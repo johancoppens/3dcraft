@@ -1012,3 +1012,62 @@ fn a_note_on_a_large_grid_sheet_needs_no_mesh() {
     run(&mut s, "note.list", json!({}));
     println!("note.list after it: {:?}", started.elapsed());
 }
+
+/// The developer, 2026-11-17, with the notes in his window: a note written
+/// over a connection of the window that gave no name is an agent's (its
+/// question for the person), without a name, not unknown; and a note the
+/// person closed while the agent worked on it takes the agent's reply all
+/// the same, kept under its closing with who gave it and when, one undo
+/// step.
+#[test]
+fn a_reply_to_a_done_note_is_kept_and_an_unnamed_connection_is_an_agent() {
+    let mut s = session();
+    plate(&mut s);
+    let unnamed = craft3d_engine::agent_log::UNNAMED_AGENT;
+    let added = s
+        .acting(Some(unnamed), None, |s| {
+            s.execute(
+                "note.add",
+                &json!({"text": "should this be thicker?", "on": "Plate:face(1)"}),
+            )
+        })
+        .unwrap();
+    assert_eq!(added["author"], "agent", "{added}");
+    assert!(added["agent"].is_null(), "{added}");
+    let inspected = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert_eq!(inspected["notes"]["fromAgents"], 1, "{inspected}");
+    // The person closes it; then the agent says what it did.
+    s.by_person(|s| s.execute("note.resolve", &json!({"id": 1})))
+        .unwrap();
+    let replied = as_agent(
+        &mut s,
+        "note.resolve",
+        json!({"id": 1, "reply": "Made it 7 mm."}),
+    );
+    assert_eq!(replied["state"], "done");
+    assert_eq!(
+        replied["done"]["author"], "person",
+        "closed as it was: {replied}"
+    );
+    assert!(replied["done"]["reply"].is_null(), "{replied}");
+    let later = &replied["done"]["later"][0];
+    assert_eq!(later["author"], "agent", "{replied}");
+    assert_eq!(later["agent"], "Claude Code");
+    assert_eq!(later["reply"], "Made it 7 mm.");
+    // One undo step takes the reply back; the closing stays.
+    run(&mut s, "edit.undo", json!({}));
+    let back = note(&mut s, 1);
+    assert_eq!(back["state"], "done");
+    assert!(back["done"].get("later").is_none(), "{back}");
+    // Without a reply, a done note is still an error that says what to do.
+    let e = error(&mut s, "note.resolve", json!({"id": 1}));
+    assert!(e.contains("give a reply to add one"), "{e}");
+    // An unnamed agent's closing reads as such.
+    s.acting(Some(unnamed), None, |s| {
+        s.execute("note.resolve", &json!({"id": 1, "reply": "checked"}))
+    })
+    .unwrap();
+    let again = note(&mut s, 1);
+    assert_eq!(again["done"]["later"][0]["author"], "agent", "{again}");
+    assert!(again["done"]["later"][0]["agent"].is_null(), "{again}");
+}

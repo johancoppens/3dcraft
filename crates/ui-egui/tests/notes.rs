@@ -232,7 +232,12 @@ fn notes_show_in_the_tab_and_the_view_and_a_marker_chooses_its_note() {
             .clone()
     };
     assert_eq!(place(4), "detached");
-    assert_eq!(place(5), "by place, near Round");
+    // Held by place: what lies there now, never the name it was pinned by.
+    assert!(
+        place(5).starts_with("by place: near a face of "),
+        "{}",
+        place(5)
+    );
     let (markers, stood_for) = shell.note_markers();
     assert!(
         !markers.is_empty() && stood_for >= markers.len(),
@@ -337,6 +342,95 @@ fn note_here_writes_a_note_where_the_right_click_was() {
         let got = note["point"][k].as_f64().unwrap();
         assert!((got - point[k]).abs() < 1e-9, "{listed}");
     }
+}
+
+fn screenshot(shell: &mut Shell, session: &mut Session) -> Value {
+    shell
+        .handle_method(
+            session,
+            "ui.screenshot",
+            Some(&json!({"width": 640, "height": 400})),
+        )
+        .unwrap()
+        .unwrap()
+}
+
+/// `ui.screenshot` draws the pins as the window does (review-pins: an
+/// agent checks the window by this picture): with the pins shown it holds
+/// them, hidden it does not, and a document without notes draws none.
+#[test]
+fn the_screenshot_shows_the_pins() {
+    let mut session = noted();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    let shown = screenshot(&mut shell, &mut session);
+    assert!(shown["pins"].as_u64().unwrap() >= 3, "{}", shown["pins"]);
+    set(
+        &mut shell,
+        &mut session,
+        json!({"notes": {"hideMarkers": true}}),
+    );
+    let hidden = screenshot(&mut shell, &mut session);
+    assert_eq!(hidden["pins"], 0);
+    assert_ne!(shown["base64"], hidden["base64"]);
+    let mut plain = plate();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut plain);
+    assert_eq!(screenshot(&mut shell, &mut plain)["pins"], 0);
+}
+
+/// The field keeps the person's text when `note.add` refuses it, and says
+/// why (review-pins: the text was lost).
+#[test]
+fn a_refused_note_keeps_its_text_in_the_field() {
+    let mut session = plate();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    run(
+        &mut session,
+        "select.set",
+        json!({"names": ["F2:copy(0)/F1:face(1)"]}),
+    );
+    w.frames(&mut shell, &mut session, 2);
+    w.key(&mut shell, &mut session, Key::N);
+    shell.type_note("a bell\u{7} here", true);
+    w.frames(&mut shell, &mut session, 3);
+    let writing = shell.note_writing().expect("the field stays open");
+    assert_eq!(writing.text, "a bell\u{7} here");
+    assert!(
+        writing
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("control character")),
+        "{:?}",
+        writing.error
+    );
+    assert_eq!(run(&mut session, "note.list", json!({}))["count"], 0);
+    // Put right, it is added and the field closes.
+    shell.type_note("a bell here", true);
+    w.frames(&mut shell, &mut session, 3);
+    assert!(shell.note_writing().is_none());
+    assert_eq!(run(&mut session, "note.list", json!({}))["count"], 1);
+}
+
+/// `ui.set` chooses only a note the document has.
+#[test]
+fn ui_set_refuses_a_note_the_document_does_not_have() {
+    let mut session = noted();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    let refused = shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&json!({"notes": {"selected": 99}})),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert!(refused.contains("no note 99"), "{refused}");
+    assert_eq!(shell.state.notes.selected, None, "nothing changed");
+    set(&mut shell, &mut session, json!({"notes": {"selected": 2}}));
+    assert_eq!(shell.state.notes.selected, Some(2));
 }
 
 #[test]

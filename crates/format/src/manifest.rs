@@ -186,7 +186,9 @@ pub enum NoteKind {
     Vertex,
 }
 
-/// Who closed a note, when, and the reply.
+/// Who closed a note, when, and the reply; the replies given after it was
+/// closed, when there are any (written only then: a file without them is
+/// as before).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NoteDone {
@@ -195,6 +197,18 @@ pub struct NoteDone {
     pub time_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub later: Vec<NoteReply>,
+}
+
+/// A reply given to a note after it was closed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoteReply {
+    pub by: NoteBy,
+    #[serde(default)]
+    pub time_ms: u64,
+    pub text: String,
 }
 
 /// A font of the document (format version 55).

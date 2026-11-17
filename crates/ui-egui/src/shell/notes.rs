@@ -8,39 +8,371 @@
 //! - **Writing a note:** with one body, face, edge or vertex selected,
 //!   **N** (or *Note here…* in the list under the right mouse button)
 //!   opens one field at that place; Enter adds the note (`note.add`, as
-//!   the person: `Session::by_person`), Escape leaves. The point is the
+//!   the person: `Session::by_person`), Shift+Enter starts a new line in
+//!   it (the field grows), Escape leaves. The field stops at the longest
+//!   text a note takes and counts near it; when `note.add` refuses, the
+//!   field stays open with its text and says why. The point is the
 //!   click's on that entity (the last click when it was on it; the front
 //!   face under the right click), else the entity's middle.
-//! - **Markers:** drawn in the accent, small; behind the bodies (a ray
+//! - **Markers:** small pins in `Tokens::note_*`, the viewport's own
+//!   colours (the viewport is not themed); behind the bodies (a ray
 //!   from the eye through the marker meets a face nearer than it by more
 //!   than a hundredth of the model's size) faint and not clickable, as
 //!   the mates' markers behind a face are. A click on a marker chooses its
-//!   note (`notes.selected`) and shows its text. Thinned for many notes:
-//!   one marker per cell of `Tokens::note_cell` points (the chosen note,
-//!   else an agent's open question, else an open note, else a done one,
-//!   lowest id first), with how many more it stands for; at most
-//!   [`MAX_MARKERS`] cells drawn. What is behind a face is looked up once
-//!   per camera, document state and size, for the markers drawn only.
+//!   note (`notes.selected`) and shows its text. Thinned for many notes
+//!   by a rule that does not depend on the view ([`lay_out_pins`]): the
+//!   notes taken in a fixed order (the chosen note, agents' open
+//!   questions, other open notes, done ones; by id), each a pin unless an
+//!   earlier pin is within `Tokens::note_cell` points, which then stands
+//!   for it too; at most [`MAX_MARKERS`] pins, the Notes tab saying how
+//!   many notes in view have none. What is behind a face is looked up
+//!   once per camera, document state and size, for the pins drawn only.
+//! - **Pictures:** `ui.screenshot` draws the same pins into its picture
+//!   (`pin_pixels.rs`), laid out for the picture's size.
 //!
 //! The window only views: every change is a command, one undo step.
 
 use super::Shell;
 use super::views::FlyTo;
 use crate::camera::Projector;
-use crate::theme::{color, color_alpha};
+use crate::theme::{Rgb, Tokens, color, color_alpha};
 use craft3d_engine::{Scene, SelectionKind, Session};
 use craft3d_math::Vec3;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod pin_pixels;
+
 /// The key that writes a note on what is selected.
 pub const NOTE_KEY: egui::Key = egui::Key::N;
 
-/// Most markers drawn: cells beyond these (by their notes' ids) are not
-/// drawn, so a document with a thousand notes costs no more per frame
-/// than one with this many.
+/// Most pins drawn: notes after these (in the order of
+/// [`lay_out_pins`]) and not near one of them have none, so a document
+/// with a thousand notes costs no more per frame than one with this many.
 pub const MAX_MARKERS: usize = 400;
+
+/// The key under which the side panel runs the note being written, so
+/// the field learns whether it was added.
+const NOTE_FIELD: &str = "note field";
+
+/// The count of a note's text shows from this many code points before
+/// the longest it may be.
+const COUNT_FROM: usize = 200;
+
+/// What a pin shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinKind {
+    /// An open note: a head in `note_open` with its number.
+    Open,
+    /// An agent's open question: a ring in `note_open` with a "?".
+    Question,
+    /// A done note: a small ring in `note_done` with a tick.
+    Done,
+    /// A note off its entity (detached, or held by place where nothing
+    /// is any more), at its stored point: a ring in `note_astray` with
+    /// its number.
+    Astray,
+}
+
+impl PinKind {
+    /// What `row`'s pin shows.
+    pub fn of(row: &NoteRow) -> Self {
+        if row.done {
+            PinKind::Done
+        } else if row.astray() {
+            PinKind::Astray
+        } else if row.question() {
+            PinKind::Question
+        } else {
+            PinKind::Open
+        }
+    }
+
+    /// Its colour.
+    pub fn ink(self, tokens: &Tokens) -> Rgb {
+        match self {
+            PinKind::Open | PinKind::Question => tokens.note_open,
+            PinKind::Done => tokens.note_done,
+            PinKind::Astray => tokens.note_astray,
+        }
+    }
+}
+
+/// A pin as the view draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pin {
+    pub id: u64,
+    /// The place it stands on, in points from the view's top left.
+    pub at: egui::Pos2,
+    pub kind: PinKind,
+    /// A face is nearer the eye than its place: drawn faint, not clicked.
+    pub behind: bool,
+    /// The chosen note's pin.
+    pub chosen: bool,
+    /// How many more notes near it it stands for.
+    pub more: usize,
+}
+
+impl Pin {
+    /// The centre of its head, for a pin standing at `at` (points): above
+    /// the place, on a short stalk.
+    pub fn head(at: egui::Pos2, radius: f32) -> egui::Pos2 {
+        at - egui::vec2(0.0, 2.2 * radius)
+    }
+}
+
+/// The pins of a view, and how many notes they leave without one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PinLayout {
+    pub pins: Vec<Pin>,
+    /// Notes whose place is in the view.
+    pub in_view: usize,
+    /// Notes the pins stand for: their own and those near them.
+    pub stood_for: usize,
+}
+
+/// Lays out the pins of `rows` in a view of `size` pixels, `scale`
+/// pixels a point, seen by `camera`. The notes whose place is in the view
+/// are taken in an order that does not depend on the view (the chosen
+/// note, agents' open questions, the other open notes, done ones; by id),
+/// each drawn as a pin unless an earlier pin's place is nearer to it in
+/// the model than `cell` points are at the view's zoom (rounded up to a
+/// power of two model units, so a small zoom keeps it), which then stands
+/// for it too; at most [`MAX_MARKERS`] pins, a note after them near none
+/// of them left without. Which notes have pins depends on the places and
+/// the zoom alone: turning the view changes it only where notes come into
+/// or leave the view. `behind` says whether a pin's place (pixels across,
+/// down, and depth) is behind a face; asked for the pins only.
+pub fn lay_out_pins(
+    rows: &[NoteRow],
+    camera: &craft3d_render::Camera,
+    size: [u32; 2],
+    scale: f64,
+    cell: f32,
+    selected: Option<u64>,
+    behind: &mut dyn FnMut(u64, [f64; 3]) -> bool,
+) -> PinLayout {
+    let mut layout = PinLayout::default();
+    let [w, h] = size;
+    let Some(projector) = Projector::new(camera, f64::from(w.max(1)), f64::from(h.max(1))) else {
+        return layout;
+    };
+    let scale = if scale.is_finite() {
+        scale.max(0.1)
+    } else {
+        1.0
+    };
+    let (width, height) = (f64::from(w) / scale, f64::from(h) / scale);
+    let mut placed: Vec<(&NoteRow, Vec3, egui::Pos2, [f64; 3])> = Vec::new();
+    for row in rows {
+        let Some(p) = row.marker else {
+            continue;
+        };
+        let place = Vec3::new(p[0], p[1], p[2]);
+        let Some(at) = projector.project(place) else {
+            continue;
+        };
+        let (x, y) = (at.x / scale, at.y / scale);
+        if (0.0..=width).contains(&x) && (0.0..=height).contains(&y) {
+            placed.push((
+                row,
+                place,
+                egui::pos2(x as f32, y as f32),
+                [at.x, at.y, at.depth],
+            ));
+        }
+    }
+    layout.in_view = placed.len();
+    placed.sort_by_key(|(row, ..)| (Some(row.id) != selected, !row.question(), row.done, row.id));
+    let near = model_cell(camera, &projector, f64::from(cell) * scale);
+    let bucket = |p: Vec3, q: f64| -> (i64, i64, i64) {
+        (
+            (p.x / q).floor() as i64,
+            (p.y / q).floor() as i64,
+            (p.z / q).floor() as i64,
+        )
+    };
+    // The places of the pins laid out so far, and the pins by the cube of
+    // the model cell their place is in.
+    let mut places: Vec<Vec3> = Vec::new();
+    let mut buckets: BTreeMap<(i64, i64, i64), Vec<usize>> = BTreeMap::new();
+    for (row, place, pos, pixel) in &placed {
+        let mut nearest: Option<(f64, usize)> = None;
+        if let Some(q) = near {
+            let (bx, by, bz) = bucket(*place, q);
+            for dx in -1..=1_i64 {
+                for dy in -1..=1_i64 {
+                    for dz in -1..=1_i64 {
+                        let key = (
+                            bx.saturating_add(dx),
+                            by.saturating_add(dy),
+                            bz.saturating_add(dz),
+                        );
+                        for &k in buckets.get(&key).into_iter().flatten() {
+                            let Some(there) = places.get(k) else {
+                                continue;
+                            };
+                            let d = there.distance(*place);
+                            if d < q && nearest.is_none_or(|(best, _)| d < best) {
+                                nearest = Some((d, k));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        match nearest {
+            Some((_, k)) => {
+                if let Some(pin) = layout.pins.get_mut(k) {
+                    pin.more += 1;
+                }
+                layout.stood_for += 1;
+            }
+            None if layout.pins.len() < MAX_MARKERS => {
+                if let Some(q) = near {
+                    buckets
+                        .entry(bucket(*place, q))
+                        .or_default()
+                        .push(layout.pins.len());
+                }
+                places.push(*place);
+                layout.pins.push(Pin {
+                    id: row.id,
+                    at: *pos,
+                    kind: PinKind::of(row),
+                    behind: behind(row.id, *pixel),
+                    chosen: Some(row.id) == selected,
+                    more: 0,
+                });
+                layout.stood_for += 1;
+            }
+            None => {}
+        }
+    }
+    layout
+}
+
+/// The model length `pixels` span at the camera's target, rounded up to a
+/// power of two (so a small zoom keeps it, and turning about the target
+/// does not change it); `None` for a view without one.
+fn model_cell(camera: &craft3d_render::Camera, projector: &Projector, pixels: f64) -> Option<f64> {
+    let right = (camera.target - camera.eye).cross(camera.up).normalized()?;
+    let a = projector.project(camera.target)?;
+    let b = projector.project(camera.target + right)?;
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let per_unit = (dx * dx + dy * dy).sqrt();
+    if !(per_unit.is_finite() && per_unit > 0.0 && pixels.is_finite() && pixels > 0.0) {
+        return None;
+    }
+    let wanted = pixels / per_unit;
+    let mut q = 1.0_f64;
+    for _ in 0..1100 {
+        if q >= wanted {
+            break;
+        }
+        q *= 2.0;
+    }
+    for _ in 0..1100 {
+        if q * 0.5 < wanted {
+            break;
+        }
+        q *= 0.5;
+    }
+    (q.is_finite() && q > 0.0).then_some(q)
+}
+
+/// Whether a place (pixels across and down in a view of `size`, and its
+/// depth) is behind a face of `scene`: a face (or the section's cap)
+/// under it nearer the eye by more than `slack`.
+fn pin_behind(
+    scene: Option<&Scene>,
+    camera: &craft3d_render::Camera,
+    size: [u32; 2],
+    at: [f64; 3],
+    section: Option<&craft3d_render::Section>,
+    slack: f64,
+) -> bool {
+    let [w, h] = size;
+    let [x, y, depth] = at;
+    let front = scene
+        .and_then(|scene| scene.pick_cut(camera, w, h, x, y, section).ok())
+        .and_then(|(face, cap)| face.map(|f| f.depth).or(cap.map(|c| c.depth)))
+        .filter(|d| d.is_finite());
+    front.is_some_and(|f| f + slack < depth)
+}
+
+/// Paints `pin` with `painter`, standing at `pos` (points); the centre of
+/// its head.
+fn paint_pin(painter: &egui::Painter, tokens: &Tokens, pin: &Pin, pos: egui::Pos2) -> egui::Pos2 {
+    let r = tokens.note_radius;
+    let alpha = if pin.behind { 70 } else { 255 };
+    let ink = pin.kind.ink(tokens);
+    let faded = |c: Rgb| color_alpha(c, alpha);
+    let head = Pin::head(pos, r);
+    // The pin: a dot at the place, a short stalk, the head above.
+    painter.circle_filled(pos, 1.5, faded(ink));
+    painter.line_segment(
+        [pos, head + egui::vec2(0.0, r)],
+        egui::Stroke::new(1.0, faded(ink)),
+    );
+    match pin.kind {
+        PinKind::Done => {
+            // A quiet tick in a small ring.
+            let small = r * 0.75;
+            let stroke = egui::Stroke::new(1.2, faded(ink));
+            painter.circle_filled(head, small, faded(tokens.note_fill));
+            painter.circle_stroke(head, small, stroke);
+            let knee = head + egui::vec2(-0.1 * small, 0.35 * small);
+            painter.line_segment([head + egui::vec2(-0.45 * small, 0.0), knee], stroke);
+            painter.line_segment(
+                [knee, head + egui::vec2(0.45 * small, -0.35 * small)],
+                stroke,
+            );
+        }
+        PinKind::Question | PinKind::Astray => {
+            // An agent's question, or a note whose place is gone: a ring
+            // with "?" or the number.
+            painter.circle_filled(head, r, faded(tokens.note_fill));
+            painter.circle_stroke(head, r, egui::Stroke::new(1.5, faded(ink)));
+            let words = if pin.kind == PinKind::Astray {
+                pin.id.to_string()
+            } else {
+                "?".to_string()
+            };
+            painter.text(
+                head,
+                egui::Align2::CENTER_CENTER,
+                words,
+                egui::FontId::proportional(r * 1.4),
+                faded(ink),
+            );
+        }
+        PinKind::Open => {
+            painter.circle_filled(head, r, faded(ink));
+            painter.text(
+                head,
+                egui::Align2::CENTER_CENTER,
+                pin.id.to_string(),
+                egui::FontId::proportional(r * 1.3),
+                faded(tokens.note_ink),
+            );
+        }
+    }
+    if pin.chosen {
+        painter.circle_stroke(head, r + 2.5, egui::Stroke::new(1.0, faded(ink)));
+    }
+    if pin.more > 0 {
+        painter.text(
+            head + egui::vec2(r + 2.0, -r),
+            egui::Align2::LEFT_TOP,
+            format!("+{}", pin.more),
+            egui::FontId::proportional(r * 1.2),
+            faded(tokens.viewport_text),
+        );
+    }
+    head
+}
 
 /// One note as the window shows it, read from `note.list`.
 #[derive(Clone, Debug, PartialEq)]
@@ -55,8 +387,11 @@ pub struct NoteRow {
     /// `attached`, `byPlace`, `lost`, `hidden`, `detached`, or empty
     /// where the places were not read (the bodies are built elsewhere).
     pub attachment: String,
-    /// Where it is, in words: "face of Rib", "by place, near Round",
-    /// "place gone, near Round", "detached".
+    /// Where it is, in words: "face of Rib"; held by place, what holds it,
+    /// an entity of the feature that made it: "by place: near an edge of
+    /// Bookend" (its name is not proven to stay with what it was pinned
+    /// to, so not that); "place gone: was near an edge of Bookend";
+    /// "detached".
     pub place: String,
     /// What a click flies to: the entity now (kind, name, feature).
     pub entity: Option<(String, String, String)>,
@@ -64,8 +399,10 @@ pub struct NoteRow {
     /// note or one whose place is gone; `None` while it is hidden.
     pub marker: Option<[f64; 3]>,
     pub reply: Option<String>,
-    /// Who closed it: `person`, `agent` (with the name) or `unknown`.
+    /// Who closed it: "you", the agent's name, "an agent" or "unknown".
     pub closed_by: Option<String>,
+    /// The replies given after it was closed: who, and what.
+    pub later: Vec<(String, String)>,
 }
 
 impl NoteRow {
@@ -114,9 +451,18 @@ pub fn rows_of(listed: &Value) -> Vec<NoteRow> {
                 .and_then(|o| text(o, "name"))
                 .or_else(|| on.and_then(|o| text(o, "body")))
                 .unwrap_or_default();
+            // Held by place: what holds it, an entity of the feature that
+            // made it, never the name it was pinned by (the round it
+            // spoke of may be a chamfer now).
+            let one = match kind.as_str() {
+                "edge" => "an edge",
+                "vertex" => "a corner",
+                "body" => "the body",
+                _ => "a face",
+            };
             let place = match attachment.as_str() {
-                "byPlace" => format!("by place, near {made}"),
-                "lost" => format!("place gone, near {made}"),
+                "byPlace" => format!("by place: near {one} of {made}"),
+                "lost" => format!("place gone: was near {one} of {made}"),
                 "detached" => "detached".to_string(),
                 "hidden" => format!("{kind} of {made}, hidden for now"),
                 _ if kind == "body" => format!("body {made}"),
@@ -139,6 +485,21 @@ pub fn rows_of(listed: &Value) -> Vec<NoteRow> {
                 _ => None,
             };
             let done = n.get("done").filter(|d| d.is_object());
+            let who_of = |r: &Value| match (text(r, "author").as_deref(), text(r, "agent")) {
+                (Some("agent"), Some(name)) => name,
+                (Some("agent"), None) => "an agent".to_string(),
+                (Some("person"), _) => "you".to_string(),
+                _ => "unknown".to_string(),
+            };
+            let later = done
+                .and_then(|d| d.get("later"))
+                .and_then(Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|r| Some((who_of(r), text(r, "reply")?)))
+                        .collect()
+                })
+                .unwrap_or_default();
             Some(NoteRow {
                 id,
                 text: text(n, "text").unwrap_or_default(),
@@ -151,11 +512,8 @@ pub fn rows_of(listed: &Value) -> Vec<NoteRow> {
                 entity,
                 marker,
                 reply: done.and_then(|d| text(d, "reply")),
-                closed_by: done.map(|d| match (text(d, "author").as_deref(), text(d, "agent")) {
-                    (Some("agent"), Some(name)) => name,
-                    (Some("person"), _) => "you".to_string(),
-                    _ => "unknown".to_string(),
-                }),
+                closed_by: done.map(who_of),
+                later,
             })
         })
         .collect()
@@ -174,6 +532,10 @@ pub struct Writing {
     pub at: egui::Pos2,
     /// The field takes the keyboard in its first frame.
     pub focus: bool,
+    /// Sent to be added (`note.add`): the field waits for the answer.
+    pub sent: bool,
+    /// Why `note.add` refused it: said at the field, the text kept.
+    pub error: Option<String>,
 }
 
 /// What is behind a face is looked up for this camera, state and size.
@@ -192,11 +554,17 @@ pub struct NoteMemory {
     /// How many markers the last frame drew, and how many notes they
     /// stood for.
     pub drawn: (usize, usize),
+    /// How many notes' places the last frame had in the view.
+    pub in_view: usize,
     /// Which drawn markers are behind a face, by note id.
     seen: Option<(SeenKey, BTreeMap<u64, bool>)>,
     /// A note's text being changed in the tab: its id and the text.
     pub(crate) editing: Option<(u64, String)>,
     pub(crate) edit_focus: bool,
+    /// The changed text was sent (`note.edit`): its field waits for the
+    /// answer; and why it was refused, said under the field.
+    pub(crate) edit_sent: bool,
+    pub(crate) edit_error: Option<String>,
     /// Where the last frame drew *Note here…* in the "select other" list.
     pub(crate) here_hit: Option<egui::Rect>,
 }
@@ -339,28 +707,100 @@ impl Shell {
             text: String::new(),
             at,
             focus: true,
+            sent: false,
+            error: None,
         });
     }
 
     /// Adds the note being written (`note.add`, as the person), when it
-    /// says something; closes the field either way.
+    /// says something, else closes the field. The field stays until the
+    /// answer: closed when the note was added, open with its text and the
+    /// reason when it was refused.
     fn submit_note(&mut self) {
-        let Some(writing) = self.notes.writing.take() else {
+        let Some(writing) = &mut self.notes.writing else {
             return;
         };
-        if writing.text.trim().is_empty() {
+        if writing.sent {
             return;
         }
+        if writing.text.trim().is_empty() {
+            self.notes.writing = None;
+            return;
+        }
+        writing.sent = true;
+        writing.error = None;
         let mut params = json!({"text": writing.text, "on": writing.on});
         if let Some(map) = params.as_object_mut() {
-            if let Some(feature) = writing.feature {
-                map.insert("feature".into(), feature.into());
+            if let Some(feature) = &writing.feature {
+                map.insert("feature".into(), feature.clone().into());
             }
             if let Some(point) = writing.point {
                 map.insert("point".into(), json!(point));
             }
         }
-        self.side_queue("note.add", params, None);
+        self.side_queue("note.add", params, Some(NOTE_FIELD.to_string()));
+    }
+
+    /// What the side panel made of the note sent: closes the field when it
+    /// was added, keeps it open with its text and the reason when it was
+    /// refused; nothing while it waits.
+    fn note_answered(&mut self) {
+        if !self.notes.writing.as_ref().is_some_and(|w| w.sent) {
+            return;
+        }
+        match self.side_outcome(NOTE_FIELD) {
+            None => {}
+            Some(Ok(())) => self.notes.writing = None,
+            Some(Err(why)) => {
+                if let Some(writing) = &mut self.notes.writing {
+                    writing.sent = false;
+                    writing.error = Some(why);
+                    writing.focus = true;
+                }
+            }
+        }
+    }
+
+    /// Reads the notes for the document as it is now (`ui.screenshot`
+    /// between frames).
+    pub(crate) fn sync_notes_now(&mut self, session: &mut Session) {
+        let Some(doc) = session.document_status().map(|s| s.id) else {
+            return;
+        };
+        let revision = session.document_revision().unwrap_or(0);
+        let bodies_here = !session.regen_elsewhere() || session.regenerated_here();
+        self.sync_notes(session, (doc, revision), bodies_here);
+    }
+
+    /// Draws the notes' pins into `rgb`, a picture of the view of `size`
+    /// pixels at `scale` pixels a point (`ui.screenshot`), as the window
+    /// draws them over the view: while they are shown, laid out for that
+    /// picture ([`lay_out_pins`]). The chosen note's text beside its pin is
+    /// not drawn. How many pins it drew.
+    pub(crate) fn draw_note_pins(
+        &self,
+        scene: Option<&Scene>,
+        rgb: &mut [u8],
+        size: [u32; 2],
+        scale: f64,
+    ) -> usize {
+        if self.notes.rows.is_empty() || self.state.notes.hide_markers {
+            return 0;
+        }
+        let camera = self.state.camera.to_render();
+        let section = self.section();
+        let slack = scene.map_or(0.0, |s| s.bbox.diagonal() * 0.01);
+        let layout = lay_out_pins(
+            &self.notes.rows,
+            &camera,
+            size,
+            scale,
+            self.tokens.note_cell,
+            self.state.notes.selected,
+            &mut |_, at| pin_behind(scene, &camera, size, at, section.as_ref(), slack),
+        );
+        pin_pixels::draw_pins(rgb, size, &layout.pins, &self.tokens, scale as f32);
+        layout.pins.len()
     }
 
     /// Chooses note `id`, and flies to what it is on (its entity
@@ -442,196 +882,69 @@ impl Shell {
         }
         self.notes.markers.clear();
         self.notes.drawn = (0, 0);
+        self.notes.in_view = 0;
         if !self.notes.rows.is_empty() && !self.state.notes.hide_markers {
             self.paint_markers(ui, rect, scene);
         }
+        self.note_answered();
         self.writing_field(ui);
     }
 
     fn paint_markers(&mut self, ui: &egui::Ui, rect: egui::Rect, scene: Option<&Scene>) {
         let tokens = self.tokens;
-        let [w, h] = self.size;
-        let Some(projector) = Projector::new(
-            &self.state.camera.to_render(),
-            f64::from(w.max(1)),
-            f64::from(h.max(1)),
-        ) else {
-            return;
-        };
+        let size = self.size;
+        let camera = self.state.camera.to_render();
         let scale = f64::from(self.pixels_per_point.max(0.1));
-        let selected = self.state.notes.selected;
-        // Each note's place on screen and its depth.
-        let mut placed: Vec<(&NoteRow, egui::Pos2, f64, [f64; 3])> = Vec::new();
-        for row in self.notes.rows.iter() {
-            let Some(p) = row.marker else {
-                continue;
-            };
-            let Some(at) = projector.project(Vec3::new(p[0], p[1], p[2])) else {
-                continue;
-            };
-            let pos = egui::pos2(
-                rect.left() + (at.x / scale) as f32,
-                rect.top() + (at.y / scale) as f32,
-            );
-            if rect.contains(pos) {
-                placed.push((row, pos, at.depth, [at.x, at.y, at.depth]));
-            }
-        }
-        // One marker per cell: the chosen note, else a question, else an
-        // open note, else a done one; lowest id first.
-        let rank = |row: &NoteRow| (Some(row.id) != selected, !row.question(), row.done, row.id);
-        let cell = tokens.note_cell.max(4.0);
-        let mut cells: BTreeMap<(i64, i64), (usize, usize)> = BTreeMap::new();
-        for (k, (row, pos, _, _)) in placed.iter().enumerate() {
-            let key = (
-                ((pos.x - rect.left()) / cell).floor() as i64,
-                ((pos.y - rect.top()) / cell).floor() as i64,
-            );
-            let entry = cells.entry(key).or_insert((k, 0));
-            entry.1 += 1;
-            if placed
-                .get(entry.0)
-                .is_some_and(|(best, ..)| rank(row) < rank(best))
-            {
-                entry.0 = k;
-            }
-        }
-        let mut shown: Vec<(usize, usize)> = cells.into_values().collect();
-        shown.sort_by_key(|(k, _)| placed.get(*k).map(|(row, ..)| rank(row)));
-        shown.truncate(MAX_MARKERS);
         // Behind a face: looked up once per camera, state and size.
         let key: SeenKey = (
             self.state.camera,
             scene.map_or(0, |s| s.revision),
-            self.size,
+            size,
             self.notes.read_for,
         );
-        if self.notes.seen.as_ref().is_none_or(|(k, _)| *k != key) {
-            let section = self.section();
-            let camera = self.state.camera.to_render();
-            let slack = scene.map_or(0.0, |s| s.bbox.diagonal() * 0.01);
-            let mut seen = BTreeMap::new();
-            for (k, _) in &shown {
-                let Some((row, _, depth, pixel)) = placed.get(*k) else {
-                    continue;
-                };
-                let front = scene
-                    .and_then(|scene| {
-                        scene
-                            .pick_cut(&camera, w, h, pixel[0], pixel[1], section.as_ref())
-                            .ok()
-                    })
-                    .and_then(|(face, cap)| face.map(|f| f.depth).or(cap.map(|c| c.depth)))
-                    .filter(|d| d.is_finite());
-                let behind = front.is_some_and(|f| f + slack < *depth);
-                seen.insert(row.id, behind);
-            }
-            self.notes.seen = Some((key, seen));
-        }
-        let seen = self
-            .notes
-            .seen
-            .as_ref()
-            .map(|(_, s)| s.clone())
-            .unwrap_or_default();
+        let mut seen = match self.notes.seen.take() {
+            Some((known, seen)) if known == key => seen,
+            _ => BTreeMap::new(),
+        };
+        let section = self.section();
+        let slack = scene.map_or(0.0, |s| s.bbox.diagonal() * 0.01);
+        let rows = Arc::clone(&self.notes.rows);
+        let layout = lay_out_pins(
+            &rows,
+            &camera,
+            size,
+            scale,
+            tokens.note_cell,
+            self.state.notes.selected,
+            &mut |id, at| {
+                *seen.entry(id).or_insert_with(|| {
+                    pin_behind(scene, &camera, size, at, section.as_ref(), slack)
+                })
+            },
+        );
+        self.notes.seen = Some((key, seen));
         let painter = ui.painter_at(rect);
-        let r = tokens.note_radius;
+        let origin = rect.min.to_vec2();
         let mut hits = Vec::new();
-        let mut stood_for = 0;
         let mut bubble = None;
-        for (k, count) in &shown {
-            let Some((row, pos, _, _)) = placed.get(*k) else {
-                continue;
-            };
-            stood_for += count;
-            let behind = seen.get(&row.id).copied().unwrap_or(false);
-            let alpha = if behind { 70 } else { 255 };
-            let detached = row.astray();
-            let ink = if row.done {
-                tokens.ok
-            } else if detached {
-                tokens.text_dim
-            } else {
-                tokens.accent
-            };
-            // The pin: a dot at the place, a short stalk, the head above.
-            let head = *pos - egui::vec2(0.0, 2.2 * r);
-            painter.circle_filled(*pos, 1.5, color_alpha(ink, alpha));
-            painter.line_segment(
-                [*pos, head + egui::vec2(0.0, r)],
-                egui::Stroke::new(1.0, color_alpha(ink, alpha)),
-            );
-            let chosen = Some(row.id) == selected;
-            if row.done {
-                // A quiet tick in a small ring.
-                let small = r * 0.75;
-                painter.circle_filled(head, small, color_alpha(tokens.panel_fill, alpha));
-                painter.circle_stroke(head, small, egui::Stroke::new(1.2, color_alpha(ink, alpha)));
-                painter.line_segment(
-                    [
-                        head + egui::vec2(-0.45 * small, 0.0),
-                        head + egui::vec2(-0.1 * small, 0.35 * small),
-                    ],
-                    egui::Stroke::new(1.2, color_alpha(ink, alpha)),
-                );
-                painter.line_segment(
-                    [
-                        head + egui::vec2(-0.1 * small, 0.35 * small),
-                        head + egui::vec2(0.45 * small, -0.35 * small),
-                    ],
-                    egui::Stroke::new(1.2, color_alpha(ink, alpha)),
-                );
-            } else if row.question() || detached {
-                // An agent's question, or a note whose place is gone: a
-                // ring with the number.
-                painter.circle_filled(head, r, color_alpha(tokens.panel_fill, alpha));
-                painter.circle_stroke(head, r, egui::Stroke::new(1.5, color_alpha(ink, alpha)));
-                painter.text(
-                    head,
-                    egui::Align2::CENTER_CENTER,
-                    if detached {
-                        row.id.to_string()
-                    } else {
-                        "?".to_string()
-                    },
-                    egui::FontId::proportional(r * 1.4),
-                    color_alpha(ink, alpha),
-                );
-            } else {
-                painter.circle_filled(head, r, color_alpha(ink, alpha));
-                painter.text(
-                    head,
-                    egui::Align2::CENTER_CENTER,
-                    row.id.to_string(),
-                    egui::FontId::proportional(r * 1.3),
-                    color_alpha(tokens.panel_fill, alpha),
-                );
+        for pin in &layout.pins {
+            let head = paint_pin(&painter, &tokens, pin, pin.at + origin);
+            if pin.chosen {
+                bubble = rows
+                    .iter()
+                    .find(|r| r.id == pin.id)
+                    .map(|r| (r.text.clone(), r.reply.clone(), head));
             }
-            if chosen {
-                painter.circle_stroke(
-                    head,
-                    r + 2.5,
-                    egui::Stroke::new(1.0, color_alpha(ink, alpha)),
-                );
-                bubble = Some((row.text.clone(), row.reply.clone(), head));
-            }
-            if *count > 1 {
-                painter.text(
-                    head + egui::vec2(r + 2.0, -r),
-                    egui::Align2::LEFT_TOP,
-                    format!("+{}", count - 1),
-                    egui::FontId::proportional(r * 1.2),
-                    color_alpha(tokens.viewport_text, alpha),
-                );
-            }
-            if !behind {
-                hits.push((row.id, head));
+            if !pin.behind {
+                hits.push((pin.id, head));
             }
         }
         self.notes.markers = hits;
-        self.notes.drawn = (shown.len(), stood_for);
+        self.notes.drawn = (layout.pins.len(), layout.stood_for);
+        self.notes.in_view = layout.in_view;
         // The chosen note's text beside its marker, on a plate.
         if let Some((text, reply, head)) = bubble {
+            let r = tokens.note_radius;
             let width = tokens.note_text_width;
             let mut job = egui::text::LayoutJob::default();
             job.wrap.max_width = width;
@@ -662,7 +975,11 @@ impl Shell {
     }
 
     /// The field a note is written in, while one is open: Enter adds the
-    /// note, Escape leaves.
+    /// note, Shift+Enter starts a new line in it (the field grows),
+    /// Escape leaves. It stops at the longest text a note takes, counts
+    /// the code points near it, and says why `note.add` refused the note,
+    /// keeping the text. A click elsewhere leaves an empty field, and
+    /// keeps one with text.
     fn writing_field(&mut self, ui: &mut egui::Ui) {
         let tokens = self.tokens;
         let Some(writing) = &mut self.notes.writing else {
@@ -670,6 +987,7 @@ impl Shell {
         };
         let mut submit = false;
         let mut leave = false;
+        let field_id = egui::Id::new("craft3d-note-field-text");
         egui::Area::new(egui::Id::new("craft3d-note-field"))
             .order(egui::Order::Foreground)
             .fixed_pos(writing.at + egui::vec2(tokens.note_radius + 6.0, -12.0))
@@ -680,31 +998,70 @@ impl Shell {
                     .corner_radius(tokens.radius)
                     .inner_margin(6.0)
                     .show(ui, |ui| {
-                        let field = ui.add(
-                            egui::TextEdit::singleline(&mut writing.text)
+                        ui.set_max_width(tokens.note_text_width + 12.0);
+                        // Enter adds the note, taken before the field sees
+                        // it; Shift+Enter is the field's: a new line.
+                        let focused = ui.memory(|m| m.has_focus(field_id));
+                        let enter = focused
+                            && ui.input_mut(|i| {
+                                !i.modifiers.shift
+                                    && i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                            });
+                        let field = ui.add_enabled(
+                            !writing.sent,
+                            egui::TextEdit::multiline(&mut writing.text)
+                                .id(field_id)
                                 .hint_text("Note…")
-                                .desired_width(tokens.note_text_width),
+                                .return_key(egui::KeyboardShortcut::new(
+                                    egui::Modifiers::SHIFT,
+                                    egui::Key::Enter,
+                                ))
+                                .desired_rows(1)
+                                .desired_width(tokens.note_text_width)
+                                .char_limit(craft3d_engine::MAX_NOTE_CHARS),
                         );
                         if writing.focus {
                             field.request_focus();
                             writing.focus = false;
                         }
-                        if field.lost_focus() {
-                            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                submit = true;
-                            } else {
-                                leave = true;
-                            }
+                        if field.changed() {
+                            writing.error = None;
+                        }
+                        let count = writing.text.chars().count();
+                        if count + COUNT_FROM >= craft3d_engine::MAX_NOTE_CHARS {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{count} / {}",
+                                    craft3d_engine::MAX_NOTE_CHARS
+                                ))
+                                .small()
+                                .color(color(tokens.plate_text_dim)),
+                            );
+                        }
+                        if let Some(why) = &writing.error {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(why)
+                                        .small()
+                                        .color(color(tokens.plate_text)),
+                                )
+                                .wrap(),
+                            );
+                        }
+                        if enter {
+                            submit = true;
+                        } else if field.lost_focus() && writing.text.trim().is_empty() {
+                            leave = true;
                         }
                         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                             leave = true;
                         }
                     });
             });
-        if submit {
-            self.submit_note();
-        } else if leave {
+        if leave {
             self.notes.writing = None;
+        } else if submit {
+            self.submit_note();
         }
     }
 }
@@ -724,21 +1081,30 @@ mod tests {
              "at": [1.0, 2.0, 3.0], "point": [1.0, 2.0, 3.0]},
             {"id": 2, "text": "why?", "state": "open", "author": "agent", "agent": "Claude Code",
              "attachment": "byPlace",
-             "on": {"kind": "face", "name": null, "pinnedAs": "F2:fillet(0)", "feature": "F2",
-                    "origin": {"feature": "F2", "name": "Round"}},
+             "on": {"kind": "edge", "name": null, "pinnedAs": "F1:edge(7)", "feature": "F3",
+                    "body": "Chamfer", "origin": {"feature": "F1", "name": "Bookend"}},
              "at": [0.0, 0.0, 0.0], "point": [0.0, 0.0, 0.0]},
             {"id": 3, "text": "gone", "state": "done", "author": "unknown", "attachment": "detached",
              "on": {"kind": "face", "name": "F4:face(5)", "feature": "F4"}, "point": [9.0, 9.0, 9.0],
-             "done": {"author": "agent", "agent": "Claude Code", "reply": "removed"}},
+             "done": {"author": "person", "agent": null, "reply": null,
+                      "later": [{"author": "agent", "agent": "Claude Code", "timeMs": 9,
+                                 "reply": "removed it"},
+                                {"author": "agent", "agent": null, "reply": "checked"}]}},
             {"id": 4, "text": "this corner", "state": "open", "author": "person", "attachment": "lost",
              "on": {"kind": "edge", "name": null, "pinnedAs": "F2:fillet(1)", "feature": "F2",
                     "origin": {"feature": "F2", "name": "Round"}},
              "point": [4.0, 5.0, 6.0]},
+            {"id": 5, "text": "over the channel", "state": "open", "author": "agent", "agent": null,
+             "attachment": "attached",
+             "on": {"kind": "face", "name": "F1:face(2)", "feature": "F1", "body": "Plate"},
+             "at": [1.0, 1.0, 1.0], "point": [1.0, 1.0, 1.0]},
             "nonsense"
         ]});
         let rows = rows_of(&listed);
-        assert_eq!(rows.len(), 4);
-        assert_eq!(rows[3].place, "place gone, near Round");
+        assert_eq!(rows.len(), 5);
+        // Held by place: what holds it, not the round it spoke of.
+        assert_eq!(rows[1].place, "by place: near an edge of Bookend");
+        assert_eq!(rows[3].place, "place gone: was near an edge of Round");
         assert_eq!(rows[3].marker, Some([4.0, 5.0, 6.0]), "at its own point");
         assert!(rows[3].astray() && rows[2].astray() && !rows[1].astray());
         assert_eq!(rows[3].entity, None);
@@ -748,13 +1114,97 @@ mod tests {
             rows[0].entity,
             Some(("face".into(), "F1:face(1)".into(), "F1".into()))
         );
-        assert_eq!(rows[1].place, "by place, near Round");
         assert!(rows[1].question());
         assert_eq!(rows[1].entity, None, "never an entity it cannot prove");
         assert_eq!(rows[2].place, "detached");
         assert_eq!(rows[2].marker, Some([9.0, 9.0, 9.0]));
-        assert_eq!(rows[2].closed_by.as_deref(), Some("Claude Code"));
-        assert_eq!(rows[2].reply.as_deref(), Some("removed"));
+        // Closed by the person, then replied to by agents.
+        assert_eq!(rows[2].closed_by.as_deref(), Some("you"));
+        assert_eq!(rows[2].reply, None);
+        assert_eq!(
+            rows[2].later,
+            vec![
+                ("Claude Code".to_string(), "removed it".to_string()),
+                ("an agent".to_string(), "checked".to_string())
+            ]
+        );
+        // An agent without a name: its question all the same.
+        assert!(rows[4].question());
+        assert_eq!(rows[4].who(), "an agent");
+        assert_eq!(PinKind::of(&rows[4]), PinKind::Question);
+        assert_eq!(PinKind::of(&rows[2]), PinKind::Done);
+        assert_eq!(PinKind::of(&rows[3]), PinKind::Astray);
+        assert_eq!(PinKind::of(&rows[0]), PinKind::Open);
         assert!(rows_of(&json!({})).is_empty());
+    }
+
+    /// The pins of many notes close together: the same notes keep their
+    /// pins when the view turns a little; open notes and questions before
+    /// done ones; at most `MAX_MARKERS`, the rest counted.
+    #[test]
+    fn pins_are_laid_out_by_a_rule_the_view_does_not_change() {
+        let mut rows = Vec::new();
+        for k in 0..1000u64 {
+            let (i, j) = ((k % 40) as f64, (k / 40) as f64);
+            rows.push(NoteRow {
+                id: k + 1,
+                text: format!("note {k}"),
+                done: k % 3 == 0,
+                author: if k % 7 == 0 { "agent" } else { "person" }.to_string(),
+                agent: None,
+                time_ms: 0,
+                attachment: "attached".to_string(),
+                place: String::new(),
+                entity: None,
+                marker: Some([i * 1.5, j * 1.5, 0.0]),
+                reply: None,
+                closed_by: None,
+                later: Vec::new(),
+            });
+        }
+        let lay_out = |yaw: f64| {
+            let camera = crate::state::CameraState {
+                target: [30.0, 18.0, 0.0],
+                distance: 120.0,
+                yaw,
+                pitch: -60.0,
+                ..crate::state::CameraState::default()
+            };
+            lay_out_pins(
+                &rows,
+                &camera.to_render(),
+                [1280, 800],
+                1.0,
+                22.0,
+                None,
+                &mut |_, _| false,
+            )
+        };
+        let a = lay_out(30.0);
+        assert!(
+            a.pins.len() <= MAX_MARKERS && a.pins.len() > 10,
+            "{}",
+            a.pins.len()
+        );
+        assert_eq!(a.in_view, 1000, "every note in view");
+        assert!(a.stood_for <= a.in_view);
+        let ids = |l: &PinLayout| {
+            l.pins
+                .iter()
+                .map(|p| p.id)
+                .collect::<std::collections::BTreeSet<u64>>()
+        };
+        // Turned half a degree, or ten: the same notes have pins.
+        for yaw in [30.5, 40.0] {
+            let b = lay_out(yaw);
+            assert_eq!(b.in_view, 1000, "every note in view at {yaw}");
+            assert_eq!(ids(&a), ids(&b), "turned to {yaw}");
+        }
+        // Done notes only where no open one stands near.
+        let first_done = a.pins.iter().position(|p| p.kind == PinKind::Done);
+        let last_open = a.pins.iter().rposition(|p| p.kind != PinKind::Done);
+        if let (Some(d), Some(o)) = (first_done, last_open) {
+            assert!(d > o, "open pins are laid out first");
+        }
     }
 }

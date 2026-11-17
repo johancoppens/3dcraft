@@ -183,11 +183,27 @@ fn notes_to_manifest(notes: &doc::Notes) -> manifest::Notes {
                         }
                     }),
                     done: done.as_ref().map(|done| {
-                        let doc::NoteDone { by, time_ms, reply } = done;
+                        let doc::NoteDone {
+                            by,
+                            time_ms,
+                            reply,
+                            later,
+                        } = done;
                         manifest::NoteDone {
                             by: note_by_to_manifest(by),
                             time_ms: *time_ms,
                             reply: reply.clone(),
+                            later: later
+                                .iter()
+                                .map(|r| {
+                                    let doc::NoteReply { by, time_ms, text } = r;
+                                    manifest::NoteReply {
+                                        by: note_by_to_manifest(by),
+                                        time_ms: *time_ms,
+                                        text: text.clone(),
+                                    }
+                                })
+                                .collect(),
                         }
                     }),
                 }
@@ -260,11 +276,27 @@ fn notes_to_doc(notes: manifest::Notes) -> doc::Notes {
                         }
                     }),
                     done: done.map(|done| {
-                        let manifest::NoteDone { by, time_ms, reply } = done;
+                        let manifest::NoteDone {
+                            by,
+                            time_ms,
+                            reply,
+                            later,
+                        } = done;
                         doc::NoteDone {
                             by: note_by_to_doc(by),
                             time_ms,
                             reply,
+                            later: later
+                                .into_iter()
+                                .map(|r| {
+                                    let manifest::NoteReply { by, time_ms, text } = r;
+                                    doc::NoteReply {
+                                        by: note_by_to_doc(by),
+                                        time_ms,
+                                        text,
+                                    }
+                                })
+                                .collect(),
                         }
                     }),
                 }

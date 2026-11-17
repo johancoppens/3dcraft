@@ -37,6 +37,8 @@ pub const MAX_NOTE_CHARS: usize = 2000;
 /// Longest name of an agent that wrote, changed or closed a note, in
 /// Unicode code points.
 pub const MAX_NOTE_AUTHOR_CHARS: usize = 200;
+/// Most replies a done note takes after it was closed.
+pub const MAX_NOTE_REPLIES: usize = 20;
 
 /// What a note is pinned to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -78,10 +80,12 @@ impl NoteKind {
 pub enum NoteAuthor {
     /// Typed by the person at the window.
     Person,
-    /// Sent by an agent, under the name its client gave (the agent log's).
+    /// Sent by an agent, under the name its client gave (the agent log's);
+    /// empty for an agent that gave none (a control connection of the
+    /// window without a name, an MCP client without one).
     Agent(String),
-    /// Over a channel that says no one: a script, the command line, a
-    /// control connection that gave no name.
+    /// Over a channel that is not an agent's: a script, the command line,
+    /// `serve`.
     Unknown,
 }
 
@@ -95,18 +99,19 @@ impl NoteAuthor {
         }
     }
 
-    /// The agent's name, for an agent.
+    /// The agent's name, for an agent that gave one.
     pub fn agent(&self) -> Option<&str> {
         match self {
-            NoteAuthor::Agent(name) => Some(name),
-            NoteAuthor::Person | NoteAuthor::Unknown => None,
+            NoteAuthor::Agent(name) if !name.is_empty() => Some(name),
+            NoteAuthor::Agent(_) | NoteAuthor::Person | NoteAuthor::Unknown => None,
         }
     }
 
     /// An agent named `name` as a note keeps it ([`clean_note_author`]);
-    /// [`NoteAuthor::Unknown`] when nothing of the name is left.
+    /// an agent without a name when nothing of the name is left (it is an
+    /// agent's channel all the same).
     pub fn agent_named(name: &str) -> NoteAuthor {
-        clean_note_author(name).map_or(NoteAuthor::Unknown, NoteAuthor::Agent)
+        NoteAuthor::Agent(clean_note_author(name).unwrap_or_default())
     }
 }
 
@@ -128,13 +133,27 @@ pub struct NoteStamp {
     pub time_ms: u64,
 }
 
-/// Who closed a note, when, and what they answered.
+/// Who closed a note, when, and what they answered; and the replies given
+/// to it after it was closed (an agent's account of what it did, when the
+/// person closed the note first), in the order they came.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteDone {
     pub by: NoteAuthor,
     /// Milliseconds since the Unix epoch (0 where there is no clock).
     pub time_ms: u64,
     pub reply: Option<String>,
+    /// At most [`MAX_NOTE_REPLIES`].
+    #[serde(default)]
+    pub later: Vec<NoteReply>,
+}
+
+/// A reply given to a note after it was closed: who, when, what.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteReply {
+    pub by: NoteAuthor,
+    /// Milliseconds since the Unix epoch (0 where there is no clock).
+    pub time_ms: u64,
+    pub text: String,
 }
 
 /// One note.
@@ -298,7 +317,9 @@ pub fn deceives(c: char) -> bool {
 }
 
 fn check_author(who: &NoteAuthor, what: &str) -> Result<(), String> {
+    // An empty name is an agent that gave none.
     if let NoteAuthor::Agent(name) = who
+        && !name.is_empty()
         && clean_note_author(name).as_deref() != Some(name.as_str())
     {
         return Err(format!(
@@ -467,10 +488,42 @@ impl Document {
         check_author(&by, "who closed it").map_err(DocError::Invalid)?;
         let note = self.note_slot(id)?;
         if done {
-            note.done = Some(NoteDone { by, time_ms, reply });
+            note.done = Some(NoteDone {
+                by,
+                time_ms,
+                reply,
+                later: Vec::new(),
+            });
         } else {
             note.done = None;
         }
+        Ok(())
+    }
+
+    /// Adds `reply` to note `id`, which is done, as given by `by` at
+    /// `time_ms`: kept under its closing, the closing as it was.
+    pub fn reply_to_note(
+        &mut self,
+        id: u64,
+        by: NoteAuthor,
+        reply: &str,
+        time_ms: u64,
+    ) -> Result<(), DocError> {
+        let text = clean_note_text(reply)
+            .map_err(|e| DocError::Invalid(e.replace("note's text", "reply")))?;
+        check_author(&by, "who replied").map_err(DocError::Invalid)?;
+        let note = self.note_slot(id)?;
+        let Some(done) = &mut note.done else {
+            return Err(DocError::Invalid(format!(
+                "note {id} is open: a reply closes it (note.resolve)"
+            )));
+        };
+        if done.later.len() >= MAX_NOTE_REPLIES {
+            return Err(DocError::Invalid(format!(
+                "note {id} has {MAX_NOTE_REPLIES} replies after its closing already"
+            )));
+        }
+        done.later.push(NoteReply { by, time_ms, text });
         Ok(())
     }
 
@@ -533,6 +586,15 @@ impl Document {
                 check_author(&done.by, "who closed it").map_err(bad)?;
                 if let Some(reply) = &done.reply {
                     check_text(reply, "its reply").map_err(bad)?;
+                }
+                if done.later.len() > MAX_NOTE_REPLIES {
+                    return Err(bad(format!(
+                        "it has more than {MAX_NOTE_REPLIES} replies after its closing"
+                    )));
+                }
+                for later in &done.later {
+                    check_author(&later.by, "who replied").map_err(bad)?;
+                    check_text(&later.text, "a reply").map_err(bad)?;
                 }
             }
         }
@@ -619,10 +681,14 @@ mod tests {
                 .count(),
             MAX_NOTE_AUTHOR_CHARS
         );
-        assert_eq!(NoteAuthor::agent_named("\u{202E}"), NoteAuthor::Unknown);
-        // A name of nothing to see is no name; one with a hidden space
-        // reads as what it shows.
-        assert_eq!(NoteAuthor::agent_named("\u{200B}"), NoteAuthor::Unknown);
+        // A name of nothing to see is no name: an agent without one (the
+        // developer, 2026-11-17: an agent's channel is an agent's); one
+        // with a hidden space reads as what it shows.
+        let unnamed = NoteAuthor::Agent(String::new());
+        assert_eq!(NoteAuthor::agent_named("\u{202E}"), unnamed);
+        assert_eq!(NoteAuthor::agent_named("\u{200B}"), unnamed);
+        assert_eq!(unnamed.word(), "agent");
+        assert_eq!(unnamed.agent(), None);
         assert_eq!(
             clean_note_author("Claude\u{200B} Code").as_deref(),
             Some("Claude Code")

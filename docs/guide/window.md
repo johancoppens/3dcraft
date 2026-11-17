@@ -299,27 +299,34 @@ The desktop app only: in the browser, agents cannot connect.
 A note is one sentence pinned to a place of the model, for whoever works on it next
 ([Working with an AI agent](agent.md#notes-on-the-model)). Select one face, edge, vertex or body and press
 **N**, or choose **Note here…** at the top of the list under the right mouse button: a field opens at the
-place you clicked. Type, then Enter; Escape leaves it. The note sits where you clicked on that face (the
-face's middle when you chose it in a list).
+place you clicked. Type, then Enter; Shift+Enter starts a new line, and the field grows; Escape leaves it.
+The field stops at 2000 characters and counts them near the end. When the note cannot be added, the field
+stays open with your text and says why. The note sits where you clicked on that face (the face's middle
+when you chose it in a list).
 
 Once a document has notes, the side panel has a **Notes** tab, its open notes counted on the tab. It lists
-them with their number, their text, where each is (*face of Rib*; *by place* for a face whose name may
-move to another, held near the feature that made it; *place gone* when that feature no longer makes
-anything there, a note that needs a look; *detached* for one whose face is gone), who wrote it
-and when. An agent's questions come first, marked with **?**; the done notes fold away under the open ones,
-each with its reply. A click on a row flies to the note and selects what it is on; the chosen row offers
-**Edit**, **Done** (or **Open again**) and **Delete**, each one step that **Ctrl+Z** takes back. **Hide in
-view** at the top hides the markers.
+them with their number, their text, where each is (*face of Rib*; *by place: near an edge of Bookend* for
+an edge or face whose name may move to another: held near what the feature that made it makes there now,
+which the row names, not what the note was pinned to; *place gone* when that feature no longer makes anything there,
+a note that needs a look; *detached* for one whose face is gone), who wrote it and when. An agent's
+questions come first, marked with **?**; the done notes fold away under the open ones, each with its reply,
+and the replies given after it was closed (an agent's account of what it did when you closed the note
+first). A click on a row flies to the note and selects what it is on; the chosen row offers **Edit**,
+**Done** (or **Open again**) and **Delete**, each one step that **Ctrl+Z** takes back. **Hide in view** at
+the top hides the markers.
 
 In the view each note is a small numbered pin in the accent colour; an agent's question is a ring with
 **?**, a done note a small green tick, a detached one (or one whose place is gone) a grey ring at the place
-it was put. A pin behind the
-model is drawn faint and cannot be clicked. A click on a pin chooses its note and shows its text beside it.
-Many notes close together on screen share one pin, which says how many more it stands for.
+it was put. The pins keep their colours in the dark appearance, as the model does. A pin behind the model
+is drawn faint and cannot be clicked. A click on a pin chooses its note and shows its text beside it. Notes
+close together on the model share one pin, which says how many more it stands for; which notes have a pin
+does not change as you turn the view, only as you zoom. At most 400 pins are drawn; when notes in view are
+left without one, the Notes tab says how many, and zooming in shows them.
 
 When an agent has left open questions, the agent pill in the status bar says how many; a click on it opens
 the Notes tab. A document without notes shows nothing of them. On a phone the tab is in the drawer, and
-**Note here…** is in the list a press and hold opens; there is no **N** without a keyboard.
+**Note here…** is in the list a press and hold opens; there is no **N** without a keyboard. On the web
+page the Notes tab lists the notes, but the view draws no pins and a row does not fly to its note yet.
 
 ## The history player
 

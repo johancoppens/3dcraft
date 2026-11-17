@@ -118,12 +118,21 @@ pub struct Tokens {
     /// in points.
     pub mate_hit: f32,
     /// A note's marker in the view (`shell/notes.rs`): its radius, in
-    /// points; the side of the cells markers are thinned to (one per
-    /// cell, with how many it stands for); the width of the text beside
+    /// points; how near another pin a note is drawn by that pin (which
+    /// says how many more it stands for); the width of the text beside
     /// the chosen one and of the field a note is written in.
     pub note_radius: f32,
     pub note_cell: f32,
     pub note_text_width: f32,
+    /// The pins' colours: an open note's head (and an agent's question's
+    /// ring), a done note's tick, a note off its entity (detached, or its
+    /// place gone), the fill inside a ring, the number on a head. Over
+    /// the viewport, which is not themed: the same in both appearances.
+    pub note_open: Rgb,
+    pub note_done: Rgb,
+    pub note_astray: Rgb,
+    pub note_fill: Rgb,
+    pub note_ink: Rgb,
     /// A point's path over the motion (`view.trace`): a deep violet,
     /// apart from the sketches' blue, the datums' petrol and the
     /// selection's copper, that stands out on the plain look's light
@@ -915,6 +924,13 @@ impl Tokens {
             note_radius: 7.0,
             note_cell: 22.0,
             note_text_width: 220.0,
+            // The accent, the light set's ok, the viewport's own text,
+            // the light panel (2026-11-17).
+            note_open: [224, 169, 62],
+            note_done: [42, 125, 68],
+            note_astray: [104, 100, 94],
+            note_fill: [247, 246, 243],
+            note_ink: [247, 246, 243],
             trace: [80, 0, 140],
             trace_width: 3.0,
             comb: [204, 51, 153],
@@ -2027,6 +2043,11 @@ mod tests {
             ("mate_halo", l.mate_halo, d.mate_halo),
             ("viewport_text", l.viewport_text, d.viewport_text),
             ("viewport_failed", l.viewport_failed, d.viewport_failed),
+            ("note_open", l.note_open, d.note_open),
+            ("note_done", l.note_done, d.note_done),
+            ("note_astray", l.note_astray, d.note_astray),
+            ("note_fill", l.note_fill, d.note_fill),
+            ("note_ink", l.note_ink, d.note_ink),
             ("chrome_work", l.chrome_work, d.chrome_work),
             ("chrome_attention", l.chrome_attention, d.chrome_attention),
             ("menu_fill", l.menu_fill, d.menu_fill),

@@ -233,13 +233,17 @@ impl Session {
         });
     }
 
-    /// The client this session serves, as it named itself (an MCP
-    /// client's `clientInfo.name` from `initialize`, `craft3d-cli mcp`):
-    /// the notes its commands write are that agent's when no other agent
-    /// acts ([`Session::set_actor`]). `None` for none, or a name with
-    /// nothing left once cleaned.
+    /// This session serves an agent's client, under the name it gave (an
+    /// MCP client's `clientInfo.name` from `initialize`, `craft3d-cli
+    /// mcp`): the notes its commands write are that agent's when no other
+    /// agent acts ([`Session::set_actor`]); an agent without a name when it
+    /// gave none, or a name with nothing left once cleaned (an MCP client
+    /// is an agent's by its nature).
     pub fn set_client(&mut self, name: Option<&str>) {
-        self.client = name.and_then(craft3d_doc::clean_note_author);
+        self.client = Some(
+            name.and_then(craft3d_doc::clean_note_author)
+                .unwrap_or_default(),
+        );
     }
 
     /// Runs `f` as the person at the window: the notes it writes, changes
@@ -268,8 +272,11 @@ impl Session {
             return given.clone();
         }
         if let Some(actor) = &self.actor {
+            // A connection of the window is an agent's by its nature (its
+            // switch is "Allow AI agents"): one that gave no name is an
+            // agent without one, not unknown (the developer, 2026-11-17).
             if actor.client == UNNAMED_AGENT {
-                return NoteAuthor::Unknown;
+                return NoteAuthor::Agent(String::new());
             }
             return NoteAuthor::agent_named(&actor.client);
         }

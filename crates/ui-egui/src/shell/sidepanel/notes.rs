@@ -12,10 +12,14 @@
 use super::super::Shell;
 use super::agent::ago;
 use crate::kit::{Button, Glyph, Kit};
-use crate::shell::notes::NoteRow;
+use crate::shell::notes::{NoteRow, PinKind};
 use crate::state::SideTab;
 use crate::theme::color;
 use serde_json::json;
+
+/// The key under which a note's changed text is run, so its field learns
+/// whether it was kept.
+const NOTE_EDIT: &str = "note edit";
 
 /// Puts the Notes tab among `offered` when `notes`: after Bodies, before
 /// Agent.
@@ -42,6 +46,24 @@ enum Asked {
 }
 
 impl Shell {
+    /// What became of the request queued under `key` (`side_queue`):
+    /// `None` while it waits, else whether it was run or why it was
+    /// refused (the reason taken from the panel's errors).
+    pub(crate) fn side_outcome(&mut self, key: &str) -> Option<Result<(), String>> {
+        if self
+            .side
+            .pending
+            .iter()
+            .any(|r| r.key.as_deref() == Some(key))
+        {
+            return None;
+        }
+        Some(match self.side.errors.remove(key) {
+            Some(why) => Err(why),
+            None => Ok(()),
+        })
+    }
+
     /// Whether the Notes tab is offered: the document has notes, or one is
     /// being written.
     pub(crate) fn notes_tab_offered(&self) -> bool {
@@ -60,10 +82,29 @@ impl Shell {
 
     /// The Notes tab.
     pub(super) fn notes_tab(&mut self, ui: &mut egui::Ui) {
+        // A changed text sent: the field closes when it was kept, and stays
+        // with the text and the reason when it was refused.
+        if self.notes.edit_sent {
+            match self.side_outcome(NOTE_EDIT) {
+                None => {}
+                Some(Ok(())) => {
+                    self.notes.edit_sent = false;
+                    self.notes.editing = None;
+                }
+                Some(Err(why)) => {
+                    self.notes.edit_sent = false;
+                    self.notes.edit_error = Some(why);
+                }
+            }
+        }
         let tokens = self.tokens;
         let kit = Kit::panel(&tokens);
         let s = kit.skin;
         let now = self.agents_now();
+        let edit_error = self.notes.edit_error.clone();
+        // Notes in the view without a pin of their own or near one.
+        let unpinned = self.notes.in_view.saturating_sub(self.notes.drawn.1);
+        let in_view = self.notes.in_view;
         let rows = std::sync::Arc::clone(&self.notes.rows);
         let selected = self.state.notes.selected;
         let mut open: Vec<&NoteRow> = rows.iter().filter(|r| !r.done).collect();
@@ -105,12 +146,22 @@ impl Shell {
                                 }
                             });
                         });
+                        if unpinned > 0 {
+                            kit.paragraph(
+                                ui,
+                                &format!(
+                                    "{unpinned} of the {in_view} notes in view have no pin: too many close together. Zoom in to see them."
+                                ),
+                                true,
+                            );
+                        }
                         if open.is_empty() {
                             kit.paragraph(ui, "No open notes.", true);
                         }
+                        let error = edit_error.as_deref();
                         for row in &open {
                             let editing = self.notes.editing.clone().filter(|(id, _)| *id == row.id);
-                            note_row(ui, &kit, row, now, selected, editing, &mut self.notes.edit_focus, &mut asked, &mut hits);
+                            note_row(ui, &kit, row, now, selected, (editing, error), &mut self.notes.edit_focus, &mut asked, &mut hits);
                         }
                         if !done.is_empty() {
                             kit.fold_header(ui, &mut done_open, "Done", Some(done.len()), None);
@@ -118,7 +169,7 @@ impl Shell {
                                 for row in &done {
                                     let editing =
                                         self.notes.editing.clone().filter(|(id, _)| *id == row.id);
-                                    note_row(ui, &kit, row, now, selected, editing, &mut self.notes.edit_focus, &mut asked, &mut hits);
+                                    note_row(ui, &kit, row, now, selected, (editing, error), &mut self.notes.edit_focus, &mut asked, &mut hits);
                                 }
                             }
                         }
@@ -137,13 +188,24 @@ impl Shell {
             Some(Asked::Edit(id, text)) => {
                 self.notes.editing = Some((id, text));
                 self.notes.edit_focus = true;
+                self.notes.edit_error = None;
             }
             Some(Asked::Typing(id, text)) => self.notes.editing = Some((id, text)),
             Some(Asked::Save(id, text)) => {
-                self.notes.editing = None;
-                self.side_queue("note.edit", json!({"id": id, "text": text}), None);
+                // The field stays until the answer (`edit_sent`).
+                self.notes.editing = Some((id, text.clone()));
+                self.notes.edit_sent = true;
+                self.notes.edit_error = None;
+                self.side_queue(
+                    "note.edit",
+                    json!({"id": id, "text": text}),
+                    Some(NOTE_EDIT.to_string()),
+                );
             }
-            Some(Asked::Cancel) => self.notes.editing = None,
+            Some(Asked::Cancel) => {
+                self.notes.editing = None;
+                self.notes.edit_error = None;
+            }
             Some(Asked::Resolve(id, done)) => {
                 self.side_queue("note.resolve", json!({"id": id, "done": done}), None);
             }
@@ -159,7 +221,8 @@ impl Shell {
 }
 
 /// One note's row: its number, text, where and who; the chosen one with
-/// its actions, or its text in a field while it is changed.
+/// its actions, or its text in a field while it is changed (`editing`,
+/// with why the last change was refused).
 #[allow(clippy::too_many_arguments)]
 fn note_row(
     ui: &mut egui::Ui,
@@ -167,7 +230,7 @@ fn note_row(
     row: &NoteRow,
     now: u64,
     selected: Option<u64>,
-    editing: Option<(u64, String)>,
+    (editing, error): (Option<(u64, String)>, Option<&str>),
     focus: &mut bool,
     asked: &mut Option<Asked>,
     hits: &mut Vec<(String, egui::Rect)>,
@@ -175,6 +238,7 @@ fn note_row(
     let t = kit.t;
     let s = kit.skin;
     let chosen = selected == Some(row.id);
+    let kind = PinKind::of(row);
     let gutter = t.nav_icon_size + t.nav_icon_gap;
     // The row senses a click before its buttons are laid out (on its rect
     // of the frame before), so Edit, Done and Delete stay on top of it.
@@ -189,36 +253,46 @@ fn note_row(
             ui.allocate_exact_size(egui::vec2(gutter, t.row_height), egui::Sense::hover());
         let centre = egui::pos2(rail.left() + t.nav_icon_size * 0.5, rail.center().y);
         let r = t.nav_icon_size * 0.42;
-        let ink = if row.done { s.ok } else { t.accent };
-        if row.done {
-            // A ring with a tick drawn in two strokes (the panel's font has
-            // no ✓).
-            let stroke = egui::Stroke::new(1.2, color(ink));
-            ui.painter().circle_stroke(centre, r, stroke);
-            let knee = centre + egui::vec2(-0.1 * r, 0.35 * r);
-            ui.painter()
-                .line_segment([centre + egui::vec2(-0.45 * r, 0.0), knee], stroke);
-            ui.painter()
-                .line_segment([knee, centre + egui::vec2(0.45 * r, -0.35 * r)], stroke);
-        } else if row.question() {
-            ui.painter()
-                .circle_stroke(centre, r, egui::Stroke::new(1.5, color(ink)));
-            ui.painter().text(
-                centre,
-                egui::Align2::CENTER_CENTER,
-                "?",
-                egui::FontId::proportional(r * 1.5),
-                color(ink),
-            );
-        } else {
-            ui.painter().circle_filled(centre, r, color(ink));
-            ui.painter().text(
-                centre,
-                egui::Align2::CENTER_CENTER,
-                row.id.to_string(),
-                egui::FontId::proportional(r * 1.3),
-                color(s.fill),
-            );
+        // The pin's own colour, as the view draws it.
+        let ink = kind.ink(&t);
+        match kind {
+            PinKind::Done => {
+                // A ring with a tick drawn in two strokes (the panel's font
+                // has no ✓).
+                let stroke = egui::Stroke::new(1.2, color(ink));
+                ui.painter().circle_stroke(centre, r, stroke);
+                let knee = centre + egui::vec2(-0.1 * r, 0.35 * r);
+                ui.painter()
+                    .line_segment([centre + egui::vec2(-0.45 * r, 0.0), knee], stroke);
+                ui.painter()
+                    .line_segment([knee, centre + egui::vec2(0.45 * r, -0.35 * r)], stroke);
+            }
+            PinKind::Question | PinKind::Astray => {
+                ui.painter()
+                    .circle_stroke(centre, r, egui::Stroke::new(1.5, color(ink)));
+                let words = if kind == PinKind::Astray {
+                    row.id.to_string()
+                } else {
+                    "?".to_string()
+                };
+                ui.painter().text(
+                    centre,
+                    egui::Align2::CENTER_CENTER,
+                    words,
+                    egui::FontId::proportional(r * 1.4),
+                    color(ink),
+                );
+            }
+            PinKind::Open => {
+                ui.painter().circle_filled(centre, r, color(ink));
+                ui.painter().text(
+                    centre,
+                    egui::Align2::CENTER_CENTER,
+                    row.id.to_string(),
+                    egui::FontId::proportional(r * 1.3),
+                    color(t.note_ink),
+                );
+            }
         }
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
@@ -228,11 +302,23 @@ fn note_row(
                     let field = ui.add(
                         egui::TextEdit::multiline(&mut text)
                             .desired_rows(2)
-                            .desired_width(ui.available_width()),
+                            .desired_width(ui.available_width())
+                            .char_limit(craft3d_engine::MAX_NOTE_CHARS),
                     );
                     if *focus {
                         field.request_focus();
                         *focus = false;
+                    }
+                    if let Some(why) = error {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(why)
+                                    .font(kit.small_font())
+                                    .color(color(s.failed)),
+                            )
+                            .wrap()
+                            .selectable(false),
+                        );
                     }
                     *asked = Some(Asked::Typing(row.id, text.clone()));
                     ui.horizontal(|ui| {
@@ -278,6 +364,19 @@ fn note_row(
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(format!("“{reply}”"))
+                            .font(kit.font())
+                            .italics()
+                            .color(color(s.text_dim)),
+                    )
+                    .wrap()
+                    .selectable(false),
+                );
+            }
+            // The replies given after it was closed, each with who gave it.
+            for (who, reply) in &row.later {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!("“{reply}” · {who}"))
                             .font(kit.font())
                             .italics()
                             .color(color(s.text_dim)),

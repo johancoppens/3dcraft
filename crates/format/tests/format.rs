@@ -6689,3 +6689,42 @@ fn notes_are_written_like_this_and_round_trip() {
     assert_eq!(read, small());
     assert!(read.notes.is_empty());
 }
+
+/// A reply given to a note after it was closed, and an agent that gave no
+/// name (the developer, 2026-11-17): written under the closing as
+/// `later`, the agent as `{"agent": ""}`, read back as they were; a note
+/// without them is written as before.
+#[test]
+fn a_reply_after_the_closing_and_an_unnamed_agent_round_trip() {
+    use craft3d_doc::NoteAuthor;
+    let mut doc = small();
+    let id = doc
+        .add_note(
+            "thicker?",
+            None,
+            [0.0, 0.0, 0.0],
+            NoteAuthor::Agent(String::new()),
+            1,
+        )
+        .unwrap();
+    doc.resolve_note(id, true, NoteAuthor::Person, None, 2)
+        .unwrap();
+    doc.reply_to_note(
+        id,
+        NoteAuthor::Agent("Claude Code".to_string()),
+        "Made it 7 mm.",
+        3,
+    )
+    .unwrap();
+    doc.validate().unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let note = &value["document"]["notes"]["items"][0];
+    assert_eq!(note["by"], serde_json::json!({"agent": ""}));
+    assert_eq!(
+        note["done"],
+        serde_json::json!({"by": "person", "timeMs": 2,
+            "later": [{"by": {"agent": "Claude Code"}, "timeMs": 3, "text": "Made it 7 mm."}]})
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+}
