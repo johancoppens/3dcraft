@@ -1,0 +1,199 @@
+{
+  "format_version": 74,
+  "written_by": "7038b0f819aceb0e8cd151b3def50ea7ec3bb04d",
+  "how": "craft3d-cli of that commit (a debug build, on the developer's laptop): craft3d-cli run --new '{\"units\": \"mm\"}' --script v74.steps.json --out v74.3dcraft, then craft3d-cli run v74.3dcraft --cmd document.inspect for the features and bodies and --cmd note.list for the notes (their times left out: the clock of the writing build); format 74: a plate 40 x 20 x t (t 5 mm, then 7 mm) drilled by a pin of radius 3 through its middle (Drilled, 40 * 20 * 7 - 9 pi * 7 = 5402.07 mm3), and the notes pinned to it: 1 by the person on the plate's top (F1:face(1), followed into Drilled), done by the agent Claude Code with a reply; 2 by that agent on the pin's wall (F2:face(0), followed into Drilled), open; 3 on a face of a lug that was deleted afterwards (detached, at its point); 4 on the body of Drilled; 5 deleted again (next id 6)",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "params": {
+        "orientation": {
+          "angle": "0 deg",
+          "axis": [
+            "0",
+            "0",
+            "1"
+          ]
+        },
+        "position": [
+          "0",
+          "0",
+          "0"
+        ],
+        "size": [
+          "40 mm",
+          "20 mm",
+          "t"
+        ],
+        "type": "block"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F2",
+      "name": "Pin",
+      "params": {
+        "height": "t",
+        "orientation": {
+          "angle": "0 deg",
+          "axis": [
+            "0",
+            "0",
+            "1"
+          ]
+        },
+        "position": [
+          "20 mm",
+          "10 mm",
+          "0 mm"
+        ],
+        "radius": "3 mm",
+        "type": "cylinder"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F3",
+      "name": "Drilled",
+      "params": {
+        "keep_tool": false,
+        "op": "subtract",
+        "target": 1,
+        "tool": 2,
+        "type": "boolean"
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 2515.3982236861557,
+      "bbox": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          40.0,
+          20.0,
+          7.0
+        ]
+      ],
+      "bboxTolerance": 0.050153745858970054,
+      "centroid": [
+        20.0,
+        10.0,
+        3.4999999999999996
+      ],
+      "edges": 14,
+      "faceNames": [
+        "F3:copy(0)/F1:face(0)",
+        "F3:copy(0)/F1:face(1)",
+        "F3:copy(0)/F1:face(2)",
+        "F3:copy(0)/F1:face(3)",
+        "F3:copy(0)/F1:face(4)",
+        "F3:copy(0)/F1:face(5)",
+        "F3:copy(1)/F2:face(0)"
+      ],
+      "faces": 7,
+      "feature": "F3",
+      "kind": "solid",
+      "name": "Drilled",
+      "shells": 1,
+      "valid": true,
+      "vertices": 10,
+      "volume": 5402.079662823846
+    }
+  ],
+  "notes": [
+    {
+      "id": 1,
+      "text": "2 mm thicker here",
+      "state": "done",
+      "author": "person",
+      "agent": null,
+      "on": {
+        "kind": "face",
+        "name": "F1:face(1)",
+        "feature": "F1"
+      },
+      "attachment": "attached",
+      "now": "F3:copy(0)/F1:face(1)",
+      "point": [
+        20.000000000000004,
+        10.000000000000002,
+        5.0
+      ],
+      "reply": "Done: t is 7 mm now.",
+      "closedBy": "Claude Code"
+    },
+    {
+      "id": 2,
+      "text": "Should this hole go all the way through?",
+      "state": "open",
+      "author": "agent",
+      "agent": "Claude Code",
+      "on": {
+        "kind": "face",
+        "name": "F2:face(0)",
+        "feature": "F2"
+      },
+      "attachment": "attached",
+      "now": "F3:copy(1)/F2:face(0)",
+      "point": [
+        22.23825067536965,
+        8.01708293262731,
+        2.5
+      ],
+      "reply": null,
+      "closedBy": null
+    },
+    {
+      "id": 3,
+      "text": "this lug can go",
+      "state": "open",
+      "author": "person",
+      "agent": null,
+      "on": {
+        "kind": "face",
+        "name": "F4:face(5)",
+        "feature": "F4"
+      },
+      "attachment": "detached",
+      "now": null,
+      "point": [
+        46.0,
+        10.0,
+        3.4999999999999996
+      ],
+      "reply": null,
+      "closedBy": null
+    },
+    {
+      "id": 4,
+      "text": "the whole part in aluminium",
+      "state": "open",
+      "author": "person",
+      "agent": null,
+      "on": {
+        "kind": "body",
+        "name": "Drilled",
+        "feature": "F3"
+      },
+      "attachment": "attached",
+      "now": null,
+      "point": [
+        22.359698277456477,
+        11.810660171779821,
+        3.500000000000002
+      ],
+      "reply": null,
+      "closedBy": null
+    }
+  ]
+}

@@ -132,6 +132,10 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // as long as a variable with the default fullness, one at the length
     // chosen over a place given with parabolas.
     (73, 4596, 0x92a7_c958_1a99_43b6),
+    // A plate drilled by a pin, with the notes pinned to it: one done by an
+    // agent with a reply, an agent's open question on the hole's wall, one
+    // whose face was deleted (detached), one on the body, one deleted.
+    (74, 3655, 0x2806_d82d_e8ba_4926),
 ];
 
 fn dir() -> PathBuf {

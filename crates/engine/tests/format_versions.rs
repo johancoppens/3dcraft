@@ -531,3 +531,54 @@ fn the_v73_rod_tipped_at_both_ends_is_its_closed_form() {
         );
     }
 }
+
+/// What pins v74's notes besides their fixture: the plate they are pinned
+/// to is its closed form (40 × 20 × t less a hole of radius 3, t = 7 mm),
+/// and the notes follow an edit after opening: the top's note stays on
+/// the top at t = 9 mm, the detached one stays detached at its point, and
+/// one more note takes id 6 (5 was given out and deleted).
+#[test]
+fn the_v74_notes_follow_the_plate_they_are_pinned_to() {
+    let dir = workdir("format-versions", "v74-notes");
+    std::fs::copy(fixtures().join("v74.3dcraft"), dir.join("v74.3dcraft")).unwrap();
+    let mut s = session_in(&dir);
+    run(&mut s, "file.open", json!({"path": "v74.3dcraft"}));
+    let pi = std::f64::consts::PI;
+    for t in [7.0_f64, 9.0] {
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "t", "expr": format!("{t} mm")}),
+        );
+        let inspect = run(&mut s, "document.inspect", json!({}));
+        let got = inspect["bodies"][0]["volume"].as_f64().unwrap();
+        let want = 40.0 * 20.0 * t - pi * 9.0 * t;
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "t {t}: {got} against {want}"
+        );
+        let notes = run(&mut s, "note.list", json!({}));
+        let states: Vec<(Value, Value)> = notes["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| (n["id"].clone(), n["attachment"].clone()))
+            .collect();
+        assert_eq!(
+            states,
+            [
+                (json!(1), json!("attached")),
+                (json!(2), json!("attached")),
+                (json!(3), json!("detached")),
+                (json!(4), json!("attached")),
+            ],
+            "t {t}"
+        );
+    }
+    let added = run(
+        &mut s,
+        "note.add",
+        json!({"text": "one more", "on": "Drilled"}),
+    );
+    assert_eq!(added["id"], 6);
+}
