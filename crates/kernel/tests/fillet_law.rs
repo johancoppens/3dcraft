@@ -37,12 +37,13 @@ use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::extrude::extrude;
 use craft3d_kernel::fillet::{
-    Fade, FilletEdge, FilletFace, FilletLawEdge, FilletResult, RadiusLaw, fillet, fillet_by_law,
+    Fade, FadeFault, FilletEdge, FilletFace, FilletLawEdge, FilletResult, RadiusLaw, fillet,
+    fillet_by_law,
 };
 use craft3d_kernel::primitives;
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
 use craft3d_math::{Frame, Portable, Vec3};
-use craft3d_tess::{TessParams, tessellate_body};
+use craft3d_tess::{SelfCheckParams, TessParams, body_self_intersections, tessellate_body};
 use craft3d_topo::{Body, EdgeId, FaceId, check};
 use std::f64::consts::PI;
 
@@ -243,24 +244,35 @@ fn crease(made: &FilletResult) -> f64 {
     worst
 }
 
-/// Valid, and meshed watertight with the volume it encloses.
+/// What a document asks of a body before it hands it on: valid,
+/// measured, meshed watertight at a normal and at a fine chord with the
+/// volume it encloses, and clear of itself on the mesh of the deep check.
 fn sound(body: &Body, k: f64, what: &str) {
     let tol = tolerance(k);
     assert_eq!(check(body, &tol), [], "{what}");
-    let exact = mass(body);
-    let chord = 0.01;
-    let params = TessParams {
-        chordal_tolerance: chord * k,
-        ..TessParams::default()
-    };
-    let mesh = tessellate_body(body, &params).unwrap_or_else(|e| panic!("{what}: {e}"));
-    let welded = mesh.weld().unwrap_or_else(|e| panic!("{what}: {e:?}"));
-    assert!(welded.is_closed(), "{what}: the mesh is not watertight");
+    let exact = craft3d_topo::mass_properties(body)
+        .unwrap_or_else(|e| panic!("{what}: cannot be measured: {e:?}"));
+    for chord in [0.05, 0.01] {
+        let params = TessParams {
+            chordal_tolerance: chord * k,
+            ..TessParams::default()
+        };
+        let mesh = tessellate_body(body, &params).unwrap_or_else(|e| panic!("{what}: {e}"));
+        let welded = mesh.weld().unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        assert!(welded.is_closed(), "{what}: the mesh is not watertight");
+        assert!(
+            (welded.volume() - exact.volume).abs() <= exact.area * chord * k,
+            "{what}: mesh volume {} against {}",
+            welded.volume(),
+            exact.volume
+        );
+    }
+    let found = body_self_intersections(body, &SelfCheckParams::new(tol.linear))
+        .unwrap_or_else(|e| panic!("{what}: the deep check cannot mesh it: {e}"));
     assert!(
-        (welded.volume() - exact.volume).abs() <= exact.area * chord * k,
-        "{what}: mesh volume {} against {}",
-        welded.volume(),
-        exact.volume
+        found.crossings.is_empty() && found.certain_crossings == 0,
+        "{what}: {} crossings",
+        found.crossings.len()
     );
 }
 
@@ -1350,5 +1362,366 @@ fn a_fillet_that_ends_in_a_point_between_a_plane_and_a_cone_is_the_arc_between_t
             high,
             back,
         });
+    }
+}
+
+/// The review's finding (`review-fade-law`, 2026-11-17): a radius that
+/// changes very fast was built, valid by the check, and could not be
+/// measured ("a boundary integral that does not settle", 3 to 1 over
+/// 0.04) nor searched by the deep check (from over 0.03). Such a law is
+/// refused now, or is a body the measure and the deep check take.
+#[test]
+fn a_steep_law_is_refused_or_measured_and_searched() {
+    let k = 1.0;
+    let tol = tolerance(k);
+    let block = boxed(k, [0.0, 0.0, 0.0], [40.0, 30.0, 40.0]);
+    let upright = edge_at(&block, &Frame::WORLD, k, [0.0, 0.0, 20.0]);
+    for over in [0.04, 0.03, 0.01, 0.002, 0.001] {
+        let law = RadiusLaw {
+            radius: 3.0,
+            fades: [Some(Fade::to(1.0, over)), None],
+        };
+        match fillet_by_law(&block, &[FilletLawEdge { edge: upright, law }], &tol) {
+            Ok(made) => sound(&made.body, k, &format!("3 to 1 over {over}")),
+            Err(KernelError::FilletFade {
+                edge,
+                fault:
+                    FadeFault::TooShort {
+                        change,
+                        over: given,
+                        least,
+                    },
+            }) => {
+                assert_eq!((edge, change, given, least), (upright, 2.0, over, 2.0));
+            }
+            Err(other) => panic!("3 to 1 over {over}: refused otherwise: {other}"),
+        }
+    }
+}
+
+/// The prism with a spline wall of the rim's test, and its rim.
+fn rim_prism(frame: &Frame, k: f64) -> (Body, EdgeId) {
+    let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 1.0];
+    rim_prism_with(frame, k, knots)
+}
+
+/// That prism with its spline on the knots given.
+fn rim_prism_with(frame: &Frame, k: f64, knots: Vec<f64>) -> (Body, EdgeId) {
+    let tol = tolerance(k);
+    let scaled = |p: [f64; 2]| [p[0] * k, p[1] * k];
+    let line = |id: u64, a: [f64; 2], b: [f64; 2]| SketchCurve {
+        id,
+        curve: Curve2::Line {
+            start: scaled(a),
+            end: scaled(b),
+        },
+    };
+    let control = [
+        [30.0, 10.0],
+        [25.0, 10.0],
+        [20.0, 13.0],
+        [12.0, 8.0],
+        [5.0, 10.0],
+        [0.0, 10.0],
+    ];
+    let curves = [
+        line(1, [0.0, 0.0], [30.0, 0.0]),
+        line(2, [30.0, 0.0], [30.0, 10.0]),
+        SketchCurve {
+            id: 3,
+            curve: Curve2::Spline(Spline2 {
+                degree: 3,
+                knots,
+                control: control.iter().map(|p| scaled(*p)).collect(),
+            }),
+        },
+        line(4, [0.0, 10.0], [0.0, 0.0]),
+    ];
+    let profiles = detect_profiles(&curves, &tol).unwrap();
+    let body = extrude(&profiles, frame, 0.0, 8.0 * k, &tol).unwrap().body;
+    let top = frame.point(0.0, 0.0, 8.0 * k);
+    let rim = (0..body.edges.len())
+        .map(|i| EdgeId(i as u32))
+        .find(|e| {
+            let data = body.edge(*e).unwrap();
+            matches!(data.curve, craft3d_geom::Curve3::Nurbs(_))
+                && (data.curve.eval(data.range.0) - top).dot(frame.z()).abs() < 1e-6 * k
+        })
+        .unwrap();
+    (body, rim)
+}
+
+/// The bound on how fast a radius may change, from both sides: a fade at
+/// least as long as the radius changes over it is built, and what is
+/// built is valid, measured, meshed at a normal and at a fine chord and
+/// clear in the deep check; a shorter one is refused with the length that
+/// is built. On the block's edge, a prism's edge at 60° and one at 120°,
+/// the spline rim and the cone's cut edge; the radius falling to a third,
+/// a tenth and a hundredth, growing to twice and to three times, and
+/// changing by a tenth; fades of half the change, a hundredth short of
+/// it, the change itself, a hundredth past it, and three times it.
+#[test]
+fn a_law_at_the_bound_of_how_fast_it_may_change_is_built_sound_and_past_it_refused() {
+    let mut built = 0;
+    let mut refused = 0;
+    for k in SCALES {
+        let tol = tolerance(k);
+        for (index, frame) in common::frames(k).iter().enumerate() {
+            let block = extrude(
+                &detect_profiles(
+                    &common::scale_curves(&common::rectangle(1, 1, (0.0, 40.0), (0.0, 30.0)), k),
+                    &tol,
+                )
+                .unwrap(),
+                frame,
+                0.0,
+                40.0 * k,
+                &tol,
+            )
+            .unwrap()
+            .body;
+            let wedge = |corner: f64| {
+                let theta = corner.to_radians();
+                let curves = common::polygon(
+                    1,
+                    1,
+                    &[
+                        [0.0, 0.0],
+                        [40.0, 0.0],
+                        [40.0 * theta.pcos(), 40.0 * theta.psin()],
+                    ],
+                );
+                extrude(
+                    &detect_profiles(&common::scale_curves(&curves, k), &tol).unwrap(),
+                    frame,
+                    0.0,
+                    40.0 * k,
+                    &tol,
+                )
+                .unwrap()
+                .body
+            };
+            let (sharp, blunt) = (wedge(60.0), wedge(120.0));
+            let (prism, rim) = rim_prism(frame, k);
+            let frustum = half_frustum(k);
+            let mut cases: Vec<(&str, &Body, EdgeId, f64)> = vec![
+                (
+                    "block",
+                    &block,
+                    edge_at(&block, frame, k, [0.0, 0.0, 20.0]),
+                    3.0,
+                ),
+                (
+                    "60°",
+                    &sharp,
+                    edge_at(&sharp, frame, k, [0.0, 0.0, 20.0]),
+                    2.0,
+                ),
+                (
+                    "120°",
+                    &blunt,
+                    edge_at(&blunt, frame, k, [0.0, 0.0, 20.0]),
+                    3.0,
+                ),
+                ("rim", &prism, rim, 1.2),
+            ];
+            if index == 0 {
+                let cut = edge_at(&frustum, &Frame::WORLD, k, [5.0 / 6.0, 0.0, 0.5]);
+                cases.push(("cone", &frustum, cut, 0.08));
+            }
+            for (name, body, edge, radius) in cases {
+                for ratio in [1.0 / 3.0, 0.1, 0.01, 2.0, 3.0, 0.9] {
+                    // (Radii this edge has room for.)
+                    if (name == "cone" || name == "rim" || name == "60°") && ratio > 2.5 {
+                        continue;
+                    }
+                    let to = radius * ratio;
+                    let change = (radius - to).abs();
+                    for part in [0.5, 0.99, 1.0, 1.01, 3.0] {
+                        let what = format!(
+                            "{name}, {radius} to {to} over {part} of the change, scale {k}, frame {index}"
+                        );
+                        let over = change * part;
+                        let law = RadiusLaw {
+                            radius: radius * k,
+                            fades: [None, Some(Fade::to(to * k, over * k))],
+                        };
+                        let made = fillet_by_law(body, &[FilletLawEdge { edge, law }], &tol);
+                        if part < 1.0 {
+                            let Err(KernelError::FilletFade {
+                                fault: FadeFault::TooShort { least, .. },
+                                ..
+                            }) = made
+                            else {
+                                panic!("{what}: not refused as too short");
+                            };
+                            assert!((least - change * k).abs() <= 1e-12 * change * k, "{what}");
+                            refused += 1;
+                            continue;
+                        }
+                        // Built, or refused for what the edge is: never a
+                        // body that is not sound.
+                        match made {
+                            Ok(made) => {
+                                sound(&made.body, k, &what);
+                                built += 1;
+                            }
+                            Err(KernelError::FilletFade { .. }) => {
+                                panic!("{what}: refused as a fade")
+                            }
+                            Err(other) => {
+                                assert!(name != "block", "{what}: {other}");
+                                println!("{what}: refused: {other}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("{built} built and sound, {refused} refused as too short");
+    assert!(
+        built > 250 && refused > 200,
+        "{built} built, {refused} refused"
+    );
+}
+
+/// What is wrong with a fade is said of the fade: its length with the
+/// least that is built, its end radius with the least that is built, and
+/// a fade that changes nothing is held to the edge's length as any other.
+#[test]
+fn what_is_wrong_with_a_fade_is_said_with_what_would_be_built() {
+    let k = 1.0;
+    let tol = tolerance(k);
+    let block = boxed(k, [0.0, 0.0, 0.0], [40.0, 30.0, 40.0]);
+    let upright = edge_at(&block, &Frame::WORLD, k, [0.0, 0.0, 20.0]);
+    let try_fade = |radius: f64, to: f64, over: f64| {
+        let law = RadiusLaw {
+            radius,
+            fades: [Some(Fade::to(to, over)), None],
+        };
+        fillet_by_law(&block, &[FilletLawEdge { edge: upright, law }], &tol)
+    };
+    // Too fast: the text names the change, the length and the least.
+    let error = try_fade(3.0, 1.0, 0.5).unwrap_err();
+    assert_eq!(
+        error,
+        KernelError::FilletFade {
+            edge: upright,
+            fault: FadeFault::TooShort {
+                change: 2.0,
+                over: 0.5,
+                least: 2.0
+            }
+        }
+    );
+    let text = error.to_string();
+    assert!(
+        text.contains("by 2 over a length of 0.5") && text.contains("an over of at least 2"),
+        "{text}"
+    );
+    assert!(try_fade(3.0, 1.0, 2.0).is_ok());
+    // An end radius the tolerance does not tell from nothing: said so,
+    // down to the smallest numbers (these were refused as an end that
+    // "does not end cleanly").
+    for to in [1.6e-5, 1e-6, 1e-9, 1e-12, 5e-324] {
+        let error = try_fade(3.0, to, 10.0).unwrap_err();
+        assert_eq!(
+            error,
+            KernelError::FilletFade {
+                edge: upright,
+                fault: FadeFault::EndTooSmall { to, least: 1.6e-5 }
+            }
+        );
+        assert!(error.to_string().contains("16 tolerances"), "{error}");
+    }
+    // A fade shorter than the tolerance tells apart, whatever it changes.
+    for (to, over) in [(1.0, 0.001), (3.0 - 1e-9, 1e-5), (3.0, 1e-5)] {
+        assert!(
+            matches!(
+                try_fade(3.0, to, over),
+                Err(KernelError::FilletFade {
+                    fault: FadeFault::TooShort { .. },
+                    ..
+                })
+            ),
+            "{to} over {over}"
+        );
+    }
+    // A fade that changes nothing: the fillet of the one radius; longer
+    // than the edge, refused as any fade is.
+    assert!(try_fade(3.0, 3.0, 12.0).is_ok());
+    match try_fade(3.0, 3.0, 40.001) {
+        Err(KernelError::Fillet { reason, .. }) => {
+            assert!(reason.contains("longer than the edge"), "{reason}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Where the edge's curvature jumps (a spline with a double knot in its
+/// middle: only its tangent is continuous there) a fillet whose radius
+/// varies is refused with the place: where the radius is changing the
+/// face would crease, and where it is the same the fitted face came out
+/// with spans the tessellator cannot mesh. A fillet that ends in a point
+/// before the place is built.
+#[test]
+fn a_law_along_an_edge_whose_curvature_jumps_is_refused_with_the_place() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        for (index, frame) in common::frames(k).iter().enumerate() {
+            let what = format!("scale {k}, frame {index}");
+            let knots = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0];
+            let (body, rim) = rim_prism_with(frame, k, knots);
+            let data = body.edge(rim).unwrap();
+            let middle = data.curve.eval(0.5 * (data.range.0 + data.range.1));
+            let try_law = |low: Option<(f64, f64)>, high: Option<(f64, f64)>, back: f64| {
+                let law = Law {
+                    radius: 1.5,
+                    low,
+                    high,
+                    back: [0.0, back],
+                };
+                fillet_by_law(
+                    &body,
+                    &[FilletLawEdge {
+                        edge: rim,
+                        law: law.on(&body, rim, -frame.x(), k),
+                    }],
+                    &tol,
+                )
+            };
+            // Changing across the middle, either way, to nothing beyond
+            // it, and the same across it.
+            for (low, high) in [
+                (Some((0.6, 25.0)), None),
+                (None, Some((2.2, 20.0))),
+                (None, Some((0.0, 9.0))),
+                (Some((0.6, 9.0)), None),
+            ] {
+                match try_law(low, high, 0.0) {
+                    Err(KernelError::FilletFade {
+                        edge,
+                        fault: FadeFault::CurvatureJump { at },
+                    }) => {
+                        assert_eq!(edge, rim, "{what}");
+                        assert!(at.distance(middle) <= 1e-9 * k, "{what}: at {at:?}");
+                    }
+                    other => panic!(
+                        "{what}: {low:?} {high:?}: {:?}",
+                        other.map(|m| m.body.faces.len())
+                    ),
+                }
+            }
+            let text = try_law(Some((0.6, 25.0)), None, 0.0)
+                .unwrap_err()
+                .to_string();
+            assert!(text.contains("curvature jumps at ("), "{text}");
+            // Ending in a point 20 short of the far end, before the
+            // place: built.
+            let made = try_law(Some((0.6, 4.0)), Some((0.0, 6.0)), 20.0)
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+            sound(&made.body, k, &what);
+        }
     }
 }

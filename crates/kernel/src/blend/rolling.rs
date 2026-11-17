@@ -1282,7 +1282,7 @@ fn blend_one(
     // and the shape by its largest radius (what the steps, the scale and
     // the bounds of the refinement are taken from).
     let along = match request.size {
-        Size::Law(law) => Some(law::Along::new(law, edge, &data.curve, data.range)?),
+        Size::Law(law) => Some(law::Along::new(law, edge, &data.curve, data.range, tol)?),
         _ => None,
     };
     if along.is_some() && closed {
@@ -1588,9 +1588,9 @@ fn blend_open(
             return Err(lost());
         };
         // A radius that varies: to the end itself in even steps, and past
-        // it in steps that start at four tolerances and double (how far
-        // by the radius there: what the blend has to get past the third
-        // face is as wide as its ball at that end).
+        // it in steps that start at a twentieth of the radius there and
+        // double (how far at most by that radius: what the blend has to
+        // get past the third face is as wide as its ball at that end).
         let steps = match law {
             Some(law) => {
                 let relative = law.at_end(index) / length;
@@ -2030,9 +2030,8 @@ impl Steps {
     /// is a continuation of this construction's choosing, and where the
     /// third face is square to the edge nothing of it is kept: so the
     /// face is followed no further than where a whole section has left
-    /// the third face, which a first step of a few tolerances finds there
-    /// and the doubling finds, in a few steps more, where the face is at
-    /// a slant.
+    /// the third face, which a first short step finds there and the
+    /// doubling finds, in a few steps more, where the face is at a slant.
     fn past(self, relative: f64, first: f64) -> Steps {
         Steps {
             outside: first,

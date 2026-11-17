@@ -20,7 +20,7 @@ use crate::blend::{self, BlendError, Blended, Face, Kind, Request, Size};
 use craft3d_math::Tolerance;
 use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
 
-pub use crate::blend::law::{Fade, RadiusLaw};
+pub use crate::blend::law::{Fade, FadeFault, RadiusLaw};
 pub use crate::blend::tangent_chain;
 
 /// Most edges one fillet takes.
@@ -106,6 +106,7 @@ fn said(error: BlendError) -> KernelError {
             error,
             smaller_fails,
         },
+        BlendError::Fade { edge, fault } => KernelError::FilletFade { edge, fault },
         BlendError::Pinched { edge, pinch } => KernelError::FilletPinched {
             edge,
             at: pinch.at,
@@ -190,7 +191,13 @@ pub fn fillet_capped(
 /// ends in one of its vertices and where its border would cross a smooth
 /// edge of a face beside it, it is refused ([`KernelError::Fillet`]).
 ///
-/// **Errors.** Those of [`fillet`], and [`KernelError::InvalidSize`] for
+/// A fade has to be at least as long as the radius changes over it, and
+/// its end radius and its length more than 16 tolerances: a radius that
+/// changes faster gives a face that cannot be measured or meshed, and is
+/// refused with the least length that is built
+/// ([`KernelError::FilletFade`]).
+///
+/// **Errors.** Those of [`fillet`], [`KernelError::FilletFade`], and [`KernelError::InvalidSize`] for
 /// a radius or a length in a law that is not a size (finite and above
 /// zero; a fade's `to` may be zero, a tip, and only then its `back` more
 /// than zero).
@@ -213,6 +220,14 @@ pub fn fillet_by_law_capped(
     let mut requests = Vec::with_capacity(edges.len());
     for e in edges {
         let law = e.law.checked()?;
+        // A fade is held to what a fade may be also where it changes
+        // nothing (its length against the edge's and the tolerance).
+        if law.fades.iter().any(Option::is_some)
+            && let Some(data) = body.edge(e.edge)
+        {
+            blend::law::Along::new(law, e.edge, &data.curve, data.range, tolerance.linear)
+                .map_err(said)?;
+        }
         requests.push(Request {
             edge: e.edge,
             first: None,

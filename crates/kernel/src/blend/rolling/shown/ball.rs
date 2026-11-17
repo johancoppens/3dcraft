@@ -108,7 +108,7 @@ pub(super) fn shown_wrong(
     // plane's ball has the law's radius there. A law that is not one is
     // the construction's to refuse.
     let along = match law {
-        Some(law) => match Along::new(law, edge, &data.curve, data.range) {
+        Some(law) => match Along::new(law, edge, &data.curve, data.range, tol) {
             Ok(along) => Some(along),
             Err(_) => return Ok(()),
         },

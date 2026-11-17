@@ -56,6 +56,7 @@
 //! captured ids and distances as a [`Frame`]. The window never calls them.
 
 use crate::cut;
+use crate::diag::Traced;
 use crate::mesh::{GpuMesh, MeshPart};
 use crate::peel;
 use crate::readback;
@@ -63,6 +64,7 @@ use crate::renderer::{
     COLOR_FORMAT, DATA_FORMAT, DEPTH_FORMAT, MESH_ATTRIBUTES, SCENE_FLOATS, Step, check_params,
     float_bytes, guarded, scene_pipeline, scene_source, scene_uniforms, target, uniform_entry,
 };
+use crate::variant::{PeelSetting, PeelVariant};
 use crate::{GpuError, Mesh};
 use craft3d_math::{Bbox3, Transform, Vec3};
 use craft3d_render::{Camera, Cut, FaceColors, Frame, NO_FACE, RenderParams};
@@ -501,9 +503,10 @@ impl CutPipelines {
         peel_layout: Option<&wgpu::BindGroupLayout>,
         samples: u32,
         per_sample: bool,
+        variant: PeelVariant,
     ) -> CutPipelines {
         let multisampled = samples > 1;
-        let module = cut::module(device, multisampled, per_sample);
+        let module = cut::module(device, multisampled, per_sample, variant);
         let cap_layout = cut::cap_layout(device, multisampled, false);
         let scene = [Some(scene_layout)];
         let capped = [Some(scene_layout), Some(&cap_layout)];
@@ -566,7 +569,8 @@ impl CutPipelines {
             true,
         );
         // The capture has one sample per pixel whatever the renderer has.
-        let flat_module = multisampled.then(|| cut::module(device, false, false));
+        let flat_module =
+            multisampled.then(|| cut::module(device, false, false, PeelVariant::Masked));
         let cap_flat_layout = multisampled.then(|| cut::cap_layout(device, false, false));
         let flat = flat_module.as_ref().unwrap_or(&module);
         let capped_flat = [
@@ -683,9 +687,10 @@ impl SeeThrough {
         queue: &wgpu::Queue,
         scene_layout: &wgpu::BindGroupLayout,
         samples: u32,
+        variant: PeelVariant,
     ) -> SeeThrough {
         let multisampled = samples > 1;
-        let module = peel::scene_module(device, multisampled);
+        let module = peel::scene_module(device, multisampled, variant);
         let peel_layout = peel::peel_layout(device, multisampled);
         let blend_layout = peel::blend_layout(device, multisampled, false);
         // With several samples the front also writes its keys, which the
@@ -822,7 +827,16 @@ pub struct Onscreen {
     studio_failure: Option<String>,
     /// Identifies this renderer in what it uploads.
     token: Arc<()>,
+    /// How many frames were noted in the trace (`diag`; [`TRACED_DRAWS`]).
+    traced_draws: u32,
+    /// The form of the multisampled see-through and section stages
+    /// (`variant.rs`: masked, or per sample on Vulkan).
+    variant: PeelVariant,
 }
+
+/// The first frames of each renderer noted in the trace, when it is
+/// written (`diag::TRACE_VAR`).
+const TRACED_DRAWS: u32 = 3;
 
 /// What the studio look's frames are summed for: the same picture.
 #[derive(Clone)]
@@ -905,7 +919,7 @@ impl Density {
             dst_factor: wgpu::BlendFactor::One,
             operation: wgpu::BlendOperation::Add,
         };
-        let ink_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let ink_pipeline = device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("craft3d edge ink"),
             layout: Some(lines_pipeline_layout),
             vertex: wgpu::VertexState {
@@ -933,7 +947,7 @@ impl Density {
             multiview_mask: None,
             cache: None,
         });
-        let tiles_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let tiles_layout = device.traced_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("craft3d edge tiles"),
             entries: &[
                 uniform_entry(0, wgpu::ShaderStages::FRAGMENT),
@@ -949,8 +963,8 @@ impl Density {
                 },
             ],
         });
-        let tiles_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("craft3d edge tiles"),
+        let tiles_shader = device.traced_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("craft3d edge tiles (edge_tiles.wgsl)"),
             source: wgpu::ShaderSource::Wgsl(EDGE_TILES_SOURCE.into()),
         });
         let tiles_pipeline_layout =
@@ -959,7 +973,7 @@ impl Density {
                 bind_group_layouts: &[Some(&tiles_layout)],
                 immediate_size: 0,
             });
-        let tiles_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let tiles_pipeline = device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("craft3d edge tiles"),
             layout: Some(&tiles_pipeline_layout),
             vertex: wgpu::VertexState {
@@ -989,7 +1003,7 @@ impl Density {
 }
 
 /// The pass over the tiles of the edge density (no template).
-const EDGE_TILES_SOURCE: &str = include_str!("edge_tiles.wgsl");
+pub(crate) const EDGE_TILES_SOURCE: &str = include_str!("edge_tiles.wgsl");
 
 /// The shaders over the picture, filled in for a depth buffer of
 /// `samples` samples per pixel: the lines, the fills, the distances the
@@ -1083,20 +1097,119 @@ impl Onscreen {
         queue: &wgpu::Queue,
         adapter: &wgpu::Adapter,
     ) -> Result<Onscreen, GpuError> {
-        let samples = if adapter.get_info().backend != wgpu::Backend::Gl
-            && multisamples(adapter, COLOR_FORMAT, WANTED_SAMPLES)
-            && multisamples(adapter, DEPTH_FORMAT, WANTED_SAMPLES)
+        // `CRAFT3D_PEEL_VARIANT` (`diag::PEEL_VARIANT_VAR`): `auto` unless
+        // it says otherwise.
+        Self::with_peel_setting(device, queue, adapter, crate::diag::peel_setting())
+    }
+
+    /// [`Onscreen::new`] with the multisampled stages of a see-through and
+    /// a cut-open picture as `setting` says ([`PeelSetting`]: chosen for
+    /// the backend by [`crate::diag::auto_choice`], or forced;
+    /// [`crate::diag::stages`]). The per-sample stages need a device that
+    /// shades per sample; without one, a Vulkan device draws the viewport
+    /// with one sample per pixel (the masked stages are invalid SPIR-V
+    /// there) and any other takes the masked stages.
+    pub fn with_peel_setting(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        adapter: &wgpu::Adapter,
+        setting: PeelSetting,
+    ) -> Result<Onscreen, GpuError> {
+        // `CRAFT3D_SAMPLES` (`diag::SAMPLES_VAR`, 1 or 4): the samples per
+        // pixel asked for instead of `WANTED_SAMPLES`, to tell a driver
+        // that fails only on the multisampled pipelines. Unset, the rule is
+        // the one it always was.
+        let forced = crate::diag::forced_samples();
+        let wanted = forced.unwrap_or(WANTED_SAMPLES);
+        let info = adapter.get_info();
+        let gl = info.backend == wgpu::Backend::Gl;
+        let samples = if wanted > 1
+            && !gl
+            && multisamples(adapter, COLOR_FORMAT, wanted)
+            && multisamples(adapter, DEPTH_FORMAT, wanted)
         {
-            WANTED_SAMPLES
+            wanted
         } else {
             1
         };
-        let per_sample = samples > 1
-            && adapter
-                .get_downlevel_capabilities()
-                .flags
-                .contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING);
-        let mut onscreen = Self::shaded(device, queue, samples, per_sample)?;
+        if let Some(forced) = forced
+            && forced != samples
+        {
+            crate::diag::say(&format!(
+                "{}={forced}: this adapter cannot draw the viewport with {forced} samples per \
+                 pixel{}; it draws with {samples}",
+                crate::diag::SAMPLES_VAR,
+                if gl { " (OpenGL)" } else { "" }
+            ));
+        }
+        let shades_per_sample = adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING);
+        // The see-through and section stages (`variant::stages`): on Vulkan
+        // the per-sample ones, and on a Vulkan device that cannot shade per
+        // sample one sample per pixel, since the masked ones are invalid
+        // SPIR-V there.
+        let chosen = crate::variant::stages(
+            setting,
+            info.backend,
+            samples,
+            samples > 1 && shades_per_sample,
+        );
+        if chosen.samples != samples {
+            crate::diag::say(&format!(
+                "the viewport draws with {} (the adapter takes {samples})",
+                chosen.why
+            ));
+        } else if setting == PeelSetting::Fixed(PeelVariant::PerSample)
+            && chosen.variant == PeelVariant::Masked
+            && samples > 1
+        {
+            crate::diag::say(&format!(
+                "{}: the per-sample stages need per-sample shading, which this adapter does \
+                 not have; the masked stages are used",
+                crate::diag::PEEL_VARIANT_VAR
+            ));
+        }
+        let asked = samples;
+        let samples = chosen.samples;
+        let (variant, why) = (chosen.variant, chosen.why);
+        let per_sample = samples > 1 && shades_per_sample;
+        if crate::diag::enabled() {
+            let counts = |format| {
+                [1, 2, 4, 8, 16]
+                    .into_iter()
+                    .filter(|n| multisamples(adapter, format, *n))
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            crate::diag::note(
+                "onscreen",
+                &format!(
+                    "samples {samples} ({}{}; {COLOR_FORMAT:?} takes [{}], {DEPTH_FORMAT:?} \
+                     [{}]); per-sample shading {shades_per_sample}; see-through and section \
+                     stages {variant} ({why}{}); next: the viewport's pipelines",
+                    match forced {
+                        Some(n) => format!("{} asks {n}", crate::diag::SAMPLES_VAR),
+                        None => format!("the default {WANTED_SAMPLES}"),
+                    },
+                    if asked == samples {
+                        String::new()
+                    } else {
+                        format!("; the adapter takes {asked}, the stages one")
+                    },
+                    counts(COLOR_FORMAT),
+                    counts(DEPTH_FORMAT),
+                    if samples > 1 {
+                        ""
+                    } else {
+                        "; not used at one sample"
+                    }
+                ),
+            );
+        }
+        let mut onscreen = Self::shaded(device, queue, samples, per_sample, variant)?;
         // The ink of the edges is summed by blending in a half float: a
         // device that cannot draw into one with blending fades its edges
         // only for being short.
@@ -1110,6 +1223,16 @@ impl Onscreen {
         {
             onscreen.density = Err("it cannot blend into a half float".to_string());
         }
+        if crate::diag::enabled() {
+            crate::diag::note(
+                "onscreen",
+                &format!(
+                    "made with {samples} samples; see-through: {}; edge density: {}",
+                    onscreen.see_through().err().unwrap_or("yes"),
+                    onscreen.edge_density().err().unwrap_or("yes")
+                ),
+            );
+        }
         Ok(onscreen)
     }
 
@@ -1117,34 +1240,51 @@ impl Onscreen {
     /// device must support them for `Rgba8Unorm` and `Depth32Float`, and
     /// with several it is taken to shade per sample, which
     /// [`Onscreen::new`] checks on the adapter: a device that cannot
-    /// refuses a cut-open picture then).
+    /// refuses a cut-open picture then). The see-through and section
+    /// stages are the default's for the device's backend
+    /// ([`crate::diag::stages`]): per sample on Vulkan, masked elsewhere.
     pub fn with_samples(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         samples: u32,
     ) -> Result<Onscreen, GpuError> {
-        Self::shaded(device, queue, samples, samples > 1)
+        let chosen = crate::variant::stages(
+            PeelSetting::Auto,
+            device.adapter_info().backend,
+            samples,
+            samples > 1,
+        );
+        Self::shaded(device, queue, samples, samples > 1, chosen.variant)
     }
 
     /// [`Onscreen::with_samples`], with whether the count of a section is
-    /// per sample (`per_sample`).
+    /// per sample (`per_sample`) and the variant of the multisampled
+    /// see-through and section stages.
     fn shaded(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         samples: u32,
         per_sample: bool,
+        variant: PeelVariant,
     ) -> Result<Onscreen, GpuError> {
         if !matches!(samples, 1 | 2 | 4 | 8) {
             return Err(GpuError::Unsupported("that number of samples per pixel"));
         }
         let mut onscreen = guarded(device, || Self::build(device, queue, samples, per_sample))?;
+        onscreen.variant = variant;
         // On its own: a device that cannot do this still draws opaque
         // pictures, and says why when asked for a see-through one.
         onscreen.see_through = guarded(device, || {
-            SeeThrough::build(device, queue, &onscreen.scene_layout, samples)
+            SeeThrough::build(device, queue, &onscreen.scene_layout, samples, variant)
         })
         .map_err(|e| e.to_string());
         Ok(onscreen)
+    }
+
+    /// The variant of the multisampled see-through and section stages this
+    /// renderer draws with ([`Onscreen::with_peel_setting`]).
+    pub fn peel_variant(&self) -> PeelVariant {
+        self.variant
     }
 
     /// As on a device that cannot draw a cut-open picture: one with a
@@ -1166,6 +1306,7 @@ impl Onscreen {
                     peel_layout,
                     self.samples,
                     self.per_sample,
+                    self.variant,
                 )
             })
             .map_err(|e| e.to_string());
@@ -1205,25 +1346,31 @@ impl Onscreen {
         samples: u32,
         per_sample: bool,
     ) -> Onscreen {
-        let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("craft3d scene"),
+        let scene_shader = device.traced_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("craft3d scene (scene.wgsl)"),
             source: wgpu::ShaderSource::Wgsl(scene_source(device, &[]).into()),
         });
         // The depth buffer is bound as an unfilterable float texture, not
         // as a depth texture: naga's GLSL backend cannot `textureLoad` a
         // depth texture, and WebGPU binds a depth format either way.
         let sources = overlay_sources(samples);
-        let lines_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("craft3d lines"),
+        // The labels name the files and the depth buffer's samples they
+        // are filled in for, for the trace (`diag`).
+        let lines_label =
+            format!("craft3d lines (lines.wgsl + depth_test.wgsl, depth of {samples} samples)");
+        let lines_shader = device.traced_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(&lines_label),
             source: wgpu::ShaderSource::Wgsl(sources.lines.as_str().into()),
         });
-        let fills_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("craft3d fills"),
+        let fills_label =
+            format!("craft3d fills (fills.wgsl + depth_test.wgsl, depth of {samples} samples)");
+        let fills_shader = device.traced_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(&fills_label),
             source: wgpu::ShaderSource::Wgsl(sources.fills.as_str().into()),
         });
 
         let both = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
-        let scene_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let scene_layout = device.traced_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("craft3d scene"),
             entries: &[uniform_entry(0, both)],
         });
@@ -1247,7 +1394,7 @@ impl Onscreen {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let lines_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let lines_layout = device.traced_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("craft3d lines"),
             entries: &[
                 uniform_entry(0, both),
@@ -1308,7 +1455,7 @@ impl Onscreen {
                 count: None,
             });
         }
-        let distance_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let distance_layout = device.traced_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("craft3d distances"),
             entries: &distance_entries,
         });
@@ -1316,8 +1463,10 @@ impl Onscreen {
             label: Some("craft3d depth"),
             ..wgpu::SamplerDescriptor::default()
         });
-        let distance_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("craft3d distances"),
+        let distance_label =
+            format!("craft3d distances (distance.wgsl, depth of {samples} samples)");
+        let distance_shader = device.traced_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(&distance_label),
             source: wgpu::ShaderSource::Wgsl(sources.distance.as_str().into()),
         });
         let distance_pipeline_layout =
@@ -1326,7 +1475,7 @@ impl Onscreen {
                 bind_group_layouts: &[Some(&distance_layout)],
                 immediate_size: 0,
             });
-        let distance_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let distance_pipeline = device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("craft3d distances"),
             layout: Some(&distance_pipeline_layout),
             vertex: wgpu::VertexState {
@@ -1377,7 +1526,7 @@ impl Onscreen {
         };
         let scene_pipeline =
             |label: &str, entry: &str, targets: &[Option<wgpu::ColorTargetState>], count: u32| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(label),
                     layout: Some(&scene_pipeline_layout),
                     vertex: wgpu::VertexState {
@@ -1445,7 +1594,7 @@ impl Onscreen {
             attributes: &line_attributes,
         };
         let lines_pipeline_for = |count: u32| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("craft3d lines"),
                 layout: Some(&lines_pipeline_layout),
                 vertex: wgpu::VertexState {
@@ -1499,7 +1648,7 @@ impl Onscreen {
             },
         ];
         let fills_pipeline_for = |count: u32| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("craft3d fills"),
                 layout: Some(&lines_pipeline_layout),
                 vertex: wgpu::VertexState {
@@ -1576,6 +1725,8 @@ impl Onscreen {
             progress: None,
             studio_failure: None,
             token: Arc::new(()),
+            traced_draws: 0,
+            variant: PeelVariant::Masked,
         }
     }
 
@@ -2020,7 +2171,28 @@ impl Onscreen {
             _ => None,
         };
         let studio_frame = lit.map(|(_, frame, ..)| frame);
-        guarded(&device, || {
+        // The first frames in the trace (`diag`): a driver may compile a
+        // pipeline only when it is first drawn with, or submitted.
+        let traced = crate::diag::enabled() && self.traced_draws < TRACED_DRAWS;
+        if traced {
+            self.traced_draws = self.traced_draws.saturating_add(1);
+            crate::diag::note(
+                "draw",
+                &format!(
+                    "begin frame {} of this renderer: {}x{}, {} samples, see-through {see_through}, \
+                     section {}, studio {}, capture {}, {} lines",
+                    self.traced_draws,
+                    params.width,
+                    params.height,
+                    self.samples,
+                    cut.is_some(),
+                    studio_frame.is_some(),
+                    options.capture,
+                    lines.segment_count()
+                ),
+            );
+        }
+        let encoded = guarded(&device, || {
             self.ensure_targets(params, options.capture, overlay.edges.tile());
             if see_through && studio_frame.is_none() {
                 self.ensure_peel_targets();
@@ -2039,7 +2211,21 @@ impl Onscreen {
                 cut.as_ref(),
                 studio_frame.as_ref(),
             )
-        })??;
+        });
+        if traced {
+            crate::diag::note(
+                "draw",
+                &format!(
+                    "end frame {} (encoded and submitted): {}",
+                    self.traced_draws,
+                    match &encoded {
+                        Ok(Ok(())) => "ok".to_string(),
+                        Ok(Err(e)) | Err(e) => e.to_string(),
+                    }
+                ),
+            );
+        }
+        encoded??;
         self.drawn = true;
         self.captured = options.capture;
         self.progress = next;
@@ -2166,8 +2352,8 @@ impl Onscreen {
         let pipeline = match &self.depth_read_pipeline {
             Some(pipeline) => pipeline,
             None => {
-                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("craft3d depth read"),
+                let shader = device.traced_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("craft3d depth read (depth_read.wgsl)"),
                     source: wgpu::ShaderSource::Wgsl(self.depth_read_source.as_str().into()),
                 });
                 let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -2175,7 +2361,7 @@ impl Onscreen {
                     bind_group_layouts: &[Some(&self.lines_layout)],
                     immediate_size: 0,
                 });
-                let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                let pipeline = device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some("craft3d depth read"),
                     layout: Some(&layout),
                     vertex: wgpu::VertexState {

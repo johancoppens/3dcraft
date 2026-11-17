@@ -38,11 +38,51 @@
 //! continued, does both within a few of its lengths: along a cone's cut
 //! edge a radius growing from 0.15 to 0.2 over 0.3 reached 0.38 two steps
 //! past the end and no ball was found. A continuation that turned back to
-//! `to`, tried first, left a notch in the surface just past the end that
-//! the validity check's nearest points fell into: a fade from 3 to 1 over
-//! 1 was refused as an invalid body, its borders half a unit off its own
-//! surface.) The continuation is this file's choice: the design of the
-//! fade gives the law up to the end only.
+//! `to`, `3τ / (1 + τ + dτ²)`, was there first: it left a notch in the
+//! surface just past the end, which the validity check's nearest points
+//! fell into, and a fade from 3 to 1 over 1 came back as an invalid body,
+//! its borders half a unit off their own surface.) The continuation is
+//! this file's choice: the design of the fade gives the law up to the end
+//! only.
+//!
+//! **How fast the radius may change.** A fade has to be at least as long
+//! as the radius changes over it: `over ≥ |radius − to|`. The cubic is
+//! steepest at the end of the edge, three times its average, so the
+//! radius then changes at most three times as fast as the length along
+//! the edge. The reason is the face's own parametrisation: a border of
+//! the fillet leaves each section at the angle whose tangent is
+//! `1 / (|dr/da| tan(φ/2))` (a foot lies `r tan(φ/2)` from the edge
+//! between faces whose normals turn by `φ`, and the arc leaves its foot
+//! square to the edge), and as the radius changes faster the border lies
+//! down along the section and the face's two parameter directions close
+//! up along its borders: 18° between them at a right angle at the bound,
+//! 3° at ten times as fast. What reads a face through its parameters then
+//! fails by degrees: the tessellator's grid grows with the rate (a block
+//! with one fillet from 3 to 1: 1,898 triangles at normal quality over
+//! 10, 14,440 over 1, 368,922 over 0.1), at 150 times as fast (over 0.04)
+//! the measure's boundary integral does not settle, and from over 0.03
+//! the self-check cannot mesh the body. Refused well short of that, with
+//! the least `over` that is built. And an end radius, and a fade's
+//! length, has to be more than what the tolerance tells apart
+//! ([`LEAST`] tolerances), as a radius of the closed forms has.
+//!
+//! **Where the edge's curvature jumps** (a spline's knot at which only
+//! its tangent is continuous) the planes across the edge turn with a jump.
+//! Where the radius is changing there, the path of the balls' centres
+//! turns a corner (by about the radius's rate times the jump of the
+//! curvature times the radius) and the arcs between the feet crease
+//! across that section. Where it is not changing the face is smooth, but
+//! the sections' family is not, and the fitted face that follows it has
+//! spans the tessellator cannot mesh (a spline rim with a double knot,
+//! one radius across it: built, and "patch 6 needs about 1624 segments"
+//! at a normal chord); the fillet of one radius is refused there as not
+//! approximated. So a law is refused along an edge with such a place
+//! inside what the fillet runs along, with the place, where the jump
+//! times the radius squared is more than the tolerance; a fillet that
+//! ends in a point before the place is built. One interpolating cubic has
+//! no such place; an edge drawn as a line, an arc and a line has two. A
+//! spine through the balls' centres with continuous curvature, as a
+//! chain's faces have, is what would carry a fillet across.
 //!
 //! **A fade to nothing** (`to` zero: [`Fade::tip`]) ends the fillet in a
 //! point of the edge: at the end of the edge, or `back` short of it, the
@@ -77,6 +117,7 @@
 use super::{BlendError, Reason, refused};
 use crate::KernelError;
 use craft3d_geom::Curve3;
+use craft3d_geom::curvature::curve_curvature;
 use craft3d_math::{Portable, Vec3};
 use craft3d_topo::EdgeId;
 
@@ -216,6 +257,32 @@ const GAUSS: [(f64, f64); 8] = [
     (0.960_289_856_497_536_3, 0.101_228_536_290_376_3),
 ];
 
+/// The least an end radius and a fade's length may be, in tolerances: as
+/// the least radius of a fillet in closed form is (what the rest of the
+/// kernel tells apart).
+pub(crate) const LEAST: f64 = 16.0;
+
+/// What is wrong with a fade of a law, with what would be built.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FadeFault {
+    /// The radius changes too fast along the edge: by `change` over
+    /// `over`. `least` is the least length over which that change is
+    /// built.
+    TooShort { change: f64, over: f64, least: f64 },
+    /// The radius at the end, `to`, is not more than the tolerance tells
+    /// from nothing: `least` is the least that is built.
+    EndTooSmall { to: f64, least: f64 },
+    /// A fade to nothing ends `back` short of the end of the edge, which
+    /// is not more than the tolerance tells from the end itself: `least`
+    /// is the least that is built (or nothing: the tip in the edge's own
+    /// vertex).
+    BackTooSmall { back: f64, least: f64 },
+    /// The edge's curvature jumps at `at`, a place the fillet runs
+    /// through (its curve has only a continuous tangent there): not
+    /// built with a radius by a law.
+    CurvatureJump { at: Vec3 },
+}
+
 /// Pieces a span between two knots is cut into, and the range of a curve
 /// that has none.
 const PER_SPAN: u32 = 4;
@@ -241,16 +308,55 @@ pub(crate) struct Along<'a> {
 
 impl<'a> Along<'a> {
     /// `law` along the edge `edge`, whose curve is `curve` over `range`
-    /// (from its start to its end). Refused: a number in the law that is
-    /// not a size, a curve whose length cannot be had, and fades that are
-    /// together longer than the edge.
+    /// (from its start to its end), at the linear tolerance `tol`.
+    /// Refused: a number in the law that is not a size, a fade over which
+    /// the radius changes too fast or whose end radius or length the
+    /// tolerance does not tell from nothing, a curve whose length cannot
+    /// be had, and fades that are together longer than the edge.
     pub(crate) fn new(
         law: RadiusLaw,
         edge: EdgeId,
         curve: &'a Curve3,
         range: (f64, f64),
+        tol: f64,
     ) -> Result<Along<'a>, BlendError> {
         let law = law.checked()?;
+        for fade in law.fades.iter().flatten() {
+            let least = LEAST * tol;
+            // (Nothing, exactly, is a tip.)
+            if !fade.is_tip() && fade.to <= least {
+                return Err(BlendError::Fade {
+                    edge,
+                    fault: FadeFault::EndTooSmall { to: fade.to, least },
+                });
+            }
+            // A tip short of the end: by more than the tolerance tells
+            // from the end itself, or the borders that end in it cannot be
+            // told from the edges that end there.
+            if fade.back > 0.0 && fade.back <= least {
+                return Err(BlendError::Fade {
+                    edge,
+                    fault: FadeFault::BackTooSmall {
+                        back: fade.back,
+                        least,
+                    },
+                });
+            }
+            // At least as long as the radius changes over it (the module
+            // documentation), and more than the tolerance tells apart.
+            let change = (law.radius - fade.to).abs();
+            let needed = change.max(least);
+            if fade.over < needed * (1.0 - 1e-12) {
+                return Err(BlendError::Fade {
+                    edge,
+                    fault: FadeFault::TooShort {
+                        change,
+                        over: fade.over,
+                        least: needed,
+                    },
+                });
+            }
+        }
         let unmeasured = || refused(edge, Reason::FreeSurface);
         let (t0, t1) = range;
         if !(t0.is_finite() && t1.is_finite() && t0 != t1) {
@@ -309,6 +415,14 @@ impl<'a> Along<'a> {
         let faded: f64 = law.fades.iter().flatten().map(|f| f.over + f.back).sum();
         if faded > total * (1.0 + 1e-12) {
             return Err(refused(edge, Reason::LawTooLong));
+        }
+        // Not along an edge whose curvature jumps (the module
+        // documentation).
+        if let Some(at) = along.jump_under_a_change(tol) {
+            return Err(BlendError::Fade {
+                edge,
+                fault: FadeFault::CurvatureJump { at },
+            });
         }
         // Where each tip lies along the edge.
         for (end, fade) in law.fades.iter().enumerate() {
@@ -377,6 +491,47 @@ impl<'a> Along<'a> {
             Some(Some(fade)) => fade.to,
             _ => self.law.radius,
         }
+    }
+
+    /// The first place along the fillet where the edge's curvature jumps
+    /// (a knot of a spline at which only its tangent is continuous) by
+    /// more than the tolerance tells over the radius there: the jump
+    /// times the radius squared against the tolerance.
+    fn jump_under_a_change(&self, tol: f64) -> Option<Vec3> {
+        let Curve3::Nurbs(spline) = self.curve else {
+            return None;
+        };
+        let (t0, t1) = self.range;
+        let (low, high) = (t0.min(t1), t0.max(t1));
+        let degree = spline.degree();
+        let knots = spline.knots();
+        let mut index = 0;
+        while let Some(&knot) = knots.get(index) {
+            let repeats = knots.iter().skip(index).take_while(|k| **k == knot).count();
+            index += repeats.max(1);
+            // Continuous to the second derivative: no jump.
+            if !(knot > low && knot < high) || degree.saturating_sub(repeats) >= 2 {
+                continue;
+            }
+            let s = (knot - t0) / (t1 - t0);
+            // (Where there is no fillet, past a tip, a jump is nothing to
+            // it.)
+            let Some(r) = self.radius(s) else {
+                continue;
+            };
+            let step = 1e-9 * (high - low);
+            let (Some((before, _)), Some((after, _))) = (
+                curve_curvature(self.curve, knot - step),
+                curve_curvature(self.curve, knot + step),
+            ) else {
+                continue;
+            };
+            let jump = (after - before).length();
+            if jump * r * r > tol {
+                return Some(self.curve.eval(knot));
+            }
+        }
+        None
     }
 
     /// How fast the curve's point moves per unit of `s`.
@@ -543,7 +698,14 @@ mod tests {
     fn the_length_of_a_line_and_of_an_arc_is_the_closed_form() {
         let line =
             Curve3::Line(Line::new(Vec3::new(1.0, 2.0, 3.0), Vec3::new(0.0, 3.0, 4.0)).unwrap());
-        let along = Along::new(RadiusLaw::constant(1.0), EdgeId(0), &line, (2.0, 12.0)).unwrap();
+        let along = Along::new(
+            RadiusLaw::constant(1.0),
+            EdgeId(0),
+            &line,
+            (2.0, 12.0),
+            1e-6,
+        )
+        .unwrap();
         assert_eq!(along.length(), 10.0);
         for (s, length) in [(0.25, 2.5), (1.0, 10.0), (-0.1, -1.0), (1.3, 13.0)] {
             let got = along.length_to(s).unwrap();
@@ -557,6 +719,7 @@ mod tests {
             EdgeId(0),
             &circle,
             (0.2, 0.2 + quarter),
+            1e-6,
         )
         .unwrap();
         for s in [0.0, 0.1, 0.5, 0.77, 1.0, -0.05, 1.2] {
@@ -581,7 +744,14 @@ mod tests {
         let knots = vec![0.0, 0.0, 0.0, 0.0, 0.3, 0.7, 1.0, 1.0, 1.0, 1.0];
         let spline = NurbsCurve::new(3, knots, points, vec![1.0, 1.0, 2.0, 0.5, 1.0, 1.0]).unwrap();
         let curve = Curve3::Nurbs(spline);
-        let along = Along::new(RadiusLaw::constant(1.0), EdgeId(0), &curve, (0.0, 1.0)).unwrap();
+        let along = Along::new(
+            RadiusLaw::constant(1.0),
+            EdgeId(0),
+            &curve,
+            (0.0, 1.0),
+            1e-6,
+        )
+        .unwrap();
         let chords = |to: f64, count: u32| -> f64 {
             (0..count)
                 .map(|k| {
@@ -598,7 +768,14 @@ mod tests {
             assert!((got - limit).abs() <= 1e-10, "{s}: {got} against {limit}");
         }
         // Against its curve the lengths are the same from the other end.
-        let back = Along::new(RadiusLaw::constant(1.0), EdgeId(0), &curve, (1.0, 0.0)).unwrap();
+        let back = Along::new(
+            RadiusLaw::constant(1.0),
+            EdgeId(0),
+            &curve,
+            (1.0, 0.0),
+            1e-6,
+        )
+        .unwrap();
         assert!((back.length() - along.length()).abs() <= 1e-13);
         let part = back.length_to(0.25).unwrap();
         let same = along.length() - along.length_to(0.75).unwrap();
@@ -615,6 +792,7 @@ mod tests {
             EdgeId(0),
             &line,
             (0.0, 40.0),
+            1e-6,
         )
         .unwrap();
         let r = |x: f64| along.radius(x / 40.0).unwrap();
@@ -673,7 +851,7 @@ mod tests {
     #[test]
     fn a_law_that_is_not_one_is_refused() {
         let line = Curve3::Line(Line::new(Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0)).unwrap());
-        let make = |law: RadiusLaw| Along::new(law, EdgeId(3), &line, (0.0, 40.0));
+        let make = |law: RadiusLaw| Along::new(law, EdgeId(3), &line, (0.0, 40.0), 1e-6);
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert!(make(RadiusLaw::constant(bad)).is_err(), "{bad}");
             // (To nothing, exactly, is a tip.)
@@ -688,6 +866,34 @@ mod tests {
         // Longer than the edge, and two that overlap: refused.
         assert!(make(law(3.0, Some((1.0, 40.001)), None)).is_err());
         assert!(make(law(3.0, Some((1.0, 25.0)), Some((2.0, 15.001)))).is_err());
+        // A radius that changes by more than the length it changes over:
+        // refused with that length; just as long: taken.
+        use super::FadeFault;
+        use crate::blend::BlendError;
+        let too_short = |law: RadiusLaw| match make(law) {
+            Err(BlendError::Fade {
+                fault: FadeFault::TooShort { least, .. },
+                ..
+            }) => Some(least),
+            _ => None,
+        };
+        assert_eq!(too_short(law(3.0, Some((1.0, 1.999)), None)), Some(2.0));
+        assert_eq!(too_short(law(3.0, None, Some((4.5, 1.0)))), Some(1.5));
+        assert!(make(law(3.0, Some((1.0, 2.0)), Some((4.5, 1.5)))).is_ok());
+        // An end radius, and a length, the tolerance does not tell from
+        // nothing: 16 tolerances and less.
+        assert!(matches!(
+            make(law(3.0, Some((1.6e-5, 10.0)), None)),
+            Err(BlendError::Fade {
+                fault: FadeFault::EndTooSmall { .. },
+                ..
+            })
+        ));
+        assert!(make(law(3.0, Some((1.7e-5, 10.0)), None)).is_ok());
+        assert_eq!(
+            too_short(law(3.0, Some((3.0 - 1e-9, 1e-5)), None)),
+            Some(1.6e-5)
+        );
         // Constant: no fade, or one that changes nothing.
         assert!(RadiusLaw::constant(2.0).is_constant());
         assert!(law(2.0, Some((2.0, 5.0)), None).is_constant());
@@ -707,6 +913,7 @@ mod tests {
                 EdgeId(0),
                 &line,
                 (0.0, 40.0),
+                1e-6,
             )
         };
         // At the end itself, and 5 short of the start.
@@ -778,7 +985,7 @@ mod tests {
             radius: 0.3,
             fades: [None, Some(Fade::tip(1.0, 0.75))],
         };
-        let along = Along::new(law, EdgeId(0), &spline, (0.0, 1.0)).unwrap();
+        let along = Along::new(law, EdgeId(0), &spline, (0.0, 1.0), 1e-6).unwrap();
         let at = along.tip(1).unwrap();
         let length = along.length_to(at).unwrap();
         assert!(
