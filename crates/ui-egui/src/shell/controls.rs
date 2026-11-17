@@ -394,6 +394,7 @@ pub(super) fn choose_axis(
         section.feature = None;
         section.point = None;
         section.normal = None;
+        section.made = None;
         section.offset = model_middle(scene, axis);
     }
 }
