@@ -962,8 +962,9 @@ fn the_direct_path_draws_datums_and_matches_the_oracle() {
 /// A terrain: a sheet through a grid of 7 × 5 heights from a table, a
 /// ridge and a hollow, cut into a block; the grid it was made through is
 /// drawn over the block's top (docs/design/surfacing.md › *Seeing the
-/// grid*). And a sketch line through the block, dimmed inside it, so the
-/// comparison has lines of every kind.
+/// grid*), its stretches behind the ridge left out (dimmed when
+/// see-through). And a sketch line through the block, dimmed inside it,
+/// so the comparison has lines of every kind.
 fn terrain_with_grid() -> Session {
     let mut s = Session::new(Workspace::none());
     run(&mut s, "file.new", json!({"units": "mm"}));
@@ -972,7 +973,12 @@ fn terrain_with_grid() -> Session {
             let mut row = vec![json!(r + 1)];
             for c in 0..7 {
                 let (x, y) = (c as f64, r as f64);
-                row.push(json!(6.0 + 3.0 * (x * 0.9).psin() * (y * 0.7).pcos()));
+                // A ridge along the middle row, high enough that the
+                // grid's back slope is hidden from the framed view.
+                let crest = 14.0 * (-(y - 2.0) * (y - 2.0) / 0.8).pexp();
+                row.push(json!(
+                    6.0 + crest + 2.0 * (x * 0.9).psin() * (y * 0.7).pcos()
+                ));
             }
             Value::Array(row)
         })
@@ -990,7 +996,7 @@ fn terrain_with_grid() -> Session {
     run(
         &mut s,
         "feature.block",
-        json!({"name": "Base", "size": [60, 40, 20], "position": [0, 0, -5]}),
+        json!({"name": "Base", "size": [60, 40, 40], "position": [0, 0, -5]}),
     );
     run(
         &mut s,
