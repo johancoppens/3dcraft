@@ -166,6 +166,7 @@ enum Outcome {
 fn scaled(size: Size, scale: f64) -> Size {
     match size {
         Size::Radius(radius) => Size::Radius(radius * scale),
+        Size::Law(law) => Size::Law(law.scaled(scale)),
         Size::Chamfer(ChamferSize::Distances { first, second }) => {
             Size::Chamfer(ChamferSize::Distances {
                 first: first * scale,

@@ -75,6 +75,7 @@
 //! it nowhere else.
 
 use super::{DEPTH, FOLLOW, Held, PIECES, SAMPLES, SECTIONS, Trace, trace_of};
+use crate::blend::law::{Along, RadiusLaw};
 use crate::blend::rolling::{
     Across, Item, Section, Shape, Side, Solver, Spine, Steps, edge_length, exact, flat_seed,
     refuse, scale_of,
@@ -95,12 +96,23 @@ pub(super) fn shown_wrong(
     body: &Body,
     item: &Item,
     radius: f64,
+    law: Option<RadiusLaw>,
     tolerance: &Tolerance,
 ) -> Result<(), BlendError> {
     let edge = item.request.edge;
     let tol = tolerance.linear;
     let Some(data) = body.edge(edge) else {
         return Ok(());
+    };
+    // A radius that varies along the edge (`radius` its largest): each
+    // plane's ball has the law's radius there. A law that is not one is
+    // the construction's to refuse.
+    let along = match law {
+        Some(law) => match Along::new(law, edge, &data.curve, data.range) {
+            Ok(along) => Some(along),
+            Err(_) => return Ok(()),
+        },
+        None => None,
     };
     let [face_a, face_b] = item.faces;
     let (Ok(side_a), Ok(side_b)) = (Side::of(body, face_a), Side::of(body, face_b)) else {
@@ -123,6 +135,7 @@ pub(super) fn shown_wrong(
         scale: scale_of(data, radius, tol),
         moved: None,
         settle: 0.0,
+        law: along.as_ref(),
     };
     // The construction's seed, settled without being counted as the
     // construction's work (`Solver::section` counts it).
@@ -148,8 +161,11 @@ pub(super) fn shown_wrong(
     let inside = Steps::of(radius, edge_length(data)).inside;
     // Where a motion carries the edge and both faces into themselves the
     // construction's balls are the seed moved, and so are these.
-    let moved = exact::motion(&solver.spine, solver.sides)
-        .and_then(|m| exact::Moved::new(m, &solver.spine, seed, 0.5));
+    let moved = match solver.law {
+        Some(_) => None,
+        None => exact::motion(&solver.spine, solver.sides)
+            .and_then(|m| exact::Moved::new(m, &solver.spine, seed, 0.5)),
+    };
     // From the middle out to each end, each plane from the one before.
     for way in [1.0, -1.0] {
         let mut at = (0.5, seed);
@@ -168,6 +184,10 @@ pub(super) fn shown_wrong(
                 continue;
             };
             at = (s, section);
+            // The ball's radius in this plane.
+            let Some(radius) = solver.size_at(s) else {
+                continue;
+            };
             if let Some(face) = wrong_in(&solver, s, &section, radius, tol, &place) {
                 let face = item.faces.get(face).copied();
                 return Err(refuse(edge, face, Reason::Through));
@@ -181,13 +201,13 @@ pub(super) fn shown_wrong(
 /// construction's first section is found.
 fn afresh(solver: &Solver<'_>, s: f64, item: &Item) -> Option<Section> {
     let seed = flat_seed(solver, s, item.into, item.request.edge).ok()?;
-    ball_at(solver, solver.spine.at(s)?, &seed)
+    ball_at(solver, s, solver.spine.at(s)?, &seed)
 }
 
-/// The ball in the plane `across`, started from `near`.
-fn ball_at(solver: &Solver<'_>, across: Across, near: &Section) -> Option<Section> {
+/// The ball in the plane `across` (the one at `s`), started from `near`.
+fn ball_at(solver: &Solver<'_>, s: f64, across: Across, near: &Section) -> Option<Section> {
     match solver.shape {
-        Shape::Ball { radius, convex } => solver.ball(across, near, radius, convex),
+        Shape::Ball { convex, .. } => solver.ball(across, near, solver.size_at(s)?, convex),
         Shape::Cut { .. } => None,
     }
 }
@@ -221,7 +241,7 @@ const MOST_STEPS: u32 = 64;
 /// follows its own: directly, or through balls between, halving the step
 /// up to `depth` times.
 fn follow(solver: &Solver<'_>, from: f64, near: &Section, to: f64, depth: u32) -> Option<Section> {
-    if let Some(found) = ball_at(solver, solver.spine.at(to)?, near) {
+    if let Some(found) = ball_at(solver, to, solver.spine.at(to)?, near) {
         return Some(found);
     }
     if depth == 0 {

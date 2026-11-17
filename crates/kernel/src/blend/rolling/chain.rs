@@ -134,6 +134,12 @@ pub(super) struct Meet {
 fn shape_of(size: Size, convex: bool, swapped: bool, edge: EdgeId) -> Result<Shape, BlendError> {
     match size {
         Size::Radius(radius) => Ok(Shape::Ball { radius, convex }),
+        // By its largest radius: a law is built along an edge on its own
+        // (`blend_one`), and refused in a chain or a meet (`build`).
+        Size::Law(law) => Ok(Shape::Ball {
+            radius: law.largest(),
+            convex,
+        }),
         Size::Chamfer(ChamferSize::Distances { first, second }) => Ok(Shape::Cut {
             distances: if swapped {
                 [second, first]
@@ -319,6 +325,7 @@ impl Around<'_> {
                 // vertex rather than along the edge.
                 let reach = match item.request.size {
                     Size::Radius(r) => r,
+                    Size::Law(law) => law.largest(),
                     Size::Chamfer(ChamferSize::Distances { first, second }) => first.max(second),
                     Size::Chamfer(ChamferSize::DistanceAngle { distance, .. }) => distance,
                 };
@@ -1041,6 +1048,7 @@ fn compute(
                 scale,
                 moved: None,
                 settle: 0.0,
+                law: None,
             })
         })
         .collect::<Result<_, _>>()?;
@@ -1967,6 +1975,7 @@ fn along_spine(
                 scale,
                 moved: None,
                 settle: 0.0,
+                law: None,
             })
         })
         .collect::<Result<_, _>>()?;
@@ -2215,6 +2224,7 @@ fn along_spine(
             scale,
             moved: None,
             settle: 0.0,
+            law: None,
         };
         // The surface starts from some of the balls, evenly along the
         // path; it is refined from there.

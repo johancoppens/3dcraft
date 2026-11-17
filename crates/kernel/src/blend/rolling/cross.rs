@@ -208,6 +208,10 @@ pub(super) struct Blend<'a> {
     pub faces: [FaceId; 2],
     pub sides: [Side<'a>; 2],
     pub shape: Shape,
+    /// A fillet whose radius varies along the edge: the ball that rests
+    /// on a point has the radius the law gives where its centre lies
+    /// along the edge.
+    pub law: Option<&'a crate::blend::law::Along<'a>>,
     pub ends: &'a [End; 2],
     /// The directions into the two faces, square to the edge, at the
     /// middle of the edge.
@@ -252,9 +256,10 @@ impl Blend<'_> {
         let side = self.sides.get(k)?;
         match self.shape {
             Shape::Ball { radius, convex } => {
-                let inward = if convex { -radius } else { radius };
                 let uv = side.surface.project(q).ok()?;
                 let n = side.normal(uv)?;
+                let radius = self.radius_on(q, n, radius, convex)?;
+                let inward = if convex { -radius } else { radius };
                 let centre = q + n * inward;
                 let other = self.sides.get(1 - k)?;
                 let start = other.surface.project(centre).ok()?;
@@ -269,6 +274,16 @@ impl Blend<'_> {
                 let g = q.distance(e) / d - 1.0;
                 g.is_finite().then_some(g)
             }
+        }
+    }
+
+    /// The radius of the ball that rests on `q` of a face whose normal out
+    /// of the body there is `n`: `radius`, or what the law gives where
+    /// that ball's centre lies along the edge.
+    fn radius_on(&self, q: Vec3, n: Vec3, radius: f64, convex: bool) -> Option<f64> {
+        match self.law {
+            Some(law) => law.radius_on(q, if convex { -n } else { n }),
+            None => Some(radius),
         }
     }
 
@@ -299,9 +314,11 @@ impl Blend<'_> {
         let on = match self.shape {
             Shape::Ball { radius, convex } => {
                 let side = self.sides.get(k)?;
-                let inward = if convex { -radius } else { radius };
                 let uv = side.surface.project(q).ok()?;
-                q + side.normal(uv)? * inward
+                let n = side.normal(uv)?;
+                let radius = self.radius_on(q, n, radius, convex)?;
+                let inward = if convex { -radius } else { radius };
+                q + n * inward
             }
             Shape::Cut { .. } => q,
         };

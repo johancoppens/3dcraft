@@ -669,7 +669,9 @@ pub(super) fn build_with(
         let sign = if first.convex { 1.0 } else { -1.0 };
         let size = match first.request.size {
             super::super::super::Size::Radius(r) => r,
-            super::super::super::Size::Chamfer(_) => return Err(lost()),
+            super::super::super::Size::Chamfer(_) | super::super::super::Size::Law(_) => {
+                return Err(lost());
+            }
         };
         let scale = body
             .vertex(meet.vertex)

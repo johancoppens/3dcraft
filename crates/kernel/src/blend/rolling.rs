@@ -69,7 +69,7 @@
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
-use super::{BlendError, Blended, Face, Reason, Request, Size, lost, refused};
+use super::{BlendError, Blended, Face, Reason, Request, Size, law, lost, refused};
 use crate::KernelError;
 use crate::chamfer::ChamferSize;
 use crate::shared::curve_through;
@@ -87,6 +87,7 @@ mod cross;
 mod exact;
 pub(crate) mod rebuild;
 mod shown;
+mod slope;
 mod used_up;
 
 /// How many times a step between two sections may be halved to follow
@@ -341,6 +342,10 @@ struct Solver<'a> {
     /// between offsets ([`rebuild`]) is settled at a hundredth of the
     /// tolerance, a twenty-fifth of the share its surface is held to.
     settle: f64,
+    /// A fillet whose radius varies along the edge ([`law`]): the ball in
+    /// the plane at `s` has the radius the law gives there. `None`: the
+    /// shape's own radius all along.
+    law: Option<&'a law::Along<'a>>,
 }
 
 impl Solver<'_> {
@@ -353,8 +358,23 @@ impl Solver<'_> {
         crate::work::blend_section();
         let across = self.spine.at(s)?;
         match self.shape {
-            Shape::Ball { radius, convex } => self.ball(across, near, radius, convex),
+            Shape::Ball { radius, convex } => {
+                let radius = match self.law {
+                    Some(law) => law.radius(s)?,
+                    None => radius,
+                };
+                self.ball(across, near, radius, convex)
+            }
             Shape::Cut { distances } => self.cut(across, near, distances),
+        }
+    }
+
+    /// The size of the blend in the plane at `s`: the radius a law gives
+    /// there, or the shape's own.
+    fn size_at(&self, s: f64) -> Option<f64> {
+        match self.law {
+            Some(law) => law.radius(s),
+            None => Some(self.shape.size()),
         }
     }
 
@@ -841,13 +861,13 @@ fn refine(
                 // the first and the last sample of an open face (where
                 // the next face of a chain goes on from it, and has to be
                 // tangent).
-                kink = kink.max(radial_kink(&surface, s, &exact)?);
+                kink = kink.max(solver.kink_across(&surface, s, &exact)?);
                 if !closed && index == 0 {
-                    kink = kink.max(radial_kink(&surface, a, near)?);
+                    kink = kink.max(solver.kink_across(&surface, a, near)?);
                 }
                 if !closed && index + 1 == pairs {
                     let last = sections.get(index + 1)?;
-                    kink = kink.max(radial_kink(&surface, b, last)?);
+                    kink = kink.max(solver.kink_across(&surface, b, last)?);
                 }
             }
             // How far over its bound the worse of the two is (NaN: over).
@@ -1178,8 +1198,22 @@ fn blend_one(
         // A ring whose vertex other edges share (a seam through it).
         return Err(refuse(edge, None, Reason::FreeClosed));
     }
+    // A radius that varies along the edge: the law by the edge's length,
+    // and the shape by its largest radius (what the steps, the scale and
+    // the bounds of the refinement are taken from).
+    let along = match request.size {
+        Size::Law(law) => Some(law::Along::new(law, edge, &data.curve, data.range)?),
+        _ => None,
+    };
+    if along.is_some() && closed {
+        return Err(refuse(edge, None, Reason::LawAlone));
+    }
     let shape = match request.size {
         Size::Radius(radius) => Shape::Ball { radius, convex },
+        Size::Law(law) => Shape::Ball {
+            radius: law.largest(),
+            convex,
+        },
         Size::Chamfer(ChamferSize::Distances { first, second }) => Shape::Cut {
             distances: [first, second],
         },
@@ -1202,6 +1236,7 @@ fn blend_one(
         scale,
         moved: None,
         settle: 0.0,
+        law: along.as_ref(),
     };
     let unsolvable = || refuse(edge, None, Reason::FreeSurface);
     let seed = first_section(&solver, 0.5, into, edge)?;
@@ -1246,12 +1281,20 @@ fn blend_one(
             faces: [first, second],
             sides,
             shape,
+            law: along.as_ref(),
             ends: &ends,
             into,
             tol,
         },
         tolerance,
     )?;
+    // Carried across a smooth edge the ball rolls on other faces: not yet
+    // with a radius that varies.
+    if along.is_some()
+        && let Some(crossing) = crossings.first()
+    {
+        return Err(refuse(edge, Some(crossing.before), Reason::LawAlone));
+    }
     for c in &crossings {
         for (j, end) in ends.iter_mut().enumerate() {
             if (c.at.is_none() || c.end == j)
@@ -1262,7 +1305,18 @@ fn blend_one(
         }
     }
     let built = blend_open(
-        body, one, into, convex, shape, scale, &data, ends, &crossings, seed, tolerance,
+        body,
+        one,
+        into,
+        convex,
+        shape,
+        along.as_ref(),
+        scale,
+        &data,
+        ends,
+        &crossings,
+        seed,
+        tolerance,
     );
     if crossings.is_empty() {
         return built;
@@ -1308,6 +1362,7 @@ fn blend_open(
     into: [Vec3; 2],
     convex: bool,
     shape: Shape,
+    law: Option<&law::Along<'_>>,
     scale: f64,
     data: &Edge,
     ends: [End; 2],
@@ -1360,6 +1415,7 @@ fn blend_open(
             scale,
             moved: None,
             settle: 0.0,
+            law,
         });
     }
     let home = bounds
@@ -1374,8 +1430,11 @@ fn blend_open(
     } else {
         first_section(solvers.get(home).ok_or_else(lost)?, 0.5, into, edge)?
     };
-    // One piece: the sections may be the seed moved.
-    if let [only] = solvers.as_mut_slice() {
+    // One piece: the sections may be the seed moved, where the radius is
+    // the same all along.
+    if let [only] = solvers.as_mut_slice()
+        && law.is_none()
+    {
         let motion = exact::motion(&only.spine, only.sides);
         only.moved = motion.and_then(|m| exact::Moved::new(m, &only.spine, seed, 0.5));
     }
@@ -1397,6 +1456,13 @@ fn blend_open(
     for (index, end) in [(0_usize, 0.0_f64), (1, 1.0)] {
         let end_data = ends.get(index).ok_or_else(lost)?;
         let third = *thirds.get(index).ok_or_else(lost)?;
+        // Past an end the steps are by the radius there: what the blend
+        // has to get past the third face is as wide as its ball at that
+        // end.
+        let steps = match law {
+            Some(law) => steps.past(law.at_end(index) / length),
+            None => steps,
+        };
         let allowed = end_data.steps(steps);
         let mut piece = home;
         let mut at = (0.5, seed);
@@ -1648,6 +1714,16 @@ impl Steps {
             most_out: 8.0 * size / length,
         }
     }
+
+    /// These steps past an end where the blend's size over the edge's
+    /// length is `relative` (a radius that varies along the edge).
+    fn past(self, relative: f64) -> Steps {
+        Steps {
+            outside: self.inside.min(0.5 * relative),
+            most_out: 8.0 * relative,
+            ..self
+        }
+    }
 }
 
 /// The first section of a blend, in the plane at `s`: from the flat
@@ -1689,7 +1765,7 @@ fn flat_seed(
             *p = uv;
         }
     }
-    let size = solver.shape.size();
+    let size = solver.size_at(s).ok_or_else(unsolvable)?;
     for k in 0..2 {
         if let (Some(f), Some(i), Some(p)) =
             (seed_feet.get_mut(k), into.get(k), seed_params.get_mut(k))
@@ -1705,7 +1781,8 @@ fn flat_seed(
     let [b1, b2] = into;
     let spread = 1.0 + b1.dot(b2);
     let centre = match solver.shape {
-        Shape::Ball { radius, .. } if spread > 1e-9 => {
+        Shape::Ball { .. } if spread > 1e-9 => {
+            let radius = size;
             let half_cos = (0.5 * spread).sqrt();
             let half_sin = (1.0 - 0.5 * spread).max(0.0).sqrt();
             if !(half_sin > 1e-9) {
@@ -2088,6 +2165,7 @@ fn ring(solver: &Solver<'_>, seed: Section, data: &Edge, tolerance: &Tolerance) 
                 scale: solver.scale,
                 moved: None,
                 settle: solver.settle,
+                law: None,
             };
             let mut params = Vec::with_capacity(at.len());
             let mut sections = Vec::with_capacity(at.len());
@@ -3275,7 +3353,11 @@ struct Item {
 pub(super) fn takes(reason: Reason) -> bool {
     matches!(
         reason,
-        Reason::KindLine | Reason::KindCircle | Reason::KindEllipse | Reason::KindSpline
+        Reason::KindLine
+            | Reason::KindCircle
+            | Reason::KindEllipse
+            | Reason::KindSpline
+            | Reason::KindLaw
     )
 }
 
@@ -3310,7 +3392,12 @@ pub(super) fn blend(
     // anything is built ([`super::along`]).
     for item in &items {
         // A radius that is not one is the construction's to refuse.
-        if let Size::Radius(radius) = item.request.size
+        let radius = match item.request.size {
+            Size::Radius(radius) => Some(radius),
+            Size::Law(law) => Some(law.largest()),
+            Size::Chamfer(_) => None,
+        };
+        if let Some(radius) = radius
             && radius > 0.0
             && let Some(pinch) = super::along::pinched(
                 body,
@@ -3354,6 +3441,18 @@ pub(super) fn blend(
     }
 }
 
+/// Refused where a piece of `chain` is a fillet whose radius varies along
+/// its edge: such a fillet is built along an edge on its own.
+fn alone(chain: &chain::Chain, items: &[Item]) -> Result<(), BlendError> {
+    for piece in &chain.pieces {
+        let item = items.get(piece.item).ok_or_else(lost)?;
+        if matches!(item.request.size, Size::Law(_)) {
+            return Err(refuse(piece.edge, None, Reason::LawAlone));
+        }
+    }
+    Ok(())
+}
+
 /// [`blend`] of the requests worked out as `items`, built.
 fn blend_items(
     body: &Body,
@@ -3362,6 +3461,21 @@ fn blend_items(
     requests: &[Request],
     tolerance: &Tolerance,
 ) -> Result<Blended, BlendError> {
+    // A fillet whose radius varies is built along an edge on its own: no
+    // other requested edge ends in one of its vertices.
+    for (index, item) in items.iter().enumerate() {
+        if !matches!(item.request.size, Size::Law(_)) {
+            continue;
+        }
+        let ends = |i: &Item| body.edge(i.request.edge).map(|e| [e.start, e.end]);
+        let Some(mine) = ends(item) else { continue };
+        let touched = items.iter().enumerate().any(|(other, i)| {
+            other != index && ends(i).is_some_and(|theirs| theirs.iter().any(|v| mine.contains(v)))
+        });
+        if touched {
+            return Err(refuse(item.request.edge, None, Reason::LawAlone));
+        }
+    }
     // Edges that go on into each other are blended as one chain; no
     // other two may share a vertex.
     let (chains, meets) = chain::group(body, uses, items, tolerance)?;
@@ -3374,6 +3488,12 @@ fn blend_items(
             continue;
         }
         let first = found.pieces.first().map_or(EdgeId(u32::MAX), |p| p.edge);
+        if !matches!(
+            (found.pieces.as_slice(), found.joints.as_slice()),
+            ([_], [])
+        ) {
+            alone(found, items)?;
+        }
         if let ([piece], []) = (found.pieces.as_slice(), found.joints.as_slice()) {
             // Held to `no_loop_behind` inside, on its fitted surface.
             let item = items.get(piece.item).ok_or_else(lost)?;
@@ -3387,6 +3507,9 @@ fn blend_items(
         no_stranded_loop(&out, first, tolerance)?;
     }
     if !with_meets.is_empty() {
+        for index in &with_meets {
+            alone(chains.get(*index).ok_or_else(lost)?, items)?;
+        }
         let made = chain::build_meets(&mut out, &chains, &with_meets, &meets, items, tolerance)?;
         let first = with_meets
             .first()
@@ -3508,6 +3631,7 @@ mod tests {
             scale: 1.0,
             moved: None,
             settle: 0.0,
+            law: None,
         };
         let seed = Section {
             feet: [Vec3::new(0.5, 0.1, 0.0), Vec3::new(0.5, 0.0, -0.1)],
@@ -3820,6 +3944,7 @@ mod tests {
             scale: 1.0,
             moved: None,
             settle: 0.0,
+            law: None,
         };
         let seed = Section {
             feet: [Vec3::new(0.5, 0.1, 0.0), Vec3::new(0.5, 0.0, -0.1)],
