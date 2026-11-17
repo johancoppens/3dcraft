@@ -257,7 +257,9 @@ block cut by it keeps the part below: a solid of 12 450 mm³.
   sheet. The Sketches toggle over the view shows and hides it with the sketches (`ui.set {"show":
   {"sketches": false}}`); the eye on the feature's row (`feature.visible`) hides one grid, with its
   sheet when that is still a body of its own. Where the grid runs behind a body, over a ridge or behind a
-  hill, it is left out; with See-through on it shows faintly through the bodies, as a sketch does. The
+  hill, it is left out; with See-through on it shows faintly through the bodies, as a sketch does. A
+  section cuts the grid where it cuts the bodies: the half cut away is not drawn, and its lines end on
+  the plane. The
   feature's row says how large the grid is (`29 rows of 37`). A side of more than 65 points is drawn every k-th line, the
   first and the last always, the smallest k that keeps 65 lines (a 400 × 300 grid every 7th column and
   every 5th row), and dots only where drawn lines cross; the feature's row says so first (`every 5th row,

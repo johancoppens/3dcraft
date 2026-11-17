@@ -408,6 +408,16 @@ impl SceneSketch {
     pub fn dims_hidden(&self, see_through: bool) -> bool {
         self.grid.is_none() || see_through
     }
+
+    /// Whether a section plane cuts this sketch where it cuts the bodies:
+    /// a viewer then draws only what lies on the kept side, its lines
+    /// ending at the plane exactly and its points beyond it left out. A
+    /// grid is cut, as the sheet it lies on is (the developer,
+    /// 2026-11-17: the grid of the half cut away floated beside the cut
+    /// and over its cap). A sketch and a helix are drawn whole, as ever.
+    pub fn cut_by_section(&self) -> bool {
+        self.grid.is_some()
+    }
 }
 
 /// How far in front of the surface under them the lines and points of a

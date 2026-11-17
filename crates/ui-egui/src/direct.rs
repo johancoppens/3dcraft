@@ -317,6 +317,9 @@ pub fn segments_marked(
         // A grid's hidden stretches are left out unless see-through
         // (`SceneSketch::dims_hidden`), as the CPU overlay leaves them.
         let dimmed = sketch.dims_hidden(see_through);
+        // A grid is cut by the section where the bodies are, as the CPU
+        // overlay cuts it (`SceneSketch::cut_by_section`).
+        let cut = sketch.cut_by_section();
         for polyline in &sketch.polylines {
             let kind = match (polyline.construction, chosen) {
                 (true, _) => LineKind::Construction,
@@ -325,7 +328,10 @@ pub fn segments_marked(
             };
             for pair in polyline.points.windows(2) {
                 if let [a, b] = *pair {
-                    line(a, b, kind, true, dimmed, false, lift);
+                    let piece = if cut { marks.kept(a, b) } else { Some([a, b]) };
+                    if let Some([a, b]) = piece {
+                        line(a, b, kind, true, dimmed, false, lift);
+                    }
                 }
             }
         }
@@ -347,7 +353,12 @@ pub fn segments_marked(
         };
         let lift = sketch.lift(tolerance) as f32;
         let dimmed = sketch.dims_hidden(see_through);
-        for point in &sketch.points {
+        let cut = sketch.cut_by_section();
+        for point in sketch
+            .points
+            .iter()
+            .filter(|p| !cut || marks.kept(**p, **p).is_some())
+        {
             out.push(Segment {
                 from: *point,
                 to: *point,
