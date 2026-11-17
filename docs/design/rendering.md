@@ -1818,9 +1818,12 @@ apart got a plane tilted 14 degrees along one of them; the choice flipped at 36.
 the better conditioned first (the longer of `n − m` and `n + m`): the plane between the faces, which as the
 angle goes to zero turns continuously into the plane midway (its normal turns by half the faces' turn, a
 unit test sweeps 30 degrees to none in a thousand steps), and changes over only at faces square to each
-other, where the two are alike. Where it does not cut the model and the other does (a convex edge's outer
-bisector touches the body along the edge only, as at the top and its chamfer), the other comes first. The
-second is offered only where it cuts the model (its mesh on both sides, beyond a billionth of its size),
+other: there `n − m` and `n + m` are as long, each bisector at 45 degrees to both faces, and the first turns
+from the one to the other, square to it. Where it does not cut the model and the other does (a convex edge's
+outer bisector touches the body along the edge only, as at the top and its chamfer), the other comes first.
+The second is offered only where it cuts the model (its mesh on both sides, beyond a billionth of its size).
+"The model" is the bodies the two faces belong to, not every body in the view (round four: a second block
+beyond the chamfered one made the outer bisector of its top and chamfer count as cutting),
 so two faces a hair off parallel get one plane, between them, cutting the model. "mid" is the word only
 where the faces are parallel within the document's angular tolerance (`Session::angular_tolerance`). (2) A `made` that does not fit its plane is refused by
 `ui.set`, not dropped. (3) After an edit the plane stays where it was, a view like the camera; the shell

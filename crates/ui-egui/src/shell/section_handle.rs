@@ -231,8 +231,10 @@ pub fn choose_plane(section: &mut SectionState, choice: &PlaneChoice) {
 /// material where they face apart, between them where they face the same
 /// way. As the faces turn parallel it turns, continuously, into the plane
 /// midway between them, which it is when they are (the other then has no
-/// direction and is left out); the choice changes only where the faces
-/// are square to each other, where the two bisectors are alike. Only
+/// direction and is left out). The choice changes only where the faces
+/// are square to each other: there `n − m` and `n + m` are as long, each
+/// bisector at 45 degrees to both faces, and the first turns from the one
+/// to the other, square to it. Only
 /// where that one does not cut the model (`cuts`: a convex edge's outer
 /// bisector, which touches it along the edge) and the other does, the
 /// other comes first. The other second, where it has a direction and cuts
@@ -281,22 +283,56 @@ pub fn planes_of(
     Some((made, std::iter::once(first).chain(second).collect()))
 }
 
-/// Whether the plane through `point` with unit `normal` cuts the model
-/// `scene` shows: its mesh's corners lie on both sides, beyond a
-/// billionth of the model's size.
-fn model_cut(scene: &Scene, point: Vec3, normal: Vec3) -> bool {
+/// Why a face gives no plane, in the window's words: the engine's speak
+/// of meshes and names (every way it says a face is not in the scene).
+pub fn in_window_words(why: String) -> String {
+    if why.contains("not flat") {
+        "Not a flat face: the plane takes one or two flat faces".to_string()
+    } else if [
+        "no area",
+        "no body has",
+        "no body of a feature",
+        "has no face",
+    ]
+    .iter()
+    .any(|words| why.contains(words))
+    {
+        "Its body is not in the view (hidden, or rolled back): show it to lay the plane on its face"
+            .to_string()
+    } else {
+        why
+    }
+}
+
+/// Whether the plane through `point` with unit `normal` cuts the bodies
+/// the selected faces belong to (`faces`: their bodies' features), as
+/// `scene` shows them: their meshes' corners lie on both sides, beyond a
+/// billionth of the model's size. Only those bodies: another one beyond
+/// a convex edge's outer bisector does not make that cut (the review of
+/// 2026-11-17, round four).
+fn model_cut(scene: &Scene, faces: &[(String, String)], point: Vec3, normal: Vec3) -> bool {
     let reach = scene
         .bodies_box
         .corners()
         .map_or(1.0, |(lo, hi)| lo.distance(hi));
     let eps = if reach.is_finite() { reach * 1e-9 } else { 0.0 };
-    separates(&scene.mesh.positions, point, normal, eps)
+    let points = scene
+        .bodies
+        .iter()
+        .filter(|body| faces.iter().any(|(feature, _)| *feature == body.feature))
+        .flat_map(|body| body.mesh.positions.iter());
+    separates(points, point, normal, eps)
 }
 
 /// Whether the plane through `point` with unit `normal` cuts what
 /// `points` hold: some lie farther than `eps` on either side of it. The
 /// model's mesh in the window; a box's corners in a test.
-pub fn separates(points: &[Vec3], point: Vec3, normal: Vec3, eps: f64) -> bool {
+pub fn separates<'a>(
+    points: impl IntoIterator<Item = &'a Vec3>,
+    point: Vec3,
+    normal: Vec3,
+    eps: f64,
+) -> bool {
     let (mut below, mut above) = (false, false);
     for &q in points {
         let s = (q - point).dot(normal);
@@ -1127,26 +1163,22 @@ impl Shell {
                 Err(why) => {
                     // In the window's words: the engine's speak of meshes
                     // and names.
-                    let why = if why.contains("not flat") {
-                        "Not a flat face: the plane takes one or two flat faces".to_string()
-                    } else if [
-                        "no area",
-                        "no body has",
-                        "no body of a feature",
-                        "has no face",
-                    ]
-                    .iter()
-                    .any(|words| why.contains(words))
-                    {
-                        "Its body is not in the view (hidden, or rolled back): show it to lay the plane on its face".to_string()
-                    } else {
-                        why
-                    };
+                    let why = in_window_words(why);
                     self.section_handle.face = Some(PlaneChoice::refused(faces, &why));
                     return;
                 }
             }
         }
+        let parallel = session.angular_tolerance().unwrap_or(PARALLEL);
+        let two = match planes.as_slice() {
+            [a, b] => planes_of(
+                *a,
+                *b,
+                &|point, normal| model_cut(scene, &faces, point, normal),
+                parallel,
+            ),
+            _ => None,
+        };
         let choice = match planes.as_slice() {
             [_] => PlaneChoice {
                 made: Some(SectionMade::Face),
@@ -1154,12 +1186,7 @@ impl Shell {
                 planes: Vec::new(),
                 refused: None,
             },
-            [a, b] => match planes_of(
-                *a,
-                *b,
-                &|point, normal| model_cut(scene, point, normal),
-                session.angular_tolerance().unwrap_or(PARALLEL),
-            ) {
+            [_, _] => match two {
                 Some((made, two)) => PlaneChoice {
                     made: Some(made),
                     faces,
@@ -1258,7 +1285,7 @@ impl Shell {
             [a, b] => planes_of(
                 *a,
                 *b,
-                &|point, normal| model_cut(scene, point, normal),
+                &|point, normal| model_cut(scene, &from.faces, point, normal),
                 session.angular_tolerance().unwrap_or(PARALLEL),
             )
             .is_some_and(|(made, two)| {
@@ -2432,5 +2459,31 @@ mod tests {
             section.clone().validated().unwrap().made,
             Some(SectionMade::Bisector)
         );
+    }
+
+    /// Every way the engine says a face is not in the scene reads in the
+    /// window's words (the review of 2026-11-17, round four: a hidden
+    /// body's face got the engine's own).
+    #[test]
+    fn a_face_out_of_the_view_is_refused_in_the_windows_words() {
+        for engine in [
+            "there is no body of a feature `F3`; the bodies: `Second`",
+            "no body has a face F1:face(1) (document.inspect lists the faceNames of every body)",
+            "`Block` has no face F1:face(9) (document.inspect lists its faceNames)",
+            "face F1:face(1) has no area in the picture's mesh, so it gives no plane",
+        ] {
+            let said = in_window_words(engine.to_string());
+            assert!(
+                said.starts_with("Its body is not in the view"),
+                "{engine}: {said}"
+            );
+        }
+        assert!(
+            in_window_words(
+                "face F1:face(6) is not flat; a section lies on a base plane".to_string()
+            )
+            .starts_with("Not a flat face")
+        );
+        assert_eq!(in_window_words("odd".to_string()), "odd");
     }
 }

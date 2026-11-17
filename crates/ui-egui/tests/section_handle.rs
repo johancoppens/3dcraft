@@ -1706,3 +1706,34 @@ fn the_opposite_sides_of_a_tray_and_a_hopper_are_halved_by_x_0() {
         assert!(outline > 0, "{name}: the plane cuts the model");
     }
 }
+
+/// The review of 2026-11-17, round four: whether a bisector cuts was
+/// tested against every body in the view, so a second block beyond the
+/// chamfered one made the outer bisector of the top and its chamfer
+/// (normal (0.383, 0, 0.924), touching the chamfered block along the edge
+/// only) come first. Tested against the selected faces' own bodies, the
+/// plane through the material comes first, alone.
+#[test]
+fn another_body_beyond_does_not_make_a_convex_edges_outer_bisector_cut() {
+    let mut session = two_bodies("0 deg");
+    let (mut shell, mut window) = window_on(&mut session, [1200.0, 800.0], "xy", 4.0, "iso");
+    select_faces(
+        &mut session,
+        &[
+            json!({"in": "Bevel", "normal": {"along": [0, 0, 1]}}),
+            json!({"in": "Bevel", "normal": {"along": [1, 0, 1]}}),
+        ],
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let choice = shell.section_face_choice().cloned().unwrap();
+    assert_eq!(choice.made, Some(SectionMade::Bisector), "{choice:?}");
+    assert_eq!(choice.planes.len(), 1, "{choice:?}");
+    let [nx, _, nz] = choice.planes[0].1;
+    assert!(nx.abs() > nz.abs(), "through the material: {choice:?}");
+    let dot = shell.section_handle().unwrap().dots[3];
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 3);
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    let n = got["section"]["normal"][0].as_f64().unwrap();
+    assert!(n.abs() > 0.9, "{}", got["section"]);
+}
