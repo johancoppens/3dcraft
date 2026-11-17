@@ -1900,6 +1900,7 @@ mod tests {
                 normal: None,
                 offset: -2.5,
                 flip: true,
+                // Added with the plane from the selection (2026-11-17).
                 made: Some(SectionMade::Face),
             },
             picked: Some(Picked {
@@ -2057,7 +2058,7 @@ mod tests {
                 "highlightVertex": {"feature": null, "vertex": "F3:vertex(1)", "corner": []},
                 "transparency": 0.5,
                 "section": {"on": true, "plane": "F3:face(2)", "feature": "F3", "point": null,
-                            "normal": null, "offset": -2.5, "flip": true},
+                            "normal": null, "offset": -2.5, "flip": true, "made": "face"},
                 "picked": {"serial": 4, "x": 120.5, "y": 80.25, "feature": "F3",
                            "name": "Post", "face": "F3:face(2)", "faceIndex": 2,
                            "point": [1.0, 2.0, 3.5], "kind": "edge",
