@@ -311,6 +311,51 @@ to another edge without anything failing, so a fillet or a chamfer refuses it, a
 instead (another name of it), or that nothing does yet. Then the pair takes all of the edges between those
 faces.
 
+### A fillet that fades
+
+A rounding does not always run the whole length of its edge: a hull's stem is rounded from the deck down
+and the rounding dies out above the forefoot. `fade` ends a fillet that way: at an end of the edge its
+radius falls smoothly to nothing and the rounded face closes in a point on the edge, tangent to both faces
+all the way. A box's upright edge rounded 3 mm, fading out over the top 15 mm:
+
+```json
+[
+  ["feature.block", {"size": [40, 30, 40], "name": "Box"}],
+  ["feature.fillet", {"edges": ["Box:edge(9)"], "radius": "3 mm", "fade": [{"at": "Box:vertex(4)", "over": "15 mm"}], "name": "Round"}],
+  ["assert.add", {"name": "fades", "measure": "volume", "of": "Round", "eq": "40 mm * 30 mm * 40 mm - (1 - pi / 4) * (3 mm)^2 * (25 mm + 9 / 14 * 15 mm)", "tol": 0.001}]
+]
+```
+
+- **`at`** is the vertex at the end of the edge where the fillet fades, by its name: `document.edges` lists
+  the vertices of a body under `vertices`. One fade per end; an edge may fade at both.
+- **`over`** is the length along the edge over which the radius falls to nothing. It is at least the
+  radius: a radius that falls faster gives a face that cannot be measured or meshed, and is refused with the
+  least `over` that is built.
+- **`back`** (0 when left out) is how far short of the vertex the fillet ends in its point. Beyond it the
+  edge stays sharp, as it was. A back is needed where the faces leave no room for a ball right up to the
+  vertex: at a hull's forefoot, where the two halves come tangent and fold within a fraction of a millimetre
+  of the foot.
+- **What is built.** An open edge rounded on its own: no `chain`, no other rounded edge ending in its
+  vertices, its other end a corner of three faces or another fade, a border that stays on the edge's two
+  faces. Other edges of one radius may be rounded in the same feature as long as they keep clear of it.
+- **What the result says.** Under `fades`, per fade: `tip` (the point the face closes in), `vertex` (that
+  point's name, by its faces), `over`, `back` and the edge's `length`.
+- **Names.** The point, and what is left of the edge beyond a point short of the vertex, are named by their
+  faces and by the end they belong to (a face at the vertex the fade is at, after `|`): moved to the other
+  end of the edge, the fade takes those names away, and a datum or a note that named them says so rather
+  than moving with the fade. The point's name lists the round's own face (`F9:fillet(0)`), which is not
+  proven to stay with it: a later fillet or fade that names the point is refused, and a note pinned to it
+  is held by place (`note.list`: `byPlace`). A fade at an end that an earlier fillet or chamfer has
+  rounded is not built yet: that end is such a point, and the refusal says so.
+- **Refused** with what to change: a vertex that is not an end of an edge the fillet rounds, a fade that is
+  too short, a `back` the tolerance cannot tell from the vertex, fades longer than the edge, faces that
+  leave no ball before the point (with how far short it was found), a radius still too large where the edge
+  turns (the face would turn back on itself there: with the place and the radius there), and an edge that
+  closes on itself.
+- **Not yet behind it.** `feature.shell`, and `feature.plate` of the faded face, refuse a face that closes in
+  a point and say so (as behind a `feature.tip`); a fade to another radius, a chamfer that fades, and a
+  fillet that fades by itself where its faces come tangent are not built yet.
+
 ## Shell and face operations
 
 - `feature.shell` makes a body hollow with walls of `thickness`; the faces in `open` are taken away. A

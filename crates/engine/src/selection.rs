@@ -27,9 +27,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub const MAX_SELECTION: usize = 10_000;
 /// Most dropped names kept to report.
 const MAX_DROPPED: usize = 50;
-/// Longest name taken, in bytes: a persistent name grows with every copy
-/// and boolean, but not without end.
-pub const MAX_NAME_BYTES: usize = 8192;
+/// Longest name taken, in bytes: as long as the longest request a client
+/// can send (the control channel's line of 1 MiB), so no name a body can
+/// have is refused for its length (the review of 2026-11-17: an extruded
+/// loop of 1700 points gave its top face a name of 10112 bytes, which a
+/// cap of 8192 refused).
+pub const MAX_NAME_BYTES: usize = 1 << 20;
 
 /// What an item of a selection is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

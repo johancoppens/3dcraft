@@ -60,6 +60,72 @@ A named set (B2) is a query kept in the document under a name: `set.define {name
 
 *Speed (2026-10-30).* One query over the flat faces of a plate with 500 bosses (2506 faces, 4008 vertices) took 6.7 s on the Strix: 804 000 lines, each followed through the whole body (16.5 million hits: a line from a boss's side crossed every boss of its row). Now: (1) the grid's lines are cast first, so a face over a step the grid shows is told before any vertex is looked at; (2) once one distance `lo` is known, a line is followed only to `lo` + 4 tolerances (a line that leaves later widens the range past the tolerance whatever it meets there, and every face met within the tolerance of where it leaves lies before that), so the answer is the same; (3) only vertices no deeper than the deepest line met (plus twice the tolerance) are sampled around, and vertices within the tolerance of one taken are taken once: wherever the length of the lines changes away from a length `d` some line has, an edge no deeper than `d` projects there (the opposite face's own edge, at `d`, or the edge of a face in front of it), and an edge of the body that ends deeper leaves the face's box or meets the opposite plane at a vertex at `d` (`a_narrow_rib_behind_a_face_is_found_from_where_it_meets_the_plate` pins a rib the grid misses, at three scales); the 4096 cap counts the distinct projected points sampled around, vertices and points along edges alike; (4) an edge that crosses the face's box (its box meets the face's box swept to the deepest line) with an end that is not sampled, outside the box or deeper, is cut into 32 pieces, and every piece that may come behind the face (its box grown by half its chord and the chordal tolerance) is sampled at a spacing of the face's diagonal over 32, at most 16384 points per face (past it the face has no thickness), each point that projects within the box standing for a vertex (review of 2026-10-31: 33 points spread over a whole 2000 mm edge fell 62 mm apart and missed a 10 mm face, `a_groove_along_a_long_base_under_a_small_boss_is_found`, at scales 0.01, 1 and 100; open: at 1000, a base 2 km long at the document's micrometre, a line of the grid from the boss's top finds no opposite face and the top has no thickness, not looked into): a step bounded by a long edge is told without a grid point on it (`a_groove_whose_ends_lie_outside_the_face_is_found_from_its_edges`), which let the grid go from 256 points to 32; (5) the thicknesses are remembered per body (by its `Arc`, held by a `Weak`, as the mass properties are) and tolerance across queries, so a named set by thickness asked again costs nothing until the body is rebuilt. The same query: 0.36 s on the Strix (test profile; grid 0.17 s, the loops over vertices and edges 0.12 s, about 130 000 lines), 4 ms asked again; same answers (`crates/engine/tests/units_and_plates.rs`).
 
+### Measuring by selecting (2026-11-17)
+
+Two things selected are measured by themselves (the developer's design, steps B and C). The engine decides
+what their relation is (`relation_cmds.rs`, `measure.between`, the same command an agent sends): on the
+exact geometry, from what the two are. Two flat faces: parallel, the distance between their planes; at an
+angle, the angle between the half-planes from the line the planes meet in toward each face (0 to 180°, so a
+45° chamfer meets the top at 135°). Axes (of cylinders and cones) and centres (circular edges, spheres):
+the centre distance, with its parts along X, Y and Z; two parallel axes drawn where the holes open (below). Two straight edges: parallel, the distance between them; meeting, or their lines crossing within
+the tolerance, the angle from where they meet toward each; skew, the least distance between the segments
+(their closest points, clamped). An axis and a flat face: their distance when parallel, else their angle.
+Two vertices: the distance between them. A vertex, a circular edge or a sphere with anything else: the
+least distance between the two as they are, never from a centre (the review of 2026-11-17 found a rim
+measured from its centre under the words "Least distance"): from a vertex exactly (the curve's or the
+face's nearest point); along an edge, sampled at 96 points and narrowed about the best by golden sections,
+to the faces or the edge of the other, then proven as `measure.distance` proves its own (round two of the
+review: a thin pin 0.1 from a rim was stepped over for a wall at 0.15): the edge in pieces of a line, each
+within its sagitta of the arc (a straight edge exactly; another curve by an estimate, then not proven),
+against the other's triangles, each within the mesh's error of its face, bound the least from below; every
+piece whose bound lies under the least found is narrowed on the exact geometry near its own faces, and the
+least bound is `atLeast`, the better of the pieces' and of what the faces the edge bounds prove (the edge lies
+on each: their least distance, proven by `measure.distance`'s own proof, is no more than the edge's). An
+arc's piece whose bound lies under the least found by more than a quarter of the tolerance, held there by
+its sagitta alone, is halved until it is not (round three: a rim to a straight edge read *26.248806 –
+26.248809*), so a circle against a plane or a line is proven within the tolerance; where a curved face's
+mesh holds the bound, the faces' proof settles it. What rests on samples (a freeform curve, a freeform face
+near the least) says `sampled: true`; an assertion keeps its proven bound below, so a check kept from it can
+fail. The things are found by the selection's own items (`Resolver::locate`), never through a name pattern;
+a name pattern without `*`, and every name a selection takes, may be as long as the longest request (1 MiB,
+the control channel's line; round three: an extruded loop of 1700 points named its top face in 10112 bytes,
+over the 8192 there were). Two parallel holes are drawn between the centres of their rims in view: just past
+each end of a hole, on its axis and near its wall, every body shown tells air from material (a top another
+body covers is not in view), each rim's centre is the mean along the axis of its edges' points (a slanted
+hole's rim is an ellipse centred on the axis), and the line goes to a level both open at, else either's, the
+upper of two (by Z, then Y, then X: where a model is mostly seen from), whichever hole was selected first.
+Two bodies: the clearance (`measure.clearance`). Anything else: the
+least distance (`measure.distance`). Each
+answer carries the two ends of a dimension line (for an angle its corner and a point toward each side) and
+the document's tolerance, linear or angular. As an assertion it is the measure `between`, or
+`angleBetween`, whose dimension is an angle (`dim_of` reads a measure's dimension by its name).
+
+The window asks once per selection and revision, on a thread of its own (`Session::between_later`, a
+`BetweenJob` the side panel polls; the card says *Measuring…* meanwhile: on the window's thread two gear
+bodies held a frame up about 180 ms), one at a time (a newer selection waits, an older answer is dropped;
+a least not proven within the tolerance shows the range it is proven in, one number where the two print
+the same at the tolerance, *about* where it rests on samples or has no bound, and *Keep as a check* keeps
+what is proven: the range, or at most the value with the bound below it), prints numbers to the document's tolerance without trailing zeros
+(the same text shown and copied), and shows one large number
+at the panel's foot in place of the first thing's rows, and draws the dimension line with egui over the
+picture (`shell/dimension.rs`, as the section's handle is drawn; neither renderer draws it): the accent over
+a dark hairline, heads at its ends, its number on a small plate beside its middle; an angle as an arc about
+its corner. A click on either number copies it with its unit and selects nothing. *Keep as a check* queues
+`assert.add` with the value now and the document's tolerance, named after the two things, once per
+selection (the button says so after).
+
+One thing selected shows its measure in the view too (the developer, the same day: "ik zou maten in de view
+willen zien"): from `select.get`'s description of it (its curve or surface, with measures) and the scene's
+lines of its edge (`Scene::edges_named`) or the middle of its face's triangles (`Scene::faces_named`). A
+straight edge's length is drawn along a line beside it, on the side away from the model's middle on the
+screen, with thin lines from its ends; a circle whole (its length its circle's, within a millionth) its
+diameter across it, square to the line of sight so it shows whole; an arc its radius from its centre to its
+middle; a cylinder its diameter across it on its axis by the middle of the face; a curved edge its length by
+its middle. A flat face, a vertex and a body have none in the view. Every dimension is drawn with the
+section arrow's line weights and head (`section_handle::dart`), so the two read as one family. The card with
+what is selected is drawn at the foot of every tab of the side panel (the Features tab has it with its
+checks), so what is selected stays in sight whichever tab is open.
+
 ### Not yet
 
 - **Relations and extremes**: neighbours of, the same size as, symmetric to, coaxial with, the highest or largest or nearest *n*; distance to an item; faces of an edge's body side. Spatial words relative to the camera are not built (B3); directions are world axes.

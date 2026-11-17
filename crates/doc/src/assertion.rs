@@ -13,8 +13,12 @@ use serde::{Deserialize, Serialize};
 
 /// Most assertions a document holds.
 pub const MAX_ASSERTIONS: usize = 1_000;
-/// Longest text of what an assertion measures, in bytes.
-pub const MAX_ASSERTION_TEXT: usize = 16_384;
+/// Longest text of what an assertion measures, in bytes: room for the two
+/// things a relation measures, each named in as many bytes as a selection
+/// takes (1 MiB, the longest request), with what else it says (the review
+/// of 2026-11-17, round three: two faces of a profile of 2000 segments,
+/// named in 12 KB each, could not be kept as a check under 16 KiB).
+pub const MAX_ASSERTION_TEXT: usize = 4 << 20;
 
 /// One assertion.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -98,8 +98,9 @@ pub const FACE_DOT: usize = 3;
 pub const TAKES_FACES: &str = "Takes one or two flat faces: select them first";
 
 /// Two faces' normals closer than this (the sine of the angle between
-/// them, or between one and the other's opposite) are parallel.
-const PARALLEL: f64 = 1e-9;
+/// them, or between one and the other's opposite) are parallel, where the
+/// document gives no angular tolerance: its default, in radians.
+pub const PARALLEL: f64 = 1e-9;
 
 /// What the fourth button would make of the selection
 /// ([`Shell::sync_face_choice`]): the plane along the one flat face
@@ -114,8 +115,8 @@ pub struct PlaneChoice {
     /// name, in the selection's order.
     pub faces: Vec<(String, String)>,
     /// The planes two faces give, each a point near the faces and a unit
-    /// normal: the one midway, or the bisector through the material and
-    /// then the other one, square to it ([`planes_of`]).
+    /// normal: the bisector a person means first, then the other one,
+    /// square to it, where it cuts the model ([`planes_of`]).
     pub planes: Vec<([f64; 3], [f64; 3])>,
     pub refused: Option<String>,
 }
@@ -131,11 +132,13 @@ impl PlaneChoice {
     }
 
     /// Which of `planes` a click takes for `section` as it is: the other
-    /// bisector when the section lies on the first one already.
+    /// bisector when the section lies on the first one already and there
+    /// is another.
     fn next(&self, section: &SectionState) -> usize {
         match (self.made, self.planes.first()) {
             (Some(SectionMade::Bisector), Some((point, normal)))
-                if section.made == Some(SectionMade::Bisector)
+                if self.planes.len() > 1
+                    && section.made == Some(SectionMade::Bisector)
                     && section.point == Some(*point)
                     && section.normal == Some(*normal) =>
             {
@@ -157,9 +160,7 @@ impl PlaneChoice {
             Some(SectionMade::Bisector) if self.next(section) == 1 => {
                 "The other bisector of the two faces, square to this one"
             }
-            Some(SectionMade::Bisector) => {
-                "Halving the angle of the two faces, through the material"
-            }
+            Some(SectionMade::Bisector) => "Halving the angle of the two faces",
             None => TAKES_FACES,
         }
         .to_string()
@@ -217,23 +218,36 @@ pub fn choose_plane(section: &mut SectionState, choice: &PlaneChoice) {
 }
 
 /// The planes two flat faces give, each face by a point of its plane and
-/// its unit outward normal, for a model whose box runs from `lo` to `hi`
-/// (`bounds`). Parallel: their normals the same or opposite within
-/// [`PARALLEL`], or the line where their planes meet passing farther from
-/// the middle of the box than its whole diagonal (the review of
-/// 2026-11-17: faces a ten-millionth of a degree off parallel met
-/// 3.4e10 away, and a "bisector" through there cut everything or
-/// nothing): the plane midway between them, along the first's normal.
-/// Else the two bisectors of the angle of their planes, through the line
-/// where these meet: first the one through the material (where both
-/// faces' bodies are, behind both faces: normal `n - m`), then the other
-/// (normal `n + m`). Each by its point nearest the middle of the two
-/// points given, so near the faces, and its unit normal; `None` when a
-/// number is not one.
+/// its unit outward normal `n`, `m`: the two bisectors of the angle of
+/// their planes, square to each other through the line where those meet
+/// (the review of 2026-11-17, round three: a rule by where the planes meet
+/// counted sides 28 degrees apart as parallel). `x · (n − m) = p · n −
+/// q · m` holds the points as far behind the one face as behind the other
+/// (through the material, behind both); `x · (n + m) = p · n + q · m` those
+/// as far behind the one as in front of the other.
+///
+/// First the better conditioned of the two, the longer of `n − m` and
+/// `n + m`: the plane between the faces a person means, through the
+/// material where they face apart, between them where they face the same
+/// way. As the faces turn parallel it turns, continuously, into the plane
+/// midway between them, which it is when they are (the other then has no
+/// direction and is left out). The choice changes only where the faces
+/// are square to each other: there `n − m` and `n + m` are as long, each
+/// bisector at 45 degrees to both faces, and the first turns from the one
+/// to the other, square to it. Only
+/// where that one does not cut the model (`cuts`: a convex edge's outer
+/// bisector, which touches it along the edge) and the other does, the
+/// other comes first. The other second, where it has a direction and cuts
+/// the model (a pair a hair off parallel meets far outside, and its other
+/// bisector cuts nothing). `made` is midway where the faces are parallel
+/// within `parallel` (radians: the document's angular tolerance), else a
+/// bisector. Each plane by its point nearest the middle of the two points
+/// given and its unit normal; `None` when a number is not one.
 pub fn planes_of(
     a: (Vec3, Vec3),
     b: (Vec3, Vec3),
-    bounds: Option<(Vec3, Vec3)>,
+    cuts: &dyn Fn(Vec3, Vec3) -> bool,
+    parallel: f64,
 ) -> Option<(SectionMade, Vec<(Vec3, Vec3)>)> {
     let ((p, n), (q, m)) = (a, b);
     let middle = p.lerp(q, 0.5);
@@ -248,26 +262,87 @@ pub fn planes_of(
     if !(middle.is_finite() && unit(n) && unit(m)) {
         return None;
     }
-    let d = n.cross(m);
-    // How far from the box's middle the line where the planes meet
-    // passes: the point of it nearest there, from that middle, is
-    // (c1 m × d + c2 d × n) / |d|² for the planes n · x = c1, m · x = c2
-    // taken from the middle.
-    let far = bounds.is_some_and(|(lo, hi)| {
-        let o = lo.lerp(hi, 0.5);
-        let diagonal = lo.distance(hi);
-        let (c1, c2) = ((p - o).dot(n), (q - o).dot(m));
-        let off = (m.cross(d) * c1 + d.cross(n) * c2) * (1.0 / d.length_squared());
-        let off = off.length();
-        diagonal.is_finite() && (off.is_nan() || off > diagonal)
-    });
-    if d.length() <= PARALLEL || far {
-        let mid = nearest(n, (p.dot(n) + q.dot(n)) * 0.5)?;
-        return Some((SectionMade::Mid, vec![mid]));
+    let through = (n - m, p.dot(n) - q.dot(m));
+    let between = (n + m, p.dot(n) + q.dot(m));
+    let (good, poor) = if through.0.length_squared() >= between.0.length_squared() {
+        (through, between)
+    } else {
+        (between, through)
+    };
+    let good = nearest(good.0, good.1)?;
+    let poor = nearest(poor.0, poor.1);
+    let (first, second) = match poor {
+        Some(poor) if !cuts(good.0, good.1) && cuts(poor.0, poor.1) => (poor, None),
+        _ => (good, poor.filter(|&(point, normal)| cuts(point, normal))),
+    };
+    let made = if n.cross(m).length() <= parallel.max(0.0) {
+        SectionMade::Mid
+    } else {
+        SectionMade::Bisector
+    };
+    Some((made, std::iter::once(first).chain(second).collect()))
+}
+
+/// Why a face gives no plane, in the window's words: the engine's speak
+/// of meshes and names (every way it says a face is not in the scene).
+pub fn in_window_words(why: String) -> String {
+    if why.contains("not flat") {
+        "Not a flat face: the plane takes one or two flat faces".to_string()
+    } else if [
+        "no area",
+        "no body has",
+        "no body of a feature",
+        "has no face",
+    ]
+    .iter()
+    .any(|words| why.contains(words))
+    {
+        "Its body is not in the view (hidden, or rolled back): show it to lay the plane on its face"
+            .to_string()
+    } else {
+        why
     }
-    let through = nearest(n - m, p.dot(n) - q.dot(m))?;
-    let other = nearest(n + m, p.dot(n) + q.dot(m))?;
-    Some((SectionMade::Bisector, vec![through, other]))
+}
+
+/// Whether the plane through `point` with unit `normal` cuts the bodies
+/// the selected faces belong to (`faces`: their bodies' features), as
+/// `scene` shows them: their meshes' corners lie on both sides, beyond a
+/// billionth of the model's size. Only those bodies: another one beyond
+/// a convex edge's outer bisector does not make that cut (the review of
+/// 2026-11-17, round four).
+fn model_cut(scene: &Scene, faces: &[(String, String)], point: Vec3, normal: Vec3) -> bool {
+    let reach = scene
+        .bodies_box
+        .corners()
+        .map_or(1.0, |(lo, hi)| lo.distance(hi));
+    let eps = if reach.is_finite() { reach * 1e-9 } else { 0.0 };
+    let points = scene
+        .bodies
+        .iter()
+        .filter(|body| faces.iter().any(|(feature, _)| *feature == body.feature))
+        .flat_map(|body| body.mesh.positions.iter());
+    separates(points, point, normal, eps)
+}
+
+/// Whether the plane through `point` with unit `normal` cuts what
+/// `points` hold: some lie farther than `eps` on either side of it. The
+/// model's mesh in the window; a box's corners in a test.
+pub fn separates<'a>(
+    points: impl IntoIterator<Item = &'a Vec3>,
+    point: Vec3,
+    normal: Vec3,
+    eps: f64,
+) -> bool {
+    let (mut below, mut above) = (false, false);
+    for &q in points {
+        let s = (q - point).dot(normal);
+        below |= s < -eps;
+        above |= s > eps;
+        if below && above {
+            return true;
+        }
+    }
+    false
 }
 
 /// The two faces the plane midway or the bisector was made from, and the
@@ -1010,9 +1085,9 @@ pub(crate) struct HandleView {
     /// The way the group went from the arrow's foot last frame, kept
     /// while its place stays clear ([`group_place`]).
     group_way: Option<Vec2>,
-    /// The faces a plane midway or a bisector was made from
-    /// ([`Shell::remember_made`]).
-    made_from: Option<MadeFrom>,
+    /// The faces a plane midway or a bisector was made from, per open
+    /// document (each tab has its own section; [`Shell::remember_made`]).
+    made_from: std::collections::BTreeMap<u64, MadeFrom>,
 }
 
 impl Shell {
@@ -1088,18 +1163,22 @@ impl Shell {
                 Err(why) => {
                     // In the window's words: the engine's speak of meshes
                     // and names.
-                    let why = if why.contains("not flat") {
-                        "Not a flat face: the plane takes one or two flat faces".to_string()
-                    } else if why.contains("no area") || why.contains("no body has") {
-                        "Its body is not in the view (hidden, or rolled back): show it to lay the plane on its face".to_string()
-                    } else {
-                        why
-                    };
+                    let why = in_window_words(why);
                     self.section_handle.face = Some(PlaneChoice::refused(faces, &why));
                     return;
                 }
             }
         }
+        let parallel = session.angular_tolerance().unwrap_or(PARALLEL);
+        let two = match planes.as_slice() {
+            [a, b] => planes_of(
+                *a,
+                *b,
+                &|point, normal| model_cut(scene, &faces, point, normal),
+                parallel,
+            ),
+            _ => None,
+        };
         let choice = match planes.as_slice() {
             [_] => PlaneChoice {
                 made: Some(SectionMade::Face),
@@ -1107,7 +1186,7 @@ impl Shell {
                 planes: Vec::new(),
                 refused: None,
             },
-            [a, b] => match planes_of(*a, *b, scene.bodies_box.corners()) {
+            [_, _] => match two {
                 Some((made, two)) => PlaneChoice {
                     made: Some(made),
                     faces,
@@ -1127,7 +1206,10 @@ impl Shell {
     /// Remembers which faces made `section`'s plane, when the fourth
     /// button made it midway or a bisector of `choice`'s two faces.
     pub(super) fn remember_made(&mut self, section: &SectionState, choice: &PlaneChoice) {
-        self.section_handle.made_from = match (section.made, section.point, section.normal) {
+        let Some(document) = self.shown_status.as_ref().map(|s| s.id) else {
+            return;
+        };
+        let made = match (section.made, section.point, section.normal) {
             (
                 Some(made @ (SectionMade::Mid | SectionMade::Bisector)),
                 Some(point),
@@ -1140,6 +1222,14 @@ impl Shell {
             }),
             _ => None,
         };
+        match made {
+            Some(made) => {
+                self.section_handle.made_from.insert(document, made);
+            }
+            None => {
+                self.section_handle.made_from.remove(&document);
+            }
+        }
     }
 
     /// Whether the plane midway or the bisector the fourth button made
@@ -1149,7 +1239,18 @@ impl Shell {
     /// block lengthened, a face gone), it is no longer called midway or a
     /// bisector (the review of 2026-11-17).
     fn check_made(&mut self, session: &mut craft3d_engine::Session, scene: &Scene) {
-        let Some(from) = self.section_handle.made_from.clone() else {
+        // The session's active document, whose section the state now
+        // holds (the shown status follows only at the end of the frame's
+        // sync: on the frame a tab is switched it is still the other).
+        let Some(document) = session.document_status().map(|s| s.id) else {
+            return;
+        };
+        // Forget what was made in documents no longer open.
+        let open: Vec<u64> = session.document_statuses().iter().map(|s| s.id).collect();
+        self.section_handle
+            .made_from
+            .retain(|id, _| open.contains(id));
+        let Some(from) = self.section_handle.made_from.get(&document).cloned() else {
             return;
         };
         let section = &self.state.section;
@@ -1158,7 +1259,7 @@ impl Shell {
             || section.point != Some(from.point)
             || section.normal != Some(from.normal)
         {
-            self.section_handle.made_from = None;
+            self.section_handle.made_from.remove(&document);
             return;
         }
         let mut planes = Vec::new();
@@ -1181,7 +1282,13 @@ impl Shell {
             .corners()
             .map_or(1.0, |(lo, hi)| lo.distance(hi).max(1e-9));
         let holds = match planes.as_slice() {
-            [a, b] => planes_of(*a, *b, scene.bodies_box.corners()).is_some_and(|(made, two)| {
+            [a, b] => planes_of(
+                *a,
+                *b,
+                &|point, normal| model_cut(scene, &from.faces, point, normal),
+                session.angular_tolerance().unwrap_or(PARALLEL),
+            )
+            .is_some_and(|(made, two)| {
                 made == from.made
                     && two.iter().any(|(p, n)| {
                         (*n - normal).length() <= 1e-9 && (*p - point).dot(*n).abs() <= 1e-9 * reach
@@ -1191,7 +1298,7 @@ impl Shell {
         };
         if !holds {
             self.state.section.made = None;
-            self.section_handle.made_from = None;
+            self.section_handle.made_from.remove(&document);
         }
     }
 
@@ -2048,45 +2155,86 @@ mod tests {
         a.distance(b) < 1e-9
     }
 
+    /// Whether a plane cuts the box from `lo` to `hi`.
+    fn in_box(lo: Vec3, hi: Vec3) -> impl Fn(Vec3, Vec3) -> bool {
+        let mut corners = Vec::new();
+        for x in [lo.x, hi.x] {
+            for y in [lo.y, hi.y] {
+                for z in [lo.z, hi.z] {
+                    corners.push(Vec3::new(x, y, z));
+                }
+            }
+        }
+        let eps = 1e-9 * lo.distance(hi);
+        move |point, normal| separates(&corners, point, normal, eps)
+    }
+
+    /// Any plane cuts.
+    fn anywhere(_: Vec3, _: Vec3) -> bool {
+        true
+    }
+
     #[test]
-    fn two_faces_give_the_plane_midway_or_the_bisectors_through_the_material_first() {
+    fn two_faces_give_their_bisectors_the_one_a_person_means_first() {
         // A block 60 x 40 x 20 at the origin: its right face (x = 60) and
         // its top (z = 20), each by a point of it and its outward normal.
         let right = (Vec3::new(60.0, 0.0, 0.0), Vec3::X);
         let top = (Vec3::new(0.0, 40.0, 20.0), Vec3::Z);
-        let (made, planes) = planes_of(right, top, None).unwrap();
+        let block = in_box(Vec3::ZERO, Vec3::new(60.0, 40.0, 20.0));
+        let (made, planes) = planes_of(right, top, &block, PARALLEL).unwrap();
         assert_eq!(made, SectionMade::Bisector);
         let h = std::f64::consts::FRAC_1_SQRT_2;
-        let [(p, n), (q, m)] = planes.as_slice() else {
-            panic!("two bisectors: {planes:?}");
+        // Square faces: through the material first, down and in from the
+        // edge along (1, 0, -1); the other only touches the block along
+        // its edge, so it is not offered.
+        let [(p, n)] = planes.as_slice() else {
+            panic!("one bisector cuts the block: {planes:?}");
         };
-        // Through the material: down and in from the edge at x = 60,
-        // z = 20, along (1, 0, -1); the other square to it, up and out.
         assert!(near(*n, Vec3::new(h, 0.0, -h)), "{n:?}");
-        assert!(near(*m, Vec3::new(h, 0.0, h)), "{m:?}");
-        for (point, normal) in [(*p, *n), (*q, *m)] {
-            // Through the edge's line, and near the faces' middle.
-            let on_edge = Vec3::new(60.0, 17.0, 20.0);
-            assert!((on_edge - point).dot(normal).abs() < 1e-9);
-            assert!(
-                point.distance(Vec3::new(30.0, 20.0, 10.0)) < 40.0,
-                "{point:?}"
-            );
-        }
-        // A point inside the block, as far behind the one face as behind
-        // the other, is on the first; one as far outside the right face
-        // as below the top's level is on the other.
+        assert!((Vec3::new(60.0, 17.0, 20.0) - *p).dot(*n).abs() < 1e-9);
         assert!((Vec3::new(55.0, 3.0, 15.0) - *p).dot(*n).abs() < 1e-9);
+        assert!(p.distance(Vec3::new(30.0, 20.0, 10.0)) < 40.0, "{p:?}");
+        // Anywhere it would cut, the other is there too, square to it.
+        let (_, both) = planes_of(right, top, &anywhere, PARALLEL).unwrap();
+        let [_, (q, m)] = both.as_slice() else {
+            panic!("two bisectors: {both:?}");
+        };
+        assert!(near(*m, Vec3::new(h, 0.0, h)), "{m:?}");
         assert!((Vec3::new(65.0, 3.0, 15.0) - *q).dot(*m).abs() < 1e-9);
         // In the other order the first is still through the material.
-        let (_, swapped) = planes_of(top, right, None).unwrap();
+        let (_, swapped) = planes_of(top, right, &block, PARALLEL).unwrap();
         let first = swapped.first().unwrap();
         assert!((Vec3::new(55.0, 3.0, 15.0) - first.0).dot(first.1).abs() < 1e-9);
+        // The top and a 45 degree chamfer of its edge at x = 60 (a convex
+        // edge of 135 degrees), the chamfered block by its corners: the
+        // outer bisector is the longer, but touches the block only along
+        // the edge, so the one through the material comes first, alone.
+        let slant = (
+            Vec3::new(56.0, 0.0, 16.0),
+            Vec3::new(1.0, 0.0, 1.0).normalized().unwrap(),
+        );
+        let corners: Vec<Vec3> = [0.0, 40.0]
+            .into_iter()
+            .flat_map(|y| {
+                [
+                    Vec3::new(0.0, y, 0.0),
+                    Vec3::new(60.0, y, 0.0),
+                    Vec3::new(0.0, y, 20.0),
+                    Vec3::new(52.0, y, 20.0),
+                    Vec3::new(60.0, y, 12.0),
+                ]
+            })
+            .collect();
+        let chamfered = |point: Vec3, normal: Vec3| separates(&corners, point, normal, 1e-7);
+        let (_, planes) = planes_of(top, slant, &chamfered, PARALLEL).unwrap();
+        let through = (Vec3::Z - slant.1).normalized().unwrap();
+        assert_eq!(planes.len(), 1, "{planes:?}");
+        assert!(near(planes[0].1, through), "{planes:?}");
 
         // Two parallel faces, facing apart (the block's left and right)
         // or the same way: the plane midway, along the first's normal.
         let left = (Vec3::new(0.0, 5.0, 5.0), Vec3::ZERO - Vec3::X);
-        let (made, planes) = planes_of(right, left, None).unwrap();
+        let (made, planes) = planes_of(right, left, &block, PARALLEL).unwrap();
         assert_eq!(made, SectionMade::Mid);
         let [(p, n)] = planes.as_slice() else {
             panic!("one plane: {planes:?}");
@@ -2096,15 +2244,17 @@ mod tests {
             "{p:?} {n:?}"
         );
         let ledge = (Vec3::new(20.0, 0.0, 0.0), Vec3::X);
-        let (made, planes) = planes_of(ledge, right, None).unwrap();
+        let (made, planes) = planes_of(ledge, right, &anywhere, PARALLEL).unwrap();
         assert_eq!(made, SectionMade::Mid);
+        assert_eq!(planes.len(), 1);
         assert!((planes[0].0.x - 40.0).abs() < 1e-9);
-        // At every scale, and a slant a billionth off parallel is not.
+        // At every scale.
         for k in [1e-3, 1.0, 1e6] {
             let (made, planes) = planes_of(
                 (Vec3::new(60.0 * k, 0.0, 0.0), Vec3::X),
                 (Vec3::new(0.0, 0.0, 20.0 * k), Vec3::Z),
-                Some((Vec3::ZERO, Vec3::new(60.0 * k, 40.0 * k, 20.0 * k))),
+                &in_box(Vec3::ZERO, Vec3::new(60.0 * k, 40.0 * k, 20.0 * k)),
+                PARALLEL,
             )
             .unwrap();
             assert_eq!(made, SectionMade::Bisector);
@@ -2113,17 +2263,13 @@ mod tests {
                 assert!((on_edge - point).dot(normal).abs() < 1e-9 * k.max(1.0));
             }
         }
-        let tilted = Vec3::new(1.0, 0.0, 1e-6).normalized().unwrap();
-        assert_eq!(
-            planes_of(right, (Vec3::ZERO, tilted), None).unwrap().0,
-            SectionMade::Bisector
-        );
+
         // Faces all but parallel (the review's, 2026-11-17): the +x ends
         // of two blocks, at x = 60 and x = 120, the second turned about z
-        // by a ten-millionth of a degree and by a thousandth, the same way
-        // and apart. Their planes meet far outside the model's box: the
-        // plane midway, by x = 60 or 90, not a bisector out there.
-        let model = Some((Vec3::ZERO, Vec3::new(120.0, 40.0, 20.0)));
+        // by a twenty-millionth of a degree up to a tenth, the same way
+        // and apart: the plane between them, by x = 90 or 60, cutting the
+        // model's box; called midway only within the angular tolerance.
+        let model = in_box(Vec3::ZERO, Vec3::new(120.0, 40.0, 20.0));
         for degrees in [5e-8_f64, 1e-7, 3e-7, 1e-3, 0.1] {
             let t = degrees.to_radians();
             let turned = Vec3::new(t.pcos(), t.psin(), 0.0);
@@ -2131,43 +2277,116 @@ mod tests {
                 ((Vec3::new(60.0, 0.0, 0.0), Vec3::X), 90.0),
                 ((Vec3::new(0.0, 0.0, 0.0), Vec3::ZERO - Vec3::X), 60.0),
             ] {
-                let (made, planes) =
-                    planes_of(first, (Vec3::new(120.0, 10.0, 10.0), turned), model).unwrap();
-                assert_eq!(made, SectionMade::Mid, "{degrees} {first:?}");
+                let (made, planes) = planes_of(
+                    first,
+                    (Vec3::new(120.0, 10.0, 10.0), turned),
+                    &model,
+                    PARALLEL,
+                )
+                .unwrap();
+                let parallel = t <= PARALLEL;
+                assert_eq!(made == SectionMade::Mid, parallel, "{degrees} {first:?}");
                 let (point, normal) = planes[0];
-                assert!(
-                    point.distance(Vec3::new(middle, point.y, point.z)) < 0.2,
-                    "{point:?}"
-                );
+                assert!((point.x - middle).abs() < 0.2, "{degrees}: {point:?}");
                 assert!(normal.x.abs() > 0.99, "{normal:?}");
                 assert!(point.y.abs() < 100.0 && point.z.abs() < 100.0, "{point:?}");
+                assert!(model(point, normal), "{degrees}: it cuts the model");
+                // The other bisector meets far out: not offered.
+                assert_eq!(planes.len(), 1, "{degrees} {first:?}: {planes:?}");
             }
         }
-        // Without the model's box, a sine past PARALLEL is an angle.
-        let turned = Vec3::new(1.0, 1e-8, 0.0).normalized().unwrap();
-        assert_eq!(
-            planes_of(right, (Vec3::new(120.0, 0.0, 0.0), turned), None)
-                .unwrap()
-                .0,
-            SectionMade::Bisector
-        );
+
+        // The review's tray (round three): opposite sides x + t z = 50 and
+        // -x + t z = 50, outward normals (±1, 0, t), the box from
+        // (-50, -50, 0) to (50, 50, 20): whatever the slope, the plane
+        // halving them is x = 0 (a rule by distance gave a plane tilted 14
+        // degrees for sides 28 degrees apart, and flipped at 36.2).
+        let (lo, hi) = (Vec3::new(-50.0, -50.0, 0.0), Vec3::new(50.0, 50.0, 20.0));
+        let tray = in_box(lo, hi);
+        for t in [
+            0.0_f64, 1e-12, 0.05, 0.1, 0.2, 0.25, 0.2638, 0.3, 0.35, 0.5, 1.0,
+        ] {
+            let a = (
+                Vec3::new(50.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, t).normalized().unwrap(),
+            );
+            let b = (
+                Vec3::new(-50.0, 0.0, 0.0),
+                Vec3::new(-1.0, 0.0, t).normalized().unwrap(),
+            );
+            let (made, planes) = planes_of(a, b, &tray, PARALLEL).unwrap();
+            let (point, normal) = planes[0];
+            assert!(near(normal, Vec3::X), "{t}: {normal:?}");
+            assert!(point.x.abs() < 1e-9, "{t}: {point:?}");
+            // Midway only within the angular tolerance: the sine of the
+            // angle between the normals, 2 t / (1 + t²).
+            let sine = 2.0 * t / (1.0 + t * t);
+            assert_eq!(made == SectionMade::Mid, sine <= PARALLEL, "{t}");
+        }
+
+        // Continuity: two faces turned apart from parallel by 30 degrees
+        // down to none, in a thousand steps, facing apart and the same
+        // way: the first plane's normal turns by no more than half the
+        // step, and its point moves by no more than a little, every step.
+        let block = in_box(Vec3::new(-10.0, -60.0, -60.0), Vec3::new(70.0, 60.0, 60.0));
+        for (start, sign) in [
+            (Vec3::new(0.0, 0.0, 0.0), -1.0),
+            (Vec3::new(20.0, 0.0, 0.0), 1.0),
+        ] {
+            let mut last: Option<(Vec3, Vec3)> = None;
+            let steps = 1000;
+            for k in (0..=steps).rev() {
+                let t = (30.0_f64 * f64::from(k) / f64::from(steps)).to_radians();
+                let m = Vec3::new(t.pcos(), t.psin(), 0.0);
+                let (_, planes) = planes_of(
+                    (start, Vec3::X * sign),
+                    (Vec3::new(60.0, 5.0, 0.0), m),
+                    &block,
+                    PARALLEL,
+                )
+                .unwrap();
+                let (point, normal) = planes[0];
+                if let Some((p0, n0)) = last {
+                    let turned = n0.dot(normal).clamp(-1.0, 1.0).pacos();
+                    let step = (30.0_f64 / f64::from(steps)).to_radians();
+                    assert!(turned <= 0.5 * step + 1e-9, "{k}: turned {turned}");
+                    assert!(point.distance(p0) < 1.0, "{k}: {p0:?} to {point:?}");
+                }
+                last = Some((point, normal));
+            }
+            // At none, the plane midway.
+            let (point, normal) = last.unwrap();
+            assert!(near(normal, Vec3::X) || near(normal, Vec3::ZERO - Vec3::X));
+            assert!((point.x - (start.x + 60.0) * 0.5).abs() < 1e-9, "{point:?}");
+        }
+
         // A real angle whose planes meet just outside the box (a frustum's
         // two sides, meeting 15 above its top) keeps its bisector.
         let side = Vec3::new(1.0, 0.0, 1.0).normalized().unwrap();
         let other = Vec3::new(-1.0, 0.0, 1.0).normalized().unwrap();
-        let (made, _) = planes_of(
+        let (made, planes) = planes_of(
             (Vec3::new(55.0, 0.0, 10.0), side),
             (Vec3::new(5.0, 0.0, 10.0), other),
-            Some((Vec3::ZERO, Vec3::new(60.0, 40.0, 20.0))),
+            &in_box(Vec3::ZERO, Vec3::new(60.0, 40.0, 20.0)),
+            PARALLEL,
         )
         .unwrap();
         assert_eq!(made, SectionMade::Bisector);
+        assert!(near(planes[0].1, Vec3::X), "{planes:?}");
         // Numbers that are not numbers: none.
         assert_eq!(
-            planes_of((Vec3::new(f64::NAN, 0.0, 0.0), Vec3::X), top, None),
+            planes_of(
+                (Vec3::new(f64::NAN, 0.0, 0.0), Vec3::X),
+                top,
+                &anywhere,
+                PARALLEL
+            ),
             None
         );
-        assert_eq!(planes_of(right, (Vec3::ZERO, Vec3::ZERO), None), None);
+        assert_eq!(
+            planes_of(right, (Vec3::ZERO, Vec3::ZERO), &anywhere, PARALLEL),
+            None
+        );
     }
 
     #[test]
@@ -2211,7 +2430,7 @@ mod tests {
         let bisectors = face(SectionMade::Bisector, vec![through, other]);
         assert_eq!(
             bisectors.words(&section),
-            "Halving the angle of the two faces, through the material"
+            "Halving the angle of the two faces"
         );
         choose_plane(&mut section, &bisectors);
         assert_eq!(section.normal, Some(through.1));
@@ -2240,5 +2459,31 @@ mod tests {
             section.clone().validated().unwrap().made,
             Some(SectionMade::Bisector)
         );
+    }
+
+    /// Every way the engine says a face is not in the scene reads in the
+    /// window's words (the review of 2026-11-17, round four: a hidden
+    /// body's face got the engine's own).
+    #[test]
+    fn a_face_out_of_the_view_is_refused_in_the_windows_words() {
+        for engine in [
+            "there is no body of a feature `F3`; the bodies: `Second`",
+            "no body has a face F1:face(1) (document.inspect lists the faceNames of every body)",
+            "`Block` has no face F1:face(9) (document.inspect lists its faceNames)",
+            "face F1:face(1) has no area in the picture's mesh, so it gives no plane",
+        ] {
+            let said = in_window_words(engine.to_string());
+            assert!(
+                said.starts_with("Its body is not in the view"),
+                "{engine}: {said}"
+            );
+        }
+        assert!(
+            in_window_words(
+                "face F1:face(6) is not flat; a section lies on a base plane".to_string()
+            )
+            .starts_with("Not a flat face")
+        );
+        assert_eq!(in_window_words("odd".to_string()), "odd");
     }
 }

@@ -587,6 +587,133 @@ pub(crate) fn edge(
     Ok(Some(current))
 }
 
+/// The copies the taker `taker` made of the vertex `name`: the instances
+/// `k` for which a vertex of `names` answers to `taker:copy(k)/name`.
+fn vertex_copies(names: &Names, taker: FeatureId, name: &PersistentName) -> BTreeSet<u64> {
+    let mut out = BTreeSet::new();
+    for vertex in 0..names.vertex_count() {
+        for own in names.vertex_names_of(vertex) {
+            if own.feature != taker || own.role != NameRole::Copy {
+                continue;
+            }
+            if let Some(&k) = own.sources.first()
+                && own == PersistentName::copy(taker, k, name.clone())
+            {
+                out.insert(k);
+            }
+        }
+    }
+    out
+}
+
+/// The name, in the newest body of its chain, of the vertex `name` of an
+/// earlier body (where a fillet fades: `fade.i.at`), followed through
+/// every feature that took the body to the vertex that answers to the
+/// copy of its name (`T:copy(k)/name`: a body of copies, or a vertex a
+/// primitive or a sweep named that the taker kept). A vertex named by its
+/// faces has no such copy in a body that names its vertices by its faces
+/// (a boolean's, a blend's): following it fails (a fillet then says why
+/// that is no vertex of its body: `crate::fillet`). `None` when that body is its own
+/// still.
+pub(crate) fn vertex(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    name: &PersistentName,
+    role: &str,
+) -> Result<Option<PersistentName>, String> {
+    let takers = chain(earlier, name.feature);
+    if takers.is_empty() || !name.is_vertex() {
+        return Ok(None);
+    }
+    let start = called(doc, name.feature);
+    if let Some(names) = earlier
+        .iter()
+        .find(|r| r.id == name.feature)
+        .and_then(|r| r.names.as_ref())
+        && names.has_entities()
+        && names.vertex_named(name).is_none()
+    {
+        return Err(format!(
+            "{role}: `{start}` has no vertex {name}; document.edges lists its vertices"
+        ));
+    }
+    let mut current = name.clone();
+    let mut from = start;
+    for _ in 0..earlier.len() {
+        let Some(taker) = earlier
+            .iter()
+            .find(|r| r.id == current.feature)
+            .and_then(|r| r.consumed_by)
+        else {
+            break;
+        };
+        let by = called(doc, taker);
+        let kind = doc.feature(taker).map_or("feature", |f| f.kind.type_name());
+        let Some(names) = earlier
+            .iter()
+            .find(|r| r.id == taker)
+            .and_then(|r| r.names.as_ref())
+        else {
+            return Err(format!(
+                "{role}: the body of `{from}` went into `{by}`, a {kind} that does not name its vertices, so {name} cannot be followed there"
+            ));
+        };
+        let found = vertex_copies(names, taker, &current);
+        match found.iter().copied().collect::<Vec<_>>().as_slice() {
+            [k] => {
+                from = by;
+                current = PersistentName::copy(taker, *k, current);
+            }
+            [] => {
+                return Err(format!(
+                    "{role}: the vertex {name} of `{from}` cannot be followed into `{by}`, a {kind} the body went into: no vertex there answers to it"
+                ));
+            }
+            several => {
+                let all: Vec<String> = several
+                    .iter()
+                    .map(|&k| PersistentName::copy(taker, k, current.clone()).to_string())
+                    .collect();
+                return Err(format!(
+                    "{role}: the vertex {name} is more than one vertex after `{by}`, a {kind} the body of `{from}` went into: {}; give one of these names",
+                    all.join(", ")
+                ));
+            }
+        }
+    }
+    Ok(Some(current))
+}
+
+/// The vertices where a fillet fades (`fade.i.at`), each followed to the
+/// newest body of its chain; `true` when one changed. A vertex name with
+/// anything not proven to identify its entity is refused as an edge's
+/// own name is ([`refs`]): an edit could move the fade to another end.
+fn fades(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    list: &mut [craft3d_doc::FilletFade],
+) -> Result<bool, String> {
+    let mut changed = false;
+    for (index, fade) in list.iter_mut().enumerate() {
+        let role = format!("fade.{index}.at");
+        if let Some(why) = identity::unproven(doc, &fade.at) {
+            return Err(format!(
+                "{role}: {}; a fillet does not fade at it: give the vertex by a name that is proven (document.edges lists the vertices of a body), or leave the fade out",
+                why.reason(doc, &fade.at)
+            ));
+        }
+        // Where it cannot be followed, it stays as given, and building the
+        // fillet says why it is no vertex of the body (with the ends a
+        // fade does take there: `crate::fillet`), never offering a name
+        // that is then refused.
+        if let Ok(Some(followed)) = vertex(doc, earlier, &fade.at, &role) {
+            fade.at = followed;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
 /// A plate's faces, the edges of its joints and their neighbours' faces,
 /// each followed to the newest body of its chain.
 fn plate(
@@ -754,14 +881,24 @@ pub(crate) fn edge_bodies(
     earlier: &[FeatureResult],
     feature: &Feature,
 ) -> Vec<FeatureId> {
+    // (The vertices where a fillet fades are followed by the names of
+    // the vertices of the same bodies.)
     let edges: Vec<&PersistentName> = match &feature.kind {
         FeatureKind::Chamfer(c) => c.edges.iter().map(EdgeRef::lead).collect(),
-        FeatureKind::Fillet(f) => f.edges.iter().map(EdgeRef::lead).collect(),
+        FeatureKind::Fillet(f) => f
+            .edges
+            .iter()
+            .map(EdgeRef::lead)
+            .chain(f.fade.iter().map(|fade| &fade.at))
+            .collect(),
         FeatureKind::Plate(p) => p.joints.iter().map(|j| &j.edge).collect(),
         _ => return Vec::new(),
     };
     let mut out: BTreeSet<FeatureId> = BTreeSet::new();
-    for name in edges.into_iter().filter(|name| name.is_edge()) {
+    for name in edges
+        .into_iter()
+        .filter(|name| name.is_edge() || name.is_vertex())
+    {
         for id in edge_way(doc, earlier, name) {
             let dropped = earlier
                 .iter()
@@ -845,7 +982,10 @@ pub(crate) fn feature(
     let pruned = prune(doc, earlier, &mut kind);
     let changed = match &mut kind {
         FeatureKind::Chamfer(chamfer) => refs(doc, earlier, &mut chamfer.edges, "chamfer")?,
-        FeatureKind::Fillet(fillet) => refs(doc, earlier, &mut fillet.edges, "fillet")?,
+        FeatureKind::Fillet(fillet) => {
+            let edges = refs(doc, earlier, &mut fillet.edges, "fillet")?;
+            fades(doc, earlier, &mut fillet.fade)? || edges
+        }
         FeatureKind::OffsetFace(offset) => faces(doc, earlier, &mut offset.faces, "faces")?,
         FeatureKind::MoveFace(moving) => faces(doc, earlier, &mut moving.faces, "faces")?,
         FeatureKind::Thicken(layer) => faces(doc, earlier, &mut layer.faces, "faces")?,

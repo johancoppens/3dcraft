@@ -226,6 +226,14 @@ fn adversarial() -> Vec<Value> {
         json!([["F7:lateralEdge(e5,e6)", "F7:lateralEdge(e6,e7)"]]),
         json!(["F7:lateralEdge(e5,e6)", ["F7:side(e5)", "F7:side(e6)"]]),
         json!(["F99:edge(0)", "F0:edge(18446744073709551615)"]),
+        // Fades of a fillet, as `fade` takes them: at a vertex of the
+        // plate, at no vertex, with lengths that are not lengths, twice
+        // at one end.
+        json!([{"at": "F1:vertex(4)", "over": 5}]),
+        json!([{"at": "F1:vertex(4)", "over": "width / 0", "back": "-1 mm"}]),
+        json!([{"at": "F7:side(e5)", "over": 1e308, "back": 5e-324}]),
+        json!([{"at": "F1:vertex(0)", "over": 1}, {"at": "F1:vertex(0)", "over": 1}]),
+        json!([{"at": "F99:vertex(0)", "over": "nope"}, {"over": 1}, 7]),
         json!("e5[99]"),
         json!("e5[-1]"),
         json!("e5[last"),
@@ -532,6 +540,26 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
             );
             run("assembly.pack", json!({}));
         }
+        // A fillet that fades (docs/design/blends.md › *A fillet that
+        // fades, as a command*), in a state of its own: in the healthy
+        // part every case would rebuild it (the review measured the hunt
+        // there 21 → 51 s, its peak 2.6 → 5.2 GB). A block's upright edge
+        // rounded 3 mm, fading over 15 mm to a point 2 mm short of its top
+        // vertex, and the same block's other upright edge fading at its
+        // foot; the tip's vertex, the edge beyond it and the fillet face
+        // all there to be named.
+        5 => {
+            run("file.new", json!({}));
+            run(
+                "feature.block",
+                json!({"name": "Box", "size": [40, 30, 40]}),
+            );
+            run(
+                "feature.fillet",
+                json!({"name": "Faded", "edges": ["Box:edge(9)", "Box:edge(11)"], "radius": 3,
+                       "fade": [{"at": "Box:vertex(4)", "over": 15, "back": 2}, {"at": "Box:vertex(3)", "over": 10}]}),
+            );
+        }
         // A document full of things that fail: bad formulas, a cycle, a
         // suppressed and a rolled-back feature, undo and redo stacks.
         _ => {
@@ -627,7 +655,7 @@ fn no_command_panics_on_adversarial_parameters() {
     let dir = workdir("hunt");
     let values = adversarial();
     let commands = Session::commands();
-    let templates: Vec<Session> = (0..5).map(|state| session(&dir, state)).collect();
+    let templates: Vec<Session> = (0..6).map(|state| session(&dir, state)).collect();
     let seed = seed_recovery(&dir);
     // One case per command, state and adversarial value: the value as the
     // params itself, under each parameter, under all of them at once, and
@@ -637,7 +665,7 @@ fn no_command_panics_on_adversarial_parameters() {
     let mut light = Vec::new();
     let mut heavy = Vec::new();
     for (c, spec) in commands.iter().enumerate() {
-        for state in 0..5 {
+        for state in 0..6 {
             for v in 0..values.len() {
                 if HEAVY.contains(&spec.id) {
                     heavy.push((c, state, v));
@@ -709,6 +737,7 @@ fn no_command_panics_on_adversarial_parameters() {
             ("path", json!("hunt.stl")),
             ("size", json!([1, 2, 3])),
             ("radius", json!(1)),
+            ("fade", json!([{"at": "F1:vertex(4)", "over": 5}])),
             ("major", json!(5)),
             ("axis", json!([0, 0, 1])),
             ("id", json!(SEED_ID)),

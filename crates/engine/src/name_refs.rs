@@ -102,10 +102,47 @@ pub fn resolve(doc: &Document, keys: &[&str], params: &Value) -> Result<Resolved
     Ok(resolved)
 }
 
+/// Where a string lies in a parameter: its path (`fade.0.at`), and
+/// whether the way to it went into an object, where the parameter alone
+/// does not say which field it is.
+struct Place {
+    path: String,
+    in_object: bool,
+}
+
+impl Place {
+    /// The parameter as a reason names it: the path once the way went
+    /// into an object (`fade.0.at`), else the parameter (`edges`).
+    fn shown<'a>(&'a self, key: &'a str) -> &'a str {
+        if self.in_object {
+            self.path.as_str()
+        } else {
+            key
+        }
+    }
+}
+
 /// Rewrites the names in `value`; true when one changed.
 fn walk(
     doc: &Document,
     key: &str,
+    value: &mut Value,
+    depth: usize,
+    budget: &mut usize,
+    rewritten: &mut Vec<(String, String)>,
+) -> Result<bool, String> {
+    let place = Place {
+        path: key.to_string(),
+        in_object: false,
+    };
+    walk_at(doc, key, &place, value, depth, budget, rewritten)
+}
+
+/// [`walk`] at `place` in the parameter `key`.
+fn walk_at(
+    doc: &Document,
+    key: &str,
+    place: &Place,
     value: &mut Value,
     depth: usize,
     budget: &mut usize,
@@ -128,21 +165,29 @@ fn walk(
                 Ok(None) => Ok(false),
                 Err(reason) => {
                     let shown: String = text.chars().take(60).collect();
-                    Err(format!("`{key}`: `{shown}`: {reason}"))
+                    Err(format!("`{}`: `{shown}`: {reason}", place.shown(key)))
                 }
             }
         }
         Value::Array(items) => {
             let mut changed = false;
-            for item in items {
-                changed |= walk(doc, key, item, depth + 1, budget, rewritten)?;
+            for (index, item) in items.iter_mut().enumerate() {
+                let inner = Place {
+                    path: format!("{}.{index}", place.path),
+                    in_object: place.in_object,
+                };
+                changed |= walk_at(doc, key, &inner, item, depth + 1, budget, rewritten)?;
             }
             Ok(changed)
         }
         Value::Object(map) => {
             let mut changed = false;
-            for item in map.values_mut() {
-                changed |= walk(doc, key, item, depth + 1, budget, rewritten)?;
+            for (field, item) in map.iter_mut() {
+                let inner = Place {
+                    path: format!("{}.{field}", place.path),
+                    in_object: true,
+                };
+                changed |= walk_at(doc, key, &inner, item, depth + 1, budget, rewritten)?;
             }
             Ok(changed)
         }

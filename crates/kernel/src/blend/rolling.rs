@@ -49,6 +49,13 @@
 //! cubic through them, and the blend face is the ring between its two
 //! borders.
 //!
+//! **A radius that varies along the edge** ([`super::law`]): the ball in
+//! the plane at a point of the edge has the radius the law gives there,
+//! by the edge's length. The face is the arcs between the feet of those
+//! balls, which is not their envelope, so its normal across a section is
+//! had from the derivative of the section along the edge ([`slope`]). Built
+//! along an open edge on its own.
+//!
 //! **Chains and meets.** Edges that go on smoothly into each other are
 //! blended as one chain, and two fillets that end in one vertex at an
 //! angle meet there: see [`chain`].
@@ -69,7 +76,7 @@
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
-use super::{BlendError, Blended, Face, Reason, Request, Size, lost, refused};
+use super::{BlendError, Blended, Face, Reason, Request, Size, law, lost, refused};
 use crate::KernelError;
 use crate::chamfer::ChamferSize;
 use crate::shared::curve_through;
@@ -87,6 +94,7 @@ mod cross;
 mod exact;
 pub(crate) mod rebuild;
 mod shown;
+mod slope;
 mod used_up;
 
 /// How many times a step between two sections may be halved to follow
@@ -98,6 +106,13 @@ const MAX_SAMPLES: usize = 4096;
 /// Passes of the refinement: each halves the steps where the surface
 /// does not hold.
 const PASSES: usize = 16;
+/// Passes of the refinement of a fillet whose radius varies along its
+/// edge. Where its law joins its continuation past an end of the edge the
+/// third derivative of the radius jumps, and the steps there are halved
+/// many times over, each pass leaving the next step over its bound by a
+/// little (a fade from 3 to 1 over 3 was still 1.04 times over after 16
+/// passes, with 192 samples).
+const LAW_PASSES: usize = 48;
 /// Steps of the search for one ball, and of the search for a nearest point.
 const BALL_STEPS: usize = 100;
 const FOOT_STEPS: usize = 60;
@@ -268,6 +283,12 @@ struct Section {
     feet: [Vec3; 2],
     params: [(f64, f64); 2],
     centre: Option<Vec3>,
+    /// A section drawn into a point (the tip of a fillet whose radius
+    /// runs to nothing there): both feet and the centre are that point,
+    /// and this is the weight of the arc's middle control point in the
+    /// limit, the cosine of half the angle between the directions from
+    /// the centre to the feet.
+    pole: Option<f64>,
 }
 
 impl Section {
@@ -278,6 +299,9 @@ impl Section {
         let Some(c) = self.centre else {
             return Some(vec![(q1, 1.0), (q2, 1.0)]);
         };
+        if let Some(weight) = self.pole {
+            return Some(vec![(q1, 1.0), (c, weight), (q2, 1.0)]);
+        }
         let (a, b) = (q1 - c, q2 - c);
         let r = a.length();
         let cosine = (a.dot(b) / (r * b.length())).clamp(-1.0, 1.0);
@@ -341,6 +365,10 @@ struct Solver<'a> {
     /// between offsets ([`rebuild`]) is settled at a hundredth of the
     /// tolerance, a twenty-fifth of the share its surface is held to.
     settle: f64,
+    /// A fillet whose radius varies along the edge ([`law`]): the ball in
+    /// the plane at `s` has the radius the law gives there. `None`: the
+    /// shape's own radius all along.
+    law: Option<&'a law::Along<'a>>,
 }
 
 impl Solver<'_> {
@@ -353,8 +381,23 @@ impl Solver<'_> {
         crate::work::blend_section();
         let across = self.spine.at(s)?;
         match self.shape {
-            Shape::Ball { radius, convex } => self.ball(across, near, radius, convex),
+            Shape::Ball { radius, convex } => match self.law {
+                Some(law) => {
+                    let radius = law.radius(s)?;
+                    self.ball(across, &resized(near, across, radius)?, radius, convex)
+                }
+                None => self.ball(across, near, radius, convex),
+            },
             Shape::Cut { distances } => self.cut(across, near, distances),
+        }
+    }
+
+    /// The size of the blend in the plane at `s`: the radius a law gives
+    /// there, or the shape's own.
+    fn size_at(&self, s: f64) -> Option<f64> {
+        match self.law {
+            Some(law) => law.radius(s),
+            None => Some(self.shape.size()),
         }
     }
 
@@ -442,6 +485,7 @@ impl Solver<'_> {
             feet,
             params,
             centre: Some(centre),
+            pole: None,
         })
     }
 
@@ -494,8 +538,31 @@ impl Solver<'_> {
             feet,
             params,
             centre: None,
+            pole: None,
         })
     }
+}
+
+/// `near`, a ball of another radius in a plane nearby, as the start of
+/// the search for the ball of `radius` in the plane `across`: its centre
+/// moved into that plane and then towards or away from the plane's point
+/// on the edge in the ratio of the radii. The ball between two faces
+/// grows from the edge in proportion to its radius (exactly so between
+/// planes), so a start a whole radius off, which the search would have to
+/// make up in steps of half a radius, becomes one a small part of the
+/// radius off, however fast the radius changes along the edge.
+fn resized(near: &Section, across: Across, radius: f64) -> Option<Section> {
+    let centre = near.centre?;
+    let was = centre.distance(*near.feet.first()?);
+    let ratio = radius / was;
+    if !(ratio.is_finite() && ratio > 0.0) {
+        return None;
+    }
+    let in_plane = centre - across.normal * (centre - across.point).dot(across.normal);
+    Some(Section {
+        centre: Some(across.point + (in_plane - across.point) * ratio),
+        ..*near
+    })
 }
 
 /// The solution of the three linear equations `rows[i] · x = rhs[i]`.
@@ -528,6 +595,16 @@ fn surface_through(params: &[f64], sections: &[Section]) -> Option<NurbsSurface>
             }
             ctrl.push(Vec3::new(x, y, z) * (1.0 / weight));
             weights.push(weight);
+        }
+    }
+    // A section drawn into a point is the first or the last row, and that
+    // row is the point itself to the last bit (the weighted point over
+    // its weight is not).
+    for (index, section) in [(0, sections.first()?), (count_u - 1, sections.last()?)] {
+        if let (Some(_), Some(point)) = (section.pole, section.centre) {
+            for slot in ctrl.iter_mut().skip(index * across).take(across) {
+                *slot = point;
+            }
         }
     }
     let degree_v = across - 1;
@@ -794,7 +871,11 @@ fn refine(
         SurfaceBound::new(solver.sides[0].surface)?,
         SurfaceBound::new(solver.sides[1].surface)?,
     ];
-    for _ in 0..PASSES {
+    let passes = match solver.law {
+        Some(_) => LAW_PASSES,
+        None => PASSES,
+    };
+    for _ in 0..passes {
         let surface = if closed {
             ring_surface(params, sections)?
         } else {
@@ -816,7 +897,13 @@ fn refine(
                 None if closed => first + 1.0,
                 None => return None,
             };
-            let near = sections.get(index)?;
+            let first = sections.get(index)?;
+            // From a section drawn into a point no ball is started: from
+            // the one after it.
+            let near = match first.pole {
+                Some(_) => sections.get(index + 1)?,
+                None => first,
+            };
             let s = 0.5 * (a + b);
             let exact = solver.section(s, near)?;
             let mut worst = 0.0_f64;
@@ -841,15 +928,28 @@ fn refine(
                 // the first and the last sample of an open face (where
                 // the next face of a chain goes on from it, and has to be
                 // tangent).
-                kink = kink.max(radial_kink(&surface, s, &exact)?);
-                if !closed && index == 0 {
-                    kink = kink.max(radial_kink(&surface, a, near)?);
+                kink = kink.max(solver.kink_across(&surface, s, &exact)?);
+                // (A face has no normal at a section drawn into a point.)
+                if !closed && index == 0 && first.pole.is_none() {
+                    kink = kink.max(solver.kink_across(&surface, a, first)?);
                 }
                 if !closed && index + 1 == pairs {
                     let last = sections.get(index + 1)?;
-                    kink = kink.max(radial_kink(&surface, b, last)?);
+                    if last.pole.is_none() {
+                        kink = kink.max(solver.kink_across(&surface, b, last)?);
+                    }
                 }
             }
+            // A radius that varies: the normals are asked as closely as
+            // the linear tolerance makes over the radius here, not over
+            // the largest (`limit` is a quarter of the tolerance). Towards
+            // a tip that bound grows with the tolerance over the radius:
+            // a face within the tolerance of the arcs may lean by that
+            // much, and no closer is asked.
+            let bend = match solver.law {
+                Some(law) => bend.max(4.0 * limit / law.radius(s)?),
+                None => bend,
+            };
             // How far over its bound the worse of the two is (NaN: over).
             let over = (worst / limit).max(kink / bend);
             middles.push((
@@ -1178,8 +1278,22 @@ fn blend_one(
         // A ring whose vertex other edges share (a seam through it).
         return Err(refuse(edge, None, Reason::FreeClosed));
     }
+    // A radius that varies along the edge: the law by the edge's length,
+    // and the shape by its largest radius (what the steps, the scale and
+    // the bounds of the refinement are taken from).
+    let along = match request.size {
+        Size::Law(law) => Some(law::Along::new(law, edge, &data.curve, data.range, tol)?),
+        _ => None,
+    };
+    if along.is_some() && closed {
+        return Err(refuse(edge, None, Reason::LawAlone));
+    }
     let shape = match request.size {
         Size::Radius(radius) => Shape::Ball { radius, convex },
+        Size::Law(law) => Shape::Ball {
+            radius: law.largest(),
+            convex,
+        },
         Size::Chamfer(ChamferSize::Distances { first, second }) => Shape::Cut {
             distances: [first, second],
         },
@@ -1202,9 +1316,19 @@ fn blend_one(
         scale,
         moved: None,
         settle: 0.0,
+        law: along.as_ref(),
     };
     let unsolvable = || refuse(edge, None, Reason::FreeSurface);
-    let seed = first_section(&solver, 0.5, into, edge)?;
+    // The middle of what the blend runs along: of the edge, or of its
+    // part between the tips of a fillet that ends in points.
+    let middle = match &along {
+        Some(law) => {
+            let (from, to) = law.span();
+            0.5 * (from + to)
+        }
+        None => 0.5,
+    };
+    let seed = first_section(&solver, middle, into, edge)?;
     if closed {
         let (surface, params, sections) = ring(&solver, seed, &data, tolerance)
             .ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?;
@@ -1228,14 +1352,24 @@ fn blend_one(
             &[(edge, first), (second_border, second)],
             blend_face,
             shape,
+            None,
             tolerance,
         )?;
         return Ok(blend_face);
     }
     let end_bound = bend(tolerance, shape.size());
+    // An end where the fillet closes in a point is no end against a third
+    // face: nothing is asked of its vertex.
+    let tip = |end: usize| along.as_ref().and_then(|law| law.tip(end));
     let mut ends = [
-        end_at(body, edge, [first, second], data.start, end_bound)?,
-        end_at(body, edge, [first, second], data.end, end_bound)?,
+        match tip(0) {
+            Some(_) => None,
+            None => Some(end_at(body, edge, [first, second], data.start, end_bound)?),
+        },
+        match tip(1) {
+            Some(_) => None,
+            None => Some(end_at(body, edge, [first, second], data.end, end_bound)?),
+        },
     ];
     // Smooth edges of the faces beside the edge that the borders cross.
     let crossings = cross::find(
@@ -1246,15 +1380,24 @@ fn blend_one(
             faces: [first, second],
             sides,
             shape,
+            law: along.as_ref(),
             ends: &ends,
             into,
             tol,
         },
         tolerance,
     )?;
+    // Carried across a smooth edge the ball rolls on other faces: not yet
+    // with a radius that varies.
+    if along.is_some()
+        && let Some(crossing) = crossings.first()
+    {
+        return Err(refuse(edge, Some(crossing.before), Reason::LawAlone));
+    }
     for c in &crossings {
         for (j, end) in ends.iter_mut().enumerate() {
             if (c.at.is_none() || c.end == j)
+                && let Some(end) = end
                 && let Some(slot) = end.across.get_mut(c.side)
             {
                 *slot = Some(c.smooth);
@@ -1262,7 +1405,18 @@ fn blend_one(
         }
     }
     let built = blend_open(
-        body, one, into, convex, shape, scale, &data, ends, &crossings, seed, tolerance,
+        body,
+        one,
+        into,
+        convex,
+        shape,
+        along.as_ref(),
+        scale,
+        &data,
+        ends,
+        &crossings,
+        (middle, seed),
+        tolerance,
     );
     if crossings.is_empty() {
         return built;
@@ -1308,11 +1462,12 @@ fn blend_open(
     into: [Vec3; 2],
     convex: bool,
     shape: Shape,
+    law: Option<&law::Along<'_>>,
     scale: f64,
     data: &Edge,
-    ends: [End; 2],
+    ends: [Option<End>; 2],
     crossings: &[cross::Crossing],
-    seed: Section,
+    (centre, seed): (f64, Section),
     tolerance: &Tolerance,
 ) -> Result<FaceId, BlendError> {
     let tol = tolerance.linear;
@@ -1360,11 +1515,12 @@ fn blend_open(
             scale,
             moved: None,
             settle: 0.0,
+            law,
         });
     }
     let home = bounds
         .windows(2)
-        .position(|w| matches!(w, [lo, hi] if *lo <= 0.5 && 0.5 < *hi))
+        .position(|w| matches!(w, [lo, hi] if *lo <= centre && centre < *hi))
         .ok_or_else(lost)?;
     // The seed holds where the middle of the blend touches the edge's own
     // faces; past a switch at the middle it is found against the faces
@@ -1372,12 +1528,15 @@ fn blend_open(
     let seed = if pieces.get(home) == Some(&faces) {
         seed
     } else {
-        first_section(solvers.get(home).ok_or_else(lost)?, 0.5, into, edge)?
+        first_section(solvers.get(home).ok_or_else(lost)?, centre, into, edge)?
     };
-    // One piece: the sections may be the seed moved.
-    if let [only] = solvers.as_mut_slice() {
+    // One piece: the sections may be the seed moved, where the radius is
+    // the same all along.
+    if let [only] = solvers.as_mut_slice()
+        && law.is_none()
+    {
         let motion = exact::motion(&only.spine, only.sides);
-        only.moved = motion.and_then(|m| exact::Moved::new(m, &only.spine, seed, 0.5));
+        only.moved = motion.and_then(|m| exact::Moved::new(m, &only.spine, seed, centre));
     }
     let length = edge_length(data);
     if !(length > 0.0) {
@@ -1385,21 +1544,90 @@ fn blend_open(
     }
     let size = shape.size();
     let steps = Steps::of(size, length);
-    let thirds: Vec<Side<'_>> = ends
+    let thirds: Vec<Option<Side<'_>>> = ends
         .iter()
-        .map(|end| end.side(body))
+        .map(|end| end.as_ref().map(|end| end.side(body)).transpose())
         .collect::<Result<_, _>>()?;
+    // Where the fillet closes in a point: the vertex of the edge there,
+    // or, short of it, a point of the edge.
+    let mut tips: [Option<Tip>; 2] = [None, None];
+    for (index, slot) in tips.iter_mut().enumerate() {
+        let Some(at) = law.and_then(|law| law.tip(index)) else {
+            continue;
+        };
+        let vertex = if index == 0 { data.start } else { data.end };
+        let (point, vertex) = if at == index as f64 {
+            (body.vertex(vertex).ok_or_else(lost)?.point, Some(vertex))
+        } else {
+            let (t0, t1) = data.range;
+            (data.curve.eval(t0 + at * (t1 - t0)), None)
+        };
+        *slot = Some(Tip { at, point, vertex });
+    }
     // Sections from the middle outwards, each from its neighbour, across
     // the switches: the section at a switch, found against the faces
     // before it, is the ball that touches the faces after it too.
-    let mut tagged: Vec<(f64, usize, Section)> = vec![(0.5, home, seed)];
+    let mut tagged: Vec<(f64, usize, Section)> = vec![(centre, home, seed)];
     let mut reach = [0.0_f64; 2];
     for (index, end) in [(0_usize, 0.0_f64), (1, 1.0)] {
-        let end_data = ends.get(index).ok_or_else(lost)?;
-        let third = *thirds.get(index).ok_or_else(lost)?;
+        // To a tip: sections up to it, and the point itself.
+        if let Some(tip) = tips.get(index).ok_or_else(lost)? {
+            let solver = solvers.get(home).ok_or_else(lost)?;
+            // Where no ball is found on the way, or none at the point, the
+            // last place one was found and how far short of the point.
+            let no_ball = |reached: Option<f64>| {
+                let (t0, t1) = data.range;
+                let before = reached.zip(law).and_then(|(reached, law)| {
+                    let before = (law.length_to(tip.at)? - law.length_to(reached)?).abs();
+                    before.is_finite().then_some((reached, before))
+                });
+                match before {
+                    Some((reached, before)) => BlendError::Fade {
+                        edge,
+                        fault: law::FadeFault::NoBall {
+                            at: data.curve.eval(t0 + reached * (t1 - t0)),
+                            before,
+                        },
+                    },
+                    None => unsolvable(),
+                }
+            };
+            let more =
+                march_short_of(solver, (centre, seed), tip.at, steps.inside).map_err(no_ball)?;
+            let (reached, last) = more.last().copied().unwrap_or((centre, seed));
+            tagged.extend(more.into_iter().map(|(s, x)| (s, home, x)));
+            let pole = solver
+                .pole(tip.point, &last)
+                .ok_or_else(|| no_ball(Some(reached)))?;
+            tagged.push((tip.at, home, pole));
+            continue;
+        }
+        let (Some(end_data), Some(third)) = (
+            ends.get(index).ok_or_else(lost)?,
+            *thirds.get(index).ok_or_else(lost)?,
+        ) else {
+            return Err(lost());
+        };
+        // A radius that varies: to the end itself in even steps, and past
+        // it in steps that start at a twentieth of the radius there and
+        // double (how far at most by that radius: what the blend has to
+        // get past the third face is as wide as its ball at that end).
+        let steps = match law {
+            Some(law) => {
+                let relative = law.at_end(index) / length;
+                steps.past(relative, (0.05 * relative).max(4.0 * tol / length))
+            }
+            None => steps,
+        };
         let allowed = end_data.steps(steps);
         let mut piece = home;
-        let mut at = (0.5, seed);
+        let mut at = (centre, seed);
+        if law.is_some() {
+            let solver = solvers.get(home).ok_or_else(lost)?;
+            let more = march_to(solver, at, end, steps.inside).ok_or_else(unsolvable)?;
+            at = *more.last().ok_or_else(lost)?;
+            tagged.extend(more.into_iter().map(|(s, x)| (s, home, x)));
+        }
         loop {
             let (next, bound) = if index == 1 {
                 (piece + 1, bounds.get(piece + 1))
@@ -1481,8 +1709,13 @@ fn blend_open(
                 .max_by(|a, b| a.1.total_cmp(&b.1));
             let (at, _) = widest.ok_or_else(lost)?;
             let (a, near) = *mine.get(at).ok_or_else(lost)?;
-            let b = mine.get(at + 1).ok_or_else(lost)?.0;
+            let (b, after) = *mine.get(at + 1).ok_or_else(lost)?;
             let middle = 0.5 * (a + b);
+            // (No ball is started from a section drawn into a point.)
+            let (a, near) = match near.pole {
+                Some(_) => (b, after),
+                None => (a, near),
+            };
             let found = solver
                 .follow(a, &near, middle, FOLLOW_DEPTH)
                 .ok_or_else(unsolvable)?;
@@ -1503,8 +1736,20 @@ fn blend_open(
                 surface_through(&[*p0, *p1], &[*c0, *c1])
             }
             None => refine(solver, &mut params, &mut sections, limit, bend, false),
-        }
-        .ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?;
+        };
+        let Some(surface) = surface else {
+            // A radius that varies and a face that cannot be made: said
+            // with the place, where it is the face turning back on itself
+            // that stands in the way (the sections refined so far show
+            // it).
+            if law.is_some()
+                && index == home
+                && let Some(fault) = turned_back(solver, data, &params, &sections, centre)
+            {
+                return Err(BlendError::Fade { edge, fault });
+            }
+            return Err(refuse(edge, None, Reason::FreeApproximation));
+        };
         parts.push(surface);
         for (s, x) in params.into_iter().zip(sections) {
             if all.last().is_none_or(|l| l.0 < s) {
@@ -1518,9 +1763,13 @@ fn blend_open(
     };
     let mut cuts = Vec::with_capacity(2);
     for (index, end) in ends.iter().enumerate() {
-        let third = *thirds.get(index).ok_or_else(lost)?;
+        let (Some(end), Some(third)) = (end, *thirds.get(index).ok_or_else(lost)?) else {
+            // A tip: no cut.
+            cuts.push(None);
+            continue;
+        };
         let past = *reach.get(index).ok_or_else(lost)?;
-        let cut = end_cut(
+        let (cut, at) = end_cut(
             &surface,
             third,
             index == 1,
@@ -1530,12 +1779,17 @@ fn blend_open(
             scale,
         )
         .ok_or_else(|| refuse(edge, Some(end.third), Reason::FreeEnd))?;
-        cuts.push(cut);
+        cuts.push(Some(chain::OneEnd::Cut { end: *end, cut, at }));
     }
-    let [cut0, cut1] = <[(NurbsCurve, [f64; 2]); 2]>::try_from(cuts).map_err(|_| lost())?;
     let params: Vec<f64> = all.iter().map(|x| x.0).collect();
     let sections: Vec<Section> = all.iter().map(|x| x.1).collect();
+    // A radius that varies: the face may not turn back on itself.
     let home_solver = solvers.get(home).ok_or_else(lost)?;
+    if law.is_some()
+        && let Some(fault) = turned_back(home_solver, data, &params, &sections, centre)
+    {
+        return Err(BlendError::Fade { edge, fault });
+    }
     let outward_hint =
         outward_from(home_solver, &surface, &params, &sections, convex).ok_or_else(unsolvable)?;
     if let Some(side) = folds(&surface, &params, &sections, (0.0, 1.0)) {
@@ -1548,15 +1802,34 @@ fn blend_open(
     };
     drop(solvers);
     drop(thirds);
-    let (blend_face, second_border) = chain::splice_one(
-        body,
-        one,
-        surface,
-        outward_hint,
-        ends,
-        [cut0, cut1],
-        tolerance,
-    )?;
+    // A tip's vertex is the edge's own there, or a new one on the edge.
+    let mut one_ends = Vec::with_capacity(2);
+    for (cut, tip) in cuts.into_iter().zip(tips) {
+        one_ends.push(match (cut, tip) {
+            (Some(cut), _) => cut,
+            (None, Some(tip)) => chain::OneEnd::Tip {
+                vertex: match tip.vertex {
+                    Some(vertex) => vertex,
+                    None => add_vertex(body, tip.point)?,
+                },
+                at: tip.at,
+            },
+            (None, None) => return Err(lost()),
+        });
+    }
+    let one_ends = <[chain::OneEnd; 2]>::try_from(one_ends).map_err(|_| lost())?;
+    let (blend_face, second_border) =
+        chain::splice_one(body, one, surface, outward_hint, one_ends, tolerance)?;
+    // Short of the edge's end, what is left of the edge beyond the tip
+    // goes on as an edge of both faces, as it was.
+    for (index, tip) in tips.iter().enumerate() {
+        if let Some(Tip {
+            at, vertex: None, ..
+        }) = tip
+        {
+            keep_beyond(body, data, faces, [edge, second_border], index, *at)?;
+        }
+    }
     let borders = cross::carry(
         body,
         edge,
@@ -1574,8 +1847,237 @@ fn blend_open(
         let surface = exact::swept(motion, &seed, shape).ok_or_else(unsolvable)?;
         exact::make_exact(body, blend_face, surface, tolerance)?;
     }
-    tangent_along(body, edge, &borders, blend_face, shape, tolerance)?;
+    tangent_along(body, edge, &borders, blend_face, shape, law, tolerance)?;
     Ok(blend_face)
+}
+
+/// What the measure of [`turned_back`] is at most where a law fillet's
+/// face has turned back on itself: nothing. No margin is taken: the
+/// measure falls with the rate of the radius as well as with the turn (a
+/// straight edge between faces at a right angle, the radius changing at
+/// the bound: 0.32 at a border; a radius growing at the bound into the
+/// slanted end of a cone's cut edge: 0.017 at the end section, 0.75
+/// within, and sound), so only its sign says turned. On a hull's stem
+/// every fade whose face was folded measured −0.03 to −1.0, the nearest
+/// sound one 0.07.
+const TURNED: f64 = 0.0;
+
+/// Where the face of a fillet whose radius varies turns back on itself:
+/// the place along the edge (its point there) and the ball's radius
+/// there.
+///
+/// The face is the arcs between the feet of its balls. At a point of it
+/// the face has two directions: across (the arc's tangent) and along the
+/// edge (how the point moves from section to section, [`slope`]). Their
+/// cross product is the face's normal, and it has to keep to one side of
+/// the ball's radius through the point all over the face. Where the
+/// radius changes fast and the edge turns, a section can move backwards
+/// along the edge (its points lie as far towards the centre of the edge's
+/// turn as the planes across the edge cross, or the feet run back along
+/// faces that curve): the two directions close up, pass each other, and
+/// the face lies turned round from there on. The fold check of every
+/// blend holds each section's normals against its own middle and does not
+/// see a section turned round as a whole; such a face came out facing the
+/// wrong way along its border, which the post-check of tangency refused
+/// in the wording of a bug (a hull's stem where it turns into the keel:
+/// radius 5 fading over 5, radius 3 fading over 5 within half a
+/// millimetre of the foot). Measured here on every section the face was
+/// refined through, at nine places across, from the exact derivative of
+/// the section: the part of the face's unit normal along the ball's
+/// radius (the two directions' cross product over their lengths, signed
+/// by the side it lies on in the middle of the fillet), against
+/// [`TURNED`]. It passes through nothing only where the face stops
+/// advancing along the edge: the radius's rate leans the normal from the
+/// ball's radius but never square to it.
+fn turned_back(
+    solver: &Solver<'_>,
+    data: &Edge,
+    params: &[f64],
+    sections: &[Section],
+    middle: f64,
+) -> Option<law::FadeFault> {
+    // The part of the face's unit normal along the ball's radius at a
+    // place across a section.
+    let side_at = |slope: &slope::Slope, v: f64| -> Option<f64> {
+        let (point, along, across) = slope.surface(v)?;
+        let ray = (point - slope.centre.0).normalized()?;
+        let scale = along.length() * across.length();
+        (scale > 0.0).then(|| along.cross(across).dot(ray) / scale)
+    };
+    // The side where the face is surely sound: at the section nearest
+    // the middle of the fillet.
+    let (s0, first) = params
+        .iter()
+        .zip(sections)
+        .filter(|(_, section)| section.pole.is_none())
+        .min_by(|a, b| (a.0 - middle).abs().total_cmp(&(b.0 - middle).abs()))?;
+    let sign = side_at(&solver.slope(*s0, first)?, 0.5)?.signum();
+    let (t0, t1) = data.range;
+    let mut worst: Option<(f64, f64, f64)> = None;
+    for (s, section) in params.iter().zip(sections) {
+        if section.pole.is_some() || !(0.0..=1.0).contains(s) {
+            continue;
+        }
+        let Some(slope) = solver.slope(*s, section) else {
+            continue;
+        };
+        for j in 0..=8 {
+            let Some(side) = side_at(&slope, f64::from(j) / 8.0) else {
+                continue;
+            };
+            let along_ray = side * sign;
+            if !along_ray.is_finite() {
+                continue;
+            }
+            if worst.is_none_or(|w| along_ray < w.0) {
+                worst = Some((along_ray, *s, slope.radius.0));
+            }
+        }
+    }
+    let (along_ray, s, radius) = worst?;
+    (along_ray <= TURNED).then(|| law::FadeFault::TurnsBack {
+        at: data.curve.eval(t0 + s * (t1 - t0)),
+        radius,
+    })
+}
+
+/// Where a fillet whose radius runs to nothing closes in a point: where
+/// along the edge (`s`), the point, and the vertex of the edge there (none
+/// short of the edge's end).
+#[derive(Clone, Copy, Debug)]
+struct Tip {
+    at: f64,
+    point: Vec3,
+    vertex: Option<VertexId>,
+}
+
+impl Solver<'_> {
+    /// The section drawn into `point`, the tip of a fillet whose radius
+    /// runs to nothing there: both feet and the centre are the point, and
+    /// the arc's middle weight is the limit of the sections before it,
+    /// the cosine of half the angle between the directions to the feet,
+    /// which at the point are the faces' own normals there. `near` is a
+    /// section nearby, for where on the faces the point is looked for.
+    fn pole(&self, point: Vec3, near: &Section) -> Option<Section> {
+        let mut params = near.params;
+        let mut normals = [Vec3::ZERO; 2];
+        for k in 0..2 {
+            let (side, start) = (self.sides.get(k)?, *params.get(k)?);
+            let (uv, _) = side.foot(point, start)?;
+            *params.get_mut(k)? = uv;
+            *normals.get_mut(k)? = side.normal(uv)?;
+        }
+        let [n1, n2] = normals;
+        let weight = (0.5 * (1.0 + n1.dot(n2))).max(0.0).sqrt();
+        // (Half a turn between the feet has no arc of one piece.)
+        (weight.is_finite() && weight > 1e-6).then_some(Section {
+            feet: [point, point],
+            params,
+            centre: Some(point),
+            pole: Some(weight),
+        })
+    }
+}
+
+/// The edge of both `faces` beyond a tip short of its end: `borders` (the
+/// first face's and the second's) end in the tip's vertex, where the
+/// edge went on, and what is left of the edge `data` past `at` (to its
+/// start for the tip at end 0, to its end for the one at end 1) is put
+/// back as an edge of both faces, each running it as it ran the edge.
+fn keep_beyond(
+    body: &mut Body,
+    data: &Edge,
+    faces: [FaceId; 2],
+    borders: [EdgeId; 2],
+    end: usize,
+    at: f64,
+) -> Result<(), BlendError> {
+    let (t0, t1) = data.range;
+    let t = t0 + at * (t1 - t0);
+    if !(t > t0 && t < t1) {
+        return Err(lost());
+    }
+    // The tip's vertex: where the first border ends at that end.
+    let first = body
+        .edge(*borders.first().ok_or_else(lost)?)
+        .ok_or_else(lost)?;
+    let vertex = if end == 0 { first.start } else { first.end };
+    let rest = add_edge(
+        body,
+        if end == 0 {
+            Edge {
+                curve: data.curve.clone(),
+                range: (t0, t),
+                start: data.start,
+                end: vertex,
+            }
+        } else {
+            Edge {
+                curve: data.curve.clone(),
+                range: (t, t1),
+                start: vertex,
+                end: data.end,
+            }
+        },
+    )?;
+    for (face, border) in faces.iter().zip(borders) {
+        let loops = body.face(*face).ok_or_else(lost)?.loops.clone();
+        let mut done = false;
+        for l in loops {
+            let ring = body.loops.get_mut(l.0 as usize).ok_or_else(lost)?;
+            let Some(index) = ring.coedges.iter().position(|c| c.edge == border) else {
+                continue;
+            };
+            let reversed = ring.coedges.get(index).ok_or_else(lost)?.reversed;
+            // The loop runs the border, and the rest of the edge with it,
+            // along their curves or against them; the rest lies before
+            // the border along the curve at end 0, after it at end 1.
+            let after = (end == 1) != reversed;
+            ring.coedges.insert(
+                if after { index + 1 } else { index },
+                Coedge {
+                    edge: rest,
+                    reversed,
+                },
+            );
+            done = true;
+            break;
+        }
+        if !done {
+            return Err(lost());
+        }
+    }
+    Ok(())
+}
+
+/// Sections from `from` towards `to` in even steps of at most `step`,
+/// each followed from the one before, short of `to` itself (where a
+/// fillet closes in a point there is no ball).
+fn march_short_of(
+    solver: &Solver<'_>,
+    from: (f64, Section),
+    to: f64,
+    step: f64,
+) -> Result<Vec<(f64, Section)>, Option<f64>> {
+    let (s0, mut last) = from;
+    let count = ((to - s0).abs() / step).ceil();
+    if !(count.is_finite() && count >= 0.0 && count < MAX_SAMPLES as f64) {
+        return Err(None);
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let count = (count as usize).max(1);
+    let mut out = Vec::with_capacity(count);
+    let mut previous = s0;
+    for i in 1..count {
+        let s = s0 + (to - s0) * (i as f64 / count as f64);
+        // (Not followed: the last place a ball was found.)
+        last = solver
+            .follow(previous, &last, s, FOLLOW_DEPTH)
+            .ok_or(Some(previous))?;
+        out.push((s, last));
+        previous = s;
+    }
+    Ok(out)
 }
 
 /// Sections from `from` to `to` in even steps of at most `step`, each
@@ -1637,6 +2139,10 @@ struct Steps {
     inside: f64,
     outside: f64,
     most_out: f64,
+    /// Past an end each step is as long as all before it together, from
+    /// `outside`, and no longer than this: a blend whose radius varies is
+    /// followed past an end no further than it has to be.
+    doubling: Option<f64>,
 }
 
 impl Steps {
@@ -1646,6 +2152,28 @@ impl Steps {
             inside,
             outside: inside.min(0.5 * size / length),
             most_out: 8.0 * size / length,
+            doubling: None,
+        }
+    }
+
+    /// These steps past an end where the blend's size over the edge's
+    /// length is `relative` (a radius that varies along the edge): from
+    /// `first` on, doubling the way gone with each. Past an end the law
+    /// is a continuation of this construction's choosing, and where the
+    /// third face is square to the edge nothing of it is kept: so the
+    /// face is followed no further than where a whole section has left
+    /// the third face, which a first short step finds there and the
+    /// doubling finds, in a few steps more, where the face is at a slant.
+    /// No step is longer than half the size there (nor than a step along
+    /// the edge): doubling on, the face of a radius that grows towards a
+    /// slanted end was followed to where its ball no longer fitted (the
+    /// cone's cut edge, 1.2 growing to 2.4 over 1.2).
+    fn past(self, relative: f64, first: f64) -> Steps {
+        Steps {
+            outside: first,
+            most_out: 8.0 * relative,
+            doubling: Some(self.inside.min(0.5 * relative).max(first)),
+            ..self
         }
     }
 }
@@ -1689,7 +2217,7 @@ fn flat_seed(
             *p = uv;
         }
     }
-    let size = solver.shape.size();
+    let size = solver.size_at(s).ok_or_else(unsolvable)?;
     for k in 0..2 {
         if let (Some(f), Some(i), Some(p)) =
             (seed_feet.get_mut(k), into.get(k), seed_params.get_mut(k))
@@ -1705,7 +2233,8 @@ fn flat_seed(
     let [b1, b2] = into;
     let spread = 1.0 + b1.dot(b2);
     let centre = match solver.shape {
-        Shape::Ball { radius, .. } if spread > 1e-9 => {
+        Shape::Ball { .. } if spread > 1e-9 => {
+            let radius = size;
             let half_cos = (0.5 * spread).sqrt();
             let half_sin = (1.0 - 0.5 * spread).max(0.0).sqrt();
             if !(half_sin > 1e-9) {
@@ -1728,6 +2257,7 @@ fn flat_seed(
         feet: seed_feet,
         params: seed_params,
         centre,
+        pole: None,
     })
 }
 
@@ -1774,7 +2304,10 @@ fn march_out(
     loop {
         let past = (s - end) * direction;
         let step = if past >= -1e-12 {
-            steps.outside
+            match steps.doubling {
+                Some(longest) => steps.outside.max(past).min(longest),
+                None => steps.outside,
+            }
         } else {
             steps.inside
         };
@@ -1887,7 +2420,10 @@ fn folds(
     let ((u0, _), (v0, v1)) = surface.domain();
     let mut samples: Vec<(f64, Option<Vec3>)> = Vec::with_capacity(2 * params.len());
     for (k, (s, section)) in params.iter().zip(sections).enumerate() {
-        samples.push((*s, section.centre));
+        // (A section drawn into a point has no normal to hold.)
+        if section.pole.is_none() {
+            samples.push((*s, section.centre));
+        }
         if let (Some(next), Some(after)) = (params.get(k + 1), sections.get(k + 1)) {
             let centre = section.centre.zip(after.centre).map(|(a, b)| (a + b) * 0.5);
             samples.push((0.5 * (s + next), centre));
@@ -1993,6 +2529,7 @@ fn tangent_along(
     borders: &[(EdgeId, FaceId)],
     blend_face: FaceId,
     shape: Shape,
+    law: Option<&law::Along<'_>>,
     tolerance: &Tolerance,
 ) -> Result<(), BlendError> {
     for (border, face) in borders {
@@ -2011,6 +2548,14 @@ fn tangent_along(
                 let normal = |f: FaceId| super::outward(body, f, p).ok();
                 let (Some(a), Some(b)) = (normal(blend_face), normal(face)) else {
                     return Err(refuse(edge, Some(face), Reason::NoNormal));
+                };
+                // A radius that varies: as closely as the face was
+                // refined here, by the radius of this place (a border of
+                // such a fillet is its surface's own curve along the
+                // edge, so its parameter is the place).
+                let limit = match law.and_then(|law| law.radius(t)) {
+                    Some(here) => 10.0 * bend(tolerance, here),
+                    None => limit,
                 };
                 if !(a.cross(b).length() <= limit && a.dot(b) > 0.0) {
                     return Err(refuse(edge, Some(face), Reason::NotTangent));
@@ -2088,6 +2633,7 @@ fn ring(solver: &Solver<'_>, seed: Section, data: &Edge, tolerance: &Tolerance) 
                 scale: solver.scale,
                 moved: None,
                 settle: solver.settle,
+                law: None,
             };
             let mut params = Vec::with_capacity(at.len());
             let mut sections = Vec::with_capacity(at.len());
@@ -3275,7 +3821,11 @@ struct Item {
 pub(super) fn takes(reason: Reason) -> bool {
     matches!(
         reason,
-        Reason::KindLine | Reason::KindCircle | Reason::KindEllipse | Reason::KindSpline
+        Reason::KindLine
+            | Reason::KindCircle
+            | Reason::KindEllipse
+            | Reason::KindSpline
+            | Reason::KindLaw
     )
 }
 
@@ -3310,7 +3860,12 @@ pub(super) fn blend(
     // anything is built ([`super::along`]).
     for item in &items {
         // A radius that is not one is the construction's to refuse.
-        if let Size::Radius(radius) = item.request.size
+        let radius = match item.request.size {
+            Size::Radius(radius) => Some(radius),
+            Size::Law(law) => Some(law.largest()),
+            Size::Chamfer(_) => None,
+        };
+        if let Some(radius) = radius
             && radius > 0.0
             && let Some(pinch) = super::along::pinched(
                 body,
@@ -3354,6 +3909,18 @@ pub(super) fn blend(
     }
 }
 
+/// Refused where a piece of `chain` is a fillet whose radius varies along
+/// its edge: such a fillet is built along an edge on its own.
+fn alone(chain: &chain::Chain, items: &[Item]) -> Result<(), BlendError> {
+    for piece in &chain.pieces {
+        let item = items.get(piece.item).ok_or_else(lost)?;
+        if matches!(item.request.size, Size::Law(_)) {
+            return Err(refuse(piece.edge, None, Reason::LawAlone));
+        }
+    }
+    Ok(())
+}
+
 /// [`blend`] of the requests worked out as `items`, built.
 fn blend_items(
     body: &Body,
@@ -3362,6 +3929,21 @@ fn blend_items(
     requests: &[Request],
     tolerance: &Tolerance,
 ) -> Result<Blended, BlendError> {
+    // A fillet whose radius varies is built along an edge on its own: no
+    // other requested edge ends in one of its vertices.
+    for (index, item) in items.iter().enumerate() {
+        if !matches!(item.request.size, Size::Law(_)) {
+            continue;
+        }
+        let ends = |i: &Item| body.edge(i.request.edge).map(|e| [e.start, e.end]);
+        let Some(mine) = ends(item) else { continue };
+        let touched = items.iter().enumerate().any(|(other, i)| {
+            other != index && ends(i).is_some_and(|theirs| theirs.iter().any(|v| mine.contains(v)))
+        });
+        if touched {
+            return Err(refuse(item.request.edge, None, Reason::LawAlone));
+        }
+    }
     // Edges that go on into each other are blended as one chain; no
     // other two may share a vertex.
     let (chains, meets) = chain::group(body, uses, items, tolerance)?;
@@ -3374,6 +3956,12 @@ fn blend_items(
             continue;
         }
         let first = found.pieces.first().map_or(EdgeId(u32::MAX), |p| p.edge);
+        if !matches!(
+            (found.pieces.as_slice(), found.joints.as_slice()),
+            ([_], [])
+        ) {
+            alone(found, items)?;
+        }
         if let ([piece], []) = (found.pieces.as_slice(), found.joints.as_slice()) {
             // Held to `no_loop_behind` inside, on its fitted surface.
             let item = items.get(piece.item).ok_or_else(lost)?;
@@ -3387,6 +3975,9 @@ fn blend_items(
         no_stranded_loop(&out, first, tolerance)?;
     }
     if !with_meets.is_empty() {
+        for index in &with_meets {
+            alone(chains.get(*index).ok_or_else(lost)?, items)?;
+        }
         let made = chain::build_meets(&mut out, &chains, &with_meets, &meets, items, tolerance)?;
         let first = with_meets
             .first()
@@ -3400,8 +3991,24 @@ fn blend_items(
     let mut seen = std::collections::BTreeSet::new();
     for request in requests {
         if let Some(data) = body.edge(request.edge) {
-            seen.insert(data.start);
-            seen.insert(data.end);
+            // (At an end where the fillet closes in a point, in the
+            // edge's vertex or short of it, nothing is cut: the vertex
+            // stays what it was.)
+            let stays = |end: usize| match request.size {
+                Size::Law(law) => law
+                    .fades
+                    .get(end)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|fade| fade.is_tip()),
+                _ => false,
+            };
+            if !stays(0) {
+                seen.insert(data.start);
+            }
+            if !stays(1) {
+                seen.insert(data.end);
+            }
         }
     }
     // A face the blends used up exactly goes; the edges on its two sides
@@ -3508,6 +4115,7 @@ mod tests {
             scale: 1.0,
             moved: None,
             settle: 0.0,
+            law: None,
         };
         let seed = Section {
             feet: [Vec3::new(0.5, 0.1, 0.0), Vec3::new(0.5, 0.0, -0.1)],
@@ -3516,12 +4124,14 @@ mod tests {
                 side.project(Vec3::new(0.5, 0.0, -0.1)).unwrap(),
             ],
             centre: Some(Vec3::new(0.5, 0.1, -0.1)),
+            pole: None,
         };
         let seed = solver.section(0.5, &seed).expect("the seed ball");
         let steps = Steps {
             inside: 0.01,
             outside: 0.01,
             most_out: f64::INFINITY,
+            doubling: None,
         };
         let third = Side {
             surface: &away,
@@ -3820,6 +4430,7 @@ mod tests {
             scale: 1.0,
             moved: None,
             settle: 0.0,
+            law: None,
         };
         let seed = Section {
             feet: [Vec3::new(0.5, 0.1, 0.0), Vec3::new(0.5, 0.0, -0.1)],
@@ -3828,6 +4439,7 @@ mod tests {
                 wall.project(Vec3::new(0.5, 0.0, -0.1)).unwrap(),
             ],
             centre: Some(Vec3::new(0.5, 0.1, -0.1)),
+            pole: None,
         };
         let seed = solver.section(0.5, &seed).expect("the seed ball");
         let mut samples: Vec<f64> = (0..=8).map(|i| f64::from(i) / 8.0).collect();

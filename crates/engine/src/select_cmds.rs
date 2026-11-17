@@ -340,8 +340,17 @@ fn glob_with_ids(doc: &Document, text: &str) -> String {
 impl Glob {
     fn new(text: &str, key: &str) -> Result<Self, String> {
         let chars: Vec<char> = text.chars().collect();
-        if chars.len() > MAX_GLOB {
-            return Err(format!("`{key}` is at most {MAX_GLOB} characters"));
+        // A name written out whole (no `*`) is matched in one pass, at any
+        // length a name can have (the review of 2026-11-17: a gear's faces
+        // have names of over 512 characters); a pattern with `*` is held
+        // to MAX_GLOB.
+        let most = if chars.contains(&'*') {
+            MAX_GLOB
+        } else {
+            crate::selection::MAX_NAME_BYTES
+        };
+        if chars.len() > most {
+            return Err(format!("`{key}` is at most {most} characters"));
         }
         Ok(Self(chars))
     }
@@ -1652,8 +1661,11 @@ fn square_within(v: Vec3, d: Vec3, tol: f64) -> bool {
     v.dot(d).abs() <= tol.max(ROUNDING_ANGLE).psin()
 }
 
-/// The length of an edge: exact for a line and a circular arc, the
-/// polygon through [`LENGTH_SAMPLES`] points otherwise.
+/// The length of an edge: exact for a line and a circular arc; otherwise
+/// the curve's speed integrated to a ten-billionth of the length (the
+/// review of 2026-11-17: the polygon through [`LENGTH_SAMPLES`] points
+/// printed to six decimals was a parabola's 29.578766 for 29.578857) by
+/// [`integrated_length`]; the polygon where the speed is not a number.
 fn edge_length(edge: &craft3d_topo::Edge) -> Option<f64> {
     let (t0, t1) = edge.range;
     let length = match &edge.curve {
@@ -1661,17 +1673,89 @@ fn edge_length(edge: &craft3d_topo::Edge) -> Option<f64> {
         Curve3::Circle(circle) => circle.radius() * (t1 - t0).abs(),
         _ => {
             let mut previous = edge.curve.eval(t0);
-            let mut total = 0.0;
+            let mut chords = 0.0;
             for i in 1..=LENGTH_SAMPLES {
                 let t = t0 + (t1 - t0) * f64::from(i) / f64::from(LENGTH_SAMPLES);
                 let point = edge.curve.eval(t);
-                total += (point - previous).length();
+                chords += (point - previous).length();
                 previous = point;
             }
-            total
+            integrated_length(&edge.curve, t0, t1, chords).unwrap_or(chords)
         }
     };
     length.is_finite().then_some(length)
+}
+
+/// Most halvings of [`integrated_length`]: at least this many, and 64 a
+/// knot span.
+const LENGTH_STEPS: usize = 20_000;
+
+/// The nodes and weights of Gauss–Legendre's rule of five points on
+/// [-1, 1].
+const GAUSS_5: [(f64, f64); 5] = [
+    (0.0, 0.568_888_888_888_888_9),
+    (-0.538_469_310_105_683_1, 0.478_628_670_499_366_5),
+    (0.538_469_310_105_683_1, 0.478_628_670_499_366_5),
+    (-0.906_179_845_938_664, 0.236_926_885_056_189_1),
+    (0.906_179_845_938_664, 0.236_926_885_056_189_1),
+];
+
+/// The length of `curve` from `t0` to `t1`: its speed integrated knot span
+/// by knot span (a spline is smooth within one; a kink between two is not
+/// sampled across, round three of the review: a degree-1 zigzag of 400
+/// kinks), each by Gauss–Legendre's rule of five points halved where the
+/// halves disagree, to a ten-billionth of `about` (an estimate of it) in
+/// all; `None` where a speed is not a number.
+fn integrated_length(curve: &Curve3, t0: f64, t1: f64, about: f64) -> Option<f64> {
+    let (lo, hi) = (t0.min(t1), t0.max(t1));
+    let span = hi - lo;
+    if !(span.is_finite() && span > 0.0) {
+        return span.is_finite().then_some(0.0);
+    }
+    let mut breaks = vec![lo];
+    if let Curve3::Nurbs(nurbs) = curve {
+        for &k in nurbs.knots() {
+            if k > lo && k < hi && breaks.last().is_some_and(|&b| k > b) {
+                breaks.push(k);
+            }
+        }
+    }
+    breaks.push(hi);
+    let speed = |t: f64| curve.derivatives(t).1.length();
+    // Never at an end: a knot's derivative is the span's after it.
+    let gauss = |a: f64, b: f64| {
+        let (c, h) = (0.5 * (a + b), 0.5 * (b - a));
+        h * GAUSS_5
+            .iter()
+            .map(|&(x, w)| w * speed(c + h * x))
+            .sum::<f64>()
+    };
+    let goal = (about.abs() * 1e-10).max(f64::MIN_POSITIVE);
+    let most = LENGTH_STEPS.max(breaks.len().saturating_mul(64));
+    let mut total = 0.0;
+    let mut steps = 0_usize;
+    for pair in breaks.windows(2) {
+        let [a, b] = *pair else {
+            continue;
+        };
+        let mut stack = vec![(a, b, gauss(a, b), goal * (b - a) / span)];
+        while let Some((a, b, whole, goal)) = stack.pop() {
+            let m = 0.5 * (a + b);
+            let (left, right) = (gauss(a, m), gauss(m, b));
+            let both = left + right;
+            if !both.is_finite() {
+                return None;
+            }
+            steps += 1;
+            if (both - whole).abs() <= goal || steps > most || (b - a) <= 1e-14 * (1.0 + a.abs()) {
+                total += both;
+            } else {
+                stack.push((a, m, left, 0.5 * goal));
+                stack.push((m, b, right, 0.5 * goal));
+            }
+        }
+    }
+    total.is_finite().then_some(total)
 }
 
 /// Every candidate of `kinds`, in document order.
@@ -2171,7 +2255,8 @@ impl Context<'_> {
     /// the sketch circle an extrusion swept, a fillet's radius), each with
     /// the edit that changes it; `copyOf`, the patterns and mirrors it is
     /// a copy made by, with the instance. A feature-like item gets its
-    /// `type`. Cheap: no measure is integrated.
+    /// `type`. Cheap: no area or volume is integrated (a curved edge's
+    /// length is, along the curve alone).
     fn describe(&mut self, c: &Candidate<'_>) -> Map<String, Value> {
         let mut map = Map::new();
         if !c.kind.is_entity() {

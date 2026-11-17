@@ -1982,10 +1982,19 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 edges,
                 radius,
                 chain,
+                fade,
             }) => manifest::FeatureKind::Fillet {
                 edges: edges.iter().map(edge_ref_to_manifest).collect(),
                 radius: expr_to_manifest(radius),
                 chain: *chain,
+                fade: fade
+                    .iter()
+                    .map(|doc::FilletFade { at, over, back }| manifest::FilletFade {
+                        at: name_to_manifest(at),
+                        over: expr_to_manifest(over),
+                        back: back.as_ref().map(expr_to_manifest),
+                    })
+                    .collect(),
             },
             doc::FeatureKind::Chamfer(doc::Chamfer { edges, size, chain }) => {
                 manifest::FeatureKind::Chamfer {
@@ -4123,10 +4132,19 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                 edges,
                 radius,
                 chain,
+                fade,
             } => doc::FeatureKind::Fillet(doc::Fillet {
                 edges: edges.into_iter().map(edge_ref_to_doc).collect(),
                 radius: doc::Expr(radius),
                 chain,
+                fade: fade
+                    .into_iter()
+                    .map(|manifest::FilletFade { at, over, back }| doc::FilletFade {
+                        at: name_to_doc(at),
+                        over: doc::Expr(over),
+                        back: back.map(doc::Expr),
+                    })
+                    .collect(),
             }),
             manifest::FeatureKind::Chamfer { edges, size, chain } => {
                 doc::FeatureKind::Chamfer(doc::Chamfer {

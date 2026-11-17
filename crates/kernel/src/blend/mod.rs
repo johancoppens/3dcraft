@@ -107,6 +107,7 @@ use std::f64::consts::{PI, TAU};
 mod along;
 mod carried;
 mod fit;
+pub(crate) mod law;
 mod rolling;
 pub(crate) use rolling::rebuild;
 mod section;
@@ -130,6 +131,9 @@ pub(crate) enum Size {
     Chamfer(ChamferSize),
     /// The radius of a fillet.
     Radius(f64),
+    /// The radius of a fillet as a law along its edge ([`law`]): built in
+    /// place along any edge.
+    Law(law::RadiusLaw),
 }
 
 /// One edge to blend.
@@ -177,6 +181,14 @@ pub(crate) enum Reason {
     KindCircle,
     KindEllipse,
     KindSpline,
+    /// A fillet whose radius varies along its edge: built in place
+    /// whatever its edge is.
+    KindLaw,
+    /// A fillet whose radius varies is built only along an open edge on
+    /// its own.
+    LawAlone,
+    /// The fades of a fillet's radius are together longer than its edge.
+    LawTooLong,
     Spindle,
     EndsBadly,
     Reaches,
@@ -271,6 +283,9 @@ impl Reason {
             }
             Reason::KindSpline => {
                 "a freeform edge is not built yet (the chamfer face would be a ruled surface)"
+            }
+            Reason::KindLaw | Reason::LawAlone | Reason::LawTooLong => {
+                "a chamfer has no radius to vary along its edge"
             }
             Reason::EndsBadly => {
                 "the chamfer does not end cleanly: at one end of the edge it would stop in a face of its own, because the faces there are neither all convex or all concave like the edge, nor square to it, nor does the edge go on in another chamfered edge; chamfer the edges it continues in as well, or leave this one out"
@@ -383,6 +398,15 @@ impl Reason {
             }
             Reason::KindSpline => {
                 "a freeform edge is not built yet (the fillet face would be a canal surface that is neither a cylinder nor a torus)"
+            }
+            Reason::KindLaw => {
+                "a fillet whose radius varies along its edge cannot be built together with these edges yet: fillet it in a feature of its own"
+            }
+            Reason::LawAlone => {
+                "a fillet whose radius varies along its edge is built only along an open edge on its own, each end a corner of exactly three faces or a point in which its radius runs to nothing: not yet round a closed edge, in a chain, where another blended edge ends in one of its vertices, or where its border crosses a smooth edge of a face beside it; give it one radius, or leave the other edges out"
+            }
+            Reason::LawTooLong => {
+                "the lengths over which the fillet's radius changes are together longer than the edge: give shorter ones"
             }
             Reason::Spindle => {
                 "the radius is too large for this rim but too small to reach its axis: the ball's centre would come nearer to the rim's axis than the radius, and the fillet face would be a torus that reaches its own axis, which is not built yet; a smaller radius fits, and so does the one that puts the ball's centre on the axis"
@@ -517,6 +541,10 @@ pub(crate) enum BlendError {
         /// Smaller sizes, tried, fail the same way.
         smaller_fails: bool,
     },
+    /// A fade of the law of `edge`'s fillet that is not built: its radius
+    /// changes too fast, or runs to less than the tolerance tells from
+    /// nothing ([`law::FadeFault`], with what would be built).
+    Fade { edge: EdgeId, fault: law::FadeFault },
     /// The two faces of `edge` are tangent at a place strictly inside it,
     /// though not all along it: a fillet's section runs to nothing there
     /// ([`along`]); for a chamfer, the place is the edge's middle, where
@@ -908,6 +936,8 @@ fn distances(
             }
             ("radius", [distance, distance])
         }
+        // Not planned: built in place (`plan`).
+        Size::Law(_) => return Err(refused(edge, Reason::KindLaw)),
     };
     for value in pair {
         // A chamfer narrower than what the booleans tell apart.
@@ -991,6 +1021,11 @@ fn oriented(
 fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<Plan, BlendError> {
     let edge = request.edge;
     let (faces, into, convex) = oriented(body, uses, request)?;
+    // A radius that varies along the edge has no closed form: in place,
+    // whatever the edge is.
+    if matches!(request.size, Size::Law(_)) {
+        return Err(refused(edge, Reason::KindLaw));
+    }
     let data = body.edge(edge).ok_or_else(lost)?;
     let surfaces = [
         &body.face(faces[0]).ok_or_else(lost)?.surface,
@@ -1061,6 +1096,7 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
     let mut distances = distances(edge, request.size, between, half_tan, tol)?;
     let round = match request.size {
         Size::Radius(radius) => Some(radius),
+        Size::Law(law) => Some(law.largest()),
         Size::Chamfer(_) => None,
     };
     let mut scale = match round {
@@ -2587,6 +2623,10 @@ fn named_before(
             Some(edge) => BlendError::Pinched { edge, pinch },
             None => lost(),
         },
+        BlendError::Fade { edge, fault } => match edge_was(edge) {
+            Some(edge) => BlendError::Fade { edge, fault },
+            None => lost(),
+        },
     }
 }
 
@@ -3037,7 +3077,8 @@ impl From<BlendError> for Failure {
             BlendError::Boolean { edge, .. }
             | BlendError::TooLarge { edge, .. }
             | BlendError::Spindle { edge, .. }
-            | BlendError::Pinched { edge, .. } => Some(*edge),
+            | BlendError::Pinched { edge, .. }
+            | BlendError::Fade { edge, .. } => Some(*edge),
             BlendError::Kernel(_) => None,
         };
         Failure { edge, error }

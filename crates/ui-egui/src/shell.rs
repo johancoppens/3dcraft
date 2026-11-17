@@ -29,6 +29,7 @@ mod bake_hint;
 mod calm;
 mod controls;
 mod dialogs;
+pub mod dimension;
 mod edit;
 pub mod help;
 pub(crate) mod icons;
@@ -1084,6 +1085,9 @@ pub struct Shell {
     /// The notes pinned to the model: their markers, the field a note is
     /// written in, what `note.list` said (`notes.rs`).
     pub(crate) notes: notes::NoteMemory,
+    /// Where the dimension of the two things selected was drawn
+    /// (`dimension.rs`).
+    dimension: Option<dimension::DimensionPlace>,
     /// The box the camera was last fitted to automatically.
     framed: Bbox3,
     /// What the camera follows while it fits by itself: the opening
@@ -1650,6 +1654,7 @@ impl Shell {
             section_lost: None,
             section_handle: section_handle::HandleView::default(),
             notes: notes::NoteMemory::default(),
+            dimension: None,
             framed: Bbox3::EMPTY,
             following: views::Following::Opening,
             themed: false,
@@ -5208,7 +5213,10 @@ impl Shell {
         let on_marker = self.mate_pointer(ui, &response, rect, scene);
         // A click on the section's handle is the handle's.
         let on_handle = self.handle_click(ui, &response, scene);
-        let tapped = response.clicked() && !self.touch_gesture && !on_marker && !on_handle;
+        // A click on the dimension's number copies it.
+        let on_dimension = self.dimension_click(ui, &response);
+        let tapped =
+            response.clicked() && !self.touch_gesture && !on_marker && !on_handle && !on_dimension;
         let closes_drawer = self.narrow && self.state.panels.drawer && tapped;
         if closes_drawer {
             self.state.panels.drawer = false;
@@ -5388,6 +5396,9 @@ impl Shell {
         // The section's handle, over the picture and under the controls.
         if !self.welcome() {
             self.paint_section_handle(ui, rect);
+            self.paint_dimension(ui, rect);
+        } else {
+            self.dimension = None;
         }
         // The notes' markers, the chosen one's text, the field a note is
         // written in (`notes.rs`).

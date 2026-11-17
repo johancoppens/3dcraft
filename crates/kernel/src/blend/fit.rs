@@ -78,7 +78,8 @@ fn sized(error: &BlendError) -> bool {
         | BlendError::TooLarge { .. }
         | BlendError::Spindle { .. }
         // Tangent faces leave no width at any size.
-        | BlendError::Pinched { .. } => false,
+        | BlendError::Pinched { .. }
+        | BlendError::Fade { .. } => false,
         BlendError::Kernel(_) => true,
         BlendError::Refused { reason, .. } => matches!(
             reason,
@@ -166,6 +167,7 @@ enum Outcome {
 fn scaled(size: Size, scale: f64) -> Size {
     match size {
         Size::Radius(radius) => Size::Radius(radius * scale),
+        Size::Law(law) => Size::Law(law.scaled(scale)),
         Size::Chamfer(ChamferSize::Distances { first, second }) => {
             Size::Chamfer(ChamferSize::Distances {
                 first: first * scale,

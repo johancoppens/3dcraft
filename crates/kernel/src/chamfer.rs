@@ -106,6 +106,12 @@ pub(crate) fn said(error: BlendError) -> KernelError {
             face: None,
             reason: crate::blend::Reason::MiddleTangent.text(Kind::Chamfer),
         },
+        // A chamfer has no radius to vary: never met.
+        BlendError::Fade { edge, .. } => KernelError::Chamfer {
+            edge: Some(edge),
+            face: None,
+            reason: crate::blend::Reason::KindLaw.text(Kind::Chamfer),
+        },
     }
 }
 

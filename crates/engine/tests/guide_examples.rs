@@ -1536,6 +1536,35 @@ fn the_tip_of_the_features_chapter_is_a_half_ball() {
     assert_eq!(check["ok"], true, "{check}");
 }
 
+/// The fillet that fades of the features chapter (`features.md` › *A
+/// fillet that fades*) runs as written: the box's edge rounded and fading
+/// out at its top meets the closed form its assertion carries (the strip
+/// of one radius and 9/14 of the fade's length), the result says where it
+/// ends, and the deep check passes.
+#[test]
+fn the_fade_of_the_features_chapter_meets_its_closed_form() {
+    let text = read_text(&docs().join("guide/features.md"));
+    let block = json_blocks(&text)
+        .into_iter()
+        .find(|b| b.contains("\"fade\""))
+        .expect("the chapter has the fade");
+    let steps = steps(&serde_json::from_str(&block).unwrap()).unwrap();
+    let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for (id, params) in steps {
+        let out = run(&mut s, &id, params);
+        assert_ne!(out["status"], "failed", "{id}: {out}");
+        if id == "feature.fillet" {
+            assert_eq!(out["fades"][0]["tip"], json!([0.0, 0.0, 40.0]), "{out}");
+        }
+    }
+    let assertions = run(&mut s, "assert.list", json!({}));
+    assert_eq!(assertions["ok"], true, "{assertions}");
+    assert_eq!(assertions["passed"], 1, "{assertions}");
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{check}");
+}
+
 /// The rings and the up direction of the features chapter (`features.md`
 /// › *Sweep along two rails*) run as written: the torus round two rings
 /// meets its volume (Pappus), the wall with a leaning up direction its

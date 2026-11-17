@@ -378,6 +378,8 @@ pub(super) fn section(
         // (`super::turns_back`); where it starts to is an event of the
         // search for what fits ([`touching`]).
         Size::Chamfer(size) => chord(edge, faces, traces, along, size),
+        // No one section: built in place (`super::plan`).
+        Size::Law(_) => Err(super::refused(edge, super::Reason::KindLaw)),
     }
 }
 

@@ -1811,13 +1811,25 @@ phone wants them a finger's width each, which makes the bar wider).
 
 *The review of the plane and the group* (2026-11-17, `review-view-section`). (1) Faces a hair off parallel
 (1.5e-9 to 1.7e-5 rad, the same way) gave a "bisector" through a line 3.4e6 to 6.9e10 away, which cut
-everything or nothing: `planes_of` now takes the model's box and counts two faces parallel also when the
-line their planes meet in passes farther from the box's middle than its whole diagonal (a frustum's sides,
-meeting a little above it, keep their bisector); the review's two blocks, one turned by 5e-8 to 1e-3
-degrees, give the plane midway, which cuts the model. (2) A `made` that does not fit its plane is refused by
+everything or nothing. A first fix counted two faces parallel when their planes met farther from the
+model's middle than its diagonal; the third round found it had no angle bound (a tray's sides 28 degrees
+apart got a plane tilted 14 degrees along one of them; the choice flipped at 36.2 degrees). Now
+`planes_of` always gives the two bisectors, `x · (n − m) = p · n − q · m` and `x · (n + m) = p · n + q · m`,
+the better conditioned first (the longer of `n − m` and `n + m`): the plane between the faces, which as the
+angle goes to zero turns continuously into the plane midway (its normal turns by half the faces' turn, a
+unit test sweeps 30 degrees to none in a thousand steps), and changes over only at faces square to each
+other: there `n − m` and `n + m` are as long, each bisector at 45 degrees to both faces, and the first turns
+from the one to the other, square to it. Where it does not cut the model and the other does (a convex edge's
+outer bisector touches the body along the edge only, as at the top and its chamfer), the other comes first.
+The second is offered only where it cuts the model (its mesh on both sides, beyond a billionth of its size).
+"The model" is the bodies the two faces belong to, not every body in the view (round four: a second block
+beyond the chamfered one made the outer bisector of its top and chamfer count as cutting),
+so two faces a hair off parallel get one plane, between them, cutting the model. "mid" is the word only
+where the faces are parallel within the document's angular tolerance (`Session::angular_tolerance`). (2) A `made` that does not fit its plane is refused by
 `ui.set`, not dropped. (3) After an edit the plane stays where it was, a view like the camera; the shell
-remembers the two faces it was made from and, once they no longer make it (`check_made`, when the scene
-changes), takes `made` away, so the number no longer says "mid". (4) A hidden body's face is refused in the
+remembers the two faces it was made from, per open document as the section is (a tab shown and back keeps
+it), and once they no longer make it (`check_made`, when the scene changes), takes `made` away, so the
+number no longer says "mid". (4) A hidden body's face is refused in the
 window's words. (5) The group hopped sides 283 times in 4356 frames of a turning view, up to 237 points,
 twice under the bar and the triad: `group_place` now keeps the way it went last frame while that place stays
 clear (sliding along the viewport's edge rather than hopping), tries round the compass after its four ways,

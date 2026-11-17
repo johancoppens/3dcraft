@@ -1502,6 +1502,7 @@ fn a_file_with_an_edge_named_by_its_place_alone_fails_the_feature_with_the_reaso
             edges: vec![EdgeRef::Edge { edge, first: None }],
             radius: Expr::new("1 mm"),
             chain: false,
+            fade: Vec::new(),
         }),
     )
     .unwrap();
@@ -1876,6 +1877,7 @@ fn a_name_that_lists_a_blend_face_is_refused_since_leaving_out_a_reference_renum
             }],
             radius: craft3d_doc::Expr::new("0.3 mm"),
             chain: false,
+            fade: Vec::new(),
         }),
     )
     .unwrap();

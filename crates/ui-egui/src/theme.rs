@@ -265,6 +265,13 @@ pub struct Tokens {
     pub section_near: f32,
     pub section_hit: f32,
     pub section_snap_reach: f32,
+    /// The relation of two things selected: its number at the foot of the
+    /// side panel, `measure_font` points high. In the view
+    /// (`shell/dimension.rs`) a dimension is drawn with the section
+    /// arrow's line weights and head, in the accent; an angle's arc
+    /// `measure_arc` from its corner.
+    pub measure_font: f32,
+    pub measure_arc: f32,
     /// The view cube's proportions, in units of its half side so that
     /// they scale with it: how deep its edges are cut (a capsule and a
     /// corner's circle are as wide as the cut less the gap), the one gap
@@ -1014,6 +1021,8 @@ impl Tokens {
             section_near: 56.0,
             section_hit: 9.0,
             section_snap_reach: 7.0,
+            measure_font: 24.0,
+            measure_arc: 36.0,
             view_cube_chamfer: 0.22,
             view_cube_gap: 0.062,
             view_cube_face_rounding: 0.9,

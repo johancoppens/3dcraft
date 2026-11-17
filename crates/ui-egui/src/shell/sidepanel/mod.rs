@@ -149,7 +149,19 @@ pub(crate) struct SideMemory {
     checks_for: Option<(u64, u64)>,
     /// What is selected, described, and for which selection.
     pub(crate) props: Option<Props>,
-    props_for: Option<(u64, u64, u64)>,
+    pub(crate) props_for: Option<(u64, u64, u64)>,
+    /// The selection whose relation was kept as a check last, by its
+    /// document and selection serial ([`SideMemory::kept_key`]), and the
+    /// check's name.
+    pub(crate) kept: Option<((u64, u64), String)>,
+    /// The relation of two things selected being measured on a thread of
+    /// its own, for the card of `props_for` it was asked for; and the one
+    /// waiting for it to finish (the newest asked, replacing any before):
+    /// one runs, one waits, an answer for an older card is dropped (the
+    /// review of 2026-11-17: a quick run of selections ran them side by
+    /// side).
+    pub(crate) between: Option<((u64, u64, u64), craft3d_engine::BetweenJob)>,
+    waiting: Option<((u64, u64, u64), Value)>,
     /// Commands waiting for the session.
     pending: Vec<SideRequest>,
     /// Errors at fields, by their key.
@@ -181,6 +193,14 @@ pub(crate) struct SideMemory {
     /// the Parameters tab's own memory (`state.parameters.open`).
     last_tab: Option<SideTab>,
     pub(crate) hits: SideHits,
+}
+
+impl SideMemory {
+    /// The document and the selection the card is of, without the
+    /// document's revision: what a relation kept as a check is kept for.
+    pub(crate) fn kept_key(&self) -> Option<(u64, u64)> {
+        self.props_for.map(|(doc, _, serial)| (doc, serial))
+    }
 }
 
 /// The tabs a document offers, in order: Parameters first for a Jig (or
@@ -288,6 +308,10 @@ impl Shell {
                     self.side.problem = None;
                     if request.command.starts_with("measure.") {
                         self.side.measured = Some(props::measured_line(request.command, &result));
+                    }
+                    if request.command == "assert.add" {
+                        let name = result.get("name").and_then(Value::as_str).unwrap_or("");
+                        self.side.measured = Some(format!("Kept as the check {name}"));
                     }
                     // Clearing a body's face colours says on the status
                     // line how many it cleared (and what it kept).
@@ -429,11 +453,66 @@ impl Shell {
             self.side.props_for = Some(props_key);
             self.side.measured = None;
             self.side.checks_asked = false;
+            let mut wanted = None;
             self.side.props = if self.selection().items.is_empty() {
                 None
             } else {
-                props::read(session, scene, bodies_here)
+                props::read(session, scene, bodies_here, &mut wanted)
             };
+            // One measure runs at a time: a newer one waits for it.
+            self.side.waiting = None;
+            if let Some(params) = wanted {
+                let busy = self
+                    .side
+                    .between
+                    .as_ref()
+                    .is_some_and(|(_, job)| job.answer().is_none());
+                if busy {
+                    self.side.waiting = Some((props_key, params));
+                } else {
+                    self.start_between(session, props_key, &params);
+                }
+            }
+        }
+        // The relation being measured: its answer, once it is there, for
+        // the card it was asked for only; then the one waiting.
+        if let Some((key, answer)) = self
+            .side
+            .between
+            .as_ref()
+            .and_then(|(key, job)| Some((*key, job.answer()?)))
+        {
+            self.side.between = None;
+            if self.side.props_for == Some(key) {
+                self.settle_measurement(answer);
+            }
+            if let Some((key, params)) = self.side.waiting.take()
+                && self.side.props_for == Some(key)
+            {
+                self.start_between(session, key, &params);
+            }
+        }
+    }
+
+    /// Starts measuring `params` (`measure.between`'s) for the card of
+    /// `key` on a thread of its own; refused at once, the card says why.
+    fn start_between(&mut self, session: &mut Session, key: (u64, u64, u64), params: &Value) {
+        match session.between_later(params) {
+            Ok(job) => self.side.between = Some((key, job)),
+            Err(e) => self.settle_measurement(Err(e.message().to_string())),
+        }
+    }
+
+    /// The card's relation, measured.
+    fn settle_measurement(&mut self, answer: Result<Value, String>) {
+        if let Some(m) = self
+            .side
+            .props
+            .as_mut()
+            .and_then(|p| p.measurement.as_mut())
+            && m.measuring
+        {
+            *m = m.settled(answer);
         }
     }
 
@@ -470,6 +549,31 @@ impl Shell {
         ui.add_space(tokens.nav_gap);
         if tab != SideTab::Parameters {
             self.parameters_hidden();
+        }
+        // What is selected shows under every tab, as at the foot of the
+        // Features tab, which has it there with the checks (the developer,
+        // 2026-11-17: with another tab open, the length of the edge he had
+        // selected was nowhere in sight).
+        if tab != SideTab::Features && self.side.props.is_some() {
+            let inset = f32::from(crate::shell::side_inset(&tokens));
+            let height = self
+                .props_height()
+                .min(ui.available_height() * 0.5)
+                .max(0.0);
+            egui::Panel::bottom("craft3d-side-selection")
+                .resizable(false)
+                .exact_size(height)
+                .frame(egui::Frame::new())
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("craft3d-side-selection-scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.set_max_width((ui.available_width() - inset).max(40.0));
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            self.props_ui(ui);
+                        });
+                });
         }
         match tab {
             SideTab::Parameters => {
