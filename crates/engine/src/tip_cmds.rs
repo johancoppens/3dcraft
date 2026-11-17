@@ -7,38 +7,76 @@
 //! like every other parameter: the feature is stored and reports `failed`
 //! with the reason.
 
-use crate::commands::{Run, add_feature, fail, spec};
+use crate::commands::{Run, add_feature, fail, spec, vec3};
 use crate::datum_cmds::face_value;
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
-use craft3d_doc::{Expr, FeatureKind, Tip};
-use serde_json::Value;
+use craft3d_doc::{Expr, FeatureKind, Tip, TipAt};
+use craft3d_kernel::tip::TipPlaced;
+use craft3d_regen::TipReport;
+use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("feature.tip", "Tip", r#"{"face": face name, "length": expr = automatic, "at": [expr, expr] = the middle, "fullness": expr = 0.4142, "shape": "round" = "round", "name": string = automatic, "when": expr = always on}"#,
-        "Adds a feature that closes a body in one rounded point over a flat end face: the face is replaced by faces that run on from the faces round it without a crease along the old edge and all reach the point with one tangent plane, parallel to the end. A loft's end, a swept or extruded spline's: the nose of a hull, the end of a slender blade. Every edge that ran into the end (a deck edge, a trailing edge) runs on to the point and fades out there. face is the end face by its name (faceNames in document.inspect, or view.pick), which may be named as an earlier body of the same chain had it; the body goes into this feature, and nothing behind the end changes. length is how far beyond the end the point lies, along the end's outward normal; left out, it is the radius of the circle with the end's area, never more than half the length at which the faces round the end, carried on, would meet (found again at every regeneration). at is where the point stands over the end, as lengths along the end face's own x and y axes from its plane's origin; left out, over the middle (the centre of area) of what the faces round the end come to in the point's plane. fullness is how full the tip is across, a number from 0.01 to 0.98: 0.4142 (the default, √2 − 1) gives quarter ellipses, so a rod with its end tipped as long as its radius ends in a half ball and any straight prism gains two thirds of its end's area times the length; 0.5 gives parabolas (eleven fifteenths); more is blunter, less more pointed. What is built: fullness 0.05 to 0.95 at lengths from a tenth of the radius of the circle of the end's area; nearer 0 or 1, and tips shorter than that, are often refused (their faces cannot be meshed or measured yet), and below a hundredth of that radius nearly always. shape is round; pointed (a straight cone, creased at the end's edge) is not built yet. The faces that stay keep their names with a prefix, \"F9:copy(0)/...\"; a face of the tip is named after the face it continues, \"F9:tip(0)/F2:side(e7)\"; the edges from the old corners to the point and the point itself are named by their faces. Refused, with the face or the edge and the reason: a face that is not flat, a face with a hole, a face bounded by one closed edge, a face whose neighbours are planes, cylinders, cones, spheres or tori (only spline faces round the end are taken yet: a loft's, a swept or turned spline's), an edge that is not a whole border of the face behind it, faces round the end that do not go on toward the point, an end whose outline no point sees whole (a crescent, a cambered blade section such as a ship propeller's: a tip that closes in one point needs a point that sees all of it), a point that stands where it does not see the whole end or so near its edge that it cannot be proven to, a length at which the faces round the end close in before the point (give a shorter one), a tip so short that it is not tangent to the faces round it within the angular tolerance or cannot be measured (give a longer one, or a fullness nearer the middle), and a tip that would run into another part of the body. A tipped body cannot yet be hollowed or offset: feature.shell, feature.offsetFace, feature.thicken and feature.plate refuse a face that closes in a point. Change it with feature.edit: face, length, at, fullness (length, at and fullness null go back to automatic).", doc: true, names: ["face"], feature_tip),
+    spec!("feature.tip", "Tip", r#"{"face": face name, "length": expr = automatic, "at": [expr, expr] or [expr, expr, expr] = chosen, "fullness": expr = 0.4142, "shape": "round" = "round", "name": string = automatic, "when": expr = always on}"#,
+        "Adds a feature that closes a body in one rounded point over a flat end face: the face is replaced by faces that run on from the faces round it without a crease along the old edge and all reach the point with one tangent plane, parallel to the end. A loft's end, a swept or extruded spline's: the nose of a hull, the end of a slender blade. Every edge that ran into the end (a deck edge, a trailing edge) runs on to the point and fades out there. face is the end face by its name (faceNames in document.inspect, or view.pick), which may be named as an earlier body of the same chain had it; the body goes into this feature, and nothing behind the end changes. length is how far beyond the end the point lies, along the end's outward normal; left out, it is the radius of the circle with the end's area, never more than half the length at which the faces round the end, carried on, would meet (found again at every regeneration). at is where the point stands over the end: two expressions [x, y] are lengths along the end face's own x and y axes from its plane's origin (the result says where those axes lie, under tip.frame), three [x, y, z] a point in the model's coordinates (as datum.point takes one), taken to the end's plane along the end's normal, which must lie on the end, at the tip or between the two (a point behind the end or beyond the tip is refused with how far it lies); either form is kept as given. Left out, the point stands over the centre of the taper, the place on the end that the faces round it, carried on, close in on (the axis of a cone or of a revolved body, the line a loft's sections are drawn and narrowed about, such as a blade's stacking line), where they narrow toward a place from which the whole end is in view; where they do not (a prism, a body that leans more than it narrows), over the middle (the centre of area) of what they come to in the point's plane; and where that does not see the whole end (an L), over the middle of the places that do. fullness is how full the tip is across, a number from 0.01 to 0.98: 0.4142 (the default, √2 − 1) gives quarter ellipses, so a rod with its end tipped as long as its radius ends in a half ball and any straight prism gains two thirds of its end's area times the length; 0.5 gives parabolas (eleven fifteenths); more is blunter, less more pointed. What is built: fullness 0.05 to 0.95 at lengths from a tenth of the radius of the circle of the end's area; nearer 0 or 1, and tips shorter than that, are often refused (their faces cannot be meshed or measured yet), and below a hundredth of that radius nearly always. shape is round; pointed (a straight cone, creased at the end's edge) is not built yet. The faces that stay keep their names with a prefix, \"F9:copy(0)/...\"; a face of the tip is named after the face it continues, \"F9:tip(0)/F2:side(e7)\"; the edges from the old corners to the point and the point itself are named by their faces. Refused, with the face or the edge and the reason: a face that is not flat, a face with a hole, a face bounded by one closed edge, a face whose neighbours are planes, cylinders, cones, spheres or tori (only spline faces round the end are taken yet: a loft's, a swept or turned spline's), an edge that is not a whole border of the face behind it, faces round the end that do not go on toward the point, an end whose outline no point sees whole (a crescent, a cambered blade section such as a ship propeller's: a tip that closes in one point needs a point that sees all of it), a point that stands where it does not see the whole end or so near its edge that it cannot be proven to, a length at which the faces round the end close in before the point (give a shorter one: the refusal says the longest length that fits over the same place), a tip so short that it is not tangent to the faces round it within the angular tolerance or cannot be measured (give a longer one, or a fullness nearer the middle), and a tip that would run into another part of the body. A tipped body cannot yet be hollowed or offset: feature.shell, feature.offsetFace, feature.thicken and feature.plate refuse a face that closes in a point. The result, and the feature in document.inspect, has the tip under tip: point (the tip's point), length and lengthGiven, foot (the point of the end's plane it stands over) and at (the same as lengths along the end face's own axes, what at [x, y] would give it as), placed (given, givenPoint, taper, shoulder or inView: how the place was found), frame (the end face's own axes: origin, x and y, and the end's outward normal), fullness and form (level or general). Change it with feature.edit: face, length, at, fullness (length, at and fullness null go back to automatic).", doc: true, names: ["face"], feature_tip),
 ];
 
-/// `at`: two expressions `[x, y]`.
-fn at_value(p: &Params, command: &str) -> Result<Option<[Expr; 2]>, CommandError> {
+/// `at`: two expressions `[x, y]`, lengths along the end face's own axes,
+/// or three `[x, y, z]`, a point in the model; `null` for the place
+/// chosen.
+fn at_value(p: &Params, command: &str) -> Result<Option<TipAt>, CommandError> {
     let Some(value) = p.get("at") else {
         return Ok(None);
     };
     let wrong = || {
         CommandError::new(format!(
-            "{command}: `at` must be an array of two expressions [x, y]: lengths along the end face's own axes"
+            "{command}: `at` must be an array of two expressions [x, y], lengths along the end face's own axes, or of three [x, y, z], a point in the model"
         ))
     };
     let Value::Array(items) = value else {
         return Err(wrong());
     };
-    let [x, y] = items.as_slice() else {
-        return Err(wrong());
+    match items.as_slice() {
+        [x, y] => Ok(Some(TipAt::Face([
+            Expr::new(p.expr_of("at", x)?),
+            Expr::new(p.expr_of("at", y)?),
+        ]))),
+        [x, y, z] => Ok(Some(TipAt::Point([
+            Expr::new(p.expr_of("at", x)?),
+            Expr::new(p.expr_of("at", y)?),
+            Expr::new(p.expr_of("at", z)?),
+        ]))),
+        _ => Err(wrong()),
+    }
+}
+
+/// What a tip says of itself in a result and in `document.inspect`:
+/// where its point stands and the end face's own axes, in the model's
+/// coordinates.
+pub(crate) fn tip_json(report: &TipReport) -> Value {
+    let placed = match report.placed {
+        TipPlaced::Face => "given",
+        TipPlaced::Point => "givenPoint",
+        TipPlaced::Taper => "taper",
+        TipPlaced::Shoulder => "shoulder",
+        TipPlaced::InView => "inView",
     };
-    Ok(Some([
-        Expr::new(p.expr_of("at", x)?),
-        Expr::new(p.expr_of("at", y)?),
-    ]))
+    json!({
+        "point": vec3(report.point),
+        "length": report.length,
+        "lengthGiven": report.length_given,
+        "foot": vec3(report.foot),
+        "at": report.at,
+        "placed": placed,
+        "frame": {
+            "origin": vec3(report.frame.origin()),
+            "x": vec3(report.frame.x()),
+            "y": vec3(report.frame.y()),
+            "normal": vec3(report.normal),
+        },
+        "fullness": report.fullness,
+        "form": if report.general { "general" } else { "level" },
+    })
 }
 
 /// `shape`: only round is built.

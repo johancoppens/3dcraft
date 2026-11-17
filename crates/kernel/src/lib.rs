@@ -379,12 +379,14 @@ pub enum KernelError {
     /// A tip cannot close this face ([`tip`]): `faces` are the end face
     /// and, where it is about one, the side behind an edge of its loop;
     /// `edge` that edge, when there is one; `blame` the input to change
-    /// (`face`, `length` or `at`).
+    /// (`face`, `length` or `at`); `longest` the longest length found to
+    /// fit over the same place, where a length given is too long.
     Tip {
         faces: Vec<craft3d_topo::FaceId>,
         edge: Option<craft3d_topo::EdgeId>,
         blame: &'static str,
         reason: String,
+        longest: Option<f64>,
     },
     /// A plate cannot be made of these faces with these joints
     /// ([`plate`]): `edge` is the edge of the faces it is about, when
@@ -764,11 +766,20 @@ impl fmt::Display for KernelError {
                 faces,
                 edge,
                 reason,
+                longest,
                 ..
             } => {
                 write!(f, "tip")?;
                 face_op_entities(f, faces, *edge)?;
-                write!(f, ": {reason}")
+                write!(f, ": {reason}")?;
+                match longest {
+                    Some(fits) => write!(
+                        f,
+                        "; the longest length that fits over this place is {}",
+                        fits_number(*fits)
+                    ),
+                    None => Ok(()),
+                }
             }
             KernelError::Loft { reason, .. }
             | KernelError::Sweep { reason, .. }

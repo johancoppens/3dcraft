@@ -521,6 +521,13 @@ fn a_tip_past_where_the_sides_meet_or_into_another_part_of_the_body_is_refused()
         json!({"face": "Cone:endCap(e2)", "length": 30}),
     );
     assert!(reason.contains("shorter"), "{reason}");
+    // With the longest length that fits over the same place, in the
+    // document's unit: just short of where the side meets the axis.
+    assert!(
+        reason.contains("the longest length that fits over this place is 19.99")
+            && reason.contains(" mm"),
+        "{reason}"
+    );
     run(&mut s, "edit.undo", json!({}));
     // The length chosen stays below half of where they meet.
     let made = run(
@@ -561,6 +568,193 @@ fn a_tip_past_where_the_sides_meet_or_into_another_part_of_the_body_is_refused()
         json!({"face": "Both:copy(0)/Cone:endCap(e2)", "length": 1}),
     );
     assert_eq!(made["status"], "ok", "{made}");
+    deep(&mut s);
+}
+
+/// The result and `document.inspect` say where the tip stands: the point,
+/// the foot on the end and the same in the end face's own axes, and those
+/// axes in the model. A place given as a point in the model is taken to
+/// the end's plane along its normal, kept in that form through an edit, a
+/// save and a reopening; behind the end it fails, saying how far, and an
+/// `at` of four values is refused.
+#[test]
+fn a_tip_says_where_it_stands_and_takes_a_point_in_the_model() {
+    let mut s = common::session();
+    new_document(&mut s, 1.0);
+    rod(&mut s, json!(5.0), 20.0);
+    let made = run(
+        &mut s,
+        "feature.tip",
+        json!({"face": "Rod:endCap(e2)", "length": 5, "name": "Nose"}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    let said = &made["tip"];
+    let v = |value: &Value| -> [f64; 3] {
+        let a = value.as_array().unwrap();
+        [
+            a[0].as_f64().unwrap(),
+            a[1].as_f64().unwrap(),
+            a[2].as_f64().unwrap(),
+        ]
+    };
+    let close = |a: [f64; 3], b: [f64; 3], what: &str| {
+        let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+        let off = (dx * dx + dy * dy + dz * dz).sqrt();
+        assert!(off <= 1e-12, "{what}: {a:?} against {b:?}");
+    };
+    assert_eq!(said["placed"], "shoulder", "{said}");
+    assert_eq!(said["lengthGiven"], true, "{said}");
+    close(v(&said["point"]), [0.0, 0.0, 25.0], "point");
+    close(v(&said["foot"]), [0.0, 0.0, 20.0], "foot");
+    close(v(&said["frame"]["normal"]), [0.0, 0.0, 1.0], "normal");
+    // The foot is `at` along the frame's own axes from its origin.
+    let (o, x, y) = (
+        v(&said["frame"]["origin"]),
+        v(&said["frame"]["x"]),
+        v(&said["frame"]["y"]),
+    );
+    let at = said["at"].as_array().unwrap();
+    let (ax, ay) = (at[0].as_f64().unwrap(), at[1].as_f64().unwrap());
+    close(
+        [
+            o[0] + ax * x[0] + ay * y[0],
+            o[1] + ax * x[1] + ay * y[1],
+            o[2] + ax * x[2] + ay * y[2],
+        ],
+        v(&said["foot"]),
+        "at in the frame",
+    );
+    let want = PI * 25.0 * 20.0 + 2.0 / 3.0 * PI * 125.0;
+    // The point in the model where the tip is to be: the same half ball.
+    let edited = run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Nose", "at": ["0 mm", "0 mm", "25 mm"]}),
+    );
+    assert_eq!(edited["status"], "ok", "{edited}");
+    assert_eq!(edited["tip"]["placed"], "givenPoint", "{edited}");
+    close(v(&edited["tip"]["point"]), [0.0, 0.0, 25.0], "point given");
+    near(volume(&mut s, "Nose"), want, 1e-11, "point given");
+    let listed = common::checked::feature(&mut s, "Nose");
+    assert_eq!(
+        listed["params"]["at"],
+        json!(["0 mm", "0 mm", "25 mm"]),
+        "{listed}"
+    );
+    assert_eq!(listed["tip"]["placed"], "givenPoint", "{listed}");
+    // Saved and opened again: the same body, bit for bit.
+    let before = body_of(&s, "Nose");
+    let path = workdir("tip", "point").join("nose.3dcraft");
+    run(&mut s, "file.save", json!({"path": path}));
+    let mut again = common::session();
+    run(&mut again, "file.open", json!({"path": path}));
+    assert_eq!(
+        format!("{:?}", body_of(&again, "Nose")),
+        format!("{before:?}")
+    );
+    let reopened = common::checked::feature(&mut again, "Nose");
+    assert_eq!(reopened["params"]["at"], listed["params"]["at"]);
+    // Behind the end: failed, blaming at and saying how far.
+    let reason = failed(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Nose", "at": ["0 mm", "0 mm", "12 mm"]}),
+    );
+    assert!(
+        reason.starts_with("at:") && reason.contains("behind") && reason.contains("8e0"),
+        "{reason}"
+    );
+    run(&mut s, "edit.undo", json!({}));
+    // Four values are no place.
+    let text = refused(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Nose", "at": [0, 0, 25, 1]}),
+    );
+    assert!(text.contains("at"), "{text}");
+}
+
+/// The drone's blade (five sections drawn about its stacking line, the
+/// line through the sketches' origins, narrowed and turned along it): left
+/// to choose, its tip stands on that line, so the point lies on the
+/// propeller's radius in the hub's plane; and in a document large enough
+/// that `document.inspect` meshes at a tolerance as coarse as the blade's
+/// thickness, every body has its box, the tip at its default place and at
+/// the one chosen before 2026-11-17 alike (whose mesh at that tolerance
+/// was refused, so the blade had none).
+#[test]
+fn a_blade_s_tip_stands_on_its_stacking_line_and_every_body_has_a_box() {
+    let script: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/tip_blade/blade.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut s = common::session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for step in script.as_array().unwrap() {
+        let id = step[0].as_str().unwrap();
+        let out = run(&mut s, id, step[1].clone());
+        assert_ne!(out["status"], "failed", "{id}: {out}");
+    }
+    // A large part beside it: the box is meshed at a thousandth of the
+    // side of a square with the bodies' area, here about 1 mm.
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": ["400 mm", "400 mm", "400 mm"], "position": ["-500 mm", 0, 0], "name": "Crate"}),
+    );
+    let length = "(1 - blade_sections[5].radius_fraction) * prop_diameter / 2 - blade_sections[5].radius_offset";
+    let made = run(
+        &mut s,
+        "feature.tip",
+        json!({"face": "Blade loft:endCap(e9)", "length": length, "name": "Blade"}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    assert_eq!(made["tip"]["placed"], "taper", "{made}");
+    let point: Vec<f64> = made["tip"]["point"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_f64().unwrap())
+        .collect();
+    // The radius 5.1 in / 2 from the hub's axis at (79.77, 79.77), on the
+    // stacking line at the hub's mid-height.
+    let on_line = [79.77 + 64.77, 79.77, 29.4];
+    for (got, want) in point.iter().zip(on_line) {
+        assert!((got - want).abs() <= 1e-9, "{point:?} against {on_line:?}");
+    }
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "reach", "measure": "sectionExtent", "of": "Blade", "plane": "zx",
+               "offset": "motor_offset", "axis": "x", "eq": "prop_diameter / 2 - 5 mm", "tol": "0.001 mm"}),
+    );
+    let listed = run(&mut s, "assert.list", json!({"wait": true}));
+    assert_eq!(listed["passed"], 1, "{listed}");
+    for at in [None, Some(json!(["0.8009 mm", "0.1018 mm"]))] {
+        if let Some(at) = &at {
+            let edited = run(
+                &mut s,
+                "feature.edit",
+                json!({"feature": "Blade", "at": at}),
+            );
+            assert_eq!(edited["status"], "ok", "{edited}");
+        }
+        let document = run(&mut s, "document.inspect", json!({}));
+        for found in document["bodies"].as_array().unwrap() {
+            assert!(
+                found.get("bbox").is_some(),
+                "{at:?}: {} has no box",
+                found["name"]
+            );
+            assert!(
+                found["bboxTolerance"].as_f64().unwrap() > 0.9,
+                "{at:?}: {found}"
+            );
+        }
+    }
     deep(&mut s);
 }
 

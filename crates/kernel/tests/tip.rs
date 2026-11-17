@@ -22,7 +22,7 @@
 
 use craft3d_geom::Surface;
 use craft3d_kernel::KernelError;
-use craft3d_kernel::tip::{ROUND_FULLNESS, TipAsk, TipOrigin, Tipped, tip};
+use craft3d_kernel::tip::{ROUND_FULLNESS, TipAsk, TipOrigin, TipPlace, TipPlaced, Tipped, tip};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_testkit::tips::{
@@ -396,7 +396,7 @@ fn over_any_prism_the_tip_is_two_thirds_of_base_times_length_or_eleven_fifteenth
                     let made = tip(
                         &prism,
                         &TipAsk {
-                            at: at.map(|[x, y]| [x * k, y * k]),
+                            at: at.map(|[x, y]| TipPlace::Face([x * k, y * k])),
                             ..ask(end_of(&prism), Some(l * k), fullness)
                         },
                         &tolerance(k),
@@ -476,7 +476,7 @@ fn a_tip_placed_off_the_middle_still_has_the_closed_form_volume() {
         &TipAsk {
             face: end_of(&prism),
             length: Some(2.0),
-            at: Some([3.0, 0.5]),
+            at: Some(TipPlace::Face([3.0, 0.5])),
             fullness: ROUND_FULLNESS,
         },
         &tolerance(1.0),
@@ -547,7 +547,7 @@ fn sides_that_reach_the_tip_s_plane_unevenly_take_the_general_form() {
                 let what = format!("{name}, k {k:e}, {frame:?}");
                 let leaning = spline_frustum(&frame, k, &section, DEPTH, 1.0, 0.2).unwrap();
                 let at = if name == "L" {
-                    Some([0.5 * k, 0.5 * k])
+                    Some(TipPlace::Face([0.5 * k, 0.5 * k]))
                 } else {
                     None
                 };
@@ -600,7 +600,7 @@ fn what_is_not_a_flat_end_with_spline_sides_is_refused_with_its_reason() {
     let text = refused(
         &prism,
         TipAsk {
-            at: Some([f64::NAN, 0.0]),
+            at: Some(TipPlace::Face([f64::NAN, 0.0])),
             ..ask(end, Some(1.0), ROUND_FULLNESS)
         },
     );
@@ -609,7 +609,7 @@ fn what_is_not_a_flat_end_with_spline_sides_is_refused_with_its_reason() {
     let text = refused(
         &prism,
         TipAsk {
-            at: Some([5.0, 0.0]),
+            at: Some(TipPlace::Face([5.0, 0.0])),
             ..ask(end, Some(1.0), ROUND_FULLNESS)
         },
     );
@@ -776,8 +776,10 @@ fn every_tip_built_can_be_measured() {
 }
 
 /// What is said where the point's place is to blame: an end no point sees
-/// whole (a U), an end whose centre of area does not see it whole (an L),
-/// a place given that does not.
+/// whole (a U), a place given that does not (outside an L). An end whose
+/// centre of area does not see it whole (the L) takes the default place
+/// all the same, over the middle of the places that do: its corner square
+/// (refused before 2026-11-17, saying to give `at`).
 #[test]
 fn where_no_point_or_not_this_one_sees_the_end_whole_the_refusal_says_so() {
     let frame = Frame::WORLD;
@@ -824,22 +826,33 @@ fn where_no_point_or_not_this_one_sees_the_end_whole_the_refusal_says_so() {
         DEPTH,
     )
     .unwrap();
+    // Its centre of area, (1.5, 1), lies on the line of its inner edge: the
+    // tip stands over the middle of the corner square instead, and adds
+    // two thirds of base times length as anywhere over a prism.
+    let before = mass_properties(&l).unwrap().volume;
     for length in [None, Some(1.0)] {
-        let text = tip(&l, &ask(end_of(&l), length, ROUND_FULLNESS), &tol, None)
-            .unwrap_err()
-            .to_string();
+        let made = tip(&l, &ask(end_of(&l), length, ROUND_FULLNESS), &tol, None)
+            .unwrap_or_else(|e| panic!("{length:?}: {e}"));
+        assert_eq!(made.placed, TipPlaced::InView, "{length:?}");
         assert!(
-            text.contains("centre of area") && text.contains("give at"),
-            "{length:?}: {text}"
+            made.foot.distance(Vec3::new(0.5, 0.5, 0.0)) <= 1e-12,
+            "{length:?}: {:?}",
+            made.foot
         );
-        assert!(!text.contains("close in at once"), "{text}");
+        let volume = sound(&made.body, 1.0, 4.0, "L, the default place");
+        assert_near(
+            volume - before,
+            2.0 / 3.0 * 6.0 * made.length,
+            1e-12,
+            "L, the default place",
+        );
     }
     // In the corner square the whole L is seen: built.
     assert!(
         tip(
             &l,
             &TipAsk {
-                at: Some([0.5, 0.5]),
+                at: Some(TipPlace::Face([0.5, 0.5])),
                 ..ask(end_of(&l), Some(1.0), ROUND_FULLNESS)
             },
             &tol,
@@ -851,7 +864,7 @@ fn where_no_point_or_not_this_one_sees_the_end_whole_the_refusal_says_so() {
     let error = tip(
         &l,
         &TipAsk {
-            at: Some([3.0, 2.5]),
+            at: Some(TipPlace::Face([3.0, 2.5])),
             ..ask(end_of(&l), Some(1.0), ROUND_FULLNESS)
         },
         &tol,
@@ -863,4 +876,279 @@ fn where_no_point_or_not_this_one_sees_the_end_whole_the_refusal_says_so() {
         "{error:?}"
     );
     assert!(error.to_string().contains("place given"), "{error}");
+}
+
+/// A section narrowed about a place that is not its centre of area: a
+/// triangle, and a thin section like a blade's, each scaled toward the
+/// frame's origin at the end (as a loft's sections drawn and made smaller
+/// about one line). Left to choose, the tip stands over that place, the
+/// centre of the taper, not over the centre of area of the shoulder;
+/// over a prism, whose sides do not narrow, it stands over the shoulder's
+/// as before.
+#[test]
+fn by_default_the_tip_stands_over_the_place_the_sides_close_in_on() {
+    let triangle = polygon(&[[-1.0, -1.0], [3.0, -1.0], [-1.0, 2.0]]);
+    let thin = polygon(&[
+        [-3.0, -0.15],
+        [2.5, -0.1],
+        [3.0, 0.05],
+        [-1.0, 0.35],
+        [-3.0, 0.1],
+    ]);
+    for k in SCALES {
+        for frame in frames(k) {
+            for (name, section) in [("triangle", &triangle), ("thin", &thin)] {
+                let narrowing = spline_frustum(&frame, k, section, DEPTH, 0.7, 0.0).unwrap();
+                for length in [Some(0.4 * k), None] {
+                    let what = format!("{name}, k {k:e}, {frame:?}, {length:?}");
+                    let made = tip(
+                        &narrowing,
+                        &ask(end_of(&narrowing), length, ROUND_FULLNESS),
+                        &tolerance(k),
+                        None,
+                    )
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                    assert_eq!(made.placed, TipPlaced::Taper, "{what}");
+                    let off = made.foot.distance(frame.origin());
+                    assert!(
+                        off <= 1e-12 * k,
+                        "{what}: the foot is {off:e} off the origin"
+                    );
+                    assert!(
+                        made.tip.distance(frame.origin() + frame.z() * made.length) <= 1e-12 * k,
+                        "{what}"
+                    );
+                    sound(&made.body, k, 4.0, &what);
+                    tangent(&made, frame.z(), &what);
+                }
+                // Not narrowed: over the centre of area, as before.
+                let prism = spline_prism(&frame, k, section, DEPTH).unwrap();
+                let made = tip(
+                    &prism,
+                    &ask(end_of(&prism), Some(0.4 * k), ROUND_FULLNESS),
+                    &tolerance(k),
+                    None,
+                )
+                .unwrap();
+                assert_eq!(made.placed, TipPlaced::Shoulder, "{name}, k {k:e}");
+            }
+        }
+    }
+}
+
+/// What the result says of where the tip stands: the end face's own axes,
+/// the foot in them and in the model, the point, all one place.
+#[test]
+fn the_result_says_where_the_tip_stands_in_the_end_face_s_own_axes() {
+    let section = polygon(&[[0.0, 0.0], [4.0, 0.0], [4.0, 3.0], [0.0, 3.0]]);
+    for k in SCALES {
+        for frame in frames(k) {
+            let prism = spline_prism(&frame, k, &section, DEPTH).unwrap();
+            for at in [None, Some(TipPlace::Face([3.0 * k, 0.5 * k]))] {
+                let what = format!("k {k:e}, {frame:?}, {at:?}");
+                let made = tip(
+                    &prism,
+                    &TipAsk {
+                        at,
+                        ..ask(end_of(&prism), Some(2.0 * k), ROUND_FULLNESS)
+                    },
+                    &tolerance(k),
+                    None,
+                )
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+                let [x, y] = made.at;
+                let near = |a: Vec3, b: Vec3| a.distance(b) <= 1e-12 * k;
+                assert!(near(made.frame.point(x, y, 0.0), made.foot), "{what}");
+                assert!(
+                    near(made.foot + made.normal * made.length, made.tip),
+                    "{what}"
+                );
+                assert!(made.normal.distance(frame.z()) <= 1e-15, "{what}");
+                match at {
+                    Some(TipPlace::Face([ax, ay])) => {
+                        assert_eq!(made.placed, TipPlaced::Face, "{what}");
+                        assert!((x - ax).abs() <= 1e-12 * k && (y - ay).abs() <= 1e-12 * k);
+                    }
+                    _ => {
+                        // The middle of the rectangle.
+                        assert_eq!(made.placed, TipPlaced::Shoulder, "{what}");
+                        assert!(
+                            near(made.foot, frame.point(2.0 * k, 1.5 * k, 0.0)),
+                            "{what}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A place given as a point in the model is taken to the end's plane
+/// along its normal: on the end, at the tip or anywhere between, the same
+/// tip as the place in the end face's own axes; behind the end, beyond the
+/// tip or outside what sees the end whole, refused, saying how far or
+/// that it does not see it, and blaming `at`.
+#[test]
+fn a_place_in_the_model_is_taken_to_the_end_s_plane_along_its_normal() {
+    let section = polygon(&[[0.0, 0.0], [4.0, 0.0], [4.0, 3.0], [0.0, 3.0]]);
+    for k in SCALES {
+        for frame in frames(k) {
+            let tol = tolerance(k);
+            let prism = spline_prism(&frame, k, &section, DEPTH).unwrap();
+            let end = end_of(&prism);
+            let length = 2.0 * k;
+            let by_axes = tip(
+                &prism,
+                &TipAsk {
+                    at: Some(TipPlace::Face([3.0 * k, 0.5 * k])),
+                    ..ask(end, Some(length), ROUND_FULLNESS)
+                },
+                &tol,
+                None,
+            )
+            .unwrap();
+            let by_axes_volume = mass_properties(&by_axes.body).unwrap().volume;
+            for height in [0.0, 0.5, 1.0] {
+                let what = format!("k {k:e}, {frame:?}, {height}");
+                let point = frame.point(3.0 * k, 0.5 * k, height * length);
+                let made = tip(
+                    &prism,
+                    &TipAsk {
+                        at: Some(TipPlace::Point(point)),
+                        ..ask(end, Some(length), ROUND_FULLNESS)
+                    },
+                    &tol,
+                    None,
+                )
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert_eq!(made.placed, TipPlaced::Point, "{what}");
+                assert!(made.tip.distance(by_axes.tip) <= 1e-12 * k, "{what}");
+                assert_near(
+                    mass_properties(&made.body).unwrap().volume,
+                    by_axes_volume,
+                    1e-12,
+                    &what,
+                );
+            }
+            let refused = |point: Vec3| {
+                tip(
+                    &prism,
+                    &TipAsk {
+                        at: Some(TipPlace::Point(point)),
+                        ..ask(end, Some(length), ROUND_FULLNESS)
+                    },
+                    &tol,
+                    None,
+                )
+                .unwrap_err()
+            };
+            for (height, said) in [(-0.25, "behind"), (1.5, "beyond")] {
+                let error = refused(frame.point(3.0 * k, 0.5 * k, height * length));
+                let text = error.to_string();
+                assert!(
+                    matches!(error, KernelError::Tip { blame: "at", .. }),
+                    "{error:?}"
+                );
+                assert!(
+                    text.contains(said) && text.contains("point given"),
+                    "{text}"
+                );
+            }
+            // Outside the end: the place's fault, in the words of a place
+            // given in the face's axes.
+            let error = refused(frame.point(6.0 * k, 0.5 * k, 0.0));
+            assert!(
+                matches!(error, KernelError::Tip { blame: "at", .. }),
+                "{error:?}"
+            );
+            assert!(error.to_string().contains("place given"), "{error}");
+            // Not a number: refused before anything is made.
+            let error = refused(Vec3::new(f64::NAN, 0.0, 0.0));
+            assert!(error.to_string().contains("at"), "{error}");
+        }
+    }
+}
+
+/// A length given past where the sides close in is refused with the
+/// longest length found to fit over the same place: on a frustum whose
+/// sides would meet 2 beyond the end, just below 2; and that length fits.
+#[test]
+fn a_length_too_long_is_refused_with_the_longest_that_fits() {
+    let frame = frames(1.0)[1];
+    let frustum = spline_frustum(&frame, 1.0, &ellipse(2.0, 2.0), DEPTH, 0.5, 0.0).unwrap();
+    let error = tip(
+        &frustum,
+        &ask(end_of(&frustum), Some(3.0), ROUND_FULLNESS),
+        &tolerance(1.0),
+        None,
+    )
+    .unwrap_err();
+    let KernelError::Tip { blame, longest, .. } = &error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(*blame, "length");
+    let fits = longest.unwrap_or_else(|| panic!("no longest in {error}"));
+    assert!(fits > 1.9 && fits <= 2.0, "{fits}");
+    let text = error.to_string();
+    assert!(
+        text.contains("the longest length that fits over this place is 1.99999"),
+        "{text}"
+    );
+    tip(
+        &frustum,
+        &ask(
+            end_of(&frustum),
+            Some(craft3d_kernel::fits_shown(fits)),
+            ROUND_FULLNESS,
+        ),
+        &tolerance(1.0),
+        None,
+    )
+    .unwrap();
+}
+
+/// A thin end (an ellipse ten times as long as it is thick, narrowing),
+/// tipped over places off its middle, meshes watertight at chordal
+/// tolerances as coarse as its thickness: the two faces of the tip on
+/// either side of the thin section share a side of their meshes next to
+/// the point, which is parted in one of them; where that one cannot be
+/// meshed so, in the other (before 2026-11-17 such a body was not meshed
+/// at all, and `document.inspect` gave it no box).
+#[test]
+fn a_thin_tip_meshes_at_a_tolerance_as_coarse_as_its_thickness() {
+    for k in SCALES {
+        let frame = frames(k)[1];
+        let thin = spline_frustum(&frame, k, &ellipse(5.0, 0.5), DEPTH * 4.0, 0.7, 0.0).unwrap();
+        for at in [[0.0, 0.0], [1.0, 0.1], [-2.0, -0.15], [2.5, 0.2]] {
+            let made = tip(
+                &thin,
+                &TipAsk {
+                    at: Some(TipPlace::Face([at[0] * k, at[1] * k])),
+                    ..ask(end_of(&thin), Some(1.5 * k), ROUND_FULLNESS)
+                },
+                &tolerance(k),
+                None,
+            )
+            .unwrap_or_else(|e| panic!("{at:?}, k {k:e}: {e}"));
+            let exact = mass_properties(&made.body).unwrap();
+            for chord in [1.0, 0.7, 0.5, 0.25] {
+                let what = format!("{at:?}, k {k:e}, chord {chord}");
+                let chord = chord * k;
+                let params = TessParams {
+                    chordal_tolerance: chord,
+                    ..TessParams::default()
+                };
+                let mesh =
+                    tessellate_body(&made.body, &params).unwrap_or_else(|e| panic!("{what}: {e}"));
+                let welded = mesh.weld().unwrap_or_else(|e| panic!("{what}: {e:?}"));
+                assert!(welded.is_closed(), "{what}: the mesh is not watertight");
+                assert!(
+                    (welded.volume() - exact.volume).abs() <= exact.area * chord,
+                    "{what}: mesh volume {} against {}",
+                    welded.volume(),
+                    exact.volume
+                );
+            }
+        }
+    }
 }

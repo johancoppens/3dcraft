@@ -25,9 +25,13 @@
 //! **Where the tip stands.** `length` beyond the end along its outward
 //! normal; by default (no length given) as long as the radius of the
 //! circle with the end's area, and never more than half the length at
-//! which the sides close in (`longest_tip_length`). Over the centre of
-//! area of what the sides are carried on to in the tip's plane (the
-//! shoulder), or over a point given in the end face's own axes.
+//! which the sides close in (`longest_tip_length`). Over a place given in
+//! the end face's own axes or as a point in the model; by default over
+//! the centre of the taper (the place on the end the sides close in on,
+//! [`TipPlaced::Taper`]) where the sides narrow toward one that sees the
+//! whole end, else over the centre of area of what the sides are carried
+//! on to in the tip's plane (the shoulder), and where that does not see
+//! the whole end, over the middle of the places that do.
 
 use crate::KernelError;
 use craft3d_geom::pole::Border;
@@ -66,13 +70,46 @@ pub struct TipAsk {
     /// How far beyond the end the tip lies, along the end's outward
     /// normal; `None` for the length chosen as the module says.
     pub length: Option<f64>,
-    /// Where the tip stands over the end, in the end face's own axes (the
-    /// frame of its plane: its x and y axes from its origin); `None` for
-    /// the centre of area of the shoulder.
-    pub at: Option<[f64; 2]>,
+    /// Where the tip stands over the end; `None` for the place chosen as
+    /// the module says.
+    pub at: Option<TipPlace>,
     /// The conic's `ρ`, within [`FULLNESS`]: [`ROUND_FULLNESS`]
     /// gives quarter ellipses, ½ parabolas, more is blunter.
     pub fullness: f64,
+}
+
+/// Where a tip is asked to stand over its end.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TipPlace {
+    /// Lengths along the end face's own x and y axes (the frame of its
+    /// plane) from its plane's origin.
+    Face([f64; 2]),
+    /// A point in the model, taken to the end's plane along the end's
+    /// normal. It must lie between the end's plane and the tip's, within
+    /// the tolerance: on the end, at the tip itself, or between.
+    Point(Vec3),
+}
+
+/// How the place of a tip was found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TipPlaced {
+    /// Given in the end face's own axes.
+    Face,
+    /// Given as a point in the model.
+    Point,
+    /// Chosen: the centre of the taper, the place on the end that the
+    /// sides, carried on, close in on (the foot of a cone's apex; the
+    /// line a loft's sections are drawn and narrowed about). Where the
+    /// sides narrow, a tip there continues the body's own axis.
+    Taper,
+    /// Chosen: the centre of area of what the sides are carried on to in
+    /// the tip's plane (the shoulder), where they do not narrow toward a
+    /// place that sees the whole end (a prism, a body that leans more than
+    /// it narrows).
+    Shoulder,
+    /// Chosen: the middle of the places that see the whole end, where the
+    /// end's centre of area does not (an end that is not convex, an L).
+    InView,
 }
 
 /// Where a face of a tipped body came from.
@@ -103,6 +140,19 @@ pub struct Tipped {
     pub length: f64,
     /// The tip point.
     pub tip: Vec3,
+    /// The end face's own axes, in which a place is given (`TipPlace::Face`):
+    /// the frame of its plane, as the face's surface has it.
+    pub frame: craft3d_math::Frame,
+    /// The end's outward normal: the frame's z axis, or against it where
+    /// the face is reversed.
+    pub normal: Vec3,
+    /// The tip's foot: the point of the end's plane it stands over.
+    pub foot: Vec3,
+    /// The foot in the end face's own axes: what `TipPlace::Face` gives it
+    /// as.
+    pub at: [f64; 2],
+    /// How the place was found.
+    pub placed: TipPlaced,
     pub form: TipForm,
     /// The least sine at which the sides leave the end toward the tip.
     pub onward: f64,
@@ -130,6 +180,7 @@ fn refused_as(
         edge,
         blame,
         reason: reason.into(),
+        longest: None,
     }
 }
 
@@ -177,8 +228,27 @@ struct RimEdge {
     against: bool,
 }
 
-/// The operation itself, at the tolerance given.
+/// The operation itself, at the tolerance given. A tip at the centre of
+/// the taper that is refused is tried once more where the place was
+/// chosen before there was one (over the shoulder's centre of area), so
+/// the default place never refuses what that one built.
 fn tip_at(body: &Body, ask: &TipAsk, tolerance: &Tolerance) -> Result<Tipped, KernelError> {
+    let tapered = std::cell::Cell::new(false);
+    match tip_placed(body, ask, tolerance, true, &tapered) {
+        Err(_) if tapered.get() => tip_placed(body, ask, tolerance, false, &tapered),
+        made => made,
+    }
+}
+
+/// [`tip_at`], the centre of the taper tried for a place left to choose
+/// when `taper` (and `tapered` set where it is taken).
+fn tip_placed(
+    body: &Body,
+    ask: &TipAsk,
+    tolerance: &Tolerance,
+    taper: bool,
+    tapered: &std::cell::Cell<bool>,
+) -> Result<Tipped, KernelError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0 && tolerance.angular.is_finite() && tolerance.angular > 0.0) {
         return Err(KernelError::InvalidSize {
@@ -201,12 +271,15 @@ fn tip_at(body: &Body, ask: &TipAsk, tolerance: &Tolerance) -> Result<Tipped, Ke
             value: length,
         });
     }
-    if let Some([x, y]) = ask.at
-        && !(x.is_finite() && y.is_finite())
-    {
+    let given = match ask.at {
+        Some(TipPlace::Face([x, y])) => [x, y, 0.0],
+        Some(TipPlace::Point(p)) => [p.x, p.y, p.z],
+        None => [0.0; 3],
+    };
+    if let Some(&bad) = given.iter().find(|x| !x.is_finite()) {
         return Err(KernelError::InvalidSize {
             name: "at",
-            value: if x.is_finite() { y } else { x },
+            value: bad,
         });
     }
     let end = ask.face;
@@ -276,34 +349,82 @@ fn tip_at(body: &Body, ask: &TipAsk, tolerance: &Tolerance) -> Result<Tipped, Ke
             "the face encloses no area seen along its normal",
         )
     })?;
-    let foot = match ask.at {
-        Some([x, y]) => {
-            // On the end's plane, whatever the frame's origin.
-            let point = frame.point(x, y, 0.0);
-            point - outward * (point - centre).dot(outward)
-        }
-        None => centre,
-    };
     let edge_of = |rim: usize| rims.get(rim).map(|r| r.coedge.edge);
-    // Whether the point's place sees the whole end: asked only when the
-    // nets refuse, to say what is true.
+    // The end's plane seen from outside, counter-clockwise.
     let in_the_plane = if frame.z().dot(outward) > 0.0 {
         (frame.x(), frame.y())
     } else {
         (frame.x(), -frame.y())
     };
-    let seen = || seen_whole(&tip_rims, in_the_plane, centre, foot);
-    let named = |error: TipError| tip_refusal(end, error, &edge_of, &seen, ask.at.is_some());
+    // Which places see the whole end: worked out only when asked.
+    let sight = std::cell::OnceCell::new();
+    let sight = || sight.get_or_init(|| Sight::of(&tip_rims, in_the_plane, centre));
+    // On the end's plane, whatever the frame's origin.
+    let on_plane = |p: Vec3| p - outward * (p - centre).dot(outward);
+    let chosen = match ask.at {
+        Some(TipPlace::Face([x, y])) => Some((on_plane(frame.point(x, y, 0.0)), TipPlaced::Face)),
+        Some(TipPlace::Point(p)) => Some((on_plane(p), TipPlaced::Point)),
+        // Where the sides narrow toward a place that sees the whole end
+        // (as far as the places the sight was cut by show).
+        None if taper => taper_centre(
+            &tip_rims,
+            centre,
+            outward,
+            in_the_plane,
+            ask.length
+                .unwrap_or_else(|| (area.abs() / std::f64::consts::PI).sqrt()),
+            tol,
+        )
+        .filter(|&f| sight().known() && sight().sees(f) == Seen::Maybe)
+        .map(|f| {
+            tapered.set(true);
+            (f, TipPlaced::Taper)
+        }),
+        None => None,
+    };
+    // Otherwise the length is looked for over the end's centre of area
+    // and the tip stands over the shoulder's, or where the end's does not
+    // see the whole end, both over the middle of the places that do.
+    let (foot, placed) = match chosen {
+        Some(found) => found,
+        None => match sight().sees(centre) {
+            Seen::NotFrom => sight()
+                .middle()
+                .map_or((centre, TipPlaced::Shoulder), |m| (m, TipPlaced::InView)),
+            Seen::Nowhere | Seen::Maybe => (centre, TipPlaced::Shoulder),
+        },
+    };
+    let at_given = ask.at.is_some();
+    let seen = || sight().sees(foot);
+    let named = |error: TipError| tip_refusal(end, error, &edge_of, &seen, at_given, None);
     let length = match ask.length {
         Some(length) => length,
         None => {
             automatic_length(&tip_rims, foot, outward, ask.fullness, area, tol).map_err(named)?
         }
     };
+    // A point in the model lies between the end's plane and the tip's.
+    if let Some(TipPlace::Point(p)) = ask.at {
+        let off = (p - centre).dot(outward);
+        if !(off >= -tol && off <= length + tol) {
+            let said = if off < 0.0 {
+                format!("{:e} behind the end's plane", -off)
+            } else {
+                format!("{off:e} beyond the end's plane, past the tip's ({length:e} beyond it)")
+            };
+            return Err(refused_as(
+                "at",
+                vec![end],
+                None,
+                format!(
+                    "the point given for the tip lies {said}: give a point on the end, at the tip, or between the two (it is taken to the end's plane along the end's normal)"
+                ),
+            ));
+        }
+    }
     let plane_point = centre + outward * length;
-    let tip_point = match ask.at {
-        Some(_) => foot + outward * length,
-        None => {
+    let tip_point = match placed {
+        TipPlaced::Shoulder => {
             let (_, shoulder) =
                 tip_shoulder(&tip_rims, plane_point, outward, tol).map_err(named)?;
             let shoulder: Vec<&NurbsCurve> = shoulder.iter().collect();
@@ -318,7 +439,21 @@ fn tip_at(body: &Body, ask: &TipAsk, tolerance: &Tolerance) -> Result<Tipped, Ke
             // In the plane, to the bit of its offset along the normal.
             middle + outward * (plane_point - middle).dot(outward)
         }
+        TipPlaced::Face | TipPlaced::Point | TipPlaced::Taper | TipPlaced::InView => {
+            foot + outward * length
+        }
     };
+    let foot = on_plane(tip_point);
+    // Where a length given is too long, the longest that fits over the
+    // same place is looked for and said.
+    let longest = || {
+        ask.length?;
+        longest_tip_length(&tip_rims, foot, outward, ask.fullness, tol, length)
+            .ok()
+            .map(|found| found.fits)
+    };
+    let named =
+        |error: TipError| tip_refusal(end, error, &edge_of, &seen, at_given, Some(&longest));
     let spec = TipSpec {
         tip: tip_point,
         normal: outward,
@@ -399,6 +534,7 @@ fn tip_at(body: &Body, ask: &TipAsk, tolerance: &Tolerance) -> Result<Tipped, Ke
         .iter()
         .map(|c| c.largest.max(c.at_rim))
         .fold(0.0_f64, f64::max);
+    let from_origin = foot - frame.origin();
     Ok(Tipped {
         body: spliced,
         faces,
@@ -406,6 +542,11 @@ fn tip_at(body: &Body, ask: &TipAsk, tolerance: &Tolerance) -> Result<Tipped, Ke
         vertices,
         length,
         tip: made.tip,
+        frame,
+        normal: outward,
+        foot,
+        at: [from_origin.dot(frame.x()), from_origin.dot(frame.y())],
+        placed,
         form: made.form,
         onward: made.onward,
         star: made.star,
@@ -522,101 +663,373 @@ enum Seen {
     Maybe,
 }
 
-/// The most half-planes [`seen_whole`] clips by.
+/// The most half-planes [`Sight`] clips by.
 const MAX_SIGHT_LINES: usize = 4096;
 
-/// Whether `foot` sees the whole outline of the end made of `rims`, read
-/// in the end's plane with the axes `axes` (counter-clockwise seen from
-/// outside) about `centre`. A point sees a closed curve whole only from
-/// the inner side of every tangent of it; the polygon of points on the
-/// inner side of the tangents at some places along the curve (a box cut
-/// by each, 32 places a knot span) holds every point that sees it whole.
-/// So where that polygon is empty no point sees the curve whole, and a
-/// foot outside it does not: both are proven by the places taken. A foot
-/// inside may or may not.
-fn seen_whole(rims: &[TipRim], axes: (Vec3, Vec3), centre: Vec3, foot: Vec3) -> Seen {
+/// A line `(point, direction)` in the end's plane, in flat coordinates.
+type Line = ([f64; 2], [f64; 2]);
+
+/// Which places of the end's plane see the whole outline of the end made
+/// of `rims`, read in the end's plane with the axes `axes`
+/// (counter-clockwise seen from outside) about `centre`. A point sees a
+/// closed curve whole only from the inner side of every tangent of it;
+/// the polygon of points on the inner side of the tangents at some places
+/// along the curve (a box cut by each, 32 places a knot span) holds every
+/// point that sees it whole. So where that polygon is empty no point sees
+/// the curve whole, and a foot outside it does not: both are proven by
+/// the places taken. A foot inside may or may not.
+struct Sight {
+    axes: (Vec3, Vec3),
+    centre: Vec3,
+    lines: Vec<Line>,
+    reach: f64,
+    polygon: Polygon,
+}
+
+/// The polygon a [`Sight`] cut.
+enum Polygon {
+    /// Not cut: too many lines, or an outline of no size.
+    Unknown,
+    /// Empty: no point sees the whole outline.
+    Empty,
+    Cut(Vec<[f64; 2]>),
+}
+
+/// How far `q` lies to the left of `line` (its direction of travel), times
+/// the direction's length.
+fn left_of(q: [f64; 2], (p, d): Line) -> f64 {
+    d[0] * (q[1] - p[1]) - d[1] * (q[0] - p[0])
+}
+
+impl Sight {
+    fn of(rims: &[TipRim], axes: (Vec3, Vec3), centre: Vec3) -> Sight {
+        let (ex, ey) = axes;
+        let flat = |p: Vec3| [(p - centre).dot(ex), (p - centre).dot(ey)];
+        let mut lines: Vec<Line> = Vec::new();
+        let mut reach = 0.0_f64;
+        for rim in rims {
+            let curve = &rim.curve;
+            for p in curve.control_points() {
+                let [x, y] = flat(*p);
+                reach = reach.max(x.abs()).max(y.abs());
+            }
+            for pair in curve.knots().windows(2) {
+                let [lo, hi] = pair else { continue };
+                if hi <= lo {
+                    continue;
+                }
+                for i in 0..=32u8 {
+                    let t = lo + (hi - lo) * f64::from(i) / 32.0;
+                    let (p, d) = curve.derivatives(t);
+                    let along = [d.dot(ex), d.dot(ey)];
+                    if along[0] != 0.0 || along[1] != 0.0 {
+                        lines.push((flat(p), along));
+                    }
+                }
+            }
+        }
+        let polygon = Sight::cut(&lines, reach);
+        Sight {
+            axes,
+            centre,
+            lines,
+            reach,
+            polygon,
+        }
+    }
+
+    fn cut(lines: &[Line], reach: f64) -> Polygon {
+        if !(reach.is_finite() && reach > 0.0) || lines.len() > MAX_SIGHT_LINES {
+            return Polygon::Unknown;
+        }
+        let big = 4.0 * reach;
+        let mut polygon: Vec<[f64; 2]> = vec![[-big, -big], [big, -big], [big, big], [-big, big]];
+        // Inside: to the left of the direction of travel.
+        for &line in lines {
+            let mut next = Vec::with_capacity(polygon.len() + 1);
+            for (k, &a) in polygon.iter().enumerate() {
+                let Some(&b) = polygon.get((k + 1) % polygon.len()) else {
+                    continue;
+                };
+                let (sa, sb) = (left_of(a, line), left_of(b, line));
+                if sa >= 0.0 {
+                    next.push(a);
+                }
+                if (sa >= 0.0) != (sb >= 0.0) {
+                    let t = sa / (sa - sb);
+                    next.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+                }
+            }
+            polygon = next;
+            if polygon.len() < 3 {
+                return Polygon::Empty;
+            }
+        }
+        let area: f64 = polygon
+            .iter()
+            .zip(polygon.iter().cycle().skip(1))
+            .map(|(a, b)| a[0] * b[1] - a[1] * b[0])
+            .sum();
+        if area.abs() <= 1e-12 * reach * reach {
+            return Polygon::Empty;
+        }
+        Polygon::Cut(polygon)
+    }
+
+    fn flat(&self, p: Vec3) -> [f64; 2] {
+        let (ex, ey) = self.axes;
+        [(p - self.centre).dot(ex), (p - self.centre).dot(ey)]
+    }
+
+    /// Whether the polygon was cut: the outline is not too long to.
+    fn known(&self) -> bool {
+        !matches!(self.polygon, Polygon::Unknown)
+    }
+
+    /// Whether `foot` sees the whole outline.
+    fn sees(&self, foot: Vec3) -> Seen {
+        match self.polygon {
+            Polygon::Unknown => Seen::Maybe,
+            Polygon::Empty => Seen::Nowhere,
+            Polygon::Cut(_) => {
+                // Not inside by more than rounding: seen edge-on at best.
+                let f = self.flat(foot);
+                let margin = 1e-9 * self.reach;
+                if self.lines.iter().any(|&(p, d)| {
+                    let length = (d[0] * d[0] + d[1] * d[1]).sqrt();
+                    left_of(f, (p, d)) <= margin * length
+                }) {
+                    Seen::NotFrom
+                } else {
+                    Seen::Maybe
+                }
+            }
+        }
+    }
+
+    /// The centre of area of the polygon of the places that may see the
+    /// whole outline, on the end's plane: the place furthest in from all
+    /// its sides, roughly. `None` where there is no such polygon.
+    fn middle(&self) -> Option<Vec3> {
+        let Polygon::Cut(polygon) = &self.polygon else {
+            return None;
+        };
+        let (mut area, mut x, mut y) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for (a, b) in polygon.iter().zip(polygon.iter().cycle().skip(1)) {
+            let cross = a[0] * b[1] - a[1] * b[0];
+            area += cross;
+            x += (a[0] + b[0]) * cross;
+            y += (a[1] + b[1]) * cross;
+        }
+        if !(area.is_finite() && area.abs() > 1e-12 * self.reach * self.reach) {
+            return None;
+        }
+        let (ex, ey) = self.axes;
+        let middle = self.centre + ex * (x / (3.0 * area)) + ey * (y / (3.0 * area));
+        (middle.is_finite() && self.sees(middle) == Seen::Maybe).then_some(middle)
+    }
+}
+
+/// The least singular value of the carry's fit (below) that counts as the
+/// sides narrowing, spreading or turning across the end: a millionth of
+/// the end's size per unit of it.
+const TAPER_LEAST: f64 = 1e-6;
+
+/// The centre of the taper: the place on the end's plane that the sides,
+/// carried on to the plane `length` beyond the end, do not move in it.
+/// Where the sides narrow toward a point (a cone toward its apex, a loft
+/// through sections drawn and made smaller about one line) it is the foot
+/// of that point or line, and a tip over it continues the body's own axis;
+/// the centre of area of what the sides come to (the shoulder) lies there
+/// only where the end is symmetric about it.
+///
+/// The carry (each point of the rim to the point of the shoulder at the
+/// same parameter, both read in the end's plane with `axes` about
+/// `centre`) is fitted by an affine map, least squares along the rim's
+/// length (Gauss–Legendre, 8 points on each quarter of every knot span):
+/// `x ↦ x + J x + d`. Its fixed point solves `J f + d = 0`. Along a
+/// direction in which `J` is nothing (within [`TAPER_LEAST`] and the
+/// fit's own misfit: sides that run on parallel, as a prism's, or lean
+/// without narrowing) the place is the shoulder's centre of area; along
+/// one in which it is not, the fixed point's. `None` where `J` is nothing
+/// both ways (a prism, a body that only leans: the place is then the
+/// shoulder's centre as before), or the shoulder cannot be had.
+fn taper_centre(
+    rims: &[TipRim],
+    centre: Vec3,
+    normal: Vec3,
+    axes: (Vec3, Vec3),
+    length: f64,
+    tol: f64,
+) -> Option<Vec3> {
+    if !(length.is_finite() && length > 0.0) {
+        return None;
+    }
+    let (_, shoulder) = tip_shoulder(rims, centre + normal * length, normal, tol).ok()?;
+    if shoulder.len() != rims.len() {
+        return None;
+    }
     let (ex, ey) = axes;
-    let flat = |p: Vec3| [(p - centre).dot(ex), (p - centre).dot(ey)];
-    let mut lines: Vec<([f64; 2], [f64; 2])> = Vec::new();
-    let mut reach = 0.0_f64;
+    let mut size = 0.0_f64;
     for rim in rims {
+        for p in rim.curve.control_points() {
+            size = size
+                .max((*p - centre).dot(ex).abs())
+                .max((*p - centre).dot(ey).abs());
+        }
+    }
+    if !(size.is_finite() && size > 0.0) {
+        return None;
+    }
+    // Flat coordinates in units of the end's size.
+    let flat = |p: Vec3| [(p - centre).dot(ex) / size, (p - centre).dot(ey) / size];
+    let rule = Rule::new(8);
+    // The normal equations of the fit: per sample `w [x y 1]ᵀ [x y 1]` and
+    // `w [x y 1]ᵀ Δ`, `Δ` the carry less the place.
+    let mut normal_eq = [[0.0_f64; 3]; 3];
+    let mut rhs = [[0.0_f64; 2]; 3];
+    let mut samples: Vec<([f64; 3], [f64; 2], f64)> = Vec::new();
+    for (rim, carried) in rims.iter().zip(&shoulder) {
         let curve = &rim.curve;
-        for p in curve.control_points() {
-            let [x, y] = flat(*p);
-            reach = reach.max(x.abs()).max(y.abs());
+        if curve.domain() != carried.domain() {
+            return None;
         }
         for pair in curve.knots().windows(2) {
             let [lo, hi] = pair else { continue };
             if hi <= lo {
                 continue;
             }
-            for i in 0..=32u8 {
-                let t = lo + (hi - lo) * f64::from(i) / 32.0;
-                let (p, d) = curve.derivatives(t);
-                let along = [d.dot(ex), d.dot(ey)];
-                if along[0] != 0.0 || along[1] != 0.0 {
-                    lines.push((flat(p), along));
+            let quarter = 0.25 * (hi - lo);
+            for panel in 0..4u8 {
+                let from = lo + quarter * f64::from(panel);
+                for (t, weight) in rule.points(from, from + quarter) {
+                    let (point, along) = curve.derivatives(t);
+                    let w = weight * along.length() / size;
+                    let [x, y] = flat(point);
+                    let [sx, sy] = flat(carried.eval(t));
+                    let row = [x, y, 1.0];
+                    let moved = [sx - x, sy - y];
+                    for (i, &ri) in row.iter().enumerate() {
+                        let (Some(eq), Some(r)) = (normal_eq.get_mut(i), rhs.get_mut(i)) else {
+                            continue;
+                        };
+                        for (cell, &rj) in eq.iter_mut().zip(&row) {
+                            *cell += w * ri * rj;
+                        }
+                        for (cell, &m) in r.iter_mut().zip(&moved) {
+                            *cell += w * ri * m;
+                        }
+                    }
+                    samples.push((row, moved, w));
                 }
             }
         }
     }
-    if !(reach.is_finite() && reach > 0.0) || lines.len() > MAX_SIGHT_LINES {
-        return Seen::Maybe;
+    let [[a1, a2], [b1, b2], [c1, c2]] = solve3(normal_eq, rhs)?;
+    // The carry's map: moved = J [x, y] + d.
+    let j = [[a1, b1], [a2, b2]];
+    let d = [c1, c2];
+    // How far the carry is from that map (root mean square, in units of
+    // the end's size).
+    let (mut misfit, mut total) = (0.0_f64, 0.0_f64);
+    for ([x, y, _], [mx, my], w) in &samples {
+        let fx = j[0][0] * x + j[0][1] * y + d[0] - mx;
+        let fy = j[1][0] * x + j[1][1] * y + d[1] - my;
+        misfit += w * (fx * fx + fy * fy);
+        total += w;
     }
-    let big = 4.0 * reach;
-    let mut polygon: Vec<[f64; 2]> = vec![[-big, -big], [big, -big], [big, big], [-big, big]];
-    // Inside: to the left of the direction of travel.
-    let side =
-        |q: [f64; 2], (p, d): ([f64; 2], [f64; 2])| d[0] * (q[1] - p[1]) - d[1] * (q[0] - p[0]);
-    for &line in &lines {
-        let mut next = Vec::with_capacity(polygon.len() + 1);
-        for (k, &a) in polygon.iter().enumerate() {
-            let Some(&b) = polygon.get((k + 1) % polygon.len()) else {
-                continue;
-            };
-            let (sa, sb) = (side(a, line), side(b, line));
-            if sa >= 0.0 {
-                next.push(a);
-            }
-            if (sa >= 0.0) != (sb >= 0.0) {
-                let t = sa / (sa - sb);
-                next.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
-            }
-        }
-        polygon = next;
-        if polygon.len() < 3 {
-            return Seen::Nowhere;
-        }
+    let misfit = if total > 0.0 {
+        (misfit / total).sqrt()
+    } else {
+        return None;
+    };
+    // The singular values and vectors of J, from Jᵀ J.
+    let p = j[0][0] * j[0][0] + j[1][0] * j[1][0];
+    let q = j[0][0] * j[0][1] + j[1][0] * j[1][1];
+    let r = j[0][1] * j[0][1] + j[1][1] * j[1][1];
+    let half = 0.5 * (p + r);
+    let spread = (0.25 * (p - r) * (p - r) + q * q).sqrt();
+    let (big, small) = (half + spread, (half - spread).max(0.0));
+    let first = if q.abs() > 0.0 {
+        let (vx, vy) = (big - r, q);
+        let norm = (vx * vx + vy * vy).sqrt();
+        [vx / norm, vy / norm]
+    } else if p >= r {
+        [1.0, 0.0]
+    } else {
+        [0.0, 1.0]
+    };
+    let second = [-first[1], first[0]];
+    let least = TAPER_LEAST.max(misfit);
+    let shoulder_refs: Vec<&NurbsCurve> = shoulder.iter().collect();
+    let (_, middle) = area_and_centre(&shoulder_refs, normal)?;
+    let g = flat(middle);
+    let mut place = [0.0_f64; 2];
+    let mut tapered = false;
+    for (v, sigma2) in [(first, big), (second, small)] {
+        let sigma = sigma2.sqrt();
+        let along = if sigma > least {
+            tapered = true;
+            // u = J v / σ; along v the fixed point is −(u · d) / σ.
+            let u = [
+                (j[0][0] * v[0] + j[0][1] * v[1]) / sigma,
+                (j[1][0] * v[0] + j[1][1] * v[1]) / sigma,
+            ];
+            -(u[0] * d[0] + u[1] * d[1]) / sigma
+        } else {
+            v[0] * g[0] + v[1] * g[1]
+        };
+        place[0] += v[0] * along;
+        place[1] += v[1] * along;
     }
-    let mut area = 0.0;
-    for (k, a) in polygon.iter().enumerate() {
-        if let Some(b) = polygon.get((k + 1) % polygon.len()) {
-            area += a[0] * b[1] - a[1] * b[0];
-        }
+    if !tapered {
+        return None;
     }
-    if area.abs() <= 1e-12 * reach * reach {
-        return Seen::Nowhere;
+    let found = centre + ex * (place[0] * size) + ey * (place[1] * size);
+    found.is_finite().then_some(found)
+}
+
+/// `N X = R` for a 3 × 3 `N` and two right-hand sides, by Cramer's rule
+/// (the normal equations of a fit in coordinates of the size of one about
+/// the centre of area are well conditioned); `None` where `N` is singular
+/// to rounding.
+fn solve3(n: [[f64; 3]; 3], r: [[f64; 2]; 3]) -> Option<[[f64; 2]; 3]> {
+    let det3 = |m: [[f64; 3]; 3]| {
+        let [[a, b, c], [d, e, f], [g, h, i]] = m;
+        a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+    };
+    let scale = n.iter().flatten().fold(0.0_f64, |m, x| m.max(x.abs()));
+    let det = det3(n);
+    if !(scale.is_finite() && det.is_finite() && det.abs() > 1e-12 * scale * scale * scale) {
+        return None;
     }
-    // Not inside by more than rounding: seen edge-on at best.
-    let f = flat(foot);
-    let margin = 1e-9 * reach;
-    if lines.iter().any(|&(p, d)| {
-        let length = (d[0] * d[0] + d[1] * d[1]).sqrt();
-        side(f, (p, d)) <= margin * length
-    }) {
-        return Seen::NotFrom;
-    }
-    Seen::Maybe
+    let [[a, b, c], [d, e, f], [g, h, i]] = n;
+    let column = |k: [f64; 3]| {
+        let [k0, k1, k2] = k;
+        [
+            det3([[k0, b, c], [k1, e, f], [k2, h, i]]) / det,
+            det3([[a, k0, c], [d, k1, f], [g, k2, i]]) / det,
+            det3([[a, b, k0], [d, e, k1], [g, h, k2]]) / det,
+        ]
+    };
+    let [[r0, s0], [r1, s1], [r2, s2]] = r;
+    let [x0, y0, z0] = column([r0, r1, r2]);
+    let [x1, y1, z1] = column([s0, s1, s2]);
+    let x = [[x0, x1], [y0, y1], [z0, z1]];
+    x.iter().flatten().all(|v| v.is_finite()).then_some(x)
 }
 
 /// A refusal of the nets, with the edge of the rim curve it names, said
-/// as what is true of the end where the point's place is to blame.
+/// as what is true of the end where the point's place is to blame;
+/// `longest` looks for the longest length that fits over the same place,
+/// asked where a length given is too long.
 fn tip_refusal(
     end: FaceId,
     error: TipError,
     edge_of: &dyn Fn(usize) -> Option<EdgeId>,
     seen: &dyn Fn() -> Seen,
     at_given: bool,
+    longest: Option<&dyn Fn() -> Option<f64>>,
 ) -> KernelError {
     let sight = matches!(
         error,
@@ -646,12 +1059,23 @@ fn tip_refusal(
                 return refused(
                     vec![end],
                     None,
-                    "the end's centre of area, where the tip stands unless at is given, does not see the whole outline of the end (an end that is not convex can have it so): give at, a place from which all of it is in view",
+                    "the end's centre of area does not see the whole outline of the end (an end that is not convex can have it so), and no other place that does was found: give at, a place from which all of it is in view",
                 );
             }
             Seen::Maybe => {}
         }
     }
+    // A length given that is too long: the longest that fits over the
+    // same place, where one is found.
+    let too_long = matches!(
+        error,
+        TipError::NotStarShaped { .. } | TipError::ClosesIn { .. }
+    );
+    let fits = if too_long {
+        longest.and_then(|find| find())
+    } else {
+        None
+    };
     let rim = match &error {
         TipError::RimOpen { rim, .. }
         | TipError::RimCrosses { rim, .. }
@@ -667,6 +1091,9 @@ fn tip_refusal(
         | TipError::NoLengthFits => None,
     };
     let advice = match &error {
+        TipError::NotStarShaped { .. } | TipError::ClosesIn { .. } if fits.is_some() => {
+            "; give a shorter length (no longer than the longest that fits, below), or a place for the tip further inside the end"
+        }
         TipError::NotStarShaped { .. } | TipError::ClosesIn { .. } => {
             "; give a shorter length, or a place for the tip further inside the end"
         }
@@ -692,7 +1119,13 @@ fn tip_refusal(
         TipError::NoLengthFits => "no length tried fits (from twice the radius of the circle of the end's area, halved again and again down to four tolerances): at each the faces round the end close in before the point, or are seen from it edge-on; give a length, or a place for the point (at)".to_string(),
         _ => format!("{error}{advice}"),
     };
-    refused_as(blame, vec![end], rim.and_then(edge_of), said)
+    KernelError::Tip {
+        faces: vec![end],
+        edge: rim.and_then(edge_of),
+        blame,
+        reason: said,
+        longest: fits,
+    }
 }
 
 /// The edge of `coedge` (a coedge of the end face's loop) and the side
