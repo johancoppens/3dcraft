@@ -725,11 +725,13 @@ fn switch_ball(
         feet,
         params: params_on(sides)?,
         centre: Some(c),
+        pole: None,
     };
     let later = Section {
         feet,
         params: params_on(after)?,
         centre: Some(c),
+        pole: None,
     };
     let [f0, f1] = feet;
     let normal = (f0 - c).cross(f1 - c);
@@ -802,7 +804,27 @@ struct EndMade {
 /// face).
 enum EndKind {
     Third(EndMade),
-    Meet { range: (f64, f64) },
+    Meet {
+        range: (f64, f64),
+    },
+    /// The face closes in a point, the vertex both its borders end in: a
+    /// fillet whose radius runs to nothing there.
+    Tip(VertexId),
+}
+
+/// One end of the blend face of a single open edge: cut where it crosses
+/// the third face there (`cut`, with where it meets the two borders), or
+/// closed in a point (`vertex`, at `at` along the face).
+pub(super) enum OneEnd {
+    Cut {
+        end: End,
+        cut: NurbsCurve,
+        at: [f64; 2],
+    },
+    Tip {
+        vertex: VertexId,
+        at: f64,
+    },
 }
 
 struct Computed {
@@ -1302,6 +1324,7 @@ fn measure(
             &[(piece.edge, first), (*second_border, second)],
             *face,
             shape,
+            None,
             tolerance,
         )?;
         faces.push((*face, piece.item));
@@ -1356,16 +1379,15 @@ fn smooth_joints(
 }
 
 /// Puts the blend face of a single open edge (`one`, a chain of one
-/// piece) into `body`: `surface`, facing `outward`, cut at its two `ends`
-/// by `cuts` (each with where it meets the two borders), as the face of a
+/// piece) into `body`: `surface`, facing `outward`, each of its two ends
+/// cut by a third face or closed in a point (`ends`), as the face of a
 /// chain's piece is. Its face and second border.
 pub(super) fn splice_one(
     body: &mut Body,
     one: &Chain,
     surface: NurbsSurface,
     outward: Vec3,
-    [start, finish]: [End; 2],
-    [(cut0, at0), (cut1, at1)]: [(NurbsCurve, [f64; 2]); 2],
+    ends: [OneEnd; 2],
     tolerance: &Tolerance,
 ) -> Result<(FaceId, EdgeId), BlendError> {
     let mut piece = PieceMade {
@@ -1373,24 +1395,25 @@ pub(super) fn splice_one(
         spans: [(0.0, 1.0); 2],
         outward,
     };
-    cut_spans(&mut piece.spans, 0, at0);
-    cut_spans(&mut piece.spans, 1, at1);
+    let mut kinds = Vec::with_capacity(2);
+    for (index, end) in ends.into_iter().enumerate() {
+        kinds.push(match end {
+            OneEnd::Cut { end, cut, at } => {
+                cut_spans(&mut piece.spans, index, at);
+                EndKind::Third(EndMade { end, cut, at })
+            }
+            OneEnd::Tip { vertex, at } => {
+                cut_spans(&mut piece.spans, index, [at, at]);
+                EndKind::Tip(vertex)
+            }
+        });
+    }
+    let kinds = <[EndKind; 2]>::try_from(kinds).map_err(|_| lost())?;
     spans_left(&one.pieces, std::slice::from_ref(&piece))?;
     let computed = Computed {
         pieces: vec![piece],
         joints: Vec::new(),
-        ends: Some([
-            EndKind::Third(EndMade {
-                end: start,
-                cut: cut0,
-                at: at0,
-            }),
-            EndKind::Third(EndMade {
-                end: finish,
-                cut: cut1,
-                at: at1,
-            }),
-        ]),
+        ends: Some(kinds),
     };
     match splice_chain(body, one, computed, [None, None], tolerance)?.as_slice() {
         [made] => Ok(*made),
@@ -1496,6 +1519,8 @@ fn splice_chain(
                         .ok_or_else(lost)?;
                     end_vertices.push(given.corners);
                 }
+                // Both borders end in the one vertex.
+                EndKind::Tip(vertex) => end_vertices.push([*vertex, *vertex]),
             }
         }
     }
@@ -1577,6 +1602,8 @@ fn splice_chain(
                         .ok_or_else(lost)?;
                     cut_edges.push(given.edges.clone());
                 }
+                // Nothing between the borders there: they meet.
+                EndKind::Tip(_) => cut_edges.push(Vec::new()),
             }
         }
     }

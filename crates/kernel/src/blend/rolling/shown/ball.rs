@@ -139,7 +139,17 @@ pub(super) fn shown_wrong(
     };
     // The construction's seed, settled without being counted as the
     // construction's work (`Solver::section` counts it).
-    let Some(seed) = afresh(&solver, 0.5, item) else {
+    // The planes: evenly from one end of what the fillet runs along to
+    // the other, the edge or its part between the tips of a fillet that
+    // ends in points.
+    let (centre, step) = match &along {
+        Some(law) => {
+            let (from, to) = law.span();
+            (0.5 * (from + to), (to - from) / f64::from(SECTIONS))
+        }
+        None => (0.5, 1.0 / f64::from(SECTIONS)),
+    };
+    let Some(seed) = afresh(&solver, centre, item) else {
         return Ok(());
     };
     // Where a point of a face's surface lies against the face: asked of
@@ -154,7 +164,6 @@ pub(super) fn shown_wrong(
             .ok()
     };
     let half = SECTIONS / 2;
-    let step = 1.0 / f64::from(SECTIONS);
     // The construction follows its balls in steps of at most this: so is
     // each plane reached from the one before, so as to stay with the
     // construction's balls where another family lies near.
@@ -164,13 +173,13 @@ pub(super) fn shown_wrong(
     let moved = match solver.law {
         Some(_) => None,
         None => exact::motion(&solver.spine, solver.sides)
-            .and_then(|m| exact::Moved::new(m, &solver.spine, seed, 0.5)),
+            .and_then(|m| exact::Moved::new(m, &solver.spine, seed, centre)),
     };
     // From the middle out to each end, each plane from the one before.
     for way in [1.0, -1.0] {
-        let mut at = (0.5, seed);
+        let mut at = (centre, seed);
         for j in 0..=half {
-            let s = 0.5 + way * f64::from(j) * step;
+            let s = centre + way * f64::from(j) * step;
             let found = if j == 0 {
                 Some(seed)
             } else {

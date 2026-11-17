@@ -122,12 +122,7 @@ impl Law {
     fn on(&self, body: &Body, edge: EdgeId, up: Vec3, k: f64) -> RadiusLaw {
         let data = body.edge(edge).unwrap();
         let (start, end) = (data.curve.eval(data.range.0), data.curve.eval(data.range.1));
-        let fade = |f: Option<(f64, f64)>| {
-            f.map(|(to, over)| Fade {
-                to: to * k,
-                over: over * k,
-            })
-        };
+        let fade = |f: Option<(f64, f64)>| f.map(|(to, over)| Fade::to(to * k, over * k));
         let fades = if (end - start).dot(up) > 0.0 {
             [fade(self.low), fade(self.high)]
         } else {
@@ -1091,13 +1086,7 @@ fn a_law_of_one_radius_is_the_fillet_of_that_radius() {
                 RadiusLaw::constant(radius),
                 RadiusLaw {
                     radius,
-                    fades: [
-                        Some(Fade {
-                            to: radius,
-                            over: 0.1 * k,
-                        }),
-                        None,
-                    ],
+                    fades: [Some(Fade::to(radius, 0.1 * k)), None],
                 },
             ];
             for law in same {
@@ -1118,17 +1107,19 @@ fn a_law_that_is_not_one_or_not_alone_is_refused() {
     let upright = edge_at(&block, &Frame::WORLD, k, [0.0, 0.0, 10.0]);
     let law = |radius: f64, start: Option<(f64, f64)>, end: Option<(f64, f64)>| RadiusLaw {
         radius,
-        fades: [start, end].map(|f| f.map(|(to, over)| Fade { to, over })),
+        fades: [start, end].map(|f| f.map(|(to, over)| Fade::to(to, over))),
     };
     let try_one = |body: &Body, edge: EdgeId, law: RadiusLaw| {
         fillet_by_law(body, &[FilletLawEdge { edge, law }], &tol)
     };
     // Numbers that are not sizes.
     for bad in [0.0, -2.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        // (A fade to nothing, exactly, is a tip: `fillet_tip.rs`.)
+        let to = if bad == 0.0 { -1.0 } else { bad };
         for law in [
             law(bad, None, None),
             law(bad, Some((1.0, 5.0)), None),
-            law(3.0, Some((bad, 5.0)), None),
+            law(3.0, Some((to, 5.0)), None),
             law(3.0, None, Some((1.0, bad))),
         ] {
             let refused = try_one(&block, upright, law);

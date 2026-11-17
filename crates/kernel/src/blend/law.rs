@@ -62,14 +62,46 @@ use craft3d_geom::Curve3;
 use craft3d_math::Vec3;
 use craft3d_topo::EdgeId;
 
-/// How a fillet's radius runs to another radius at one end of its edge.
+/// How a fillet's radius runs to another radius at one end of its edge,
+/// or to nothing: a tip.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Fade {
-    /// The radius at the end of the edge itself.
+    /// The radius where the fade ends: at the end of the edge itself, or,
+    /// for a tip, nothing (zero) at `back` from it.
     pub to: f64,
-    /// The length along the edge, from that end, over which the radius
-    /// runs from the fillet's own to `to`.
+    /// The length along the edge over which the radius runs from the
+    /// fillet's own to `to`.
     pub over: f64,
+    /// How far short of the end of the edge the fade ends. Only a fade to
+    /// nothing may end short of it: the fillet face closes in a point of
+    /// the edge there, and the edge beyond stays as it is.
+    pub back: f64,
+}
+
+impl Fade {
+    /// A fade to the radius `to` at the end of the edge, over `over`.
+    pub fn to(to: f64, over: f64) -> Self {
+        Self {
+            to,
+            over,
+            back: 0.0,
+        }
+    }
+
+    /// A fade to nothing over `over`: the fillet ends in a point of the
+    /// edge, `back` short of the edge's end.
+    pub fn tip(over: f64, back: f64) -> Self {
+        Self {
+            to: 0.0,
+            over,
+            back,
+        }
+    }
+
+    /// Whether the fade runs to nothing.
+    pub(crate) fn is_tip(&self) -> bool {
+        self.to == 0.0
+    }
 }
 
 /// A fillet's radius along its edge: see the module documentation.
@@ -103,8 +135,20 @@ impl RadiusLaw {
         };
         size("radius", self.radius)?;
         for fade in self.fades.iter().flatten() {
-            size("fade.to", fade.to)?;
+            // Nothing, exactly, is a tip.
+            if !fade.is_tip() {
+                size("fade.to", fade.to)?;
+            }
             size("fade.over", fade.over)?;
+            // Short of the end only a tip ends, and by a length or by
+            // nothing.
+            let back = fade.back;
+            if !(back.is_finite() && back >= 0.0 && (back == 0.0 || fade.is_tip())) {
+                return Err(KernelError::InvalidSize {
+                    name: "fade.back",
+                    value: back,
+                });
+            }
         }
         Ok(self)
     }
@@ -133,6 +177,7 @@ impl RadiusLaw {
                 fade.map(|f| Fade {
                     to: f.to * scale,
                     over: f.over,
+                    back: f.back,
                 })
             }),
         }
@@ -171,6 +216,9 @@ pub(crate) struct Along<'a> {
     /// curve from its start to each.
     breaks: Vec<f64>,
     lengths: Vec<f64>,
+    /// Per end of the edge, where a fade to nothing there ends: the `s`
+    /// of the tip.
+    tips: [Option<f64>; 2],
 }
 
 impl<'a> Along<'a> {
@@ -224,6 +272,7 @@ impl<'a> Along<'a> {
             range,
             breaks,
             lengths: Vec::new(),
+            tips: [None, None],
         };
         let mut lengths = Vec::with_capacity(along.breaks.len());
         let mut total = 0.0_f64;
@@ -239,9 +288,28 @@ impl<'a> Along<'a> {
         along.lengths = lengths;
         // Two fades may meet in the middle; they may not overlap, and one
         // may not be longer than the edge.
-        let faded: f64 = law.fades.iter().flatten().map(|f| f.over).sum();
+        let faded: f64 = law.fades.iter().flatten().map(|f| f.over + f.back).sum();
         if faded > total * (1.0 + 1e-12) {
             return Err(refused(edge, Reason::LawTooLong));
+        }
+        // Where each tip lies along the edge.
+        for (end, fade) in law.fades.iter().enumerate() {
+            let Some(fade) = fade.as_ref().filter(|f| f.is_tip()) else {
+                continue;
+            };
+            let s = if fade.back == 0.0 {
+                if end == 0 { 0.0 } else { 1.0 }
+            } else {
+                let at = if end == 0 {
+                    fade.back
+                } else {
+                    total - fade.back
+                };
+                along.place_of(at).ok_or_else(unmeasured)?
+            };
+            if let Some(slot) = along.tips.get_mut(end) {
+                *slot = Some(s);
+            }
         }
         Ok(along)
     }
@@ -249,6 +317,40 @@ impl<'a> Along<'a> {
     /// The length of the edge.
     pub(crate) fn length(&self) -> f64 {
         self.lengths.last().copied().unwrap_or(0.0)
+    }
+
+    /// Where the fillet ends in a point at the end `end` of the edge (0:
+    /// its start, 1: its end): the `s` of the tip, where the fade there
+    /// runs to nothing.
+    pub(crate) fn tip(&self, end: usize) -> Option<f64> {
+        self.tips.get(end).copied().flatten()
+    }
+
+    /// The part of the edge the fillet runs along, in `s`: from a tip at
+    /// its start, or the start, to a tip at its end, or the end.
+    pub(crate) fn span(&self) -> (f64, f64) {
+        (self.tip(0).unwrap_or(0.0), self.tip(1).unwrap_or(1.0))
+    }
+
+    /// The `s` at which the curve is `length` long from the edge's start
+    /// (within the edge), by bisection: the length grows with `s`.
+    fn place_of(&self, length: f64) -> Option<f64> {
+        if !(length >= 0.0 && length <= self.length()) {
+            return None;
+        }
+        let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+        for _ in 0..200 {
+            let middle = 0.5 * (lo + hi);
+            if !(middle > lo && middle < hi) {
+                break;
+            }
+            if self.length_to(middle)? < length {
+                lo = middle;
+            } else {
+                hi = middle;
+            }
+        }
+        Some(0.5 * (lo + hi))
     }
 
     /// The radius at the end `end` of the edge (0: its start, 1: its end).
@@ -339,9 +441,12 @@ impl<'a> Along<'a> {
         let (mut r, mut rate) = (radius, 0.0);
         for (fade, (from_end, sign)) in fades.iter().zip([(at, 1.0), (length - at, -1.0)]) {
             let Some(fade) = fade else { continue };
-            let tau = from_end / fade.over;
+            let tau = (from_end - fade.back) / fade.over;
             let change = radius - fade.to;
-            if tau < 0.0 {
+            if fade.is_tip() && tau <= 0.0 {
+                // At the tip and beyond it there is no fillet.
+                (r, rate) = (0.0, 0.0);
+            } else if tau < 0.0 {
                 // Past the end: levelling off (the module documentation).
                 let reach = 0.5 * (6.0 * change.abs() / fade.to + 1.0);
                 let d = (reach * reach).max(4.0);
@@ -405,7 +510,7 @@ mod tests {
     use craft3d_topo::EdgeId;
 
     fn law(radius: f64, start: Option<(f64, f64)>, end: Option<(f64, f64)>) -> RadiusLaw {
-        let fade = |f: Option<(f64, f64)>| f.map(|(to, over)| Fade { to, over });
+        let fade = |f: Option<(f64, f64)>| f.map(|(to, over)| Fade::to(to, over));
         RadiusLaw {
             radius,
             fades: [fade(start), fade(end)],
@@ -546,7 +651,10 @@ mod tests {
         let make = |law: RadiusLaw| Along::new(law, EdgeId(3), &line, (0.0, 40.0));
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert!(make(RadiusLaw::constant(bad)).is_err(), "{bad}");
-            assert!(make(law(3.0, Some((bad, 5.0)), None)).is_err(), "{bad}");
+            // (To nothing, exactly, is a tip.)
+            if bad != 0.0 {
+                assert!(make(law(3.0, Some((bad, 5.0)), None)).is_err(), "{bad}");
+            }
             assert!(make(law(3.0, None, Some((1.0, bad)))).is_err(), "{bad}");
         }
         // The whole edge, and two fades that meet in its middle: taken.
@@ -560,5 +668,97 @@ mod tests {
         assert!(law(2.0, Some((2.0, 5.0)), None).is_constant());
         assert!(!law(2.0, Some((1.0, 5.0)), None).is_constant());
         assert_eq!(law(2.0, Some((1.0, 5.0)), Some((4.0, 5.0))).largest(), 4.0);
+    }
+
+    #[test]
+    fn a_fade_to_nothing_ends_in_a_tip_at_the_end_or_short_of_it() {
+        let line = Curve3::Line(Line::new(Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0)).unwrap());
+        let make = |start: Option<Fade>, end: Option<Fade>| {
+            Along::new(
+                RadiusLaw {
+                    radius: 3.0,
+                    fades: [start, end],
+                },
+                EdgeId(0),
+                &line,
+                (0.0, 40.0),
+            )
+        };
+        // At the end itself, and 5 short of the start.
+        let along = make(Some(Fade::tip(10.0, 5.0)), Some(Fade::tip(15.0, 0.0))).unwrap();
+        assert_eq!(along.tip(0), Some(0.125));
+        assert_eq!(along.tip(1), Some(1.0));
+        assert_eq!(along.span(), (0.125, 1.0));
+        let r = |x: f64| along.radius(x / 40.0);
+        // Nothing at a tip and beyond it; the cubic from it; the radius
+        // itself from where the fade begins.
+        for x in [-1.0, 0.0, 3.0, 5.0, 40.0, 41.0] {
+            assert_eq!(r(x), None, "{x}");
+        }
+        for x in [5.5_f64, 9.0, 14.0] {
+            let m = 1.0 - (x - 5.0) / 10.0;
+            assert!(
+                (r(x).unwrap() - 3.0 * (1.0 - m * m * m)).abs() <= 1e-14,
+                "{x}"
+            );
+        }
+        for x in [26.0_f64, 33.0, 39.9] {
+            let m = 1.0 - (40.0 - x) / 15.0;
+            assert!(
+                (r(x).unwrap() - 3.0 * (1.0 - m * m * m)).abs() <= 1e-14,
+                "{x}"
+            );
+        }
+        assert_eq!(r(15.0), Some(3.0));
+        assert_eq!(r(25.0), Some(3.0));
+        // Close to a tip the radius is three times the distance over the
+        // fade's length, times the radius.
+        let near = r(40.0 - 1e-6).unwrap();
+        assert!((near - 3.0 * 3.0 * 1e-6 / 15.0).abs() <= 1e-11, "{near}");
+        // No tip without a fade to nothing: the edge's whole length.
+        let plain = make(Some(Fade::to(1.0, 10.0)), None).unwrap();
+        assert_eq!((plain.tip(0), plain.tip(1)), (None, None));
+        assert_eq!(plain.span(), (0.0, 1.0));
+        // Short of the end only a tip ends; by a length, not by less than
+        // nothing; and the fade with it has to fit on the edge.
+        let short = Fade {
+            to: 1.0,
+            over: 10.0,
+            back: 2.0,
+        };
+        assert!(make(Some(short), None).is_err());
+        for bad in [-1.0, f64::NAN, f64::INFINITY] {
+            assert!(make(Some(Fade::tip(10.0, bad)), None).is_err(), "{bad}");
+        }
+        assert!(make(Some(Fade::tip(10.0, 30.0)), None).is_ok());
+        assert!(make(Some(Fade::tip(10.0, 30.001)), None).is_err());
+        assert!(make(Some(Fade::tip(10.0, 12.0)), Some(Fade::tip(15.0, 3.0))).is_ok());
+        assert!(make(Some(Fade::tip(10.0, 12.0)), Some(Fade::tip(15.0, 3.001))).is_err());
+        // Along a spline the tip lies where the curve is that long.
+        let spline = Curve3::Nurbs(
+            NurbsCurve::new(
+                3,
+                vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                vec![
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(1.0, 2.0, 0.0),
+                    Vec3::new(3.0, 2.5, 1.0),
+                    Vec3::new(4.0, 0.0, 1.5),
+                ],
+                vec![1.0; 4],
+            )
+            .unwrap(),
+        );
+        let law = RadiusLaw {
+            radius: 0.3,
+            fades: [None, Some(Fade::tip(1.0, 0.75))],
+        };
+        let along = Along::new(law, EdgeId(0), &spline, (0.0, 1.0)).unwrap();
+        let at = along.tip(1).unwrap();
+        let length = along.length_to(at).unwrap();
+        assert!(
+            (length - (along.length() - 0.75)).abs() <= 1e-12,
+            "{length}"
+        );
     }
 }

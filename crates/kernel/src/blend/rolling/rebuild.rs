@@ -146,6 +146,7 @@ fn seed(
         feet,
         params,
         centre: Some(centre),
+        pole: None,
     })
 }
 

@@ -264,14 +264,8 @@ mod tests {
         RadiusLaw {
             radius,
             fades: [
-                Some(Fade {
-                    to: start.0,
-                    over: start.1,
-                }),
-                Some(Fade {
-                    to: end.0,
-                    over: end.1,
-                }),
+                Some(Fade::to(start.0, start.1)),
+                Some(Fade::to(end.0, end.1)),
             ],
         }
     }
@@ -386,6 +380,7 @@ mod tests {
                     wall.project(feet[1]).unwrap(),
                 ],
                 centre: Some(centre),
+                pole: None,
             }
         };
         // One radius: the normal is the ball's radius.
@@ -480,6 +475,7 @@ mod tests {
                     wall.project(feet[1]).unwrap(),
                 ],
                 centre: Some(p + Vec3::new(0.0, r, -r)),
+                pole: None,
             }
         };
         let one = solver(&edge, range, sides, 0.5, None);

@@ -212,7 +212,9 @@ pub(super) struct Blend<'a> {
     /// on a point has the radius the law gives where its centre lies
     /// along the edge.
     pub law: Option<&'a crate::blend::law::Along<'a>>,
-    pub ends: &'a [End; 2],
+    /// The ends against a third face; none where the blend closes in a
+    /// point.
+    pub ends: &'a [Option<End>; 2],
     /// The directions into the two faces, square to the edge, at the
     /// middle of the edge.
     pub into: [Vec3; 2],
@@ -349,6 +351,7 @@ pub(super) fn find(
     for k in 0..2 {
         let face = *blend.faces.get(k).ok_or_else(lost)?;
         for (j, end) in blend.ends.iter().enumerate() {
+            let Some(end) = end else { continue };
             let first = *end.others.get(k).ok_or_else(lost)?;
             let Some((inside, smooth, path)) = branch(body, first, end.vertex, [face, end.third])
             else {
@@ -462,7 +465,7 @@ pub(super) fn find(
     for c in &found {
         if c.at.is_none() {
             let data = body.edge(c.smooth).ok_or_else(lost)?;
-            let both = blend.ends.iter().all(|end| {
+            let both = blend.ends.iter().flatten().all(|end| {
                 let first = end.others.get(c.side).copied();
                 first
                     .and_then(|f| branch(body, f, end.vertex, [c.before, end.third]))

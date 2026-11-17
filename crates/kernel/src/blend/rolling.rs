@@ -283,6 +283,12 @@ struct Section {
     feet: [Vec3; 2],
     params: [(f64, f64); 2],
     centre: Option<Vec3>,
+    /// A section drawn into a point (the tip of a fillet whose radius
+    /// runs to nothing there): both feet and the centre are that point,
+    /// and this is the weight of the arc's middle control point in the
+    /// limit, the cosine of half the angle between the directions from
+    /// the centre to the feet.
+    pole: Option<f64>,
 }
 
 impl Section {
@@ -293,6 +299,9 @@ impl Section {
         let Some(c) = self.centre else {
             return Some(vec![(q1, 1.0), (q2, 1.0)]);
         };
+        if let Some(weight) = self.pole {
+            return Some(vec![(q1, 1.0), (c, weight), (q2, 1.0)]);
+        }
         let (a, b) = (q1 - c, q2 - c);
         let r = a.length();
         let cosine = (a.dot(b) / (r * b.length())).clamp(-1.0, 1.0);
@@ -476,6 +485,7 @@ impl Solver<'_> {
             feet,
             params,
             centre: Some(centre),
+            pole: None,
         })
     }
 
@@ -528,6 +538,7 @@ impl Solver<'_> {
             feet,
             params,
             centre: None,
+            pole: None,
         })
     }
 }
@@ -584,6 +595,16 @@ fn surface_through(params: &[f64], sections: &[Section]) -> Option<NurbsSurface>
             }
             ctrl.push(Vec3::new(x, y, z) * (1.0 / weight));
             weights.push(weight);
+        }
+    }
+    // A section drawn into a point is the first or the last row, and that
+    // row is the point itself to the last bit (the weighted point over
+    // its weight is not).
+    for (index, section) in [(0, sections.first()?), (count_u - 1, sections.last()?)] {
+        if let (Some(_), Some(point)) = (section.pole, section.centre) {
+            for slot in ctrl.iter_mut().skip(index * across).take(across) {
+                *slot = point;
+            }
         }
     }
     let degree_v = across - 1;
@@ -876,7 +897,13 @@ fn refine(
                 None if closed => first + 1.0,
                 None => return None,
             };
-            let near = sections.get(index)?;
+            let first = sections.get(index)?;
+            // From a section drawn into a point no ball is started: from
+            // the one after it.
+            let near = match first.pole {
+                Some(_) => sections.get(index + 1)?,
+                None => first,
+            };
             let s = 0.5 * (a + b);
             let exact = solver.section(s, near)?;
             let mut worst = 0.0_f64;
@@ -902,14 +929,27 @@ fn refine(
                 // the next face of a chain goes on from it, and has to be
                 // tangent).
                 kink = kink.max(solver.kink_across(&surface, s, &exact)?);
-                if !closed && index == 0 {
-                    kink = kink.max(solver.kink_across(&surface, a, near)?);
+                // (A face has no normal at a section drawn into a point.)
+                if !closed && index == 0 && first.pole.is_none() {
+                    kink = kink.max(solver.kink_across(&surface, a, first)?);
                 }
                 if !closed && index + 1 == pairs {
                     let last = sections.get(index + 1)?;
-                    kink = kink.max(solver.kink_across(&surface, b, last)?);
+                    if last.pole.is_none() {
+                        kink = kink.max(solver.kink_across(&surface, b, last)?);
+                    }
                 }
             }
+            // A radius that varies: the normals are asked as closely as
+            // the linear tolerance makes over the radius here, not over
+            // the largest (`limit` is a quarter of the tolerance). Towards
+            // a tip that bound grows with the tolerance over the radius:
+            // a face within the tolerance of the arcs may lean by that
+            // much, and no closer is asked.
+            let bend = match solver.law {
+                Some(law) => bend.max(4.0 * limit / law.radius(s)?),
+                None => bend,
+            };
             // How far over its bound the worse of the two is (NaN: over).
             let over = (worst / limit).max(kink / bend);
             middles.push((
@@ -1279,7 +1319,16 @@ fn blend_one(
         law: along.as_ref(),
     };
     let unsolvable = || refuse(edge, None, Reason::FreeSurface);
-    let seed = first_section(&solver, 0.5, into, edge)?;
+    // The middle of what the blend runs along: of the edge, or of its
+    // part between the tips of a fillet that ends in points.
+    let middle = match &along {
+        Some(law) => {
+            let (from, to) = law.span();
+            0.5 * (from + to)
+        }
+        None => 0.5,
+    };
+    let seed = first_section(&solver, middle, into, edge)?;
     if closed {
         let (surface, params, sections) = ring(&solver, seed, &data, tolerance)
             .ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?;
@@ -1303,14 +1352,24 @@ fn blend_one(
             &[(edge, first), (second_border, second)],
             blend_face,
             shape,
+            None,
             tolerance,
         )?;
         return Ok(blend_face);
     }
     let end_bound = bend(tolerance, shape.size());
+    // An end where the fillet closes in a point is no end against a third
+    // face: nothing is asked of its vertex.
+    let tip = |end: usize| along.as_ref().and_then(|law| law.tip(end));
     let mut ends = [
-        end_at(body, edge, [first, second], data.start, end_bound)?,
-        end_at(body, edge, [first, second], data.end, end_bound)?,
+        match tip(0) {
+            Some(_) => None,
+            None => Some(end_at(body, edge, [first, second], data.start, end_bound)?),
+        },
+        match tip(1) {
+            Some(_) => None,
+            None => Some(end_at(body, edge, [first, second], data.end, end_bound)?),
+        },
     ];
     // Smooth edges of the faces beside the edge that the borders cross.
     let crossings = cross::find(
@@ -1338,6 +1397,7 @@ fn blend_one(
     for c in &crossings {
         for (j, end) in ends.iter_mut().enumerate() {
             if (c.at.is_none() || c.end == j)
+                && let Some(end) = end
                 && let Some(slot) = end.across.get_mut(c.side)
             {
                 *slot = Some(c.smooth);
@@ -1355,7 +1415,7 @@ fn blend_one(
         &data,
         ends,
         &crossings,
-        seed,
+        (middle, seed),
         tolerance,
     );
     if crossings.is_empty() {
@@ -1405,9 +1465,9 @@ fn blend_open(
     law: Option<&law::Along<'_>>,
     scale: f64,
     data: &Edge,
-    ends: [End; 2],
+    ends: [Option<End>; 2],
     crossings: &[cross::Crossing],
-    seed: Section,
+    (centre, seed): (f64, Section),
     tolerance: &Tolerance,
 ) -> Result<FaceId, BlendError> {
     let tol = tolerance.linear;
@@ -1460,7 +1520,7 @@ fn blend_open(
     }
     let home = bounds
         .windows(2)
-        .position(|w| matches!(w, [lo, hi] if *lo <= 0.5 && 0.5 < *hi))
+        .position(|w| matches!(w, [lo, hi] if *lo <= centre && centre < *hi))
         .ok_or_else(lost)?;
     // The seed holds where the middle of the blend touches the edge's own
     // faces; past a switch at the middle it is found against the faces
@@ -1468,7 +1528,7 @@ fn blend_open(
     let seed = if pieces.get(home) == Some(&faces) {
         seed
     } else {
-        first_section(solvers.get(home).ok_or_else(lost)?, 0.5, into, edge)?
+        first_section(solvers.get(home).ok_or_else(lost)?, centre, into, edge)?
     };
     // One piece: the sections may be the seed moved, where the radius is
     // the same all along.
@@ -1476,7 +1536,7 @@ fn blend_open(
         && law.is_none()
     {
         let motion = exact::motion(&only.spine, only.sides);
-        only.moved = motion.and_then(|m| exact::Moved::new(m, &only.spine, seed, 0.5));
+        only.moved = motion.and_then(|m| exact::Moved::new(m, &only.spine, seed, centre));
     }
     let length = edge_length(data);
     if !(length > 0.0) {
@@ -1484,18 +1544,49 @@ fn blend_open(
     }
     let size = shape.size();
     let steps = Steps::of(size, length);
-    let thirds: Vec<Side<'_>> = ends
+    let thirds: Vec<Option<Side<'_>>> = ends
         .iter()
-        .map(|end| end.side(body))
+        .map(|end| end.as_ref().map(|end| end.side(body)).transpose())
         .collect::<Result<_, _>>()?;
+    // Where the fillet closes in a point: the vertex of the edge there,
+    // or, short of it, a point of the edge.
+    let mut tips: [Option<Tip>; 2] = [None, None];
+    for (index, slot) in tips.iter_mut().enumerate() {
+        let Some(at) = law.and_then(|law| law.tip(index)) else {
+            continue;
+        };
+        let vertex = if index == 0 { data.start } else { data.end };
+        let (point, vertex) = if at == index as f64 {
+            (body.vertex(vertex).ok_or_else(lost)?.point, Some(vertex))
+        } else {
+            let (t0, t1) = data.range;
+            (data.curve.eval(t0 + at * (t1 - t0)), None)
+        };
+        *slot = Some(Tip { at, point, vertex });
+    }
     // Sections from the middle outwards, each from its neighbour, across
     // the switches: the section at a switch, found against the faces
     // before it, is the ball that touches the faces after it too.
-    let mut tagged: Vec<(f64, usize, Section)> = vec![(0.5, home, seed)];
+    let mut tagged: Vec<(f64, usize, Section)> = vec![(centre, home, seed)];
     let mut reach = [0.0_f64; 2];
     for (index, end) in [(0_usize, 0.0_f64), (1, 1.0)] {
-        let end_data = ends.get(index).ok_or_else(lost)?;
-        let third = *thirds.get(index).ok_or_else(lost)?;
+        // To a tip: sections up to it, and the point itself.
+        if let Some(tip) = tips.get(index).ok_or_else(lost)? {
+            let solver = solvers.get(home).ok_or_else(lost)?;
+            let more = march_short_of(solver, (centre, seed), tip.at, steps.inside)
+                .ok_or_else(unsolvable)?;
+            let last = more.last().map_or(seed, |(_, section)| *section);
+            tagged.extend(more.into_iter().map(|(s, x)| (s, home, x)));
+            let pole = solver.pole(tip.point, &last).ok_or_else(unsolvable)?;
+            tagged.push((tip.at, home, pole));
+            continue;
+        }
+        let (Some(end_data), Some(third)) = (
+            ends.get(index).ok_or_else(lost)?,
+            *thirds.get(index).ok_or_else(lost)?,
+        ) else {
+            return Err(lost());
+        };
         // Past an end the steps are by the radius there: what the blend
         // has to get past the third face is as wide as its ball at that
         // end.
@@ -1505,7 +1596,7 @@ fn blend_open(
         };
         let allowed = end_data.steps(steps);
         let mut piece = home;
-        let mut at = (0.5, seed);
+        let mut at = (centre, seed);
         loop {
             let (next, bound) = if index == 1 {
                 (piece + 1, bounds.get(piece + 1))
@@ -1587,8 +1678,13 @@ fn blend_open(
                 .max_by(|a, b| a.1.total_cmp(&b.1));
             let (at, _) = widest.ok_or_else(lost)?;
             let (a, near) = *mine.get(at).ok_or_else(lost)?;
-            let b = mine.get(at + 1).ok_or_else(lost)?.0;
+            let (b, after) = *mine.get(at + 1).ok_or_else(lost)?;
             let middle = 0.5 * (a + b);
+            // (No ball is started from a section drawn into a point.)
+            let (a, near) = match near.pole {
+                Some(_) => (b, after),
+                None => (a, near),
+            };
             let found = solver
                 .follow(a, &near, middle, FOLLOW_DEPTH)
                 .ok_or_else(unsolvable)?;
@@ -1624,9 +1720,13 @@ fn blend_open(
     };
     let mut cuts = Vec::with_capacity(2);
     for (index, end) in ends.iter().enumerate() {
-        let third = *thirds.get(index).ok_or_else(lost)?;
+        let (Some(end), Some(third)) = (end, *thirds.get(index).ok_or_else(lost)?) else {
+            // A tip: no cut.
+            cuts.push(None);
+            continue;
+        };
         let past = *reach.get(index).ok_or_else(lost)?;
-        let cut = end_cut(
+        let (cut, at) = end_cut(
             &surface,
             third,
             index == 1,
@@ -1636,9 +1736,8 @@ fn blend_open(
             scale,
         )
         .ok_or_else(|| refuse(edge, Some(end.third), Reason::FreeEnd))?;
-        cuts.push(cut);
+        cuts.push(Some(chain::OneEnd::Cut { end: *end, cut, at }));
     }
-    let [cut0, cut1] = <[(NurbsCurve, [f64; 2]); 2]>::try_from(cuts).map_err(|_| lost())?;
     let params: Vec<f64> = all.iter().map(|x| x.0).collect();
     let sections: Vec<Section> = all.iter().map(|x| x.1).collect();
     let home_solver = solvers.get(home).ok_or_else(lost)?;
@@ -1654,15 +1753,34 @@ fn blend_open(
     };
     drop(solvers);
     drop(thirds);
-    let (blend_face, second_border) = chain::splice_one(
-        body,
-        one,
-        surface,
-        outward_hint,
-        ends,
-        [cut0, cut1],
-        tolerance,
-    )?;
+    // A tip's vertex is the edge's own there, or a new one on the edge.
+    let mut one_ends = Vec::with_capacity(2);
+    for (cut, tip) in cuts.into_iter().zip(tips) {
+        one_ends.push(match (cut, tip) {
+            (Some(cut), _) => cut,
+            (None, Some(tip)) => chain::OneEnd::Tip {
+                vertex: match tip.vertex {
+                    Some(vertex) => vertex,
+                    None => add_vertex(body, tip.point)?,
+                },
+                at: tip.at,
+            },
+            (None, None) => return Err(lost()),
+        });
+    }
+    let one_ends = <[chain::OneEnd; 2]>::try_from(one_ends).map_err(|_| lost())?;
+    let (blend_face, second_border) =
+        chain::splice_one(body, one, surface, outward_hint, one_ends, tolerance)?;
+    // Short of the edge's end, what is left of the edge beyond the tip
+    // goes on as an edge of both faces, as it was.
+    for (index, tip) in tips.iter().enumerate() {
+        if let Some(Tip {
+            at, vertex: None, ..
+        }) = tip
+        {
+            keep_beyond(body, data, faces, [edge, second_border], index, *at)?;
+        }
+    }
     let borders = cross::carry(
         body,
         edge,
@@ -1680,8 +1798,152 @@ fn blend_open(
         let surface = exact::swept(motion, &seed, shape).ok_or_else(unsolvable)?;
         exact::make_exact(body, blend_face, surface, tolerance)?;
     }
-    tangent_along(body, edge, &borders, blend_face, shape, tolerance)?;
+    tangent_along(
+        body,
+        edge,
+        &borders,
+        blend_face,
+        shape,
+        law.map(|law| (law, convex)),
+        tolerance,
+    )?;
     Ok(blend_face)
+}
+
+/// Where a fillet whose radius runs to nothing closes in a point: where
+/// along the edge (`s`), the point, and the vertex of the edge there (none
+/// short of the edge's end).
+#[derive(Clone, Copy, Debug)]
+struct Tip {
+    at: f64,
+    point: Vec3,
+    vertex: Option<VertexId>,
+}
+
+impl Solver<'_> {
+    /// The section drawn into `point`, the tip of a fillet whose radius
+    /// runs to nothing there: both feet and the centre are the point, and
+    /// the arc's middle weight is the limit of the sections before it,
+    /// the cosine of half the angle between the directions to the feet,
+    /// which at the point are the faces' own normals there. `near` is a
+    /// section nearby, for where on the faces the point is looked for.
+    fn pole(&self, point: Vec3, near: &Section) -> Option<Section> {
+        let mut params = near.params;
+        let mut normals = [Vec3::ZERO; 2];
+        for k in 0..2 {
+            let (side, start) = (self.sides.get(k)?, *params.get(k)?);
+            let (uv, _) = side.foot(point, start)?;
+            *params.get_mut(k)? = uv;
+            *normals.get_mut(k)? = side.normal(uv)?;
+        }
+        let [n1, n2] = normals;
+        let weight = (0.5 * (1.0 + n1.dot(n2))).max(0.0).sqrt();
+        // (Half a turn between the feet has no arc of one piece.)
+        (weight.is_finite() && weight > 1e-6).then_some(Section {
+            feet: [point, point],
+            params,
+            centre: Some(point),
+            pole: Some(weight),
+        })
+    }
+}
+
+/// The edge of both `faces` beyond a tip short of its end: `borders` (the
+/// first face's and the second's) end in the tip's vertex, where the
+/// edge went on, and what is left of the edge `data` past `at` (to its
+/// start for the tip at end 0, to its end for the one at end 1) is put
+/// back as an edge of both faces, each running it as it ran the edge.
+fn keep_beyond(
+    body: &mut Body,
+    data: &Edge,
+    faces: [FaceId; 2],
+    borders: [EdgeId; 2],
+    end: usize,
+    at: f64,
+) -> Result<(), BlendError> {
+    let (t0, t1) = data.range;
+    let t = t0 + at * (t1 - t0);
+    if !(t > t0 && t < t1) {
+        return Err(lost());
+    }
+    // The tip's vertex: where the first border ends at that end.
+    let first = body
+        .edge(*borders.first().ok_or_else(lost)?)
+        .ok_or_else(lost)?;
+    let vertex = if end == 0 { first.start } else { first.end };
+    let rest = add_edge(
+        body,
+        if end == 0 {
+            Edge {
+                curve: data.curve.clone(),
+                range: (t0, t),
+                start: data.start,
+                end: vertex,
+            }
+        } else {
+            Edge {
+                curve: data.curve.clone(),
+                range: (t, t1),
+                start: vertex,
+                end: data.end,
+            }
+        },
+    )?;
+    for (face, border) in faces.iter().zip(borders) {
+        let loops = body.face(*face).ok_or_else(lost)?.loops.clone();
+        let mut done = false;
+        for l in loops {
+            let ring = body.loops.get_mut(l.0 as usize).ok_or_else(lost)?;
+            let Some(index) = ring.coedges.iter().position(|c| c.edge == border) else {
+                continue;
+            };
+            let reversed = ring.coedges.get(index).ok_or_else(lost)?.reversed;
+            // The loop runs the border, and the rest of the edge with it,
+            // along their curves or against them; the rest lies before
+            // the border along the curve at end 0, after it at end 1.
+            let after = (end == 1) != reversed;
+            ring.coedges.insert(
+                if after { index + 1 } else { index },
+                Coedge {
+                    edge: rest,
+                    reversed,
+                },
+            );
+            done = true;
+            break;
+        }
+        if !done {
+            return Err(lost());
+        }
+    }
+    Ok(())
+}
+
+/// Sections from `from` towards `to` in even steps of at most `step`,
+/// each followed from the one before, short of `to` itself (where a
+/// fillet closes in a point there is no ball).
+fn march_short_of(
+    solver: &Solver<'_>,
+    from: (f64, Section),
+    to: f64,
+    step: f64,
+) -> Option<Vec<(f64, Section)>> {
+    let (s0, mut last) = from;
+    let count = ((to - s0).abs() / step).ceil();
+    if !(count.is_finite() && count >= 0.0 && count < MAX_SAMPLES as f64) {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let count = (count as usize).max(1);
+    let mut out = Vec::with_capacity(count);
+    let mut previous = s0;
+    for i in 1..count {
+        let s = s0 + (to - s0) * (i as f64 / count as f64);
+        last = solver.follow(previous, &last, s, FOLLOW_DEPTH)?;
+        out.push((s, last));
+        previous = s;
+    }
+    Some(out)
 }
 
 /// Sections from `from` to `to` in even steps of at most `step`, each
@@ -1845,6 +2107,7 @@ fn flat_seed(
         feet: seed_feet,
         params: seed_params,
         centre,
+        pole: None,
     })
 }
 
@@ -2004,7 +2267,10 @@ fn folds(
     let ((u0, _), (v0, v1)) = surface.domain();
     let mut samples: Vec<(f64, Option<Vec3>)> = Vec::with_capacity(2 * params.len());
     for (k, (s, section)) in params.iter().zip(sections).enumerate() {
-        samples.push((*s, section.centre));
+        // (A section drawn into a point has no normal to hold.)
+        if section.pole.is_none() {
+            samples.push((*s, section.centre));
+        }
         if let (Some(next), Some(after)) = (params.get(k + 1), sections.get(k + 1)) {
             let centre = section.centre.zip(after.centre).map(|(a, b)| (a + b) * 0.5);
             samples.push((0.5 * (s + next), centre));
@@ -2110,6 +2376,7 @@ fn tangent_along(
     borders: &[(EdgeId, FaceId)],
     blend_face: FaceId,
     shape: Shape,
+    law: Option<(&law::Along<'_>, bool)>,
     tolerance: &Tolerance,
 ) -> Result<(), BlendError> {
     for (border, face) in borders {
@@ -2128,6 +2395,19 @@ fn tangent_along(
                 let normal = |f: FaceId| super::outward(body, f, p).ok();
                 let (Some(a), Some(b)) = (normal(blend_face), normal(face)) else {
                     return Err(refuse(edge, Some(face), Reason::NoNormal));
+                };
+                // A radius that varies: as closely as the face was
+                // refined here, by the radius of the ball that rests on
+                // this point.
+                let limit = match law {
+                    Some((law, convex)) => {
+                        let towards = if convex { -b } else { b };
+                        let here = law
+                            .radius_on(p, towards)
+                            .ok_or_else(|| refuse(edge, Some(face), Reason::NoNormal))?;
+                        10.0 * bend(tolerance, here)
+                    }
+                    None => limit,
                 };
                 if !(a.cross(b).length() <= limit && a.dot(b) > 0.0) {
                     return Err(refuse(edge, Some(face), Reason::NotTangent));
@@ -3680,6 +3960,7 @@ mod tests {
                 side.project(Vec3::new(0.5, 0.0, -0.1)).unwrap(),
             ],
             centre: Some(Vec3::new(0.5, 0.1, -0.1)),
+            pole: None,
         };
         let seed = solver.section(0.5, &seed).expect("the seed ball");
         let steps = Steps {
@@ -3993,6 +4274,7 @@ mod tests {
                 wall.project(Vec3::new(0.5, 0.0, -0.1)).unwrap(),
             ],
             centre: Some(Vec3::new(0.5, 0.1, -0.1)),
+            pole: None,
         };
         let seed = solver.section(0.5, &seed).expect("the seed ball");
         let mut samples: Vec<f64> = (0..=8).map(|i| f64::from(i) / 8.0).collect();

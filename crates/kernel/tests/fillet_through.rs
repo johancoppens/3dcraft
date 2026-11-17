@@ -632,13 +632,7 @@ fn a_radius_that_varies_is_held_to_the_wall_by_the_radius_of_each_plane() {
                 let (edge, face) = rim(&body, &frame, k);
                 let law = |to: f64| RadiusLaw {
                     radius: 1.03 * star * k,
-                    fades: [
-                        Some(Fade {
-                            to: to * star * k,
-                            over: 12.0 * k,
-                        }),
-                        None,
-                    ],
+                    fades: [Some(Fade::to(to * star * k, 12.0 * k)), None],
                 };
                 let try_law =
                     |to: f64| fillet_by_law(&body, &[FilletLawEdge { edge, law: law(to) }], &tol);
