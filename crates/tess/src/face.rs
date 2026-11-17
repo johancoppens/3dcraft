@@ -3416,6 +3416,20 @@ fn spline_parts(
             if s1 > 1.0 - ALL_BUT { 1.0 } else { s1 },
         ))
     };
+    // The bounds of many whole spans are made on threads of their own
+    // first (`NurbsSurface::make_whole_span_bounds`), then found below.
+    let whole = |range: (f64, f64), across: &[(f64, f64)]| {
+        across
+            .iter()
+            .any(|&stretch| part(range, stretch) == Some((0.0, 1.0)))
+    };
+    let wholes: Vec<usize> = spans
+        .iter()
+        .enumerate()
+        .filter(|(_, span)| whole(span.u, &across_u) && whole(span.v, &across_v))
+        .map(|(index, _)| index)
+        .collect();
+    surface.make_whole_span_bounds(&wholes);
     let mut parts = Vec::new();
     for (index, span) in spans.iter().enumerate() {
         for &stretch_u in &across_u {

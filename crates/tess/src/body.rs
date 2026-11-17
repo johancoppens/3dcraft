@@ -661,7 +661,12 @@ fn tessellate_placed(
             let asks = !wanted.is_empty() || !refine.across.is_empty();
             let mut ask = Vec::new();
             let result = (mesh && (last || !asks)).then(|| {
-                let clock = craft3d_math::clock::clock("tess.mesh_face");
+                let clock =
+                    craft3d_math::clock::clock(if matches!(face.surface, Surface::Plane(_)) {
+                        "tess.mesh_face.plane"
+                    } else {
+                        "tess.mesh_face.curved"
+                    });
                 let mut made = mesh_face(&boundary, face, index, params, &[], &mut ask, !last)?;
                 drop(clock);
                 let _clock = craft3d_math::clock::clock("tess.closes_along_edges");

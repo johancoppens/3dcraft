@@ -167,23 +167,100 @@ impl NurbsSurface {
     pub fn whole_span_bounds(&self, index: usize) -> Option<SpanBounds> {
         let spans = self.bezier_spans_shared().ok()?;
         let span = spans.get(index)?;
-        let slots = self.bounds.0.get_or_init(|| {
-            (0..spans.len())
-                .map(|_| std::sync::OnceLock::new())
-                .collect()
-        });
-        let slot = slots.get(index)?;
+        let slot = self.bounds_slots(spans.len()).get(index)?;
         if let Some(&(bounds, units)) = slot.get() {
             crate::allowance::charge(units);
             return Some(bounds);
         }
-        let width = (span.u.1 - span.u.0, span.v.1 - span.v.0);
-        let (bounds, units) = crate::allowance::measured(|| SpanBounds::of(&span.patch, width));
-        if crate::allowance::counting() {
-            let _ = slot.set((bounds, units));
-        }
-        Some(bounds)
+        Some(make_kept(slot, &span.patch, span_width(span)))
     }
+
+    /// Makes the bounds of those whole spans of `indices` not kept yet, as
+    /// [`Self::whole_span_bounds`] would, on threads of the process's pool
+    /// (`craft3d_math::pool::lease`; each taking at least
+    /// [`SPANS_PER_THREAD`]), and keeps them; charges nothing here, as each
+    /// is charged where it is asked for (and kept only if made while
+    /// counting, which threads of their own always are). For the many
+    /// spans of a large face, before they are asked for one by one; with
+    /// fewer than two threads to be had they are left to be made as they
+    /// are asked. What is kept, and what any question then charges, is the
+    /// same however many threads made it.
+    pub fn make_whole_span_bounds(&self, indices: &[usize]) {
+        if cfg!(target_arch = "wasm32") {
+            return;
+        }
+        let Ok(spans) = self.bezier_spans_shared() else {
+            return;
+        };
+        let slots = self.bounds_slots(spans.len());
+        let missing: Vec<usize> = indices
+            .iter()
+            .copied()
+            .filter(|&i| slots.get(i).is_some_and(|slot| slot.get().is_none()))
+            .collect();
+        let wanted = missing.len() / SPANS_PER_THREAD;
+        if wanted < 2 {
+            return;
+        }
+        let lease = craft3d_math::pool::lease(wanted);
+        let threads = lease.threads();
+        if threads < 2 {
+            return;
+        }
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let work = || {
+            lease.helper_starts();
+            loop {
+                let n = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(&index) = missing.get(n) else {
+                    return;
+                };
+                if let (Some(span), Some(slot)) = (spans.get(index), slots.get(index))
+                    && slot.get().is_none()
+                {
+                    make_kept(slot, &span.patch, span_width(span));
+                }
+            }
+        };
+        std::thread::scope(|scope| {
+            let helpers: Vec<_> = (0..threads)
+                .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, work).ok())
+                .collect();
+            // A helper that stopped leaves its spans to be made as asked.
+            for helper in helpers {
+                let _ = helper.join();
+            }
+        });
+    }
+
+    /// The slots of [`BoundsCache`], one per span of `count`.
+    fn bounds_slots(&self, count: usize) -> &[Kept] {
+        self.bounds
+            .0
+            .get_or_init(|| (0..count).map(|_| std::sync::OnceLock::new()).collect())
+    }
+}
+
+/// Spans made at least per thread by
+/// [`NurbsSurface::make_whole_span_bounds`]: starting a thread costs tens
+/// of microseconds, a span's bounds about as much (some 25 µs for a
+/// bicubic span in release).
+pub const SPANS_PER_THREAD: usize = 256;
+
+/// The width of a span in the surface's parameters, as the tessellator
+/// takes a whole span's (`(u₁ − u₀) × 1`).
+fn span_width(span: &crate::BezierSpan) -> (f64, f64) {
+    (span.u.1 - span.u.0, span.v.1 - span.v.0)
+}
+
+/// `SpanBounds::of` the span, kept in `slot` with what making it was
+/// charged when it was made while counting.
+fn make_kept(slot: &Kept, patch: &RationalBezierPatch, width: (f64, f64)) -> SpanBounds {
+    let (bounds, units) = crate::allowance::measured(|| SpanBounds::of(patch, width));
+    if crate::allowance::counting() {
+        let _ = slot.set((bounds, units));
+    }
+    bounds
 }
 
 #[cfg(test)]
@@ -286,6 +363,44 @@ mod tests {
                 cost > 0,
                 "made again, and charged, after an uncounted making"
             );
+        }
+    }
+
+    /// Made ahead on threads of their own, a large sheet's spans' bounds
+    /// charge nothing then, and are the bounds made afresh, each charging
+    /// what its making is charged when it is asked for.
+    #[test]
+    fn bounds_made_ahead_on_threads_are_the_bounds_and_charged_when_asked() {
+        let (rows, columns) = (40, 50);
+        let points: Vec<Vec3> = (0..rows)
+            .flat_map(|r| (0..columns).map(move |c| (r, c)))
+            .map(|(r, c)| {
+                let (x, y) = (c as f64, r as f64);
+                Vec3::new(x, y, (0.3 * x).psin() * (0.2 * y).pcos())
+            })
+            .collect();
+        let surface = crate::grid::interpolate(
+            &points,
+            rows,
+            columns,
+            crate::grid::Spacing::Even,
+            1e-6,
+            1e-9,
+        )
+        .unwrap()
+        .surface;
+        let spans = surface.bezier_spans_shared().unwrap();
+        assert!(spans.len() >= 4 * SPANS_PER_THREAD);
+        let all: Vec<usize> = (0..spans.len()).collect();
+        let ((), ahead) = crate::allowance::measured(|| surface.make_whole_span_bounds(&all));
+        assert_eq!(ahead, 0);
+        for (index, span) in spans.iter().enumerate() {
+            let width = (span.u.1 - span.u.0, span.v.1 - span.v.0);
+            let (fresh, cost) = crate::allowance::measured(|| SpanBounds::of(&span.patch, width));
+            let (kept, kept_cost) =
+                crate::allowance::measured(|| surface.whole_span_bounds(index).unwrap());
+            assert_eq!(bits(&kept), bits(&fresh), "span {index}");
+            assert_eq!(kept_cost, cost, "span {index}");
         }
     }
 }
