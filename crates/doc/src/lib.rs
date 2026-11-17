@@ -1584,11 +1584,10 @@ pub struct Tip {
     /// half the length at which the sides close in.
     #[serde(default)]
     pub length: Option<Expr>,
-    /// Where the point stands over the end, as lengths along the end
-    /// face's own x and y axes from its plane's origin; `None` for the
-    /// centre of area of what the sides are carried on to.
+    /// Where the point stands over the end, in the form it was given
+    /// ([`TipAt`]); `None` for the place chosen at every regeneration.
     #[serde(default)]
-    pub at: Option<[Expr; 2]>,
+    pub at: Option<TipAt>,
     /// The conic's `ρ`, a plain number from 0.01 to 0.98; `None` for
     /// `√2 − 1` (about 0.4142), quarter ellipses.
     #[serde(default)]
@@ -1599,6 +1598,37 @@ impl Tip {
     /// The feature whose body the face is of: the one that made it.
     pub fn source(&self) -> FeatureId {
         self.face.feature
+    }
+}
+
+/// Where a tip's point stands over its end face, kept in the form it was
+/// given: two expressions are lengths along the end face's own x and y
+/// axes from its plane's origin, three a point in the model, taken to the
+/// end's plane along the end's normal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TipAt {
+    /// Lengths along the end face's own x and y axes.
+    Face([Expr; 2]),
+    /// A point in the model's coordinates.
+    Point([Expr; 3]),
+}
+
+impl TipAt {
+    /// The expressions, in their order.
+    pub fn exprs(&self) -> &[Expr] {
+        match self {
+            TipAt::Face(at) => at,
+            TipAt::Point(at) => at,
+        }
+    }
+
+    /// The expressions, in their order, to be changed.
+    pub fn exprs_mut(&mut self) -> &mut [Expr] {
+        match self {
+            TipAt::Face(at) => at,
+            TipAt::Point(at) => at,
+        }
     }
 }
 
@@ -2118,8 +2148,9 @@ impl FeatureKind {
                 }
                 if let Some(at) = &t.at {
                     out.extend(
-                        at.iter()
-                            .zip(["x", "y"])
+                        at.exprs()
+                            .iter()
+                            .zip(["x", "y", "z"])
                             .map(|(e, axis)| (format!("at.{axis}"), e)),
                     );
                 }
@@ -2298,7 +2329,7 @@ impl FeatureKind {
             FeatureKind::Tip(t) => t
                 .length
                 .iter_mut()
-                .chain(t.at.iter_mut().flat_map(|at| at.iter_mut()))
+                .chain(t.at.iter_mut().flat_map(|at| at.exprs_mut().iter_mut()))
                 .chain(t.fullness.iter_mut())
                 .collect(),
             FeatureKind::Chamfer(c) => match &mut c.size {

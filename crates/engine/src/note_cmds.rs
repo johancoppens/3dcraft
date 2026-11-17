@@ -25,13 +25,14 @@ use craft3d_math::Vec3;
 use craft3d_regen::Regen;
 use craft3d_topo::Body;
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("note.add", "Add Note", r#"{"text": string, "on": face, edge or vertex name, or a feature (its body) = the selection, "feature": id or name = the first body that has the name, "point": [x, y, z] = a point in the middle of what it is on}"#,
         "Pins a note to a place of the model: a sentence for whoever works on it next (\"2 mm thicker here\", \"this hole can go\", or an agent's question about that place). Where: on, what it is pinned to: a face, an edge or a vertex by its persistent name (document.inspect faceNames, document.edges, view.pick; a feature's name may stand for its id: Plate:face(1)), or a feature's name or id for its body; without on, the one item selected (select.get), a body, a face, an edge or a vertex. feature says which body has the name when several do. point is where on it, in the document's length unit, at most a fiftieth of the body's size off it; without it the point of the entity nearest its middle (a face's centre of area, an edge's middle, a vertex itself). The note stays pinned to that name through every edit that keeps the entity (a changed size, a later boolean or fillet that took its body); when the entity is gone it stays at its point, detached, and says why (note.list). Who wrote it is the agent running the command (by the name its client gave), or the person. text: 1 to 2000 characters, line breaks kept, no other control characters; a document holds at most 1000 notes. One undo step; saved with the document, left out of everything published (jig.export) and of every export. Returns the note as note.list lists it, with summary.", doc: true, names: ["on"], note_add),
     spec!("note.list", "List Notes", r#"{"state": "open|done|all" = "all"}"#,
-        "Lists the notes pinned to the model, in the order they were written; state open lists only those still to do, done only those done. Each has id, text, state (open or done), author (person or agent, with agent its name), timeMs (when it was written, milliseconds since 1970; 0 without a clock), on (what it was pinned to: kind body, face, edge or vertex, name, feature: the body's feature id, body: that feature's name, origin: the feature that made the entity, at the end of its name's way, with its name and type: the one to edit to change it), point ([x, y, z] where it was put), attachment (attached: the entity is there, with now: what it is in the newest body when a later feature took it; hidden: its feature is suppressed, rolled back or failed for now, with why; detached: the entity is gone, with why: the note stays at its point) and, for a done note, done: {author, agent, timeMs, reply}. Also count, open, done, detached, fromAgents (open notes an agent wrote: its questions to the person) and summary. An agent works through the open ones: does what each asks (on and origin say where), then note.resolve with a sentence of reply.", doc: true, note_list),
+        "Lists the notes pinned to the model, in the order they were written; state open lists only those still to do, done only those done. Each has id, text, state (open or done), author (person or agent, with agent its name), timeMs (when it was written, milliseconds since 1970; 0 without a clock), on (what it was pinned to: kind body, face, edge or vertex, name, feature: the body's feature id, body: that feature's name, origin: the feature that made the entity, at the end of its name's way, with its name and type: the one to edit to change it), point ([x, y, z] where it was put), attachment (attached: the entity is there, with at: the point of the entity as it is now nearest point, where the window draws its marker, and now: what it is in the newest body when a later feature took it; hidden: its feature is suppressed, rolled back or failed for now, with why; detached: the entity is gone, with why: the note stays at its point) and, for a done note, done: {author, agent, timeMs, reply}. Also count, open, done, detached, fromAgents (open notes an agent wrote: its questions to the person) and summary. An agent works through the open ones: does what each asks (on and origin say where), then note.resolve with a sentence of reply.", doc: true, note_list),
     spec!("note.resolve", "Resolve Note", r#"{"id": integer, "reply": string, "done": boolean = true}"#,
         "Marks note id done, with reply: one sentence of what was done or why not (1 to 2000 characters, as a note's text). It is closed by the agent running the command, or the person; done: false opens a done note again (its reply goes). A note done already, or open already with done: false, is an error that says so. One undo step. Returns the note, with summary.", doc: true, note_resolve),
     spec!("note.edit", "Edit Note", r#"{"id": integer, "text": string, "on": face, edge or vertex name, or a feature (its body), "feature": id or name, "point": [x, y, z]}"#,
@@ -139,9 +140,17 @@ fn item_json(doc: &Document, item: &SelectionItem) -> Value {
     json!({"kind": item.kind.name(), "name": item.name, "feature": item.feature, "body": body})
 }
 
-/// A note as the commands give it; with `resolver`, where it is now
-/// (`attachment`).
-fn note_json(doc: &Document, note: &Note, resolver: Option<&mut Resolver<'_>>) -> Value {
+/// Where a note is now ([`listed`]): what became of the entity it is
+/// pinned to (`None` for a note at its point alone), and the point of that
+/// entity nearest the note's point, where its marker is drawn.
+struct Now {
+    fate: Option<Fate>,
+    at: Option<[f64; 3]>,
+}
+
+/// A note as the commands give it; with `now`, where it is now
+/// (`attachment`, `now`, `at`).
+fn note_json(doc: &Document, note: &Note, now: Option<&Now>) -> Value {
     let (author, agent) = author_json(note.by.as_ref());
     let mut out = Map::new();
     out.insert("id".into(), note.id.into());
@@ -161,36 +170,38 @@ fn note_json(doc: &Document, note: &Note, resolver: Option<&mut Resolver<'_>>) -
                 map.insert("origin".into(), origin(doc, on));
             }
             out.insert("on".into(), pinned);
-            if let Some(resolver) = resolver {
-                match resolver.follow(&seed) {
-                    Fate::Found(now) => {
-                        out.insert("attachment".into(), "attached".into());
-                        if let Some((first, _)) = now.first()
-                            && !first.same(&seed)
-                        {
-                            out.insert("now".into(), item_json(doc, first));
-                        }
-                    }
-                    Fate::Hidden(why) => {
-                        out.insert("attachment".into(), "hidden".into());
-                        out.insert("why".into(), why.into());
-                    }
-                    Fate::Gone(why) => {
-                        out.insert("attachment".into(), "detached".into());
-                        out.insert("why".into(), why.into());
+            match now.and_then(|now| now.fate.as_ref()) {
+                Some(Fate::Found(found)) => {
+                    out.insert("attachment".into(), "attached".into());
+                    if let Some((first, _)) = found.first()
+                        && !first.same(&seed)
+                    {
+                        out.insert("now".into(), item_json(doc, first));
                     }
                 }
+                Some(Fate::Hidden(why)) => {
+                    out.insert("attachment".into(), "hidden".into());
+                    out.insert("why".into(), why.clone().into());
+                }
+                Some(Fate::Gone(why)) => {
+                    out.insert("attachment".into(), "detached".into());
+                    out.insert("why".into(), why.clone().into());
+                }
+                None => {}
             }
         }
         None => {
             out.insert("on".into(), Value::Null);
-            if resolver.is_some() {
+            if now.is_some() {
                 out.insert("attachment".into(), "detached".into());
                 out.insert("why".into(), "it is pinned to its point alone".into());
             }
         }
     }
     out.insert("point".into(), point_json(note.point));
+    if let Some(at) = now.and_then(|now| now.at) {
+        out.insert("at".into(), point_json(at));
+    }
     if let Some(done) = &note.done {
         let (author, agent) = author_json(done.by.as_ref());
         out.insert(
@@ -624,14 +635,82 @@ fn listed(
     }
     let regen: Arc<Regen> = open.regen();
     let mut resolver = Resolver::new(&doc, &regen);
-    Ok(doc
-        .notes
-        .items
-        .iter()
-        .filter(|n| filter(n))
-        .map(|n| note_json(&doc, n, Some(&mut resolver)))
-        .collect())
+    let linear = doc.tolerance.linear;
+    // One mesh per body at most, made only for a nearest point not
+    // remembered from an earlier look.
+    let mut shapes: BTreeMap<FeatureId, Option<Shape>> = BTreeMap::new();
+    let mut out = Vec::new();
+    for note in doc.notes.items.iter().filter(|n| filter(n)) {
+        let fate = note
+            .on
+            .as_ref()
+            .map(|on| resolver.follow(&seed_of(&doc, on)));
+        let at = match &fate {
+            Some(Fate::Found(found)) => found.first().and_then(|(item, _)| {
+                nearest_now(&regen, &mut resolver, &mut shapes, linear, item, note.point)
+            }),
+            _ => None,
+        };
+        out.push(note_json(&doc, note, Some(&Now { fate, at })));
+    }
+    Ok(out)
 }
+
+/// The point of `item` (what a note's entity is now) nearest the note's
+/// `point`: where its marker is drawn, on the entity as it is now. On the
+/// mesh a note's point is placed on (within a thousandth of the body's
+/// size of the exact surface; a vertex itself), remembered per body.
+fn nearest_now(
+    regen: &Regen,
+    resolver: &mut Resolver<'_>,
+    shapes: &mut BTreeMap<FeatureId, Option<Shape>>,
+    linear: f64,
+    item: &SelectionItem,
+    point: [f64; 3],
+) -> Option<[f64; 3]> {
+    let kind = note_kind(item.kind)?;
+    let id = feature_id(&item.feature)?;
+    let body = regen.feature(id)?.own_body()?.clone();
+    let index = match kind {
+        NoteKind::Body => 0,
+        _ => resolver.locate(&item.name, Some(&item.feature)).ok()?.2,
+    };
+    let key: Nearest = (kind, index, point.map(f64::to_bits));
+    if let Some(known) = crate::mass::recall_key(&NEAREST, &body, &key) {
+        return known;
+    }
+    let p = Vec3::new(point[0], point[1], point[2]);
+    let found = match kind {
+        NoteKind::Vertex => body.vertices.get(index).map(|v| v.point),
+        _ => {
+            let shape = shapes
+                .entry(id)
+                .or_insert_with(|| shape_of(&body, linear).ok())
+                .as_ref();
+            shape.and_then(|shape| match kind {
+                NoteKind::Edge => shape
+                    .edges
+                    .get(index)
+                    .and_then(|line| nearest_on_line(line, p))
+                    .map(|(q, _)| q),
+                NoteKind::Face => {
+                    nearest_on(&triangles(&shape.mesh, Some(index)), p).map(|(q, _)| q)
+                }
+                _ => nearest_on(&triangles(&shape.mesh, None), p).map(|(q, _)| q),
+            })
+        }
+    }
+    .map(|q| [q.x, q.y, q.z])
+    .filter(|q| q.iter().all(|c| c.is_finite()));
+    crate::mass::remember_key(&NEAREST, &body, key, found);
+    found
+}
+
+/// A note's nearest point is remembered by what it is on (its kind and
+/// place in the body) and the bits of its point.
+type Nearest = (NoteKind, usize, [u64; 3]);
+static NEAREST: std::sync::Mutex<crate::mass::Store<BTreeMap<Nearest, Option<[f64; 3]>>>> =
+    std::sync::Mutex::new(crate::mass::Store::new());
 
 /// The note `id` as note.list gives it, with `summary`.
 fn one(session: &mut Session, id: u64, summary: String) -> Run {

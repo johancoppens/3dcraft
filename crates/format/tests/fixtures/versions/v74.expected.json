@@ -1,69 +1,218 @@
 {
   "format_version": 74,
-  "written_by": "7038b0f819aceb0e8cd151b3def50ea7ec3bb04d",
-  "how": "craft3d-cli of that commit (a debug build, on the developer's laptop): craft3d-cli run --new '{\"units\": \"mm\"}' --script v74.steps.json --out v74.3dcraft, then craft3d-cli run v74.3dcraft --cmd document.inspect for the features and bodies and --cmd note.list for the notes (their times left out: the clock of the writing build); format 74: a plate 40 x 20 x t (t 5 mm, then 7 mm) drilled by a pin of radius 3 through its middle (Drilled, 40 * 20 * 7 - 9 pi * 7 = 5402.07 mm3), and the notes pinned to it: 1 by the person on the plate's top (F1:face(1), followed into Drilled), done by the agent Claude Code with a reply; 2 by that agent on the pin's wall (F2:face(0), followed into Drilled), open; 3 on a face of a lug that was deleted afterwards (detached, at its point); 4 on the body of Drilled; 5 deleted again (next id 6)",
+  "written_by": "73caa7ad67b32089f1d40dfa56f26dcc5f3c9359",
+  "how": "craft3d-cli of that commit (a release build, on the developer's laptop): craft3d-cli run --new '{\"units\": \"mm\"}' --script v74.steps.json --out v74.3dcraft, then craft3d-cli run v74.3dcraft --cmd document.inspect for the features and bodies; format 74: a rod lofted through three circles of radius r = 5 mm at 0, 10 and 20 mm (its side a spline surface that is the cylinder exactly), its end tipped as long as r with the place given as a point in the model where the tip is to be, (0, 0, 20 mm + r), and its start tipped as long as r with the place given as a point in the model on the end, (0, 0, 0): a half ball on each end, 500 pi + 2 * 250 pi / 3 = 2000 pi / 3 = 2094.395102393195 mm3 in closed form",
   "rollback": null,
   "features": [
     {
+      "dof": 2,
       "id": "F1",
-      "name": "Plate",
+      "name": "S0",
       "params": {
-        "orientation": {
-          "angle": "0 deg",
-          "axis": [
-            "0",
-            "0",
-            "1"
-          ]
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "curve": 2,
+              "type": "radius",
+              "value": "r"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "center": 1,
+              "radius": 5.0,
+              "type": "circle"
+            },
+            "id": 2
+          }
+        ],
+        "next_constraint_id": 2,
+        "next_entity_id": 3,
+        "plane": {
+          "offset": "0",
+          "plane": "xy",
+          "type": "world"
         },
-        "position": [
-          "0",
-          "0",
-          "0"
-        ],
-        "size": [
-          "40 mm",
-          "20 mm",
-          "t"
-        ],
-        "type": "block"
+        "type": "sketch"
       },
       "status": "ok",
       "suppressed": false
     },
     {
+      "dof": 2,
       "id": "F2",
-      "name": "Pin",
+      "name": "S1",
       "params": {
-        "height": "t",
-        "orientation": {
-          "angle": "0 deg",
-          "axis": [
-            "0",
-            "0",
-            "1"
-          ]
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "curve": 2,
+              "type": "radius",
+              "value": "r"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "center": 1,
+              "radius": 5.0,
+              "type": "circle"
+            },
+            "id": 2
+          }
+        ],
+        "next_constraint_id": 2,
+        "next_entity_id": 3,
+        "plane": {
+          "offset": "10 mm",
+          "plane": "xy",
+          "type": "world"
         },
-        "position": [
-          "20 mm",
-          "10 mm",
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "dof": 2,
+      "id": "F3",
+      "name": "S2",
+      "params": {
+        "constraints": [
+          {
+            "id": 1,
+            "kind": {
+              "curve": 2,
+              "type": "radius",
+              "value": "r"
+            }
+          }
+        ],
+        "entities": [
+          {
+            "construction": false,
+            "geometry": {
+              "type": "point",
+              "x": 0.0,
+              "y": 0.0
+            },
+            "id": 1
+          },
+          {
+            "construction": false,
+            "geometry": {
+              "center": 1,
+              "radius": 5.0,
+              "type": "circle"
+            },
+            "id": 2
+          }
+        ],
+        "next_constraint_id": 2,
+        "next_entity_id": 3,
+        "plane": {
+          "offset": "20 mm",
+          "plane": "xy",
+          "type": "world"
+        },
+        "type": "sketch"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "bodyUsedBy": "F5",
+      "id": "F4",
+      "name": "Rod",
+      "params": {
+        "closed": false,
+        "ruled": false,
+        "sections": [
+          {
+            "sketch": 1,
+            "start": null
+          },
+          {
+            "sketch": 2,
+            "start": null
+          },
+          {
+            "sketch": 3,
+            "start": null
+          }
+        ],
+        "type": "loft"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "bodyUsedBy": "F6",
+      "id": "F5",
+      "name": "Nose",
+      "params": {
+        "at": [
+          "0 mm",
+          "0 mm",
+          "20 mm + r"
+        ],
+        "face": "F4:endCap(e2)",
+        "fullness": null,
+        "length": "r",
+        "type": "tip"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "followed": {
+        "at": [
+          "0 mm",
+          "0 mm",
           "0 mm"
         ],
-        "radius": "3 mm",
-        "type": "cylinder"
+        "face": "F5:copy(0)/F4:startCap(e2)",
+        "fullness": null,
+        "length": "r",
+        "type": "tip"
       },
-      "status": "ok",
-      "suppressed": false
-    },
-    {
-      "id": "F3",
-      "name": "Drilled",
+      "id": "F6",
+      "name": "Tail",
       "params": {
-        "keep_tool": false,
-        "op": "subtract",
-        "target": 1,
-        "tool": 2,
-        "type": "boolean"
+        "at": [
+          "0 mm",
+          "0 mm",
+          "0 mm"
+        ],
+        "face": "F4:startCap(e2)",
+        "fullness": null,
+        "length": "r",
+        "type": "tip"
       },
       "status": "ok",
       "suppressed": false
@@ -71,129 +220,48 @@
   ],
   "bodies": [
     {
-      "area": 2515.3982236861557,
+      "area": 942.4777960769384,
       "bbox": [
         [
-          0.0,
-          0.0,
-          0.0
+          -5.0,
+          -5.0,
+          -5.0
         ],
         [
-          40.0,
-          20.0,
-          7.0
+          5.0,
+          5.0,
+          25.0
         ]
       ],
-      "bboxTolerance": 0.050153745858970054,
+      "bboxTolerance": 0.03069980123839466,
       "centroid": [
-        20.0,
-        10.0,
-        3.4999999999999996
+        -2.849776994591311e-16,
+        -1.0177774980683254e-16,
+        10.0
       ],
-      "edges": 14,
+      "edges": 20,
       "faceNames": [
-        "F3:copy(0)/F1:face(0)",
-        "F3:copy(0)/F1:face(1)",
-        "F3:copy(0)/F1:face(2)",
-        "F3:copy(0)/F1:face(3)",
-        "F3:copy(0)/F1:face(4)",
-        "F3:copy(0)/F1:face(5)",
-        "F3:copy(1)/F2:face(0)"
+        "F6:copy(0)/F4:side(e2,e2,e2)",
+        "F6:copy(0)/F4:side(e2,e2,e2)",
+        "F6:copy(0)/F4:side(e2,e2,e2)",
+        "F6:copy(0)/F4:side(e2,e2,e2)",
+        "F6:copy(0)/F5:tip(0)/F4:side(e2,e2,e2)",
+        "F6:copy(0)/F5:tip(0)/F4:side(e2,e2,e2)",
+        "F6:copy(0)/F5:tip(0)/F4:side(e2,e2,e2)",
+        "F6:copy(0)/F5:tip(0)/F4:side(e2,e2,e2)",
+        "F6:tip(0)/F5:copy(0)/F4:side(e2,e2,e2)",
+        "F6:tip(0)/F5:copy(0)/F4:side(e2,e2,e2)",
+        "F6:tip(0)/F5:copy(0)/F4:side(e2,e2,e2)",
+        "F6:tip(0)/F5:copy(0)/F4:side(e2,e2,e2)"
       ],
-      "faces": 7,
-      "feature": "F3",
+      "faces": 12,
+      "feature": "F6",
       "kind": "solid",
-      "name": "Drilled",
+      "name": "Tail",
       "shells": 1,
       "valid": true,
       "vertices": 10,
-      "volume": 5402.079662823846
-    }
-  ],
-  "notes": [
-    {
-      "id": 1,
-      "text": "2 mm thicker here",
-      "state": "done",
-      "author": "person",
-      "agent": null,
-      "on": {
-        "kind": "face",
-        "name": "F1:face(1)",
-        "feature": "F1"
-      },
-      "attachment": "attached",
-      "now": "F3:copy(0)/F1:face(1)",
-      "point": [
-        20.000000000000004,
-        10.000000000000002,
-        5.0
-      ],
-      "reply": "Done: t is 7 mm now.",
-      "closedBy": "Claude Code"
-    },
-    {
-      "id": 2,
-      "text": "Should this hole go all the way through?",
-      "state": "open",
-      "author": "agent",
-      "agent": "Claude Code",
-      "on": {
-        "kind": "face",
-        "name": "F2:face(0)",
-        "feature": "F2"
-      },
-      "attachment": "attached",
-      "now": "F3:copy(1)/F2:face(0)",
-      "point": [
-        22.23825067536965,
-        8.01708293262731,
-        2.5
-      ],
-      "reply": null,
-      "closedBy": null
-    },
-    {
-      "id": 3,
-      "text": "this lug can go",
-      "state": "open",
-      "author": "person",
-      "agent": null,
-      "on": {
-        "kind": "face",
-        "name": "F4:face(5)",
-        "feature": "F4"
-      },
-      "attachment": "detached",
-      "now": null,
-      "point": [
-        46.0,
-        10.0,
-        3.4999999999999996
-      ],
-      "reply": null,
-      "closedBy": null
-    },
-    {
-      "id": 4,
-      "text": "the whole part in aluminium",
-      "state": "open",
-      "author": "person",
-      "agent": null,
-      "on": {
-        "kind": "body",
-        "name": "Drilled",
-        "feature": "F3"
-      },
-      "attachment": "attached",
-      "now": null,
-      "point": [
-        22.359698277456477,
-        11.810660171779821,
-        3.500000000000002
-      ],
-      "reply": null,
-      "closedBy": null
+      "volume": 2094.3951023931954
     }
   ]
 }

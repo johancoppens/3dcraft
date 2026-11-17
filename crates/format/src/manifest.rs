@@ -100,13 +100,13 @@ pub struct Document {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fonts: Vec<Font>,
     /// Notes pinned to the model, in the order they were written, and the
-    /// id the next one gets (format version 74). Absent when there are
-    /// none and no id was given out (and in files before version 74).
+    /// id the next one gets (format version 75). Absent when there are
+    /// none and no id was given out (and in files before version 75).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<Notes>,
 }
 
-/// The notes of a document (format version 74): `{"next": 4, "items":
+/// The notes of a document (format version 75): `{"next": 4, "items":
 /// [...]}`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1125,14 +1125,15 @@ pub enum FeatureKind {
     /// The flat end face `face` of the body of an earlier feature
     /// replaced by faces that close the body in one point (format version
     /// 73). Absent `length`: the length chosen at every regeneration;
-    /// absent `at`: over the centre of area of the shoulder; absent
-    /// `fullness`: `√2 − 1`, quarter ellipses.
+    /// absent `at`: the place chosen at every regeneration; absent
+    /// `fullness`: `√2 − 1`, quarter ellipses. `at` of three expressions,
+    /// a point in the model, is format version 74.
     Tip {
         face: Name,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         length: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        at: Option<[String; 2]>,
+        at: Option<TipAt>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fullness: Option<String>,
     },
@@ -1354,6 +1355,16 @@ pub struct SheetJog {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub k_factor: Option<String>,
     pub id: u32,
+}
+
+/// Where a tip's point stands: two expressions, lengths along the end
+/// face's own x and y axes (format version 73), or three, a point in the
+/// model taken to the end's plane along its normal (format version 74).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TipAt {
+    Face([String; 2]),
+    Point([String; 3]),
 }
 
 /// A choice among names: one of them (`"tear"`), or an expression whose

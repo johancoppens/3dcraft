@@ -432,6 +432,18 @@ fn a_note_stays_on_its_face_through_edits_and_is_detached_when_it_goes() {
         at(point(&note(&mut s, 1)), [20.0, 10.0, 5.0]),
         "where it was put"
     );
+    // Its marker is on the top as it is now, 7 mm up: the point of the
+    // face nearest where it was put, the middle of the plate, which the
+    // hole drilled since has taken: so on the hole's rim (radius 3, on a
+    // mesh of chords within a thousandth of the plate's size).
+    let top = note(&mut s, 1);
+    let marker = top["at"].as_array().unwrap();
+    let [x, y, z] = [0, 1, 2].map(|k| marker[k].as_f64().unwrap());
+    let radial = ((x - 20.0) * (x - 20.0) + (y - 10.0) * (y - 10.0)).sqrt();
+    assert!(
+        (z - 7.0).abs() < 1e-9 && radial > 3.0 - 0.05 && radial <= 3.0 + 1e-9,
+        "{top}"
+    );
     // Suppressed: hidden for now.
     run(&mut s, "feature.suppress", json!({"feature": "Pin"}));
     let hidden = note(&mut s, 2);
@@ -456,6 +468,7 @@ fn a_note_stays_on_its_face_through_edits_and_is_detached_when_it_goes() {
     );
     assert_eq!(detached["point"], wall["point"]);
     assert_eq!(detached["text"], "smaller hole");
+    assert!(detached.get("at").is_none(), "no marker on what is gone");
     let listed = notes(&mut s);
     assert_eq!(listed["detached"], 1);
     assert!(

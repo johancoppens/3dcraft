@@ -16,7 +16,7 @@
 //! notes are beside the history, not in it: regeneration does not read
 //! them, so they change no body, no cache key and no assertion. Changing
 //! them is an undo step all the same, as every change of the document is.
-//! They are saved with the document (format version 74) and left out of
+//! They are saved with the document (format version 75) and left out of
 //! everything published: a `.3dcraftjig` holds none (`jig.export`), nor a
 //! bundled example (`cargo xtask bundle-examples` refuses a file with
 //! any).

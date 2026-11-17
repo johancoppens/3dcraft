@@ -216,6 +216,8 @@ What one round looks like, as the agent runs it (`Plate:face(1)` is the plate's 
   them; each change is one step that `edit.undo` takes back. They never change the model.
 - **Published files hold none.** A Jig exported with `jig.export` leaves them out (it says how many), and
   no export (STEP, STL, 3MF, OBJ, DXF, SVG) carries them.
+- **In a part, not yet in an assembly.** Notes are pinned in a part's document; in an assembly
+  (`.3dcraftasm`) `note.add` refuses for now: open the part (`instance.open`) and pin the note there.
 - `note.edit` changes a note's text or moves it; `note.delete` takes away one, several, the done ones
   (`state: done`) or all. A document holds at most 1000 notes of at most 2000 characters each.
 
