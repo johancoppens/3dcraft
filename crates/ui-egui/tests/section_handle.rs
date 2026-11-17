@@ -1090,7 +1090,8 @@ fn two_faces_give_the_plane_midway_or_their_bisector_and_the_plate_says_which() 
     );
 
     // An agent: ui.set with point, normal and made, read back by ui.get;
-    // `made` that does not fit the plane is dropped, and a plane by name
+    // `made` that does not fit the plane is refused (the review of
+    // 2026-11-17: it was dropped without a word), and a plane by name
     // takes it away.
     call(
         &mut shell,
@@ -1108,13 +1109,20 @@ fn two_faces_give_the_plane_midway_or_their_bisector_and_the_plate_says_which() 
     );
     window.frames(&mut shell, &mut session, 2);
     assert_eq!(plane_of(&mut shell, &mut session).2, Value::Null);
-    call(
-        &mut shell,
-        &mut session,
-        "ui.set",
+    let before = shell.state.clone();
+    for odd in [
         json!({"section": {"plane": "zx", "made": "bisector"}}),
-    );
-    assert_eq!(shell.state.section.made, None);
+        json!({"section": {"plane": "zx", "made": "face"}}),
+        json!({"section": {"point": [1, 2, 3], "normal": [0, 0, 1], "made": "face"}}),
+        json!({"section": {"made": "mid"}}),
+    ] {
+        let error = shell
+            .handle_method(&mut session, "ui.set", Some(&odd))
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("does not fit the plane"), "{odd}: {error}");
+        assert_eq!(shell.state, before, "{odd}");
+    }
     let error = shell
         .handle_method(
             &mut session,
@@ -1415,4 +1423,202 @@ fn the_bar_keeps_the_section_options_on_a_phone_only() {
             assert!(shell.section_handle().is_none(), "{width}");
         }
     }
+}
+
+/// The review's fixture: the chamfered block, and a second block 20 wide
+/// at x = 100 turned about z by `turn`.
+fn two_bodies(turn: &str) -> Session {
+    let mut s = chamfered();
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [20, 20, 20], "position": [100, 0, 0], "angle": turn, "name": "Second"}),
+    );
+    s
+}
+
+/// The review of 2026-11-17: faces all but parallel (two blocks' +x ends,
+/// one turned by a ten-millionth of a degree) gave a "bisector" 3.4e10
+/// away that cut everything or nothing. Their planes meet far outside the
+/// model's box: the plane is the one midway, and it cuts the model.
+#[test]
+fn faces_all_but_parallel_give_the_plane_midway_that_cuts_the_model() {
+    for turn in [
+        "0.00000005 deg",
+        "0.0000001 deg",
+        "0.0000003 deg",
+        "0.001 deg",
+    ] {
+        let mut session = two_bodies(turn);
+        let (mut shell, mut window) = window_on(&mut session, [1200.0, 800.0], "xy", 4.0, "iso");
+        for (what, faces, middle) in [
+            (
+                "same way",
+                [
+                    json!({"in": "Bevel", "normal": {"along": [1, 0, 0]}}),
+                    json!({"in": "Second", "normal": {"along": [1, 0, 0], "tol": 1}}),
+                ],
+                90.0,
+            ),
+            (
+                "apart",
+                [
+                    json!({"in": "Bevel", "normal": {"along": [-1, 0, 0]}}),
+                    json!({"in": "Second", "normal": {"along": [1, 0, 0], "tol": 1}}),
+                ],
+                60.0,
+            ),
+        ] {
+            select_faces(&mut session, &faces);
+            window.frames(&mut shell, &mut session, 3);
+            let choice = shell.section_face_choice().cloned().unwrap();
+            assert_eq!(
+                choice.made,
+                Some(SectionMade::Mid),
+                "{turn} {what}: {choice:?}"
+            );
+            let dot = shell.section_handle().unwrap().dots[3];
+            window.click(&mut shell, &mut session, dot);
+            window.frames(&mut shell, &mut session, 3);
+            let got = call(&mut shell, &mut session, "ui.get", json!({}));
+            assert_eq!(got["section"]["made"], "mid", "{turn} {what}");
+            let point = got["section"]["point"][0].as_f64().unwrap();
+            assert!(
+                (point - middle).abs() < 0.5,
+                "{turn} {what}: {}",
+                got["section"]
+            );
+            for k in [1, 2] {
+                let c = got["section"]["point"][k].as_f64().unwrap();
+                assert!(c.abs() < 200.0, "{turn} {what}: {}", got["section"]);
+            }
+            // It cuts the model: there is a range, the section is on.
+            assert!(shell.state.section.on, "{turn} {what}");
+            let range = got["section"]["range"].as_array().unwrap();
+            let (lo, hi) = (range[0].as_f64().unwrap(), range[1].as_f64().unwrap());
+            assert!(lo < 0.0 && hi > 0.0, "{turn} {what}: {range:?}");
+        }
+    }
+}
+
+/// The review of 2026-11-17: after an edit the plane midway stays where
+/// it was (a section is a view, like the camera: it does not move under
+/// the person), and once its two faces no longer make it, it is no longer
+/// called midway. A hidden body's face is refused in the window's words.
+#[test]
+fn after_an_edit_the_plane_stays_and_its_name_goes_once_it_no_longer_holds() {
+    let mut session = chamfered();
+    let (mut shell, mut window) = window_on(&mut session, [1200.0, 800.0], "xy", 4.0, "iso");
+    select_faces(
+        &mut session,
+        &[
+            json!({"normal": {"along": [-1, 0, 0]}}),
+            json!({"normal": {"along": [1, 0, 0]}}),
+        ],
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let dot = shell.section_handle().unwrap().dots[3];
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 3);
+    let made = shell.state.section.clone();
+    assert_eq!(made.made, Some(SectionMade::Mid));
+    // An edit that leaves the two ends where they are: still midway.
+    run(
+        &mut session,
+        "feature.edit",
+        json!({"feature": "Down", "radius": 2}),
+    );
+    window.frames(&mut shell, &mut session, 4);
+    assert_eq!(shell.state.section, made);
+    // The block made longer: its +x end moves to 80; the plane stays at
+    // 30, and is no longer called midway.
+    run(
+        &mut session,
+        "feature.edit",
+        json!({"feature": "Block", "size": [80, 40, 20]}),
+    );
+    window.frames(&mut shell, &mut session, 4);
+    assert_eq!(shell.state.section.point, made.point);
+    assert_eq!(shell.state.section.normal, made.normal);
+    assert_eq!(shell.state.section.made, None);
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["section"]["made"], Value::Null);
+    assert_eq!(got["section"]["direction"], "free");
+
+    // A hidden body's face: refused in the window's words.
+    select_faces(&mut session, &[json!({"normal": {"along": [0, 0, 1]}})]);
+    let feature = run(&mut session, "select.get", json!({}))["items"][0]["feature"].clone();
+    run(
+        &mut session,
+        "feature.visible",
+        json!({"feature": feature, "visible": false}),
+    );
+    window.frames(&mut shell, &mut session, 4);
+    if let Some(choice) = shell.section_face_choice().cloned()
+        && let Some(why) = choice.refused
+    {
+        assert!(
+            !why.contains("mesh") && !why.contains("no body has"),
+            "in the window's words: {why}"
+        );
+    }
+}
+
+/// The review of 2026-11-17: while the view turned, the group (the dark
+/// plate) hopped sides hundreds of times, sometimes under the display bar
+/// and the triad. Turned all round in steps of 3 degrees, at three
+/// heights, across X, Y and Z: it keeps its side while that stays clear
+/// and is never under a control.
+#[test]
+fn while_the_view_turns_the_group_keeps_its_side_and_clear_of_the_controls() {
+    let mut session = drilled();
+    let (mut shell, mut window) = window_on(&mut session, [1200.0, 800.0], "yz", 30.0, "iso");
+    let (mut frames, mut hops, mut worst) = (0_usize, 0_usize, 0.0_f32);
+    for plane in ["yz", "zx", "xy"] {
+        call(
+            &mut shell,
+            &mut session,
+            "ui.set",
+            json!({"section": {"plane": plane}}),
+        );
+        let mut last: Option<egui::Vec2> = None;
+        for pitch in [35.0, 10.0, -25.0] {
+            for k in 0..120 {
+                let yaw = f64::from(k) * 3.0;
+                call(
+                    &mut shell,
+                    &mut session,
+                    "ui.set",
+                    json!({"camera": {"yaw": yaw, "pitch": pitch}}),
+                );
+                window.frames(&mut shell, &mut session, 1);
+                let Some(place) = shell.section_handle().cloned() else {
+                    last = None;
+                    continue;
+                };
+                frames += 1;
+                let from_foot = place.group.center() - place.frame.at;
+                if let Some(before) = last {
+                    let jump = (from_foot - before).length();
+                    if jump > 60.0 {
+                        hops += 1;
+                        worst = worst.max(jump);
+                    }
+                }
+                last = Some(from_foot);
+                let layout = shell.controls_layout().unwrap();
+                for (name, r) in layout.parts() {
+                    assert!(
+                        !r.intersects(place.group),
+                        "{plane} pitch {pitch} yaw {yaw}: under the {name}: {:?} {r:?}",
+                        place.group
+                    );
+                }
+            }
+        }
+    }
+    eprintln!("TURNED {frames} frames, {hops} hops, the worst {worst} pt");
+    assert!(frames > 600, "{frames}");
+    // Round one: 283 hops in 4356 frames (6.5 %). Now one in forty at most.
+    assert!(hops * 40 <= frames, "{hops} hops in {frames} frames");
 }
