@@ -1980,5 +1980,15 @@ Every other line has lift 0 and is drawn as before, bit for bit. Pinned by `crat
 grid_shown.rs` (a hollow sheet's grid: points dimmed without the lift, none with it) and `gpu_viewport.rs` ›
 `the_direct_path_draws_a_grid_on_its_sheet_and_matches_the_oracle` (a terrain's grid and a sketch line through
 it, opaque and see-through: 1341 line samples, all agreeing, on the laptop's Intel MTL with 4 samples). Not
-covered: a body meshed coarser than the scene's tolerance (`Scene::coarsened`), and a view more than 60° from the
-surface's normal, where a grid may still be dimmed in places.
+covered: a body meshed coarser than the scene's tolerance (`Scene::coarsened`).
+
+*Round 2 (2026-11-17).* A grid's stretches behind a body are now left out, as a body's hidden edges are, and
+drawn dimmed only see-through (the developer's decision; `SceneSketch::dims_hidden`). Left out, a decision near
+the threshold showed as a line going in and out of sight pixel by pixel, so a lifted line is tested with its
+lift times the slant of the surface under it (`√(1 + (g / footprint)²)` from the depth buffer's cell, at most 16:
+`viewport::surface_slant`, `lines.wgsl` › `slant_at`), the gap between a mesh and its surface growing as the
+secant of the angle it is seen at, and is hidden where most of five places a pixel apart along it are
+(`viewport::lifted_hides`, `lines.wgsl` › `hides`). The relief's short runs in and out of sight fell from 66 to
+9 at the reviewer's camera and from 591 to 24 low at its summit ([`surfacing.md`](surfacing.md) › *Seeing the
+grid*). The terrain of `the_direct_path_draws_a_grid_on_its_sheet_and_matches_the_oracle` now has a ridge that
+hides its back slope: 1039 line samples opaque, all agreeing, 1040 of 1041 see-through (Intel MTL).

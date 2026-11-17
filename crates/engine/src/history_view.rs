@@ -473,8 +473,57 @@ fn key_value(shown: &Shown<'_>, kind: &FeatureKind) -> (String, Option<KeyEdit>)
         ),
         // The sketch's row adds its degrees of freedom, which take solving.
         FeatureKind::Sketch(_) => (String::new(), None),
+        FeatureKind::SurfaceGrid(grid) => match grid_key(shown.doc, grid) {
+            Some(key) => (key, None),
+            None => (kind.default_name(), None),
+        },
         other => (other.default_name(), None),
     }
+}
+
+/// A grid surface's key value: its size, `29 rows of 37`, and where the
+/// window draws its grid thinned (`crate::scene::grid_step`) every how
+/// many rows and columns, said first so a row cut to the panel shows it:
+/// `every 5th row, 7th column · 300 rows of 400`.
+/// From the document alone (a table's rows and its columns other than the
+/// key); `None` for a table the document does not have.
+fn grid_key(doc: &Document, grid: &craft3d_doc::SurfaceGrid) -> Option<String> {
+    let (rows, columns) = match &grid.points {
+        craft3d_doc::GridPoints::Given { rows } => (rows.len(), rows.first().map_or(0, Vec::len)),
+        craft3d_doc::GridPoints::Table { table, .. } => {
+            let found = doc.table(table)?;
+            let heights = found.columns.iter().filter(|c| c.name != found.key);
+            (found.rows.len(), heights.count())
+        }
+    };
+    let size = format!("{rows} rows of {columns}");
+    let (row_step, column_step) = (
+        crate::scene::grid_step(rows),
+        crate::scene::grid_step(columns),
+    );
+    let every = match (row_step > 1, column_step > 1) {
+        (false, false) => return Some(size),
+        (true, false) => format!("every {} row", ordinal(row_step)),
+        (false, true) => format!("every {} column", ordinal(column_step)),
+        (true, true) => format!(
+            "every {} row, {} column",
+            ordinal(row_step),
+            ordinal(column_step)
+        ),
+    };
+    Some(format!("{every} · {size}"))
+}
+
+/// `2nd`, `5th`, `21st`, `13th`.
+fn ordinal(n: usize) -> String {
+    let suffix = match (n % 100, n % 10) {
+        (11..=13, _) => "th",
+        (_, 1) => "st",
+        (_, 2) => "nd",
+        (_, 3) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
 }
 
 /// The variables, with their values and groups.

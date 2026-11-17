@@ -473,6 +473,16 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
                 json!({"text": "this goes", "on": "Gone:face(0)"}),
             );
             run("feature.delete", json!({"feature": "Gone"}));
+            // A sheet through a grid of heights from a table, whose grid
+            // the scene draws with the sketches.
+            run(
+                "table.set",
+                json!({"name": "heights", "columns": ["row", "a", "b", "c"], "rows": [[1, 0, 1, 0], [2, 1, 2, 1], [3, 0, 1, 0]]}),
+            );
+            run(
+                "feature.surface.grid",
+                json!({"table": "heights", "step": [5, 5], "origin": [50, 0, 0], "name": "Terrain"}),
+            );
         }
         // An assembly (docs/design/assemblies.md): two instances of a
         // packed part, a picked body, a ground, a driven hinge, a mate on a
@@ -588,6 +598,21 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
             run("sketch.create", json!({"name": "Gone"}));
             run("feature.extrude", json!({"sketch": "Gone", "distance": 1}));
             run("feature.delete", json!({"feature": "Gone"}));
+            // A grid surface whose table is gone (it fails), and one given
+            // point by point.
+            run(
+                "table.set",
+                json!({"name": "relief", "columns": ["row", "a", "b"], "rows": [[1, 0, 1], [2, 1, 0]]}),
+            );
+            run(
+                "feature.surface.grid",
+                json!({"table": "relief", "step": [1, 1], "name": "Relief"}),
+            );
+            run("table.delete", json!({"name": "relief", "force": true}));
+            run(
+                "feature.surface.grid",
+                json!({"points": [[[0, 0, 0], [1, 0, 0]], [[0, 1, 0], [1, 1, 1]]], "name": "Patch"}),
+            );
             run("feature.suppress", json!({"feature": "Cylinder1"}));
             run("history.rollback", json!({"feature": "Plate"}));
             run("edit.undo", json!({}));
