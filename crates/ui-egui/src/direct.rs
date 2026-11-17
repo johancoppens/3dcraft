@@ -314,6 +314,9 @@ pub fn segments_marked(
         let chosen = selected == Some(sketch.feature.as_str());
         // Narrowed at the GPU boundary.
         let lift = sketch.lift(tolerance) as f32;
+        // A grid's hidden stretches are left out unless see-through
+        // (`SceneSketch::dims_hidden`), as the CPU overlay leaves them.
+        let dimmed = sketch.dims_hidden(see_through);
         for polyline in &sketch.polylines {
             let kind = match (polyline.construction, chosen) {
                 (true, _) => LineKind::Construction,
@@ -322,7 +325,7 @@ pub fn segments_marked(
             };
             for pair in polyline.points.windows(2) {
                 if let [a, b] = *pair {
-                    line(a, b, kind, true, true, false, lift);
+                    line(a, b, kind, true, dimmed, false, lift);
                 }
             }
         }
@@ -343,6 +346,7 @@ pub fn segments_marked(
             LineKind::Sketch
         };
         let lift = sketch.lift(tolerance) as f32;
+        let dimmed = sketch.dims_hidden(see_through);
         for point in &sketch.points {
             out.push(Segment {
                 from: *point,
@@ -350,7 +354,7 @@ pub fn segments_marked(
                 color: kind.color(tokens),
                 width: tokens.point_radius * 2.0 * scale,
                 tested: true,
-                dimmed: true,
+                dimmed,
                 axis: false,
                 hidden_opacity: None,
                 edge: None,

@@ -7,14 +7,21 @@
 //! takes a note whatever a mesh of it would do; an edge's from its curve,
 //! a vertex is its point. A sheet, which the probe does not take (it has
 //! no inside), is placed by its surfaces too: a face's point is the foot
-//! on its surface where that lies within the face's box, else the nearest
-//! point of its edges; no mesh is made (a grid sheet of 33 000 spans took
+//! on its surface where that lies within the face's loops, else the
+//! nearest point of its edges. Whether a foot is within the loops is
+//! told in the surface's parameters: the loops drawn there from points
+//! along their edges, the foot inside when an odd number of them goes
+//! around it (a hole of a trimmed sheet is not on it). A loop that does
+//! not close in the parameters (round a seam, through a pole) leaves the
+//! face's box to tell. No mesh is made (a grid sheet of 33 000 spans took
 //! 6.8 s to mesh for its first note).
 
 use crate::verify;
 use craft3d_kernel::boolean::probe::{OnFace, Probe};
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_topo::{Body, FaceId};
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 /// What on a body: every face of it, some faces (the pieces of one name,
 /// or what one feature made), some edges, some vertices.
@@ -29,12 +36,23 @@ pub(crate) enum Entity {
 /// Points along each edge of a face whose boundary gives its middle.
 const BOUNDARY_SAMPLES: u32 = 16;
 
+/// Points along each edge of a sheet's face whose loops are drawn in its
+/// surface's parameters.
+const LOOP_SAMPLES: u32 = 32;
+
+/// A face's loops in its surface's parameters: each a closed run of
+/// (u, v), the last point joined to the first.
+type Rings = Vec<Vec<(f64, f64)>>;
+
 /// A body made ready to place points on.
 pub(crate) struct Geometry<'a> {
     body: &'a Body,
     probe: Option<Probe<'a>>,
     linear: f64,
     size: f64,
+    /// The loops of a sheet's faces in their parameters, by face, made
+    /// when first asked for; `None` where they do not close there.
+    rings: RefCell<BTreeMap<usize, Option<Rings>>>,
 }
 
 impl<'a> Geometry<'a> {
@@ -52,6 +70,7 @@ impl<'a> Geometry<'a> {
             probe,
             linear,
             size,
+            rings: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -161,20 +180,14 @@ impl<'a> Geometry<'a> {
     }
 
     /// The point of a sheet's face nearest `p`: the foot on its surface
-    /// where it lies within the face's box, else the nearest point of its
-    /// edges, whichever is nearer.
+    /// where it lies within the face's loops, else the nearest point of
+    /// its edges, whichever is nearer.
     fn nearest_on_sheet_face(&self, face: usize, p: Vec3) -> Option<Vec3> {
         let f = self.body.faces.get(face)?;
-        let foot = f
-            .surface
-            .project(p)
-            .ok()
-            .map(|(u, v)| f.surface.eval(u, v))
-            .filter(|q| q.is_finite())
-            .filter(|q| {
-                self.face_box(face)
-                    .is_none_or(|b| verify::box_distance(&b, *q) <= self.linear.max(1e-9))
-            });
+        let foot = f.surface.project(p).ok().and_then(|(u, v)| {
+            let q = f.surface.eval(u, v);
+            (q.is_finite() && self.within_sheet_face(face, (u, v), q)).then_some(q)
+        });
         let edge = self
             .face_edges(face)
             .iter()
@@ -263,16 +276,110 @@ impl<'a> Geometry<'a> {
             let foot = f.surface.eval(u, v);
             let inside = match &self.probe {
                 Some(probe) => probe.on_face(face, foot).ok() == Some(OnFace::In),
-                // A sheet: within its face's box.
-                None => self
-                    .face_box(face)
-                    .is_none_or(|b| verify::box_distance(&b, foot) <= self.linear.max(1e-9)),
+                // A sheet: within its face's loops.
+                None => self.within_sheet_face(face, (u, v), foot),
             };
             if foot.is_finite() && inside {
                 return Some(foot);
             }
         }
         self.nearest_on_face(face, centre)
+    }
+
+    /// Whether `q`, the point of a sheet's face's surface at `uv`, lies
+    /// on the face: within its loops where they can be drawn in the
+    /// surface's parameters, else within the face's box.
+    fn within_sheet_face(&self, face: usize, uv: (f64, f64), q: Vec3) -> bool {
+        match self.sheet_inside(face, uv) {
+            Some(inside) => inside,
+            None => self
+                .face_box(face)
+                .is_none_or(|b| verify::box_distance(&b, q) <= self.linear.max(1e-9)),
+        }
+    }
+
+    /// Whether the point at `uv` of a face's surface lies within the
+    /// face's loops: an odd number of them goes around it in the
+    /// parameters (each with the point turned by whole periods to its
+    /// middle). `None` when the loops cannot be drawn there.
+    fn sheet_inside(&self, face: usize, uv: (f64, f64)) -> Option<bool> {
+        let f = self.body.faces.get(face)?;
+        let (pu, pv) = (f.surface.period_u(), f.surface.period_v());
+        let mut known = self.rings.borrow_mut();
+        let rings = known
+            .entry(face)
+            .or_insert_with(|| self.rings_of(face))
+            .as_ref()?;
+        if rings.is_empty() {
+            // A face without loops is all of its surface.
+            return Some(true);
+        }
+        // Inside after an odd number of loops that go around it.
+        let mut inside = false;
+        for ring in rings {
+            let (mut lo, mut hi) = (
+                (f64::INFINITY, f64::INFINITY),
+                (f64::NEG_INFINITY, f64::NEG_INFINITY),
+            );
+            for (u, v) in ring {
+                lo = (lo.0.min(*u), lo.1.min(*v));
+                hi = (hi.0.max(*u), hi.1.max(*v));
+            }
+            let q = (
+                turned(uv.0, 0.5 * (lo.0 + hi.0), pu),
+                turned(uv.1, 0.5 * (lo.1 + hi.1), pv),
+            );
+            if winding(ring, q) != 0 {
+                inside = !inside;
+            }
+        }
+        Some(inside)
+    }
+
+    /// The loops of `face` in its surface's parameters, from points along
+    /// their edges, each point found from the one before it (a few
+    /// evaluations of a freeform surface each) and turned by whole periods
+    /// to be next to it. `None` when a point does not project, or a loop
+    /// does not close in the parameters (round a seam, through a pole).
+    fn rings_of(&self, face: usize) -> Option<Rings> {
+        let f = self.body.faces.get(face)?;
+        let (pu, pv) = (f.surface.period_u(), f.surface.period_v());
+        let mut rings = Vec::with_capacity(f.loops.len());
+        for l in &f.loops {
+            let found = self.body.loops.get(l.0 as usize)?;
+            let mut ring: Vec<(f64, f64)> = Vec::new();
+            for coedge in &found.coedges {
+                let edge = self.body.edges.get(coedge.edge.0 as usize)?;
+                let mut points: Vec<Vec3> = verify::edge_points(edge, LOOP_SAMPLES).collect();
+                if coedge.reversed {
+                    points.reverse();
+                }
+                for p in points {
+                    let at = match ring.last() {
+                        None => f.surface.project(p).ok()?,
+                        Some(&(u0, v0)) => {
+                            let (u, v) = f.surface.project_from(p, (u0, v0)).ok()?;
+                            (turned(u, u0, pu), turned(v, v0, pv))
+                        }
+                    };
+                    if !(at.0.is_finite() && at.1.is_finite()) {
+                        return None;
+                    }
+                    ring.push(at);
+                }
+            }
+            let (Some(first), Some(last)) = (ring.first(), ring.last()) else {
+                continue;
+            };
+            let open = |a: f64, b: f64, period: Option<f64>| {
+                period.is_some_and(|p| (a - b).abs() > 0.5 * p)
+            };
+            if open(first.0, last.0, pu) || open(first.1, last.1, pv) {
+                return None;
+            }
+            rings.push(ring);
+        }
+        Some(rings)
     }
 
     fn edge_middle(&self, index: usize) -> Option<Vec3> {
@@ -283,5 +390,59 @@ impl<'a> Geometry<'a> {
             return None;
         }
         Some(edge.curve.eval(mid)).filter(|p| p.is_finite())
+    }
+}
+
+/// `x` turned by whole periods to lie within half a period of `to`; `x`
+/// itself where the parameter has no period.
+fn turned(x: f64, to: f64, period: Option<f64>) -> f64 {
+    match period {
+        Some(p) if p.is_finite() && p > 0.0 => {
+            let turns = ((to - x) / p).round();
+            if turns.is_finite() { x + p * turns } else { x }
+        }
+        _ => x,
+    }
+}
+
+/// How many times `ring`, its last point joined to its first, goes around
+/// `q` (counter-clockwise counted up, clockwise down).
+fn winding(ring: &[(f64, f64)], q: (f64, f64)) -> i64 {
+    let mut count: i64 = 0;
+    for (a, b) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+        let cross = (b.0 - a.0) * (q.1 - a.1) - (q.0 - a.0) * (b.1 - a.1);
+        if a.1 <= q.1 {
+            if b.1 > q.1 && cross > 0.0 {
+                count = count.saturating_add(1);
+            }
+        } else if b.1 <= q.1 && cross < 0.0 {
+            count = count.saturating_sub(1);
+        }
+    }
+    count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_ring_winds_about_its_inside_and_not_its_outside() {
+        let square = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)];
+        assert_eq!(winding(&square, (1.0, 1.0)), 1);
+        assert_eq!(winding(&square, (3.0, 1.0)), 0);
+        let mut backwards = square;
+        backwards.reverse();
+        assert_eq!(winding(&backwards, (1.0, 1.0)), -1);
+        assert_eq!(winding(&[], (1.0, 1.0)), 0);
+    }
+
+    #[test]
+    fn a_parameter_is_turned_next_to_another() {
+        let tau = std::f64::consts::TAU;
+        assert!((turned(0.1, 6.2, Some(tau)) - (0.1 + tau)).abs() < 1e-12);
+        assert!((turned(6.2, 0.1, Some(tau)) - (6.2 - tau)).abs() < 1e-12);
+        assert!((turned(0.1, 6.2, None) - 0.1).abs() < 1e-15);
+        assert!(turned(f64::NAN, 1.0, Some(tau)).is_nan());
     }
 }

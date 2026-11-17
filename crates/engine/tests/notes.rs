@@ -1071,3 +1071,66 @@ fn a_reply_to_a_done_note_is_kept_and_an_unnamed_connection_is_an_agent() {
     assert_eq!(again["done"]["later"][0]["author"], "agent", "{again}");
     assert!(again["done"]["later"][0]["agent"].is_null(), "{again}");
 }
+
+/// Review-pins 1c (minor): the hole of a trimmed sheet is not on the
+/// sheet. A ring (radius 30 about (50, 50), a hole of 12 about (50, 55))
+/// trimmed from a block's top at z = 25: a point in the hole is refused,
+/// a point on the ring taken, and a note without a point goes on the
+/// ring, not in its hole (the centre of its boundary lies in the hole).
+#[test]
+fn a_point_in_the_hole_of_a_trimmed_sheet_is_refused() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [100, 100, 25], "name": "Base"}),
+    );
+    for (name, centre, radius) in [("Disc", [50.0, 50.0], 30.0), ("Hole", [50.0, 55.0], 12.0)] {
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "offset": 50, "name": name}),
+        );
+        run(
+            &mut s,
+            "sketch.circle",
+            json!({"sketch": name, "center": centre, "radius": radius}),
+        );
+    }
+    run(
+        &mut s,
+        "feature.surface.trim",
+        json!({"face": "F1:face(1)", "outer": ["Disc"], "holes": [["Hole"]], "name": "Ring"}),
+    );
+    let refused = error(
+        &mut s,
+        "note.add",
+        json!({"text": "in the hole", "on": "Ring", "point": [50, 55, 25]}),
+    );
+    println!("{refused}");
+    let taken = run(
+        &mut s,
+        "note.add",
+        json!({"text": "on the ring", "on": "Ring", "point": [70, 50, 25]}),
+    );
+    assert!(at(point(&taken), [70.0, 50.0, 25.0]), "{taken}");
+    let middle = point(&run(
+        &mut s,
+        "note.add",
+        json!({"text": "somewhere on it", "on": "Ring"}),
+    ));
+    let from = |c: [f64; 2]| {
+        let (dx, dy) = (middle[0] - c[0], middle[1] - c[1]);
+        (dx * dx + dy * dy).sqrt()
+    };
+    assert!((middle[2] - 25.0).abs() < 1e-6, "{middle:?}");
+    assert!(
+        from([50.0, 55.0]) > 12.0 - 1e-6,
+        "not in the hole: {middle:?}"
+    );
+    assert!(
+        from([50.0, 50.0]) < 30.0 + 1e-6,
+        "within the disc: {middle:?}"
+    );
+}
