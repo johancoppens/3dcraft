@@ -19,8 +19,12 @@ use std::sync::Arc;
 
 /// Most rows a table holds.
 pub const MAX_ROWS: usize = 10_000;
-/// Most columns a table holds.
-pub const MAX_COLUMNS: usize = 64;
+/// Most columns a table holds, its key among them: a key and a row of
+/// the widest grid a table gives (`craft3d_doc::MAX_GRID_SIDE`, 1024
+/// heights; the developer's decision of 2026-11-17, from 64). What all
+/// the tables of a document hold together is capped by their cells
+/// (`craft3d_doc::table::MAX_CELLS`).
+pub const MAX_COLUMNS: usize = 1025;
 
 /// One cell: a number in its column's unit, or a short text (a key such
 /// as `GT2`), at most [`crate::MAX_TEXT_LEN`] bytes.

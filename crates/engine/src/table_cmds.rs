@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("table.set", "Set Table", r#"{"name": string, "columns": [column name, or {name, unit: um|mm|cm|m|in|ft|deg|rad|g|kg|s|N|kN|Pa|kPa|MPa|GPa|J or null}, ...], "rows": [[number or string, ...], ...], "key": string = the first column}"#,
-        "Defines a table or replaces it whole (one undo step), e.g. {\"name\": \"belt\", \"columns\": [\"profile\", {\"name\": \"pitch\", \"unit\": \"mm\"}], \"rows\": [[\"GT2\", 2], [\"HTD3\", 3]]}. A cell is a number in its column's unit or a short text (printable ASCII without quotes or backslashes, at most 64 characters). key is the column whose cells name the rows: unique and not empty; a choice parameter shows them (variable.publish with choicesFrom). An expression looks a value up as belt[i].pitch, with i the row's number counted from 1 (a variable or a choice parameter), or belt[\"GT2\"].pitch by its key; the value has its column's unit. At most 10000 rows and 64 columns; the name is a variable's kind of name and not a variable's. Returns the table as table.list shows it, failed (the features that fail now and did not before) as variable.set does, and the assertions' summary (assertions). Where the host regenerates a piece at a time between its frames (the web page), the regeneration comes after the command: failed and the summary are left out then, and deferred: true says so.", doc: true, table_set),
+        "Defines a table or replaces it whole (one undo step), e.g. {\"name\": \"belt\", \"columns\": [\"profile\", {\"name\": \"pitch\", \"unit\": \"mm\"}], \"rows\": [[\"GT2\", 2], [\"HTD3\", 3]]}. A cell is a number in its column's unit or a short text (printable ASCII without quotes or backslashes, at most 64 characters). key is the column whose cells name the rows: unique and not empty; a choice parameter shows them (variable.publish with choicesFrom). An expression looks a value up as belt[i].pitch, with i the row's number counted from 1 (a variable or a choice parameter), or belt[\"GT2\"].pitch by its key; the value has its column's unit. At most 10000 rows and 1025 columns (a key and 1024 values: a row of the widest grid surface, feature.surface.grid), and a million cells in all the tables of a document; the name is a variable's kind of name and not a variable's. Returns the table as table.list shows it, failed (the features that fail now and did not before) as variable.set does, and the assertions' summary (assertions). Where the host regenerates a piece at a time between its frames (the web page), the regeneration comes after the command: failed and the summary are left out then, and deferred: true says so.", doc: true, table_set),
     spec!("table.delete", "Delete Table", r#"{"name": string, "force": boolean = false}"#,
         "Deletes a table. A table still used is refused, with every user named (variables, features, assertions, parameter ranges, choice parameters); with force it is deleted anyway and what looked values up in it fails until it is defined again, except a choice parameter's table, which force does not delete (unpublish the parameter or give it other choices first). One undo step. With force, the result lists what used it under usedBy and the features that fail now under failed. Where the host regenerates a piece at a time between its frames (the web page), the regeneration comes after the command: failed is left out then, and deferred: true says so.", doc: true, table_delete),
     spec!("table.rename", "Rename Table", r#"{"name": string, "to": string}"#,
@@ -82,6 +82,18 @@ fn table_set(session: &mut Session, params: &Value) -> Run {
                     "{SET}: a table has at most {} rows, got {}",
                     craft3d_expr::MAX_ROWS,
                     rows.len()
+                ));
+            }
+            // Held to the document's cap on cells before they are read: no
+            // request makes more cells than a document may hold.
+            let cells = rows
+                .iter()
+                .map(|row| row.as_array().map_or(0, Vec::len))
+                .fold(0_usize, usize::saturating_add);
+            if cells > craft3d_doc::table::MAX_CELLS {
+                return fail(format!(
+                    "{SET}: the tables of a document hold at most {} cells together, and these rows have {cells}",
+                    craft3d_doc::table::MAX_CELLS
                 ));
             }
             let mut out = Vec::with_capacity(rows.len());

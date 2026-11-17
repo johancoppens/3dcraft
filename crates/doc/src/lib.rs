@@ -912,6 +912,10 @@ pub const MAX_GRID_POINTS: usize = 1 << 18;
 /// (`craft3d_geom::grid::MAX_GRID_SIDE`).
 pub const MAX_GRID_SIDE: usize = 1 << 10;
 
+// A table holds a row of the widest grid with its key (the grid's table
+// form: a column a point).
+const _: () = assert!(craft3d_expr::MAX_COLUMNS > MAX_GRID_SIDE);
+
 /// A sheet through an `m × n` grid of points, passing through every one
 /// (docs/design/surfacing.md › *A sheet through a grid of points*): the
 /// parameter along a row from its first point to its last, across the rows
