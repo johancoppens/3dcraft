@@ -698,6 +698,74 @@ pub fn draw_lines(
     Ok(())
 }
 
+/// Most pixels a dot of [`draw_dots`] covers across: a radius beyond half
+/// of it is drawn at half of it.
+const MAX_DOT_SIDE: f64 = 64.0;
+
+/// Draws `points` over `frame`, the picture seen with `camera`, as dots
+/// of `radius` pixels in `rgb` (a pixel is inked when its centre is within
+/// the radius), each left out where the frame's surface at the pixel under
+/// it is nearer than the point by more than `slack` model units (hidden
+/// behind a body). For pictures made without a window (`view.render`'s
+/// sketch points); the window draws its points itself. At most 2^24
+/// pixels are inked in all.
+pub fn draw_dots(
+    frame: &mut crate::Frame,
+    camera: &crate::Camera,
+    points: &[Vec3],
+    rgb: [u8; 3],
+    radius: f64,
+    slack: f64,
+) -> Result<(), crate::RenderError> {
+    let view = crate::Viewpoint::new(camera, frame.width, frame.height)?;
+    let (w, h) = (frame.width as usize, frame.height as usize);
+    let radius = if radius.is_finite() {
+        radius.clamp(0.5, 0.5 * MAX_DOT_SIDE)
+    } else {
+        0.5
+    };
+    let reach = radius.ceil();
+    let mut budget: u64 = 1 << 24;
+    for &p in points {
+        let Some([x, y, dist]) = view.project(p) else {
+            continue;
+        };
+        if !(x >= 0.0 && y >= 0.0 && x < w as f64 && y < h as f64) {
+            continue;
+        }
+        // Within the picture by the test above.
+        let i = (y as usize) * w + x as usize;
+        let front = frame.depth.get(i).copied().unwrap_or(f64::INFINITY);
+        if front + slack < dist {
+            continue;
+        }
+        let side = (2.0 * reach + 1.0) as u64;
+        budget = budget.saturating_sub(side * side);
+        if budget == 0 {
+            return Ok(());
+        }
+        let (x0, x1) = ((x - reach).floor().max(0.0), (x + reach).ceil());
+        let (y0, y1) = ((y - reach).floor().max(0.0), (y + reach).ceil());
+        let mut py = y0;
+        while py <= y1 && py < h as f64 {
+            let mut px = x0;
+            while px <= x1 && px < w as f64 {
+                let (dx, dy) = (px + 0.5 - x, py + 0.5 - y);
+                if dx * dx + dy * dy <= radius * radius {
+                    // Both within the picture, and not negative.
+                    let k = (py as usize) * w + px as usize;
+                    if let Some(pixel) = frame.rgb.get_mut(3 * k..3 * k + 3) {
+                        pixel.copy_from_slice(&rgb);
+                    }
+                }
+                px += 1.0;
+            }
+            py += 1.0;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

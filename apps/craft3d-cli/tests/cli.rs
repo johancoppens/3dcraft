@@ -393,6 +393,10 @@ fn other_usage_errors_exit_with_2() {
             vec!["render", &part, "--out", "x.png", "--focus", "picked"],
             "--focus picked: render has no window",
         ),
+        (
+            vec!["render", &part, "--out", "x.png", "--sketches", "yes"],
+            "`--sketches` must be on or off",
+        ),
         (vec!["convert", &part], "IN OUT"),
         // How a drawing of the model as seen looks at it: only for such
         // a drawing.

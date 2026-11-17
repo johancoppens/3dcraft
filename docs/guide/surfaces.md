@@ -250,6 +250,17 @@ block cut by it keeps the part below: a solid of 12 450 mm³.
 - **What it reports**: under `grid`, the rows and columns, how far the sheet passes from its points
   (`deviation`, rounding), and `warnings`: a table whose heights rise more than a thousand times the step
   (a `factor` left out), a sheet larger than a boolean takes.
+- **Seeing the grid**: the grid a sheet was made through is drawn with the sketches: its rows and its
+  columns as thin lines in the light tint of construction lines, and its points as a sketch's points
+  (in the selected colour while the feature is selected). The lines are the sheet's own curves through the points, so
+  they lie on the sheet and on a block cut by it, and the grid stays drawn after a later feature took the
+  sheet. The Sketches toggle over the view shows and hides it with the sketches (`ui.set {"show":
+  {"sketches": false}}`); the eye on the feature's row (`feature.visible`) hides one grid, with its
+  sheet when that is still a body of its own. A side of more than 65 points is drawn every k-th line, the
+  first and the last always, the smallest k that keeps 65 lines (a 400 × 300 grid every 7th column and
+  every 5th row), and dots only where drawn lines cross; `ui.get` says so under `scene.grids` (`every`,
+  `thinned`). A picture without a window shows it with `view.render {"sketches": true}`, which says the
+  same under `grids`.
 - **Names**: the face is `F1:face(0)`, its edges `edge(0)` to `edge(3)` along the first row, the last row, the
   first column and the last column, its corners `vertex(0)` to `vertex(3)` at the first row's first and last
   point and the last row's. Moving the points renames nothing.

@@ -706,6 +706,37 @@ fn the_grid_of_the_surfaces_chapter_is_as_it_says() {
         .unwrap()
         .clone();
     assert_eq!(hill["params"]["spacing"], "even", "{hill}");
+    // Seeing the grid: drawn with the sketches after the block took the
+    // sheet, 4 rows of 5 points; a 400 × 300 grid every 7th column and
+    // every 5th row, 65 lines a side at most.
+    for said in [
+        "Seeing the grid",
+        "every 7th column",
+        "every 5th row",
+        "65 points",
+    ] {
+        assert!(text.contains(said), "the page says {said}");
+    }
+    let scene = s
+        .scene_with(craft3d_engine::SceneQuality::display())
+        .unwrap()
+        .unwrap();
+    let drawn = scene
+        .sketches
+        .iter()
+        .find(|sketch| sketch.name == "Hill")
+        .and_then(|sketch| sketch.grid)
+        .expect("the hill's grid is drawn");
+    assert_eq!((drawn.rows, drawn.columns), (4, 5));
+    assert!(!drawn.thinned());
+    assert_eq!(craft3d_engine::MAX_GRID_LINES, 65);
+    assert_eq!(
+        (
+            craft3d_engine::grid_step(400),
+            craft3d_engine::grid_step(300)
+        ),
+        (7, 5)
+    );
     run(&mut s, "variable.set", json!({"name": "lift", "expr": "3"}));
     let (_, higher) = base(&mut s);
     assert!(
