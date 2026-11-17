@@ -2124,7 +2124,7 @@ mod tests {
         // and apart. Their planes meet far outside the model's box: the
         // plane midway, by x = 60 or 90, not a bisector out there.
         let model = Some((Vec3::ZERO, Vec3::new(120.0, 40.0, 20.0)));
-        for degrees in [5e-8, 1e-7, 3e-7, 1e-3, 0.1] {
+        for degrees in [5e-8_f64, 1e-7, 3e-7, 1e-3, 0.1] {
             let t = degrees.to_radians();
             let turned = Vec3::new(t.pcos(), t.psin(), 0.0);
             for (first, middle) in [
