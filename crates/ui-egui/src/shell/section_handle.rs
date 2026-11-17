@@ -64,8 +64,45 @@ const PAD: Vec2 = vec2(7.0, 3.0);
 pub enum HandlePart {
     Arrow,
     Number,
-    /// The dot of X, Y or Z.
+    /// The dot of X, Y or Z (0, 1, 2), or [`FACE_DOT`]: the plane
+    /// parallel to the selected flat face.
     Dot(usize),
+}
+
+/// The fourth dot's place among the dots, and the bar's fourth cell's
+/// among X, Y, Z: the plane parallel to a face.
+pub const FACE_DOT: usize = 3;
+
+/// The face the fourth dot would lay the plane on: the one face selected,
+/// by its body's feature (`F3`) and its persistent name, and why it
+/// cannot when it is not flat.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FaceChoice {
+    pub feature: String,
+    pub face: String,
+    pub refused: Option<String>,
+}
+
+/// The section across the face of `choice`, through it: the face's plane
+/// with its outward normal, offset 0, nothing kept flipped (what lies
+/// outside the face is cut away, so nothing is yet: the arrow, dragged
+/// in, cuts into the body). A face that is not flat leaves the section
+/// as it is.
+pub fn choose_face(section: &mut crate::state::SectionState, choice: &FaceChoice) {
+    if choice.refused.is_some() {
+        return;
+    }
+    if section.plane.as_deref() == Some(choice.face.as_str())
+        && section.feature.as_deref() == Some(choice.feature.as_str())
+    {
+        return;
+    }
+    section.plane = Some(choice.face.clone());
+    section.feature = Some(choice.feature.clone());
+    section.point = None;
+    section.normal = None;
+    section.offset = 0.0;
+    section.flip = false;
 }
 
 /// What a drag snapped to.
@@ -106,8 +143,9 @@ pub struct HandlePlace {
     pub frame: PlaneFrame,
     /// The number's plate.
     pub number: Rect,
-    /// The middles of the dots X, Y and Z, and their radius.
-    pub dots: [Pos2; 3],
+    /// The middles of the dots X, Y and Z (and the face's, while there is
+    /// one: [`FACE_DOT`]), and their radius.
+    pub dots: Vec<Pos2>,
     pub dot_radius: f32,
     /// How near the arrow a press takes it.
     pub hit: f32,
@@ -170,9 +208,80 @@ fn in_plane(normal: Vec3) -> Option<(Vec3, Vec3)> {
     Some((u, normal.cross(u)))
 }
 
+/// Where the plane through `origin` with unit normal `normal` passes
+/// through the box from `lo` to `hi`: the corners of that polygon in the
+/// plane's coordinates along `u` and `v` from `origin`, in order round
+/// it; `None` when it passes by (or touches it in less than a polygon).
+/// Across X, Y or Z it is the box's cross-section; at a slant it is
+/// where the plane cuts the corner it passes through.
+fn box_cut(
+    lo: Vec3,
+    hi: Vec3,
+    origin: Vec3,
+    normal: Vec3,
+    u: Vec3,
+    v: Vec3,
+) -> Option<Vec<(f64, f64)>> {
+    let size = lo.distance(hi);
+    let eps = (size * 1e-12).max(f64::MIN_POSITIVE);
+    let corner = |k: usize| {
+        Vec3::new(
+            if k & 1 == 0 { lo.x } else { hi.x },
+            if k & 2 == 0 { lo.y } else { hi.y },
+            if k & 4 == 0 { lo.z } else { hi.z },
+        )
+    };
+    let mut points: Vec<(f64, f64)> = Vec::new();
+    let mut add = |p: Vec3| {
+        let d = p - origin;
+        let q = (d.dot(u), d.dot(v));
+        if q.0.is_finite()
+            && q.1.is_finite()
+            && !points
+                .iter()
+                .any(|r| (r.0 - q.0).abs() <= eps && (r.1 - q.1).abs() <= eps)
+        {
+            points.push(q);
+        }
+    };
+    // The twelve edges: corners that differ in one bit.
+    for a in 0..8_usize {
+        for bit in [1, 2, 4] {
+            if a & bit != 0 {
+                continue;
+            }
+            let (p, q) = (corner(a), corner(a | bit));
+            let (sp, sq) = ((p - origin).dot(normal), (q - origin).dot(normal));
+            if sp.abs() <= eps {
+                add(p);
+            }
+            if sq.abs() <= eps {
+                add(q);
+            }
+            if (sp < -eps && sq > eps) || (sp > eps && sq < -eps) {
+                add(p + (q - p) * (sp / (sp - sq)));
+            }
+        }
+    }
+    if points.len() < 3 {
+        return None;
+    }
+    let n = points.len() as f64;
+    let (cs, ct) = points
+        .iter()
+        .fold((0.0, 0.0), |(a, b), (s, t)| (a + s / n, b + t / n));
+    points.sort_by(|a, b| {
+        (a.1 - ct)
+            .patan2(a.0 - cs)
+            .total_cmp(&(b.1 - ct).patan2(b.0 - cs))
+    });
+    Some(points)
+}
+
 /// Where `plane` and its arrow are in the `viewport` (in the window's
-/// points) seen by `camera`: the outline round the model's box `bounds`
-/// as it lies in the plane, a little larger, and the arrow at its middle,
+/// points) seen by `camera`: the outline of where it passes through the
+/// model's box `bounds` (the box laid onto it where it passes by), a
+/// little larger, and the arrow at its middle,
 /// [`Tokens::section_arrow_length`] long seen side on. `None` for an
 /// empty box, a camera that looks nowhere, a middle behind the eye, or a
 /// number that is not one.
@@ -207,15 +316,43 @@ pub fn plane_frame(
         }
     }
     let margin = (s1 - s0).max(t1 - t0) * OUTLINE_MARGIN;
-    let (s0, s1, t0, t1) = (s0 - margin, s1 + margin, t0 - margin, t1 + margin);
     let corner = |s: f64, t: f64| origin + u * s + v * t;
-    let corners = [
-        corner(s0, t0),
-        corner(s1, t0),
-        corner(s1, t1),
-        corner(s0, t1),
-    ];
-    let middle = corner((s0 + s1) * 0.5, (t0 + t1) * 0.5);
+    // Where the plane passes through the box, a little larger; the box
+    // laid onto the plane where it passes by it.
+    let (corners, middle) = match box_cut(lo, hi, origin, plane.along, u, v) {
+        Some(polygon) => {
+            let n = polygon.len() as f64;
+            let (cs, ct) = polygon
+                .iter()
+                .fold((0.0, 0.0), |(a, b), (s, t)| (a + s / n, b + t / n));
+            let grown: Vec<Vec3> = polygon
+                .iter()
+                .map(|&(s, t)| {
+                    let (ds, dt) = (s - cs, t - ct);
+                    let reach = ds.phypot(dt);
+                    let k = if reach > 0.0 {
+                        1.0 + margin / reach
+                    } else {
+                        1.0
+                    };
+                    corner(cs + ds * k, ct + dt * k)
+                })
+                .collect();
+            (grown, corner(cs, ct))
+        }
+        None => {
+            let (s0, s1, t0, t1) = (s0 - margin, s1 + margin, t0 - margin, t1 + margin);
+            (
+                vec![
+                    corner(s0, t0),
+                    corner(s1, t0),
+                    corner(s1, t1),
+                    corner(s0, t1),
+                ],
+                corner((s0 + s1) * 0.5, (t0 + t1) * 0.5),
+            )
+        }
+    };
     if !(middle.is_finite() && corners.iter().all(|c| c.is_finite())) {
         return None;
     }
@@ -223,9 +360,10 @@ pub fn plane_frame(
         let p = pos2(viewport.left() + x as f32, viewport.top() + y as f32);
         (p.x.is_finite() && p.y.is_finite()).then_some(p)
     };
-    let outline: Vec<[Pos2; 2]> = (0..4)
+    let sides = corners.len();
+    let outline: Vec<[Pos2; 2]> = (0..sides)
         .filter_map(|k| {
-            let (a, b) = projector.segment(*corners.get(k)?, *corners.get((k + 1) % 4)?)?;
+            let (a, b) = projector.segment(*corners.get(k)?, *corners.get((k + 1) % sides)?)?;
             Some([to_window(a.x, a.y)?, to_window(b.x, b.y)?])
         })
         .collect();
@@ -262,8 +400,10 @@ pub fn label_place(
     viewport: Rect,
     size: Vec2,
     dot_radius: f32,
-) -> (Rect, [Pos2; 3]) {
-    let dots_width = 6.0 * dot_radius + 2.0 * DOT_GAP;
+    count: usize,
+) -> (Rect, Vec<Pos2>) {
+    let n = count as f32;
+    let dots_width = 2.0 * n * dot_radius + (n - 1.0).max(0.0) * DOT_GAP;
     let group = vec2(size.x + GAP + dots_width, size.y.max(2.0 * dot_radius));
     let (anchor, align) = match frame.arrow {
         Some([a, b]) => {
@@ -299,8 +439,14 @@ pub fn label_place(
     }
     let number = Rect::from_min_size(pos2(place.left(), place.center().y - size.y * 0.5), size);
     let first = number.right() + GAP + dot_radius;
-    let dots =
-        [0.0, 1.0, 2.0].map(|k| pos2(first + k * (2.0 * dot_radius + DOT_GAP), place.center().y));
+    let dots = (0..count)
+        .map(|k| {
+            pos2(
+                first + k as f32 * (2.0 * dot_radius + DOT_GAP),
+                place.center().y,
+            )
+        })
+        .collect();
     (number, dots)
 }
 
@@ -406,6 +552,10 @@ pub(crate) struct HandleView {
     snapped: Option<Snapped>,
     /// The typing into the number began this frame.
     fresh: bool,
+    /// The face the fourth dot lays the plane on, and the selection and
+    /// scene it was found for (`Shell::sync_face_choice`).
+    pub(crate) face: Option<FaceChoice>,
+    face_for: Option<(u64, u64, (u64, Option<u64>))>,
 }
 
 impl Shell {
@@ -414,6 +564,69 @@ impl Shell {
     /// document without bodies).
     pub fn section_handle(&self) -> Option<&HandlePlace> {
         self.section_handle.place.as_ref()
+    }
+
+    /// The face the plane would be laid on (the display bar's fourth
+    /// cell, the handle's fourth dot): the one face selected, with why
+    /// it cannot be when it is not flat.
+    pub fn section_face_choice(&self) -> Option<&FaceChoice> {
+        self.section_handle.face.as_ref()
+    }
+
+    /// Whether the section's plane is that of a face (laid on it by the
+    /// fourth dot, or `ui.set` with a face's name).
+    pub fn section_on_face(&self) -> bool {
+        self.section_cache.as_ref().is_some_and(|cache| cache.face)
+    }
+
+    /// Whether the fourth dot and the bar's fourth cell are shown: one
+    /// face selected, or the plane a face's already.
+    pub(super) fn face_option(&self) -> bool {
+        self.section_handle.face.is_some() || self.section_on_face()
+    }
+
+    /// Finds again, when the selection or the scene changed, the face the
+    /// fourth dot would lay the plane on: the one face selected, flat or
+    /// with why not (the engine's own test, `Session::section_plane`).
+    pub(crate) fn sync_face_choice(
+        &mut self,
+        session: &mut craft3d_engine::Session,
+        scene: &Scene,
+    ) {
+        let (tolerance, angle) = scene.sampling();
+        let key = (
+            session.selection_serial(),
+            scene.revision,
+            (tolerance.to_bits(), angle.map(f64::to_bits)),
+        );
+        if self.section_handle.face_for == Some(key) {
+            return;
+        }
+        self.section_handle.face_for = Some(key);
+        let one = match self.selection().items.as_slice() {
+            [one] if one.kind == craft3d_engine::SelectionKind::Face => one.clone(),
+            _ => {
+                self.section_handle.face = None;
+                return;
+            }
+        };
+        let spec = craft3d_engine::SectionSpec {
+            plane: Some(one.name.clone()),
+            feature: Some(one.feature.clone()),
+            ..craft3d_engine::SectionSpec::default()
+        };
+        let refused = session.section_plane(scene, &spec).err().map(|why| {
+            if why.contains("not flat") {
+                "Not a flat face: the plane lies along a flat face".to_string()
+            } else {
+                why
+            }
+        });
+        self.section_handle.face = Some(FaceChoice {
+            feature: one.feature,
+            face: one.name,
+            refused,
+        });
     }
 
     /// What the drag of the section's arrow under way snapped to last.
@@ -558,6 +771,11 @@ impl Shell {
                 self.fields.focus = None;
                 self.section_handle.fresh = true;
             }
+            HandlePart::Dot(FACE_DOT) => {
+                if let Some(choice) = self.section_handle.face.clone() {
+                    choose_face(&mut section, &choice);
+                }
+            }
             HandlePart::Dot(axis) => choose_axis(&mut section, axis, scene),
         }
         self.commit_section(ui, section);
@@ -625,7 +843,8 @@ impl Shell {
         }
         let size = text + PAD * 2.0;
         let dot_radius = tokens.section_dot_radius;
-        let (number_rect, dots) = label_place(&frame, rect, size, dot_radius);
+        let count = if self.face_option() { 4 } else { 3 };
+        let (number_rect, dots) = label_place(&frame, rect, size, dot_radius, count);
         let place = HandlePlace {
             frame,
             number: number_rect,
@@ -742,40 +961,101 @@ impl Shell {
                 color_alpha(tokens.plate_text, alpha),
             );
         }
-        // The dots: the axis the plane is across filled with the accent.
-        let chosen = chosen_axis(&self.state.section);
+        // The dots: the axis the plane is across filled with the accent;
+        // the fourth, the plane parallel to the selected face, greyed
+        // when that face is not flat.
+        let chosen = if self.section_on_face() {
+            Some(FACE_DOT)
+        } else {
+            chosen_axis(&self.state.section)
+        };
+        let refused = self
+            .section_handle
+            .face
+            .as_ref()
+            .and_then(|f| f.refused.clone());
         let small = egui::FontId::proportional((dot_radius * 1.15).clamp(8.0, 16.0));
-        for (k, (&middle, (name, _))) in place.dots.iter().zip(SECTION_PLANES).enumerate() {
+        for (k, &middle) in place.dots.iter().enumerate() {
             let on = chosen == Some(k);
+            let greyed = k == FACE_DOT && !on && refused.is_some();
             let (fill, ink) = if on {
                 (accent, color_alpha(tokens.plate_fill, alpha))
             } else {
+                let ink = if greyed {
+                    tokens.plate_text_dim
+                } else {
+                    tokens.plate_text
+                };
                 (
                     color_alpha(tokens.plate_fill, plate_alpha),
-                    color_alpha(tokens.plate_text, alpha),
+                    color_alpha(ink, alpha),
                 )
             };
             painter.circle_filled(middle, dot_radius, fill);
-            painter.circle_stroke(middle, dot_radius, egui::Stroke::new(1.0, accent));
-            painter.text(
-                middle,
-                egui::Align2::CENTER_CENTER,
-                name.to_uppercase(),
-                small.clone(),
-                ink,
-            );
+            let rim = if greyed {
+                color_alpha(tokens.plate_text_dim, alpha)
+            } else {
+                accent
+            };
+            painter.circle_stroke(middle, dot_radius, egui::Stroke::new(1.0, rim));
+            match SECTION_PLANES.get(k) {
+                Some((name, _)) => {
+                    painter.text(
+                        middle,
+                        egui::Align2::CENTER_CENTER,
+                        name.to_uppercase(),
+                        small.clone(),
+                        ink,
+                    );
+                }
+                // Parallel to a face: two slanted strokes.
+                None => {
+                    let (w, h) = (dot_radius * 0.22, dot_radius * 0.5);
+                    for dx in [-0.28, 0.28] {
+                        let x = middle.x + dot_radius * dx;
+                        painter.line_segment(
+                            [pos2(x - w, middle.y + h), pos2(x + w, middle.y - h)],
+                            egui::Stroke::new(1.3, ink),
+                        );
+                    }
+                }
+            }
         }
-        // What the pointer would take.
+        // What the pointer would take, and why the fourth dot cannot.
         if !dragging
-            && let Some(part) = pointer
-                .filter(|p| rect.contains(*p))
-                .and_then(|p| place.part_at(p))
+            && let Some(at) = pointer.filter(|p| rect.contains(*p))
+            && let Some(part) = place.part_at(at)
         {
             ui.ctx().set_cursor_icon(match part {
                 HandlePart::Arrow => egui::CursorIcon::Grab,
                 HandlePart::Number => egui::CursorIcon::Text,
+                HandlePart::Dot(FACE_DOT) if refused.is_some() && chosen != Some(FACE_DOT) => {
+                    egui::CursorIcon::NotAllowed
+                }
                 HandlePart::Dot(_) => egui::CursorIcon::PointingHand,
             });
+            let words = match part {
+                HandlePart::Dot(FACE_DOT) => Some(
+                    refused
+                        .clone()
+                        .unwrap_or_else(|| "Parallel to the selected face".to_string()),
+                ),
+                _ => None,
+            };
+            if let Some(words) = words
+                && let Some(&dot) = place.dots.get(FACE_DOT)
+            {
+                let galley =
+                    painter.layout_no_wrap(words, kit.small_font(), color(tokens.notice_text));
+                let at = dot + vec2(-galley.size().x * 0.5, dot_radius + 6.0);
+                let back = Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 3.0));
+                painter.rect_filled(
+                    back,
+                    radius,
+                    color_alpha(tokens.notice_fill, tokens.notice_opacity),
+                );
+                painter.galley(at, galley, color(tokens.notice_text));
+            }
         }
         self.section_handle.place = Some(place);
     }
@@ -792,6 +1072,47 @@ mod tests {
             feature: "F1".to_string(),
             name: None,
         }
+    }
+
+    #[test]
+    fn the_outline_is_where_the_plane_passes_through_the_box() {
+        let (lo, hi) = (Vec3::ZERO, Vec3::new(60.0, 40.0, 20.0));
+        let area = |p: &[(f64, f64)]| {
+            let n = p.len();
+            (0..n)
+                .map(|k| {
+                    let (a, b) = (p[k], p[(k + 1) % n]);
+                    a.0 * b.1 - b.0 * a.1
+                })
+                .sum::<f64>()
+                .abs()
+                * 0.5
+        };
+        let (u, v) = in_plane(Vec3::X).unwrap();
+        // Across x: the 40 × 20 cross-section, in order round it.
+        let cut = box_cut(lo, hi, Vec3::new(30.0, 0.0, 0.0), Vec3::X, u, v).unwrap();
+        assert_eq!(cut.len(), 4);
+        assert!((area(&cut) - 800.0).abs() < 1e-9, "{cut:?}");
+        // On a face of the box: that face.
+        let cut = box_cut(lo, hi, Vec3::ZERO, Vec3::X, u, v).unwrap();
+        assert!((area(&cut) - 800.0).abs() < 1e-9, "{cut:?}");
+        // At a slant past a corner: a triangle with legs of 6 along x, y
+        // and z from (60, 40, 20), in the plane x + y + z = 114.
+        let n = Vec3::new(1.0, 1.0, 1.0).normalized().unwrap();
+        let (u, v) = in_plane(n).unwrap();
+        let cut = box_cut(lo, hi, Vec3::new(54.0, 40.0, 20.0), n, u, v).unwrap();
+        assert_eq!(cut.len(), 3, "{cut:?}");
+        let side = 6.0 * std::f64::consts::SQRT_2;
+        assert!(
+            (area(&cut) - 3.0_f64.sqrt() / 4.0 * side * side).abs() < 1e-9,
+            "{cut:?}"
+        );
+        // Beyond the box, and touching it at a corner only: none.
+        assert_eq!(
+            box_cut(lo, hi, Vec3::new(99.0, 0.0, 0.0), Vec3::X, u, v),
+            None
+        );
+        assert_eq!(box_cut(lo, hi, hi, n, u, v), None);
     }
 
     #[test]
@@ -914,11 +1235,12 @@ mod tests {
             viewport,
             vec2(80.0, 20.0),
             tokens.section_dot_radius,
+            3,
         );
         let place = HandlePlace {
             frame: frame.clone(),
             number,
-            dots,
+            dots: dots.clone(),
             dot_radius: tokens.section_dot_radius,
             hit: tokens.section_hit,
         };
