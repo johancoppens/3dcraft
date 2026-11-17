@@ -17,6 +17,7 @@ a motion) have a chapter of their own: [Engineering checks](engineering-checks.m
 | `document.inspect`, `document.measure` | Volume, area, centroid, bounding box of every body; mass and inertia with a material |
 | `measure.distance {"from", "to"}` | The least distance between faces or bodies, and where |
 | `measure.clearance {"from", "to"}` | The gap between bodies; an overlap has none |
+| `measure.between {"from", "to"}` | The relation of two things, as the window shows it for two selected: a distance, an angle, a centre distance, a clearance ([between two things](#between-two-things)) |
 | `measure.thickness {"of"}` | The thinnest wall of a body (or from chosen faces), and where |
 | `measure.through {"of"}` | Whether holes (cylindrical or conical faces) go clear through along their axis |
 | `measure.ray {"from", "direction"}` | Every place a line meets the bodies, entering or leaving |
@@ -46,6 +47,34 @@ is below, beside the value found at a real place. On the flange of
 [Working with an AI agent](agent.md#a-full-session), `measure.thickness` answers `"thickness": 6.0,
 "atLeast": 5.99999999999968`: the thinnest wall found is 6 mm, and no wall is thinner than 5.99999999999968
 mm anywhere.
+
+## Between two things
+
+`measure.between {"from", "to"}` gives the relation of two things, each a face, an edge, a vertex or a body
+as `select.get` lists the selection; what they are decides what is measured. It is what the window shows
+by itself when two things are selected ([The window › Features](window.md#features)):
+
+| The two | Relation |
+|---|---|
+| Two flat faces, parallel | `distance` between their planes |
+| Two flat faces at an angle | `angle` between them, 0 to 180 degrees: a 45 degree chamfer meets the top at 135 |
+| Two axes (holes, bosses, straight edges) or centres (circular edges, spheres) | `centerDistance`, with its parts along X, Y and Z, and whether two axes are `parallel` |
+| An axis and a flat face | `distance` when parallel, else the `angle` between them |
+| A vertex, or a centre with anything else | `leastDistance` |
+| Two bodies | `clearance`, as `measure.clearance` |
+| Anything else of faces and bodies | `leastDistance`, as `measure.distance` |
+
+The answer has `value` (in the document's length unit; an angle in radians, with `degrees`), `words`, the
+two ends of a dimension line (`from`, `to`; for an angle `at`, its corner) and the document's `tolerance`.
+`relation` asks for one in particular, refused when the two cannot have it. As an assertion it is the
+measure `between` (`from`, `to`, `relation`), or `angleBetween` for an angle; this is what the window's
+**Keep as a check** adds:
+
+```json
+[
+ ["assert.add", {"name": "Centre distance", "measure": "between", "from": {"kind": "face", "name": "F2:face(0)", "feature": "Plate"}, "to": {"kind": "face", "name": "F3:face(0)", "feature": "Plate"}, "relation": "centerDistance", "eq": 30, "tol": 1e-6}]
+]
+```
 
 ## Assertions
 

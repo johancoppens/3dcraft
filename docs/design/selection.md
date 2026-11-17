@@ -60,6 +60,28 @@ A named set (B2) is a query kept in the document under a name: `set.define {name
 
 *Speed (2026-10-30).* One query over the flat faces of a plate with 500 bosses (2506 faces, 4008 vertices) took 6.7 s on the Strix: 804 000 lines, each followed through the whole body (16.5 million hits: a line from a boss's side crossed every boss of its row). Now: (1) the grid's lines are cast first, so a face over a step the grid shows is told before any vertex is looked at; (2) once one distance `lo` is known, a line is followed only to `lo` + 4 tolerances (a line that leaves later widens the range past the tolerance whatever it meets there, and every face met within the tolerance of where it leaves lies before that), so the answer is the same; (3) only vertices no deeper than the deepest line met (plus twice the tolerance) are sampled around, and vertices within the tolerance of one taken are taken once: wherever the length of the lines changes away from a length `d` some line has, an edge no deeper than `d` projects there (the opposite face's own edge, at `d`, or the edge of a face in front of it), and an edge of the body that ends deeper leaves the face's box or meets the opposite plane at a vertex at `d` (`a_narrow_rib_behind_a_face_is_found_from_where_it_meets_the_plate` pins a rib the grid misses, at three scales); the 4096 cap counts the distinct projected points sampled around, vertices and points along edges alike; (4) an edge that crosses the face's box (its box meets the face's box swept to the deepest line) with an end that is not sampled, outside the box or deeper, is cut into 32 pieces, and every piece that may come behind the face (its box grown by half its chord and the chordal tolerance) is sampled at a spacing of the face's diagonal over 32, at most 16384 points per face (past it the face has no thickness), each point that projects within the box standing for a vertex (review of 2026-10-31: 33 points spread over a whole 2000 mm edge fell 62 mm apart and missed a 10 mm face, `a_groove_along_a_long_base_under_a_small_boss_is_found`, at scales 0.01, 1 and 100; open: at 1000, a base 2 km long at the document's micrometre, a line of the grid from the boss's top finds no opposite face and the top has no thickness, not looked into): a step bounded by a long edge is told without a grid point on it (`a_groove_whose_ends_lie_outside_the_face_is_found_from_its_edges`), which let the grid go from 256 points to 32; (5) the thicknesses are remembered per body (by its `Arc`, held by a `Weak`, as the mass properties are) and tolerance across queries, so a named set by thickness asked again costs nothing until the body is rebuilt. The same query: 0.36 s on the Strix (test profile; grid 0.17 s, the loops over vertices and edges 0.12 s, about 130 000 lines), 4 ms asked again; same answers (`crates/engine/tests/units_and_plates.rs`).
 
+### Measuring by selecting (2026-11-17)
+
+Two things selected are measured by themselves (the developer's design, steps B and C). The engine decides
+what their relation is (`relation_cmds.rs`, `measure.between`, the same command an agent sends): on the
+exact geometry, from what the two are. Two flat faces: parallel, the distance between their planes; at an
+angle, the angle between the half-planes from the line the planes meet in toward each face (0 to 180°, so a
+45° chamfer meets the top at 135°). Axes (of cylinders, cones and tori, straight edges) and centres (circular
+edges, spheres): the centre distance, with its parts along X, Y and Z. An axis and a flat face: their
+distance when parallel, else their angle. A vertex, or a centre with anything else: the least distance. Two
+bodies: the clearance (`measure.clearance`). Anything else: the least distance (`measure.distance`). Each
+answer carries the two ends of a dimension line (for an angle its corner and a point toward each side) and
+the document's tolerance, linear or angular. As an assertion it is the measure `between`, or
+`angleBetween`, whose dimension is an angle (`dim_of` reads a measure's dimension by its name).
+
+The window asks once per selection (the side panel's card, `sidepanel/props.rs`), shows one large number
+at the panel's foot in place of the first thing's rows, and draws the dimension line with egui over the
+picture (`shell/dimension.rs`, as the section's handle is drawn; neither renderer draws it): the accent over
+a dark hairline, heads at its ends, its number on a small plate beside its middle; an angle as an arc about
+its corner. A click on either number copies it with its unit and selects nothing. *Keep as a check* queues
+`assert.add` with the value now and the document's tolerance, named after the two things, once per
+selection (the button says so after).
+
 ### Not yet
 
 - **Relations and extremes**: neighbours of, the same size as, symmetric to, coaxial with, the highest or largest or nearest *n*; distance to an item; faces of an edge's body side. Spatial words relative to the camera are not built (B3); directions are world axes.

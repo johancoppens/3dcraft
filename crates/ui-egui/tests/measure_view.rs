@@ -216,11 +216,8 @@ fn two_holes_show_their_centre_distance_by_themselves_and_escape_takes_it_away()
     assert_eq!(got["selection"], selection);
     // The panel's large number copies too.
     window.copied = None;
-    window.click(
-        &mut shell,
-        &mut session,
-        target(&shell, "copy value").center(),
-    );
+    let value = target(&shell, "copy value").center();
+    window.click(&mut shell, &mut session, value);
     assert_eq!(window.copied.as_deref(), Some("30.00 mm"));
     // Escape over the view: the selection, the number and the line go.
     window.frame(
@@ -283,7 +280,8 @@ fn keep_as_a_check_adds_the_relation_now_as_an_assertion_one_step_to_undo() {
     );
     window.frames(&mut shell, &mut session, 3);
     let revision = session.document_revision();
-    window.click(&mut shell, &mut session, target(&shell, "keep").center());
+    let keep = target(&shell, "keep").center();
+    window.click(&mut shell, &mut session, keep);
     window.frames(&mut shell, &mut session, 3);
     let listed = run(&mut session, "assert.list", json!({}));
     let rows = listed["assertions"].as_array().unwrap();
@@ -297,7 +295,8 @@ fn keep_as_a_check_adds_the_relation_now_as_an_assertion_one_step_to_undo() {
     assert_eq!(row["measure"]["measure"], "between");
     assert_eq!(row["measure"]["relation"], "centerDistance");
     // Kept once: the button says so until the selection changes.
-    window.click(&mut shell, &mut session, target(&shell, "keep").center());
+    let keep = target(&shell, "keep").center();
+    window.click(&mut shell, &mut session, keep);
     window.frames(&mut shell, &mut session, 2);
     assert_eq!(
         run(&mut session, "assert.list", json!({}))["assertions"]
@@ -325,7 +324,8 @@ fn keep_as_a_check_adds_the_relation_now_as_an_assertion_one_step_to_undo() {
     );
     window.frames(&mut shell, &mut session, 3);
     for _ in 0..2 {
-        window.click(&mut shell, &mut session, target(&shell, "keep").center());
+        let keep = target(&shell, "keep").center();
+        window.click(&mut shell, &mut session, keep);
         window.frames(&mut shell, &mut session, 2);
         // Selected again, so the button can keep it again.
         run(&mut session, "select.set", json!({"mode": "clear"}));

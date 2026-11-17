@@ -1,6 +1,6 @@
 //! The relation of two things selected, in the view (the developer's
 //! design of 2026-11-17, step B): one thin dimension line between them,
-//! in the accent over the section arrow's dark hairline, with heads at
+//! in the accent over a dark hairline, with heads at
 //! its ends and its number on a small plate at its middle; an angle as
 //! an arc about its corner. It is the side panel's measurement
 //! (`measure.between`) drawn: gone with the selection, and with Escape,

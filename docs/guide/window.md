@@ -252,8 +252,19 @@ while something is selected, or when the panel is short, to make room.
 - a body: its volume, mass, area and box.
 
 *Made by* links to the feature that made it, and *Name* is its persistent name, the name an agent uses.
-**Measure** measures a face's wall thickness, or the distance between the first two things selected;
-**Copy name** copies the name.
+**Measure** measures a face's wall thickness; **Copy name** copies the name.
+
+**Two things selected** (Shift-click the second) are measured by themselves: the foot of the panel shows
+their relation as one large number, what it is in a few words and, for a distance, its parts along X, Y and
+Z, and the view draws one thin dimension line between them in the accent (an arc for an angle). Two holes
+give their centre distance, two parallel faces the distance between them, two faces at an angle the angle
+(a 45° chamfer meets the top at 135°), a vertex and anything the least distance, two bodies the clearance
+([Measuring and assertions › Between two things](measure.md#between-two-things)). Click the number, in the
+panel or on the line, to copy it with its unit. Another selection, or Escape, takes it away.
+
+**Keep as a check** keeps that relation as a check of the document: named after the two things (*Centre
+distance Left face – Right face*), its value now, within the document's tolerance. It shows under
+**Checks**, is measured again after every change, and is one step to undo.
 
 ![A hole selected: the foot of the side panel names its surface, its area and axis, the feature that made it and its name](images/selection.png)
 
