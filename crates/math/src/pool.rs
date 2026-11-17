@@ -7,16 +7,26 @@
 //! background builder (`craft3d_engine` › `motion_build.rs`), each of
 //! which works only while it holds one ([`lease_for_worker`]). Kept here, at the bottom of the
 //! layers, so the threads that may each run a freeform boolean come from
-//! the same pool (the tessellator's and the mass integrator's lighter
-//! threads keep bounds of their own) (an independent review of 2026-11-01 found the pattern's
-//! unions starting their own threads on top of the engine's). Each such thread may run
+//! the same pool (an independent review of 2026-11-01 found the pattern's
+//! unions starting their own threads on top of the engine's). The
+//! tessellator's and the mass integrator's lighter threads, one per face
+//! or per run of a face's boundary, keep bounds of their own; since
+//! 2026-11-17 the tessellator also takes the pool's threads for the
+//! bounds of a large spline face's spans, made ahead of the face's own
+//! work (`craft3d_geom` › `NurbsSurface::make_whole_span_bounds`, at least
+//! 256 spans a thread). Each such thread may run
 //! a freeform boolean with its own budget of trees (`craft3d_kernel` ›
 //! `freeform::HELD_BYTES`, 2 GiB), and the work nests (an assertion job
 //! measures overlaps, each with its pairs): without one limit the threads
-//! multiplied (2 assertions × 8 pairs). A caller always works itself and
-//! takes extra threads only as far as the pool has them, never waiting
-//! for one, so nothing can deadlock and the answers do not depend on how
-//! many it got (each task's answer goes to its own place).
+//! multiplied (2 assertions × 8 pairs). A caller takes extra threads only
+//! as far as the pool has them, never waiting for one, so nothing can
+//! deadlock and the answers do not depend on how many it got (each task's
+//! answer goes to its own place). It works itself alongside them, with one
+//! exception: `make_whole_span_bounds` hands its spans to two or more of
+//! the pool's threads and waits for them (its own thread would charge
+//! the work to the operation then and again when the bounds are asked
+//! for), and with fewer than two to be had it leaves the spans to be
+//! made as they are asked, on its own thread.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
