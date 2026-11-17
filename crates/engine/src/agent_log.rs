@@ -160,7 +160,7 @@ fn result_line(result: &Value) -> String {
         .unwrap_or_default()
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
         // native clock: this block is cfg(not(wasm32)); the browser takes the 0 below.
@@ -178,7 +178,7 @@ fn now_ms() -> u64 {
 /// window itself runs some of them after every request (`param.list` for
 /// its Parameters tab), which are no agent's doing. Checks an agent runs
 /// (`document.check`, `assert.check`) are logged.
-const NOT_LOGGED: [&str; 11] = [
+const NOT_LOGGED: [&str; 12] = [
     "agent.log",
     "document.inspect",
     "select.get",
@@ -190,6 +190,7 @@ const NOT_LOGGED: [&str; 11] = [
     "variable.list",
     "set.list",
     "recovery.list",
+    "note.list",
 ];
 
 /// Commands that bring back a document as it was (undo, redo, opening,
@@ -226,6 +227,52 @@ impl Session {
             client: one_line(client),
             intent: None,
         });
+    }
+
+    /// The client this session serves, as it named itself (an MCP
+    /// client's `clientInfo.name` from `initialize`, `craft3d-cli mcp`):
+    /// the notes its commands write are that agent's when no other agent
+    /// acts ([`Session::set_actor`]). `None` for none, or a name with
+    /// nothing left once cleaned.
+    pub fn set_client(&mut self, name: Option<&str>) {
+        self.client = name.and_then(craft3d_doc::clean_note_author);
+    }
+
+    /// Runs `f` as the person at the window: the notes it writes, changes
+    /// and closes are the person's (`author: person`). Only a window's
+    /// own controls run commands this way; a control channel, a script
+    /// and an agent never do.
+    pub fn by_person<T>(&mut self, f: impl FnOnce(&mut Session) -> T) -> T {
+        struct Person<'a>(&'a mut Session, bool);
+        impl Drop for Person<'_> {
+            fn drop(&mut self) {
+                self.0.person = self.1;
+            }
+        }
+        let was = std::mem::replace(&mut self.person, true);
+        let scope = Person(self, was);
+        f(scope.0)
+    }
+
+    /// How the notes the next command writes come in: the author a job
+    /// handed over carries, else the acting agent, else the person at the
+    /// window ([`Session::by_person`]), else the client this session
+    /// serves ([`Session::set_client`]), else unknown.
+    pub(crate) fn note_author(&self) -> craft3d_doc::NoteAuthor {
+        use craft3d_doc::NoteAuthor;
+        if let Some(given) = &self.author_given {
+            return given.clone();
+        }
+        if let Some(actor) = &self.actor {
+            return NoteAuthor::agent_named(&actor.client);
+        }
+        if self.person {
+            return NoteAuthor::Person;
+        }
+        match &self.client {
+            Some(client) => NoteAuthor::agent_named(client),
+            None => NoteAuthor::Unknown,
+        }
     }
 
     /// Why the agent runs the next commands, in its own words (cleaned,
