@@ -606,9 +606,18 @@ fn the_slabs_find_the_whole_outline_among_a_few_triangles() {
                     }
                 }
                 assert!(checked > 60 && crossed > 300, "{name}: {crossed} segments");
-                // Other slabs: the whole outline all the same.
+                // Other slabs: the whole outline all the same; a cut a
+                // millionth of a radian off the slabs' direction too, with
+                // its point far beside the model (review of 2026-11-17).
                 let cut = Cut::new(&section(Vec3::ZERO, Vec3::Y), &bounds).unwrap();
                 assert_eq!(cut.outline_in(mesh, &slabs), cut.outline(mesh));
+                let aside = along.cross(Vec3::Z).normalized().unwrap_or(Vec3::Y);
+                let off = (along + aside * 1.2e-6).normalized().unwrap();
+                for beside in [0.0, 1e3 * scale, 1e7 * scale] {
+                    let origin = along * (0.3 * scale) + aside * beside;
+                    let cut = Cut::new(&section(origin, off), &bounds).unwrap();
+                    assert_eq!(cut.outline_in(mesh, &slabs), cut.outline(mesh), "{name}");
+                }
                 let other = Slabs::new(&ball, base, Vec3::Y).unwrap();
                 if !std::ptr::eq(mesh, &ball) {
                     assert_eq!(cut.outline_in(mesh, &other), cut.outline(mesh), "{name}");

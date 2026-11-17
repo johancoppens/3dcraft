@@ -394,11 +394,14 @@ impl Slabs {
 
     /// The triangles of `mesh` that `cut` can cross, ascending, each
     /// once: those that reach within its tolerance of it, and a few more.
-    /// `None` when these slabs were not made for `mesh` or not along the
-    /// cut's normal.
+    /// `None` when these slabs were not made for `mesh`, or not along the
+    /// cut's normal exactly (either way round): a direction off by the
+    /// least turns the cut's distances across the mesh by its sine times
+    /// the mesh's reach from the cut's point, which the slabs do not
+    /// allow for, so such a cut is outlined over the whole mesh.
     fn crossing(&self, cut: &Cut, mesh: &Mesh) -> Option<Vec<u32>> {
-        if mesh.triangles.len() != self.triangles || cut.normal.dot(self.along).abs() < 1.0 - 1e-12
-        {
+        let along = cut.normal == self.along || cut.normal == Vec3::ZERO - self.along;
+        if mesh.triangles.len() != self.triangles || !along {
             return None;
         }
         let at = (cut.origin - self.base).dot(self.along);

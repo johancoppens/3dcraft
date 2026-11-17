@@ -703,9 +703,9 @@ fn sync_cost(shell: &mut Shell, session: &mut Session, what: &str) {
     );
 }
 
-/// The turbofan of the benchmark (665 thousand triangles at the display
-/// quality): what the shell's work for a frame of a drag costs on a heavy
-/// model. On demand: `-- --ignored`.
+/// The turbofan of the benchmark (130 thousand triangles at the display
+/// quality in this window): what the shell's work for a frame of a drag
+/// costs on a heavy model. On demand: `-- --ignored`.
 #[test]
 #[ignore = "regenerates the turbofan; run with --ignored for the numbers"]
 fn a_drag_on_the_turbofan_costs_this_much() {
@@ -720,4 +720,403 @@ fn a_drag_on_the_turbofan_costs_this_much() {
     }
     let (mut shell, _window) = window_on(&mut s, [1400.0, 900.0], "zx", 0.0, "iso");
     sync_cost(&mut shell, &mut s, "the turbofan");
+}
+
+/// The drilled block with its top's edge along y at x = 60 chamfered by
+/// 8: a flat face at a slant, its outward normal (1, 0, 1) / √2.
+fn chamfered() -> Session {
+    let mut s = drilled();
+    run(
+        &mut s,
+        "feature.chamfer",
+        json!({"edges": [["F1:face(1)", "F1:face(5)"]], "distance": 8, "name": "Bevel"}),
+    );
+    s
+}
+
+/// Selects the one face `filter` finds, as a click would.
+fn select_face(session: &mut Session, filter: Value) -> Value {
+    let found = run(
+        session,
+        "select.query",
+        json!({"kind": "face", "where": filter, "then": "replace"}),
+    );
+    assert_eq!(found["count"], 1, "{found}");
+    found["items"][0].clone()
+}
+
+#[test]
+fn the_plane_goes_parallel_to_a_selected_flat_face_and_stays_when_the_selection_changes() {
+    let mut session = chamfered();
+    let slant = select_face(&mut session, json!({"normal": {"along": [1, 0, 1]}}));
+    let (mut shell, mut window) = window_on(&mut session, [1200.0, 800.0], "xy", 4.0, "iso");
+    window.frames(&mut shell, &mut session, 2);
+    // One flat face selected: the bar has a fourth cell, the handle a
+    // fourth dot.
+    let choice = shell.section_face_choice().cloned().expect("the face");
+    assert_eq!(choice.face, slant["name"].as_str().unwrap());
+    assert_eq!(choice.refused, None);
+    assert_eq!(shell.section_handle().unwrap().dots.len(), 4);
+    let names: Vec<&str> = shell.section_hits().iter().map(|(n, _)| *n).collect();
+    assert_eq!(names, ["toggle", "x", "y", "z", "face", "offset", "flip"]);
+    // The bar's cell: the plane through the face, along its outward
+    // normal, nothing cut yet.
+    let cell = shell
+        .section_hits()
+        .iter()
+        .find(|(n, _)| *n == "face")
+        .unwrap()
+        .1;
+    window.click(&mut shell, &mut session, cell.center());
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(shell.state.section.plane, Some(choice.face.clone()));
+    assert_eq!(shell.state.section.feature, Some(choice.feature.clone()));
+    assert_eq!(
+        (shell.state.section.offset, shell.state.section.flip),
+        (0.0, false)
+    );
+    assert!(shell.section_on_face());
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["section"]["direction"], "face");
+    let n: Vec<f64> = got["section"]["normal"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    let h = std::f64::consts::FRAC_1_SQRT_2;
+    assert!(
+        (n[0] - h).abs() < 1e-9 && n[1].abs() < 1e-9 && (n[2] - h).abs() < 1e-9,
+        "{n:?}"
+    );
+    // The face itself is a place the plane snaps to, at 0.
+    assert!(
+        got["section"]["snaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["offset"].as_f64().unwrap().abs() < 1e-9 && s["kind"] == "face"),
+        "{}",
+        got["section"]["snaps"]
+    );
+    // The arrow points out of the face; dragged back into the body (Alt:
+    // as it is), the plane goes in by as much.
+    let place = shell.section_handle().unwrap().clone();
+    let [a, b] = place.frame.arrow.expect("seen side on");
+    let way = (b - a).normalized();
+    let grip = a.lerp(b, 0.5);
+    window.modifiers = Modifiers::ALT;
+    window.drag(&mut shell, &mut session, grip, grip - way * 30.0, 6, |_| {});
+    window.modifiers = Modifiers::NONE;
+    window.frames(&mut shell, &mut session, 2);
+    let offset = shell.state.section.offset;
+    let expected = -30.0 * place.frame.per_point;
+    assert!(
+        (offset - expected).abs() < 0.05 * expected.abs(),
+        "{offset} against {expected}"
+    );
+    // The outline the shell keeps for the face's plane, moved by the drag
+    // and found among the slabs, is the one a fresh cut finds over the
+    // whole mesh, at several offsets along the face's normal.
+    for offset in [offset, -0.37, -3.0, -11.3] {
+        call(
+            &mut shell,
+            &mut session,
+            "ui.set",
+            json!({"section": {"offset": offset}}),
+        );
+        let scene = shell.sync(&mut session).unwrap();
+        let kept = shell.marks(Some(&scene)).cut.unwrap().outline;
+        let fresh =
+            craft3d_ui_egui::viewport::SectionCut::new(&scene, shell.section().unwrap()).unwrap();
+        assert!(!kept.is_empty(), "{offset}");
+        assert_eq!(*kept, *fresh.outline, "{offset}");
+    }
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"section": {"offset": offset}}),
+    );
+    window.frames(&mut shell, &mut session, 2);
+    // The selection goes: the plane stays on the face, and so do its
+    // fourth dot and cell, chosen.
+    run(&mut session, "select.set", json!({"mode": "clear"}));
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(shell.section_face_choice(), None);
+    assert_eq!(shell.state.section.plane, Some(choice.face.clone()));
+    assert_eq!(shell.state.section.offset, offset);
+    assert_eq!(shell.section_handle().unwrap().dots.len(), 4);
+    assert!(shell.section_hits().iter().any(|(n, _)| *n == "face"));
+    // X takes it back across x.
+    let x = shell.section_handle().unwrap().dots[0];
+    window.click(&mut shell, &mut session, x);
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(shell.state.section.plane.as_deref(), Some("yz"));
+    assert!(!shell.section_on_face());
+    assert_eq!(shell.section_handle().unwrap().dots.len(), 3);
+
+    // A hole's wall is not flat: the dot and the cell say so and do
+    // nothing, and ui.set refuses it in words.
+    let wall = select_face(&mut session, json!({"hole": true, "radius": 3}));
+    window.frames(&mut shell, &mut session, 3);
+    let refused = shell.section_face_choice().cloned().unwrap();
+    assert!(
+        refused
+            .refused
+            .as_deref()
+            .is_some_and(|why| why.contains("Not a flat face")),
+        "{refused:?}"
+    );
+    let before = shell.state.section.clone();
+    let dot = shell.section_handle().unwrap().dots[3];
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 2);
+    assert_eq!(shell.state.section, before);
+    let error = shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&json!({"section": {"plane": wall["name"], "feature": wall["feature"]}})),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert!(error.contains("not flat"), "{error}");
+    assert_eq!(shell.state.section, before);
+    // The fourth dot over the handle: the slanted face again.
+    select_face(&mut session, json!({"normal": {"along": [1, 0, 1]}}));
+    window.frames(&mut shell, &mut session, 3);
+    let dot = shell.section_handle().unwrap().dots[3];
+    assert_eq!(
+        shell.section_handle().unwrap().part_at(dot),
+        Some(HandlePart::Dot(3))
+    );
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 3);
+    assert!(shell.section_on_face());
+    assert_eq!(shell.state.section.offset, 0.0);
+    // An agent lays a plane in any direction the same way.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"section": {"point": [52, 20, 20], "normal": [1, 0, 1], "offset": -2}}),
+    );
+    window.frames(&mut shell, &mut session, 2);
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["section"]["direction"], "free");
+    assert!(!shell.section_on_face());
+    // The face still selected: the fourth dot stays, not chosen.
+    assert_eq!(shell.section_handle().unwrap().dots.len(), 4);
+}
+
+/// Turns the camera, perspective, so that the section's normal across x
+/// is `off` degrees from the line of sight, looking at what it looked at
+/// (the review's reproducer, 2026-11-17).
+fn look_along_x_off_by(shell: &mut Shell, session: &mut Session, window: &mut Window, off: f64) {
+    call(
+        shell,
+        session,
+        "ui.set",
+        json!({"camera": {"projection": "perspective"}}),
+    );
+    let _ = shell.handle_method(session, "ui.fit", Some(&json!({"view": "left"})));
+    window.frames(shell, session, 2);
+    let mut camera = shell.state.camera;
+    camera.auto_fit = false;
+    camera.yaw += off;
+    shell.state.camera = camera;
+    window.frames(shell, session, 3);
+}
+
+/// A press on the arrow's middle, the pointer moved along the arrow on
+/// the screen in `steps` of `step` points, `between` before each, then
+/// let go; the offset after each step.
+fn drag_along(
+    shell: &mut Shell,
+    session: &mut Session,
+    window: &mut Window,
+    steps: usize,
+    step: f32,
+    mut between: impl FnMut(usize, &mut Shell, &mut Session),
+) -> Vec<f64> {
+    let place = shell.section_handle().expect("a handle").clone();
+    let [a, b] = place.frame.arrow.expect("seen side on");
+    let way = (b - a).normalized();
+    let grip = a.lerp(b, 0.5);
+    window.frame(shell, session, vec![Event::PointerMoved(grip)]);
+    window.button(shell, session, grip, true);
+    let mut seen = Vec::new();
+    for k in 1..=steps {
+        between(k, shell, session);
+        window.frame(
+            shell,
+            session,
+            vec![Event::PointerMoved(grip + way * (step * k as f32))],
+        );
+        seen.push(shell.state.section.offset);
+    }
+    window.button(shell, session, grip + way * (step * steps as f32), false);
+    window.frame(shell, session, vec![Event::PointerGone]);
+    seen
+}
+
+/// Dragged along the arrow toward and past the point its line runs to
+/// on the screen, in perspective, the plane goes to the far end and stays
+/// there: the pointer's ray meets the arrow's line behind the eye from
+/// then on, and that is no place (review of 2026-11-17: it jumped back to
+/// the near end, 550 to 760 points on, at 18.5 to 25 degrees).
+#[test]
+fn dragged_past_where_the_arrow_runs_to_in_perspective_the_plane_does_not_jump_back() {
+    for off in [18.5_f64, 20.0, 22.0, 25.0, 35.0] {
+        let mut session = drilled();
+        let (mut shell, mut window) = window_on(&mut session, [1200.0, 800.0], "yz", 10.0, "iso");
+        look_along_x_off_by(&mut shell, &mut session, &mut window, off);
+        if shell
+            .section_handle()
+            .and_then(|place| place.frame.arrow)
+            .is_none()
+        {
+            continue;
+        }
+        let seen = drag_along(
+            &mut shell,
+            &mut session,
+            &mut window,
+            80,
+            10.0,
+            |_, _, _| {},
+        );
+        assert!(seen.iter().all(|v| v.is_finite()), "{off}: {seen:?}");
+        assert!(
+            seen.windows(2).all(|w| w[1] >= w[0] - 1e-9),
+            "{off}: the plane went back: {seen:?}"
+        );
+        assert_eq!(seen.last().copied(), Some(60.0), "{off}: {seen:?}");
+    }
+}
+
+/// An agent sets another plane during a drag, or another tab is shown:
+/// the drag is over, holds the pointer until it lets go, and writes
+/// nothing more (review of 2026-11-17: the agent's Y plane at 5 ended at
+/// the X drag's 24).
+#[test]
+fn a_drag_ends_when_another_sets_the_plane_or_another_tab_is_shown() {
+    let mut session = drilled();
+    let (mut shell, mut window) = window_on(&mut session, [1200.0, 800.0], "yz", 20.0, "iso");
+    let camera = shell.state.camera;
+    drag_along(
+        &mut shell,
+        &mut session,
+        &mut window,
+        10,
+        4.0,
+        |k, shell, session| {
+            if k == 5 {
+                call(
+                    shell,
+                    session,
+                    "ui.set",
+                    json!({"section": {"plane": "zx", "offset": 5.0}}),
+                );
+            }
+        },
+    );
+    assert_eq!(shell.state.section.plane.as_deref(), Some("zx"));
+    assert_eq!(shell.state.section.offset, 5.0);
+    assert_eq!(
+        shell.state.camera, camera,
+        "the rest of the drag turned the view"
+    );
+    // Only the offset, set by an agent mid-drag: that holds too.
+    drag_along(
+        &mut shell,
+        &mut session,
+        &mut window,
+        10,
+        4.0,
+        |k, shell, session| {
+            if k == 3 {
+                call(
+                    shell,
+                    session,
+                    "ui.set",
+                    json!({"section": {"offset": 7.0}}),
+                );
+            }
+        },
+    );
+    assert_eq!(shell.state.section.offset, 7.0);
+    // Another tab mid-drag: the new document's view is left as it is,
+    // and back on the first the plane is where the drag left it.
+    let before = shell.state.section.offset;
+    let mut at_switch = None;
+    drag_along(
+        &mut shell,
+        &mut session,
+        &mut window,
+        10,
+        4.0,
+        |k, shell, session| {
+            if k == 4 {
+                at_switch = Some(shell.state.section.offset);
+                run(session, "file.new", json!({"units": "mm"}));
+            }
+        },
+    );
+    window.frames(&mut shell, &mut session, 2);
+    assert!(!shell.state.section.on, "the new tab has no section");
+    let at_switch = at_switch.unwrap();
+    assert!(at_switch > before, "{before} {at_switch}");
+    run(&mut session, "file.activate", json!({"document": 0}));
+    window.frames(&mut shell, &mut session, 3);
+    assert!(shell.state.section.on);
+    assert_eq!(shell.state.section.offset, at_switch);
+}
+
+/// More places than a drag looked at before (1200 faces parallel to the
+/// plane: the 1024 lowest were kept): every one is kept, and `ui.get`
+/// lists those nearest the plane, with how many there are (review of
+/// 2026-11-17).
+#[test]
+fn on_hundreds_of_plates_every_place_is_kept_and_ui_get_lists_those_near_the_plane() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 10, 0.4], "name": "Plate"}),
+    );
+    run(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Plate", "count": 600, "step": [0, 0, 1], "name": "Stack"}),
+    );
+    let (mut shell, mut window) = window_on(&mut s, [1200.0, 800.0], "xy", 590.0, "front");
+    window.frames(&mut shell, &mut s, 2);
+    let got = call(&mut shell, &mut s, "ui.get", json!({}));
+    assert_eq!(got["section"]["snapsTotal"], 1200, "{}", got["section"]);
+    let listed: Vec<f64> = got["section"]["snaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["offset"].as_f64().unwrap())
+        .collect();
+    assert_eq!(listed.len(), 64);
+    assert!(
+        listed.first().unwrap() < &590.0 && listed.last().unwrap() > &590.0,
+        "{listed:?}"
+    );
+    // The top plate's bottom, 599, is a place a drag snaps to.
+    let place = shell.section_handle().unwrap().clone();
+    let [a, b] = place.frame.arrow.unwrap();
+    let grip = a.lerp(b, 0.5);
+    let points = ((599.0 - 590.0) / place.frame.per_point) as f32;
+    let way = (b - a).normalized();
+    let mut snapped = None;
+    window.drag(&mut shell, &mut s, grip, grip + way * points, 6, |shell| {
+        snapped = shell.section_snapped();
+    });
+    assert_eq!(snapped, Some(Snapped::Place(SnapKind::Face)));
+    assert_eq!(shell.state.section.offset, 599.0);
 }

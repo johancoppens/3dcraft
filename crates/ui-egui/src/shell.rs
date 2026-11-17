@@ -642,6 +642,8 @@ struct SectionCache {
     bounds: Bbox3,
     snaps: Arc<Vec<craft3d_engine::SectionSnap>>,
     slabs: Option<Arc<craft3d_render::Slabs>>,
+    /// The plane is a flat face's (`plane` names a face).
+    face: bool,
 }
 
 /// Whether two section states are the same plane, at any offset and on
@@ -2365,10 +2367,19 @@ impl Shell {
                 "normal": vec3(cache.plane.normal),
                 "range": cache.range,
                 "lost": null,
-                "snaps": cache
-                    .snaps
+                "direction": if cache.face {
+                    "face"
+                } else {
+                    match controls::chosen_axis(&self.state.section) {
+                        Some(0) => "x",
+                        Some(1) => "y",
+                        Some(2) => "z",
+                        _ if self.state.section.plane.is_some() => "datum",
+                        _ => "free",
+                    }
+                },
+                "snaps": section_handle::nearest_snaps(&cache.snaps, self.state.section.offset)
                     .iter()
-                    .take(section_handle::REPORTED_SNAPS)
                     .map(|snap| serde_json::json!({
                         "offset": snap.offset,
                         "kind": snap.kind.name(),
@@ -2376,6 +2387,7 @@ impl Shell {
                         "name": snap.name,
                     }))
                     .collect::<Vec<_>>(),
+                "snapsTotal": cache.snaps.len(),
             })),
             (None, Some(why)) => Some(serde_json::json!({ "lost": why })),
             (None, None) => None,
@@ -2460,6 +2472,7 @@ impl Shell {
                     cache.bounds,
                     Arc::clone(&cache.snaps),
                     cache.slabs.clone(),
+                    cache.face,
                 )
             });
         let resolved = match &kept {
@@ -2468,16 +2481,20 @@ impl Shell {
         };
         match resolved {
             Ok(plane) => {
-                let (bounds, snaps, slabs) = kept.map_or_else(
+                let section = &self.state.section;
+                let (bounds, snaps, slabs, face) = kept.map_or_else(
                     || {
                         (
                             craft3d_render::section_bounds(&scene.mesh),
                             Arc::new(plane.snaps(scene)),
                             craft3d_render::Slabs::new(&scene.mesh, plane.base, plane.along)
                                 .map(Arc::new),
+                            section.plane.as_deref().is_some_and(|name| {
+                                scene.faces_named(section.feature.as_deref(), name).is_ok()
+                            }),
                         )
                     },
-                    |(_, bounds, snaps, slabs)| (bounds, snaps, slabs),
+                    |(_, bounds, snaps, slabs, face)| (bounds, snaps, slabs, face),
                 );
                 self.section_cache = Some(SectionCache {
                     revision: scene.revision,
@@ -2495,6 +2512,7 @@ impl Shell {
                     bounds,
                     snaps,
                     slabs,
+                    face,
                 });
                 self.section_lost = None;
             }
@@ -2800,6 +2818,7 @@ impl Shell {
         };
         self.resolve_section(session, &scene);
         self.sync_selection(session, &scene);
+        self.sync_face_choice(session, &scene);
         if let Some(first) = scene.problems.first().or(scene.notices.first()) {
             self.problem = Some(first.clone());
         }

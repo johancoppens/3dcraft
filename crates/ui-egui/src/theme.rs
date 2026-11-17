@@ -222,10 +222,10 @@ pub struct Tokens {
     /// (the pick radius of `view.pick`, which is in pixels).
     pub pick_radius: f32,
     /// The section's handle in the view (`shell/section_handle.rs`), in
-    /// the accent over a hairline of `plate_fill` at
-    /// `section_halo_opacity` (0 to 255), so it reads on the background,
-    /// a body and the cap: the plane's outline, `section_outline_width`
-    /// wide in dashes of `section_dash` (on, off); the arrow,
+    /// the accent: the plane's outline, `section_outline_width` wide in
+    /// dashes of `section_dash` (on, off); the arrow and the ring over a
+    /// hairline of `plate_fill` at `section_halo_opacity` (0 to 255), so
+    /// they read on the background, a body and the cap; the arrow,
     /// `section_arrow_length` long seen side on and `section_arrow_width`
     /// wide; the dots X, Y, Z of `section_dot_radius`. Faint
     /// (`section_rest_opacity`, 0 to 255) until the pointer is within
@@ -966,12 +966,12 @@ impl Tokens {
             select_box_opacity: 31,
             select_box_width: 1.5,
             pick_radius: 4.0,
-            section_outline_width: 1.0,
+            section_outline_width: 1.2,
             section_dash: [5.0, 4.0],
             section_arrow_length: 54.0,
             section_arrow_width: 2.0,
-            section_halo_opacity: 110,
-            section_rest_opacity: 115,
+            section_halo_opacity: 170,
+            section_rest_opacity: 140,
             section_near: 56.0,
             section_hit: 9.0,
             section_dot_radius: 8.0,

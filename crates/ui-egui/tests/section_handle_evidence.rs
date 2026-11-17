@@ -407,6 +407,53 @@ fn pictures_of_the_section_handle() {
         w.frames(&mut shell, &mut session, 2);
         w.save(name);
     }
+    // A slanted face (the drilled block's top edge chamfered by 8)
+    // selected: the fourth dot; laid on it; dragged into the body.
+    for (view, name) in [("iso", "face"), ("front", "face-front")] {
+        let mut session = drilled();
+        run(
+            &mut session,
+            "feature.chamfer",
+            json!({"edges": [["F1:face(1)", "F1:face(5)"]], "distance": 8, "name": "Bevel"}),
+        );
+        run(
+            &mut session,
+            "select.query",
+            json!({"kind": "face", "where": {"normal": {"along": [1, 0, 1]}}, "then": "replace"}),
+        );
+        let mut w = window([1400, 900]);
+        let mut shell = open(
+            &mut session,
+            &mut w,
+            json!({"view": view, "section": {"on": true, "plane": "yz", "offset": 20}}),
+        );
+        let dot = shell.section_handle().unwrap().dots[3];
+        w.frame(&mut shell, &mut session, vec![Event::PointerMoved(dot)]);
+        w.frames(&mut shell, &mut session, 2);
+        w.save(&format!("{name}-selected"));
+        w.press(&mut shell, &mut session, dot, true);
+        w.press(&mut shell, &mut session, dot, false);
+        w.frames(&mut shell, &mut session, 4);
+        let at = pointer_on(&shell, "arrow");
+        w.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
+        w.frames(&mut shell, &mut session, 2);
+        w.save(&format!("{name}-laid"));
+        // Into the body by 6 mm: the arrow's way back, in steps.
+        let place = shell.section_handle().unwrap().clone();
+        if let Some([a, b]) = place.frame.arrow {
+            let way = (b - a).normalized();
+            let points = (6.0 / place.frame.per_point) as f32;
+            w.press(&mut shell, &mut session, at, true);
+            for k in 1..=10 {
+                let to = at - way * (points * k as f32 / 10.0);
+                w.frame(&mut shell, &mut session, vec![Event::PointerMoved(to)]);
+            }
+            w.press(&mut shell, &mut session, at - way * points, false);
+            w.frames(&mut shell, &mut session, 3);
+        }
+        println!("{name}: offset {}", shell.state.section.offset);
+        w.save(&format!("{name}-cut"));
+    }
     // A phone: no handle; a desk window touched: a finger's handle.
     {
         let mut session = drilled();

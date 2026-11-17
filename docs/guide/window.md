@@ -441,7 +441,7 @@ The section's plane also has a handle in the view: its dashed outline, an arrow 
 is cut away, the distance beside it and the dots **X**, **Y** and **Z**. It stays faint until the pointer
 comes near.
 
-![The flange cut open across X through two bolt holes: the plane's dashed outline, the arrow, X 30.00 mm and the dots X, Y, Z; the Offset slider on the bar says the same](images/section.png)
+![The flange cut open across X through the middle of a bolt hole: the plane's dashed outline, the arrow, X 30.00 mm and the dots X, Y, Z; the Offset slider on the bar says the same](images/section.png)
 
 | Do | To |
 |---|---|
@@ -449,6 +449,7 @@ comes near.
 | Double-click the arrow | Keep the other half |
 | Click the number | Type a distance, such as `12.5` or `width / 2`; Enter sets it, Escape leaves it |
 | Click **X**, **Y** or **Z** | Turn the plane across that axis, through the middle of the model |
+| Select a flat face, then click **∥** | Lay the plane on that face: along it, through it, the arrow pointing out of the body; drag the arrow in to cut. The plane stays when you select something else. A face that is not flat greys **∥** and says why |
 
 The handle and the bar move the same plane, so the slider follows the arrow and the other way round. Seen
 straight along the arrow (a section across Z from the top), it shows as a ring: use the slider or type the
