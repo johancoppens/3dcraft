@@ -429,8 +429,8 @@ impl Nav<'_> {
         let see = self.see_w();
         let off_w = pad + sketches + sp + datums + sp + edges + sp + see + gap + section + pad;
         let flip = self.chip(self.w.flip);
-        // X, Y, Z and the plane from the selection.
-        let axes = 4.0 * self.w.axis;
+        // X, Y, Z, and the plane from the selection sharing their room.
+        let axes = 3.0 * self.w.axis;
         let extra = if self.wrap {
             0.0
         } else {
