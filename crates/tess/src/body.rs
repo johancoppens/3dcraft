@@ -584,9 +584,11 @@ fn tessellate_placed(
         }
         used
     });
+    let clock = craft3d_math::clock::clock("tess.edge_points_and_long_chords");
     let mut edges = edge_points_of(body, params, used.as_deref())?;
     let count = body.faces.len();
     cut_long_chords(body, params, threads, &chosen, &mut edges)?;
+    drop(clock);
     let mut results: Vec<Option<FaceResult>> = (0..count).map(|_| None).collect();
     // The faces that still ask for finer chords.
     let mut asking = vec![false; count];
@@ -627,6 +629,7 @@ fn tessellate_placed(
             let before = craft3d_geom::allowance::spent();
             let mut starved = false;
             let placed = along_borders(index);
+            let clock = craft3d_math::clock::clock("tess.face_boundary");
             let boundary =
                 match face_boundary(body, points, face, index, params, &mut starved, placed) {
                     Ok(boundary) => boundary,
@@ -650,12 +653,18 @@ fn tessellate_placed(
                         );
                     }
                 };
+            drop(clock);
+            let clock = craft3d_math::clock::clock("tess.chords_to_refine");
             let refine = boundary.chords_to_refine(body, params, aligning.is_some());
+            drop(clock);
             let wanted = refine.halve;
             let asks = !wanted.is_empty() || !refine.across.is_empty();
             let mut ask = Vec::new();
             let result = (mesh && (last || !asks)).then(|| {
+                let clock = craft3d_math::clock::clock("tess.mesh_face");
                 let mut made = mesh_face(&boundary, face, index, params, &[], &mut ask, !last)?;
+                drop(clock);
+                let _clock = craft3d_math::clock::clock("tess.closes_along_edges");
                 closes_along_edges(body, points, face, index, &made.border)?;
                 made.border = Vec::new();
                 Ok(made)
@@ -806,6 +815,7 @@ fn tessellate_placed(
         (edges, results) = before;
     }
     if mesh {
+        let _clock = craft3d_math::clock::clock("tess.part_shared_rungs");
         part_shared_rungs(body, params, &edges.points, &mut results, borders)?;
     }
     Ok((edges, results))

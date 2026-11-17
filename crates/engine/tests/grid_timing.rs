@@ -125,3 +125,145 @@ fn a_large_grid_is_built_meshed_measured_and_saved() {
         );
     }
 }
+
+/// The heights of the Mont Ventoux relief every 87.5 m, `rows[r][c]` in
+/// metres (`grid_timing/ventoux-87.5m.csv`: 113 rows south to north, 145
+/// heights a row west to east).
+fn relief() -> Vec<Vec<f64>> {
+    let text = include_str!("grid_timing/ventoux-87.5m.csv");
+    text.lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .map(|l| l.split(',').map(|v| v.trim().parse().unwrap()).collect())
+        .collect()
+}
+
+/// A point of a grid of `rows` × `columns`: `at(r, c)`.
+type At = Box<dyn Fn(usize, usize) -> [f64; 3]>;
+
+/// The synthetic terrain of [`height`] at `columns` points a row, 100 mm
+/// wide.
+fn synthetic(columns: usize) -> At {
+    let step = 100.0 / (columns - 1) as f64;
+    Box::new(move |r, c| {
+        let (x, y) = (
+            c as f64 / (columns - 1) as f64,
+            r as f64 / (columns - 1) as f64,
+        );
+        [c as f64 * step, r as f64 * step, height(x, y)]
+    })
+}
+
+/// Where the time of a large sheet goes, stage by stage: the 87.5 m relief
+/// (145 × 113, given point by point, as at 1:70 000 with heights times
+/// 2.1) and the synthetic terrains of 150 × 120 and 400 × 300, each
+/// built, cut by a block of its footprint, meshed (an STL of the cut) and
+/// measured (`document.inspect`). Prints the stages the clocks of
+/// `craft3d_math::clock` summed in each command, the volume and the
+/// height of vertical rays at some nodes (to compare runs).
+#[test]
+#[ignore]
+fn stages_of_a_large_grid() {
+    let heights = relief();
+    let cases: Vec<(&str, usize, usize, At)> = vec![
+        (
+            "relief 145 x 113",
+            145,
+            113,
+            Box::new(move |r, c| [c as f64 * 1.25, r as f64 * 1.25, heights[r][c] * 0.03]),
+        ),
+        ("synthetic 150 x 120", 150, 120, synthetic(150)),
+        ("synthetic 400 x 300", 400, 300, synthetic(400)),
+    ];
+    for (label, columns, rows, at) in cases {
+        let dir = workdir("grid-stages", &format!("{columns}x{rows}"));
+        let mut s = session_in(&dir);
+        run(
+            &mut s,
+            "file.new",
+            json!({"units": "mm", "tolerance": 0.001}),
+        );
+        let points: Vec<Value> = (0..rows)
+            .map(|r| Value::Array((0..columns).map(|c| json!(at(r, c))).collect()))
+            .collect();
+        let [x1, y1] = {
+            let p = at(rows - 1, columns - 1);
+            [p[0], p[1]]
+        };
+        let timed = |s: &mut craft3d_engine::Session, id: &str, params: Value| {
+            craft3d_math::clock::enable(true);
+            let t = Instant::now();
+            let result = s.execute(id, &params).map_err(|e| e.to_string());
+            let took = t.elapsed().as_secs_f64();
+            let stages = craft3d_math::clock::take();
+            craft3d_math::clock::enable(false);
+            println!("  {label}: {id} {took:.3} s");
+            for (stage, seconds, runs) in stages {
+                println!("    {stage:<40} {seconds:>9.3} s {runs:>7} runs");
+            }
+            result
+        };
+        println!("{label}:");
+        let made = timed(
+            &mut s,
+            "feature.surface.grid",
+            json!({"points": points, "spacing": "even", "name": "Sheet"}),
+        );
+        assert_eq!(made.as_ref().unwrap()["status"], "ok", "{made:?}");
+        let block = timed(
+            &mut s,
+            "feature.block",
+            json!({"size": [x1, y1, 100.0], "position": [0, 0, -10.0], "name": "Blank"}),
+        );
+        assert_eq!(block.unwrap()["status"], "ok");
+        let cut = timed(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "intersect", "target": "Blank", "tool": "Sheet", "keepTool": true, "name": "Under"}),
+        )
+        .unwrap();
+        println!("  {label}: cut status {} {}", cut["status"], cut["error"]);
+        if cut["status"] != "ok" {
+            let _ = timed(
+                &mut s,
+                "file.export",
+                json!({"path": "sheet.stl", "bodies": ["Sheet"]}),
+            );
+            if let Ok(inspect) = timed(&mut s, "document.inspect", json!({})) {
+                for body in inspect["bodies"].as_array().unwrap() {
+                    println!("  {label}: body {} area {}", body["name"], body["area"]);
+                }
+            }
+            continue;
+        }
+        let mesh = timed(
+            &mut s,
+            "file.export",
+            json!({"path": "under.stl", "bodies": ["Under"]}),
+        );
+        println!("  {label}: triangles {}", mesh.unwrap()["triangles"]);
+        let inspect = timed(&mut s, "document.inspect", json!({})).unwrap();
+        for body in inspect["bodies"].as_array().unwrap() {
+            println!(
+                "  {label}: body {} volume {} area {}",
+                body["name"], body["volume"], body["area"]
+            );
+        }
+        // Vertical rays at every 8th node each way.
+        let mut zs = Vec::new();
+        for r in (0..rows).step_by(8) {
+            for c in (0..columns).step_by(8) {
+                let p = at(r, c);
+                let x = p[0].clamp(1e-6, x1 - 1e-6);
+                let y = p[1].clamp(1e-6, y1 - 1e-6);
+                let hit = run(
+                    &mut s,
+                    "measure.ray",
+                    json!({"from": [x, y, 95.0], "direction": "-z", "of": "Under", "limit": 1}),
+                );
+                let z = hit["hits"][0]["point"][2].as_f64().unwrap_or(f64::NAN);
+                zs.push(format!("{z:.17e}"));
+            }
+        }
+        println!("  {label}: rays {}", zs.join(" "));
+    }
+}

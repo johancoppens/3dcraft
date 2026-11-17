@@ -1378,6 +1378,7 @@ fn imported(
 
 /// Never hand on an invalid body (docs/design/kernel.md).
 fn checked(doc: &Document, mut body: Body) -> Result<Body, String> {
+    let _clock = craft3d_math::clock::clock("regen.checked");
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
     // Remembered: a body the operation that made it checked already

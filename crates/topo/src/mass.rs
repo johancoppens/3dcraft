@@ -5451,6 +5451,7 @@ fn replay(
 /// time is bounded). A face that is outside its own loops is
 /// [`MassError::UnboundedFace`].
 pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
+    let _clock = craft3d_math::clock::clock("topo.mass_properties");
     let (all, _, middle, _) = integrate(body, Wanted::First);
     Ok(mass_from(body, all?, middle))
 }
@@ -5513,6 +5514,7 @@ pub fn mass_with_shells_each_while(
     bodies: &[&Body],
     go_on: impl Fn(&MassProperties) -> bool,
 ) -> Vec<Option<Measured>> {
+    let _clock = craft3d_math::clock::clock("topo.mass_with_shells_each");
     let rule = Rule::new(NODES);
     let mut out: Vec<Option<Measured>> = Vec::with_capacity(bodies.len());
     let mut failed = false;

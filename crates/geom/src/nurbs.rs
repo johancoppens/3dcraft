@@ -2168,6 +2168,7 @@ impl NurbsSurface {
 
     /// The spans of [`Self::bezier_spans`], made afresh.
     fn make_bezier_spans(&self) -> Result<Vec<BezierSpan>, GeomError> {
+        let _clock = craft3d_math::clock::clock("geom.bezier_spans");
         let (count_u, count_v) = self.counts();
         let (du, dv) = (self.degree_u, self.degree_v);
         // Along u first: one curve per column j.
