@@ -72,6 +72,7 @@ mod motion;
 mod motion_build;
 mod name_refs;
 mod note_cmds;
+mod note_place;
 mod offset_cmds;
 mod open_bytes;
 mod output_cmds;
@@ -699,6 +700,14 @@ pub struct Session {
     /// The agent the commands run for, and its intent; `None` for the
     /// person (`agent_log.rs`).
     pub(crate) actor: Option<agent_log::Actor>,
+    /// Who the notes the commands write come from when no agent acts
+    /// (`note_cmds.rs`): the client an MCP server was opened by, as it
+    /// named itself (`Session::set_client`), the person at the window
+    /// (`Session::by_person`), or, as a job handed over says, the author
+    /// its host had (`commands_elsewhere.rs`).
+    pub(crate) client: Option<String>,
+    pub(crate) person: bool,
+    pub(crate) author_given: Option<craft3d_doc::NoteAuthor>,
     /// The active document was made active by an agent (`file.activate`,
     /// `file.open`, `recovery.open`, …), not by the person.
     pub(crate) agent_activated: bool,
@@ -774,6 +783,9 @@ impl Session {
             window_camera: None,
             new_when: None,
             actor: None,
+            client: None,
+            person: false,
+            author_given: None,
             agent_activated: false,
             stepwise: false,
             measure_here: false,

@@ -71,13 +71,29 @@ fn as_agent(s: &mut Session, id: &str, params: Value) -> Value {
         .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
 }
 
+/// A command run as the window's own controls run it for the person.
+fn as_person(s: &mut Session, id: &str, params: Value) -> Value {
+    s.by_person(|s| s.execute(id, &params))
+        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
+}
+
+fn xyz(value: &Value) -> [f64; 3] {
+    let p = value.as_array().unwrap();
+    [0, 1, 2].map(|k| p[k].as_f64().unwrap())
+}
+
+fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+}
+
 #[test]
 fn notes_are_pinned_listed_resolved_edited_and_deleted() {
     let mut s = session();
     plate(&mut s);
     // On a face by its name, the feature written by its name: at the
     // centre of the top face.
-    let top = run(
+    let top = as_person(
         &mut s,
         "note.add",
         json!({"text": " 2 mm thicker here ", "on": "Plate:face(1)"}),
@@ -231,17 +247,22 @@ fn notes_are_pinned_listed_resolved_edited_and_deleted() {
     assert!(reopened.get("done").is_none(), "{reopened}");
     let e = error(&mut s, "note.resolve", json!({"id": 1, "done": false}));
     assert!(e.contains("note 1 is open"), "{e}");
+    // Closed over a channel that says no one: unknown, never the person.
     run(&mut s, "note.resolve", json!({"id": 2}));
-    assert_eq!(note(&mut s, 2)["done"]["author"], "person");
+    assert_eq!(note(&mut s, 2)["done"]["author"], "unknown");
+    assert_eq!(note(&mut s, 2)["author"], "unknown");
 
     // Edited: its text; pinned elsewhere, at the new entity's middle;
     // moved on what it is on.
-    let edited = run(
+    let edited = as_agent(
         &mut s,
         "note.edit",
         json!({"id": 3, "text": "round it, 1 mm"}),
     );
     assert_eq!(edited["text"], "round it, 1 mm");
+    assert_eq!(edited["author"], "unknown", "who wrote it stays");
+    assert_eq!(edited["edited"]["author"], "agent");
+    assert_eq!(edited["edited"]["agent"], "Claude Code");
     assert_eq!(edited["on"]["kind"], "edge", "pinned as before");
     let moved = run(&mut s, "note.edit", json!({"id": 3, "on": "F1:face(0)"}));
     assert_eq!(moved["on"]["name"], "F1:face(0)");
@@ -292,7 +313,7 @@ fn hostile_notes_are_refused_and_change_nothing() {
         ),
         (
             json!({"text": megabyte, "on": "F1:face(1)"}),
-            "at most 2000 characters",
+            "at most 2000 Unicode code points",
         ),
         (
             json!({"text": "a\u{7}b", "on": "F1:face(1)"}),
@@ -408,11 +429,15 @@ fn a_note_stays_on_its_face_through_edits_and_is_detached_when_it_goes() {
     for id in [1, 2] {
         let n = note(&mut s, id);
         assert_eq!(n["attachment"], "attached", "{n}");
-        assert_eq!(n["now"]["feature"], "F3", "followed into the boolean: {n}");
-        assert_eq!(n["now"]["body"], "Drilled");
+        assert_eq!(
+            n["now"][0]["feature"], "F3",
+            "followed into the boolean: {n}"
+        );
+        assert_eq!(n["now"][0]["body"], "Drilled");
+        assert_eq!(n["now"][0]["pieces"], 1);
     }
     assert!(
-        note(&mut s, 1)["now"]["name"]
+        note(&mut s, 1)["now"][0]["name"]
             .as_str()
             .unwrap()
             .ends_with("F1:face(1)"),
@@ -638,4 +663,184 @@ fn saving_keeps_the_notes_and_publishing_and_exports_leave_them_out() {
             "{path} carries a note"
         );
     }
+}
+
+/// Rule 4 (review-pins R1): a name not proven to stay with its entity (a
+/// fillet's face is numbered by its edge's place among the fillet's
+/// references) never holds a note. The note is taken and held by place:
+/// by the fillet that made the face and its point. The fillet given one
+/// edge fewer, the face once numbered 0 is another corner's; the note
+/// does not say attached, does not name an entity it cannot prove, and
+/// its marker stays on what the fillet made nearest its point.
+#[test]
+fn a_note_on_an_unproven_name_is_held_by_place() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Plate", "size": [40, 20, 10]}),
+    );
+    run(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": ["F1:edge(9)", "F1:edge(8)"], "radius": 3, "name": "Round"}),
+    );
+    let added = run(
+        &mut s,
+        "note.add",
+        json!({"text": "this corner smaller", "on": "F2:fillet(0)"}),
+    );
+    assert_eq!(added["attachment"], "byPlace", "{added}");
+    assert!(added["on"]["name"].is_null(), "{added}");
+    assert_eq!(added["on"]["pinnedAs"], "F2:fillet(0)");
+    assert_eq!(added["on"]["origin"]["name"], "Round");
+    assert!(added.get("now").is_none(), "{added}");
+    assert!(
+        added["why"].as_str().unwrap().contains("held by `Round`"),
+        "{added}"
+    );
+    let point = point(&added);
+    assert!(distance(xyz(&added["at"]), point) < 1e-6, "{added}");
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Round", "edges": ["F1:edge(8)"]}),
+    );
+    let n = note(&mut s, 1);
+    assert_eq!(n["attachment"], "byPlace", "{n}");
+    assert!(n.get("now").is_none(), "{n}");
+    // The marker on the nearest face the fillet makes now: never
+    // reported as the face the note was put on.
+    assert!(n["at"].is_array(), "{n}");
+    // The fillet deleted: nothing it made is there; detached.
+    run(&mut s, "feature.delete", json!({"feature": "Round"}));
+    assert_eq!(note(&mut s, 1)["attachment"], "detached");
+}
+
+/// Review-pins R2: a face a later feature cut in two keeps the note on
+/// both pieces; `now` says there are two and the marker is on the piece
+/// nearest the note's point.
+#[test]
+fn a_face_cut_in_two_keeps_the_note_on_the_piece_it_is_near() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Plate", "size": [40, 20, 10]}),
+    );
+    run(
+        &mut s,
+        "note.add",
+        json!({"text": "right", "on": "Plate:face(1)", "point": [35, 10, 10]}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Groove", "size": [4, 22, 10], "position": [18, -1, 3]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Plate", "tool": "Groove"}),
+    );
+    let n = note(&mut s, 1);
+    assert_eq!(n["attachment"], "attached", "{n}");
+    assert_eq!(n["now"][0]["pieces"], 2, "{n}");
+    assert!(distance(xyz(&n["at"]), [35.0, 10.0, 10.0]) < 1e-6, "{n}");
+}
+
+/// Review-pins R3: a vertex stays pinned through a later feature that
+/// takes its body and keeps it (a hole far from it), followed by where it
+/// lies.
+#[test]
+fn a_vertex_note_follows_its_corner_into_later_features() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Plate", "size": [40, 20, 5]}),
+    );
+    run(
+        &mut s,
+        "note.add",
+        json!({"text": "corner", "on": "F1:vertex(0)"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Hole", "radius": 2, "height": 5, "position": [30, 15, 0]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Plate", "tool": "Hole", "name": "Holed"}),
+    );
+    let n = note(&mut s, 1);
+    assert_eq!(n["attachment"], "attached", "{n}");
+    assert_eq!(n["now"][0]["feature"], "F3", "{n}");
+    assert!(distance(xyz(&n["at"]), point(&n)) < 1e-9, "{n}");
+}
+
+/// Review-pins R4: a body subtracted as a boolean's tool is no material
+/// of the result: a note on it is detached, not attached to the plate.
+#[test]
+fn a_note_on_a_subtracted_tool_is_detached() {
+    let mut s = session();
+    plate(&mut s);
+    run(
+        &mut s,
+        "note.add",
+        json!({"text": "pin in brass", "on": "Pin"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Plate", "tool": "Pin", "name": "Drilled"}),
+    );
+    let n = note(&mut s, 1);
+    assert_eq!(n["attachment"], "detached", "{n}");
+    assert!(n["why"].as_str().unwrap().contains("subtracted"), "{n}");
+    // Undone, the pin is its own body again, and the note on it.
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(note(&mut s, 1)["attachment"], "attached");
+}
+
+/// Review-pins R5: every face of a bundled example takes a note, placed
+/// on the face's surface within its bounds (the ship propeller's blades,
+/// whose coarse mesh could not be made).
+#[test]
+fn every_face_of_the_ship_propeller_takes_a_note() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples/published");
+    let dir = workdir("notes", "propeller");
+    std::fs::copy(
+        root.join("ship-propeller.3dcraft"),
+        dir.join("ship-propeller.3dcraft"),
+    )
+    .unwrap();
+    let mut s = session_in(&dir);
+    run(
+        &mut s,
+        "file.open",
+        json!({"path": "ship-propeller.3dcraft"}),
+    );
+    let inspected = run(&mut s, "document.inspect", json!({"measures": false}));
+    let mut placed = 0;
+    for body in inspected["bodies"].as_array().unwrap() {
+        let feature = body["feature"].as_str().unwrap().to_string();
+        for face in body["faceNames"].as_array().unwrap() {
+            let face = face.as_str().unwrap();
+            let added = s.execute(
+                "note.add",
+                &json!({"text": "here", "on": face, "feature": feature}),
+            );
+            let added = added.unwrap_or_else(|e| panic!("{face}: {e}"));
+            assert!(added["point"].is_array(), "{added}");
+            placed += 1;
+        }
+    }
+    assert!(placed >= 48, "{placed} faces");
 }

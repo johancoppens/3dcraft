@@ -221,7 +221,10 @@ fn noted(notes: &Value) -> Value {
                     "id": n["id"], "text": n["text"], "state": n["state"],
                     "author": n["author"], "agent": n["agent"],
                     "on": {"kind": n["on"]["kind"], "name": n["on"]["name"], "feature": n["on"]["feature"]},
-                    "attachment": n["attachment"], "now": n.get("now").map(|now| now["name"].clone()),
+                    "attachment": n["attachment"],
+                    "now": n.get("now").and_then(Value::as_array).map(|now| {
+                        now.iter().map(|item| item["name"].clone()).collect::<Vec<_>>()
+                    }),
                     "point": n["point"], "reply": n["done"]["reply"], "closedBy": n["done"]["agent"],
                 })
             })

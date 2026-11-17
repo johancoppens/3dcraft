@@ -119,9 +119,12 @@ pub struct Notes {
 
 /// One note pinned to the model: `{"id": 1, "text": "2 mm thicker
 /// here", "on": {"kind": "face", "feature": 3, "name": name}, "point":
-/// [x, y, z], "by": "Claude Code", "timeMs": 1763380000000, "done": {"by":
-/// ..., "timeMs": ..., "reply": "..."}}`. `by` is the agent that wrote it
-/// (absent: the person), `done` absent while it is open.
+/// [x, y, z], "by": "person", "timeMs": 1763380000000, "edited": {"by":
+/// {"agent": "Claude Code"}, "timeMs": ...}, "done": {"by": "unknown",
+/// "timeMs": ..., "reply": "..."}}`. `by` says how it came in: `"person"`
+/// (typed at the window), `{"agent": name}` or `"unknown"`; `edited` is
+/// who last changed its text (absent: the text it was written with),
+/// `done` absent while it is open.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Note {
@@ -132,13 +135,33 @@ pub struct Note {
     pub on: Option<NoteOn>,
     /// Where it was put, in the document's length unit.
     pub point: [f64; 3],
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub by: Option<String>,
+    pub by: NoteBy,
     /// Milliseconds since the Unix epoch; 0 where there was no clock.
     #[serde(default)]
     pub time_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited: Option<NoteStamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done: Option<NoteDone>,
+}
+
+/// How a note, its text or its closing came in: `"person"`, `{"agent":
+/// name}` or `"unknown"`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteBy {
+    Person,
+    Agent(String),
+    Unknown,
+}
+
+/// Who did something to a note, and when.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoteStamp {
+    pub by: NoteBy,
+    #[serde(default)]
+    pub time_ms: u64,
 }
 
 /// What a note is pinned to: a body by the feature that makes it, or a
@@ -163,12 +186,11 @@ pub enum NoteKind {
     Vertex,
 }
 
-/// Who closed a note (absent: the person), when, and the reply.
+/// Who closed a note, when, and the reply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NoteDone {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub by: Option<String>,
+    pub by: NoteBy,
     #[serde(default)]
     pub time_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

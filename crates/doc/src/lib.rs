@@ -54,8 +54,8 @@ pub use name::{
     offset_groups,
 };
 pub use note::{
-    MAX_NOTE_AUTHOR_CHARS, MAX_NOTE_CHARS, MAX_NOTES, Note, NoteDone, NoteKind, NoteOn, Notes,
-    check_note_point, clean_note_author, clean_note_text,
+    MAX_NOTE_AUTHOR_CHARS, MAX_NOTE_CHARS, MAX_NOTES, Note, NoteAuthor, NoteDone, NoteKind, NoteOn,
+    NoteStamp, Notes, check_note_point, clean_note_author, clean_note_text,
 };
 pub use output::{MAX_OUTPUTS, Output, OutputDef};
 pub use public::{

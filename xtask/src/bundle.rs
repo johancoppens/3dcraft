@@ -1549,6 +1549,47 @@ mod tests {
         assert!(check_packed_licences(&broken, by).is_err());
     }
 
+    /// No document the repository ships for others to open (the bundled
+    /// examples, Jigs and assemblies under `docs/examples/published`, the
+    /// showcase under `docs/showcase`, anything else under `docs/`) holds
+    /// a note pinned to the model, nor does a part packed in it: a
+    /// published file holds none (docs/decisions.md, 2026-11-17).
+    #[test]
+    fn no_document_under_docs_holds_a_note() {
+        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            let mut entries: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+            entries.sort();
+            for path in entries {
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| matches!(e, "3dcraft" | "3dcraftjig" | "3dcraftasm"))
+                {
+                    out.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&root().join("docs"), &mut files);
+        assert!(
+            files.iter().any(|f| f.starts_with(root().join(FOLDER))),
+            "the bundled examples are among them: {files:?}"
+        );
+        for file in &files {
+            let bytes = std::fs::read(file).unwrap();
+            let document = craft3d_format::from_bytes(&bytes)
+                .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            if let Err(e) = check_no_notes(&document) {
+                panic!("{}: {e}", file.display());
+            }
+        }
+    }
+
     /// A file with notes pinned to the model is not bundled, nor an
     /// assembly that packs a part with notes, at any depth: a published
     /// example holds none.
@@ -1559,8 +1600,14 @@ mod tests {
             let mut part = Document::new(craft3d_doc::Units::default());
             part.info.title = title.to_string();
             part.info.licence = by.to_string();
-            part.add_note("2 mm thicker here", None, [0.0; 3], None, 0)
-                .unwrap();
+            part.add_note(
+                "2 mm thicker here",
+                None,
+                [0.0; 3],
+                craft3d_doc::NoteAuthor::Unknown,
+                0,
+            )
+            .unwrap();
             part
         };
         let clean = assembly(vec![part_bytes("Jaw", by)]);

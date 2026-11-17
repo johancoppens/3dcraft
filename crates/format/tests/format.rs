@@ -6570,13 +6570,15 @@ fn a_tip_at_a_point_in_the_model_is_written_like_this_and_round_trips() {
 }
 
 /// Version 75: the notes pinned to the model, each as it was put there
-/// (what it is pinned to by feature and name, the point, who wrote it and
-/// when, and for one done who closed it and the reply), with the id the
-/// next one gets, round trip; a document without any writes none; a field
-/// a note does not have is refused; a version-74 file has none.
+/// (what it is pinned to by feature and name, the point, how it came in
+/// (the person, an agent by name, or unknown) and when, who last changed
+/// its text, and for one done who closed it and the reply), with the id
+/// the next one gets, round trip; a document without any writes none; a
+/// field a note does not have is refused; a version-74 file has none.
 #[test]
 fn notes_are_written_like_this_and_round_trip() {
-    use craft3d_doc::{NoteKind, NoteOn, PersistentName};
+    use craft3d_doc::{NoteAuthor, NoteKind, NoteOn, PersistentName};
+    let agent = || NoteAuthor::Agent("Claude Code".to_string());
     assert_eq!(FORMAT_VERSION, 75);
     assert!(!to_manifest_json(&small()).unwrap().contains("\"notes\""));
     let mut doc = small();
@@ -6591,7 +6593,7 @@ fn notes_are_written_like_this_and_round_trip() {
             "2 mm thicker here",
             Some(on(NoteKind::Face, Some("F1:face(1)"))),
             [20.0, 10.0, 10.0],
-            None,
+            NoteAuthor::Person,
             1_763_380_000_000,
         )
         .unwrap();
@@ -6600,7 +6602,7 @@ fn notes_are_written_like_this_and_round_trip() {
             "Is this edge meant to stay sharp?",
             Some(on(NoteKind::Edge, Some("F1:edge(3)"))),
             [0.0, 20.0, 10.0],
-            Some("Claude Code"),
+            agent(),
             1_763_380_000_500,
         )
         .unwrap();
@@ -6609,7 +6611,7 @@ fn notes_are_written_like_this_and_round_trip() {
             "this corner",
             Some(on(NoteKind::Vertex, Some("F1:vertex(0)"))),
             [0.0, 0.0, 0.0],
-            None,
+            NoteAuthor::Unknown,
             0,
         )
         .unwrap();
@@ -6617,14 +6619,16 @@ fn notes_are_written_like_this_and_round_trip() {
         "the whole plate in aluminium",
         Some(on(NoteKind::Body, None)),
         [40.0, 10.0, 5.0],
-        None,
+        NoteAuthor::Unknown,
         1,
     )
     .unwrap();
+    doc.edit_note_text(top, "2 mm thicker here, please", agent(), 1_763_380_000_900)
+        .unwrap();
     doc.resolve_note(
         top,
         true,
-        Some("Claude Code"),
+        agent(),
         Some("Done: 12 mm now."),
         1_763_380_001_000,
     )
@@ -6638,15 +6642,20 @@ fn notes_are_written_like_this_and_round_trip() {
     assert_eq!(notes["next"], 5);
     assert_eq!(
         notes["items"][0],
-        serde_json::json!({"id": top, "text": "2 mm thicker here",
+        serde_json::json!({"id": top, "text": "2 mm thicker here, please",
             "on": {"kind": "face", "feature": 1,
                    "name": {"feature": 1, "role": "face", "sources": [1]}},
-            "point": [20.0, 10.0, 10.0], "timeMs": 1_763_380_000_000_u64,
-            "done": {"by": "Claude Code", "timeMs": 1_763_380_001_000_u64,
+            "point": [20.0, 10.0, 10.0], "by": "person", "timeMs": 1_763_380_000_000_u64,
+            "edited": {"by": {"agent": "Claude Code"}, "timeMs": 1_763_380_000_900_u64},
+            "done": {"by": {"agent": "Claude Code"}, "timeMs": 1_763_380_001_000_u64,
                      "reply": "Done: 12 mm now."}})
     );
     assert_eq!(notes["items"][1]["id"], edge);
-    assert_eq!(notes["items"][1]["by"], "Claude Code");
+    assert_eq!(
+        notes["items"][1]["by"],
+        serde_json::json!({"agent": "Claude Code"})
+    );
+    assert_eq!(notes["items"][2]["by"], "unknown");
     assert_eq!(notes["items"][1]["on"]["kind"], "edge");
     assert!(notes["items"][1].get("done").is_none(), "open");
     assert_eq!(
@@ -6668,6 +6677,10 @@ fn notes_are_written_like_this_and_round_trip() {
     assert_ne!(odd, json);
     assert!(from_manifest_json(odd.as_bytes()).is_err());
     let bad = json.replacen("2 mm thicker here", "2 mm\\u0007 thicker", 1);
+    // Every note says how it came in.
+    let anonymous = json.replacen(r#""by": "unknown","#, "", 1);
+    assert_ne!(anonymous, json);
+    assert!(from_manifest_json(anonymous.as_bytes()).is_err());
     assert_ne!(bad, json);
     assert!(from_manifest_json(bad.as_bytes()).is_err());
     // A version-74 file has no notes; it reads as it is.

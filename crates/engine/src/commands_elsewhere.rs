@@ -139,6 +139,9 @@ pub(crate) struct CommandJob {
     /// Answered on the state it was asked on, also after an edit came
     /// behind it ([`Session::set_reads_on_their_state`]).
     own_state: bool,
+    /// How the notes it writes come in, as this session has it
+    /// ([`Session::note_author`]): the other side writes them so.
+    author: craft3d_doc::NoteAuthor,
 }
 
 /// The reads handed over whose result says what this session knows of the
@@ -430,6 +433,7 @@ impl Session {
             trace,
             session_fields,
             own_state,
+            author: self.note_author(),
         });
         Trial::Deferred(result)
     }
@@ -487,6 +491,7 @@ impl Session {
             trace: None,
             session_fields: None,
             own_state: false,
+            author: self.note_author(),
         });
         Some(token)
     }
@@ -643,6 +648,7 @@ impl Session {
             "follows": job.follows,
             "camera": job.camera,
             "jigInUse": job.jig_in_use,
+            "author": author_wire(&job.author),
             // A read is run on the moment shown; any other job leaves the
             // other side's view as it is.
             "view": if job.kind == JobKind::Read { view.json() } else { Value::Null },
@@ -968,6 +974,28 @@ impl Session {
     }
 }
 
+/// How a job's notes come in, written out: `"person"`, `"unknown"` or
+/// `{"agent": name}`.
+fn author_wire(author: &craft3d_doc::NoteAuthor) -> Value {
+    match author {
+        craft3d_doc::NoteAuthor::Agent(name) => json!({ "agent": name }),
+        other => json!(other.word()),
+    }
+}
+
+/// [`author_wire`] read back; unknown for anything else.
+pub(crate) fn author_from_wire(value: Option<&Value>) -> craft3d_doc::NoteAuthor {
+    use craft3d_doc::NoteAuthor;
+    match value {
+        Some(Value::String(word)) if word == "person" => NoteAuthor::Person,
+        Some(Value::Object(map)) => map
+            .get("agent")
+            .and_then(Value::as_str)
+            .map_or(NoteAuthor::Unknown, NoteAuthor::agent_named),
+        _ => NoteAuthor::Unknown,
+    }
+}
+
 /// The commands that may edit the document and are handed over when
 /// they need the bodies (`assert.add`, a feature that follows a face or
 /// an edge): their edit is made there and applied here from the answer
@@ -979,7 +1007,7 @@ impl Session {
 /// played (the hook for that: a motion's states handed over as a job of
 /// their own, the motion's view state kept here).
 fn edits_elsewhere(id: &str) -> bool {
-    const FAMILIES: [&str; 17] = [
+    const FAMILIES: [&str; 18] = [
         "feature.",
         "sketch.",
         "datum.",
@@ -1000,6 +1028,10 @@ fn edits_elsewhere(id: &str) -> bool {
         "instance.",
         "mate.",
         "coupling.",
+        // The notes pinned to the model: their entities are found and
+        // their points placed on the bodies; who writes them goes with
+        // the job (`author`).
+        "note.",
     ];
     FAMILIES.iter().any(|family| id.starts_with(family))
         && !matches!(id, "sketch.text" | "sketch.textEdit" | "sketch.textOnCurve")

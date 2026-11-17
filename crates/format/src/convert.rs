@@ -149,6 +149,7 @@ fn notes_to_manifest(notes: &doc::Notes) -> manifest::Notes {
                     point,
                     by,
                     time_ms,
+                    edited,
                     done,
                 } = note;
                 manifest::Note {
@@ -172,12 +173,19 @@ fn notes_to_manifest(notes: &doc::Notes) -> manifest::Notes {
                         }
                     }),
                     point: *point,
-                    by: by.clone(),
+                    by: note_by_to_manifest(by),
                     time_ms: *time_ms,
+                    edited: edited.as_ref().map(|edited| {
+                        let doc::NoteStamp { by, time_ms } = edited;
+                        manifest::NoteStamp {
+                            by: note_by_to_manifest(by),
+                            time_ms: *time_ms,
+                        }
+                    }),
                     done: done.as_ref().map(|done| {
                         let doc::NoteDone { by, time_ms, reply } = done;
                         manifest::NoteDone {
-                            by: by.clone(),
+                            by: note_by_to_manifest(by),
                             time_ms: *time_ms,
                             reply: reply.clone(),
                         }
@@ -185,6 +193,22 @@ fn notes_to_manifest(notes: &doc::Notes) -> manifest::Notes {
                 }
             })
             .collect(),
+    }
+}
+
+fn note_by_to_manifest(by: &doc::NoteAuthor) -> manifest::NoteBy {
+    match by {
+        doc::NoteAuthor::Person => manifest::NoteBy::Person,
+        doc::NoteAuthor::Agent(name) => manifest::NoteBy::Agent(name.clone()),
+        doc::NoteAuthor::Unknown => manifest::NoteBy::Unknown,
+    }
+}
+
+fn note_by_to_doc(by: manifest::NoteBy) -> doc::NoteAuthor {
+    match by {
+        manifest::NoteBy::Person => doc::NoteAuthor::Person,
+        manifest::NoteBy::Agent(name) => doc::NoteAuthor::Agent(name),
+        manifest::NoteBy::Unknown => doc::NoteAuthor::Unknown,
     }
 }
 
@@ -202,6 +226,7 @@ fn notes_to_doc(notes: manifest::Notes) -> doc::Notes {
                     point,
                     by,
                     time_ms,
+                    edited,
                     done,
                 } = note;
                 doc::Note {
@@ -225,11 +250,22 @@ fn notes_to_doc(notes: manifest::Notes) -> doc::Notes {
                         }
                     }),
                     point,
-                    by,
+                    by: note_by_to_doc(by),
                     time_ms,
+                    edited: edited.map(|edited| {
+                        let manifest::NoteStamp { by, time_ms } = edited;
+                        doc::NoteStamp {
+                            by: note_by_to_doc(by),
+                            time_ms,
+                        }
+                    }),
                     done: done.map(|done| {
                         let manifest::NoteDone { by, time_ms, reply } = done;
-                        doc::NoteDone { by, time_ms, reply }
+                        doc::NoteDone {
+                            by: note_by_to_doc(by),
+                            time_ms,
+                            reply,
+                        }
                     }),
                 }
             })

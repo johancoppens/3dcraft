@@ -1,7 +1,7 @@
 //! Notes pinned to the model (2026-11-17): a sentence written at a place
-//! of the model, by the person ("2 mm thicker here", "this hole can go")
-//! or by an agent (a question about that place), which an agent reads,
-//! works through and marks done with a sentence of reply.
+//! of the model ("2 mm thicker here", "this hole can go", or an agent's
+//! question about that place), which whoever works on the model next
+//! reads, works through and marks done with a sentence of reply.
 //!
 //! A note is pinned to a body, a face, an edge or a vertex the way a
 //! selection keeps what it holds: by the feature whose body has it and,
@@ -11,6 +11,12 @@
 //! decided where the bodies are known (`craft3d-engine`, `note.list`): a
 //! note whose entity is gone is not changed, it stays at its point and
 //! says so, and is pinned again when the entity comes back (an undo).
+//!
+//! Who wrote a note, changed its text and closed it is kept as how it
+//! came in ([`NoteAuthor`]): typed by the person in the window, sent by an
+//! agent under the name its client gave, or over a channel that says no
+//! one (a script, the command line): never a proof of who wrote it, as a
+//! file can be edited by hand.
 //!
 //! Like the assertions, the named sets and the appearance of bodies,
 //! notes are beside the history, not in it: regeneration does not read
@@ -26,9 +32,10 @@ use serde::{Deserialize, Serialize};
 
 /// Most notes a document holds.
 pub const MAX_NOTES: usize = 1000;
-/// Longest text of a note, and of a reply, in characters.
+/// Longest text of a note, and of a reply, in Unicode code points.
 pub const MAX_NOTE_CHARS: usize = 2000;
-/// Longest name of who wrote a note or closed it, in characters.
+/// Longest name of an agent that wrote, changed or closed a note, in
+/// Unicode code points.
 pub const MAX_NOTE_AUTHOR_CHARS: usize = 200;
 
 /// What a note is pinned to.
@@ -65,6 +72,44 @@ impl NoteKind {
     }
 }
 
+/// How a note, its new text or its closing came in: what the program
+/// knew of who sent it, not a proof of who wrote it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NoteAuthor {
+    /// Typed by the person at the window.
+    Person,
+    /// Sent by an agent, under the name its client gave (the agent log's).
+    Agent(String),
+    /// Over a channel that says no one: a script, the command line, a
+    /// control connection that gave no name.
+    Unknown,
+}
+
+impl NoteAuthor {
+    /// `person`, `agent` or `unknown`, as the commands say it.
+    pub fn word(&self) -> &'static str {
+        match self {
+            NoteAuthor::Person => "person",
+            NoteAuthor::Agent(_) => "agent",
+            NoteAuthor::Unknown => "unknown",
+        }
+    }
+
+    /// The agent's name, for an agent.
+    pub fn agent(&self) -> Option<&str> {
+        match self {
+            NoteAuthor::Agent(name) => Some(name),
+            NoteAuthor::Person | NoteAuthor::Unknown => None,
+        }
+    }
+
+    /// An agent named `name` as a note keeps it ([`clean_note_author`]);
+    /// [`NoteAuthor::Unknown`] when nothing of the name is left.
+    pub fn agent_named(name: &str) -> NoteAuthor {
+        clean_note_author(name).map_or(NoteAuthor::Unknown, NoteAuthor::Agent)
+    }
+}
+
 /// The entity a note is pinned to, as it was when the note was put there.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteOn {
@@ -75,12 +120,18 @@ pub struct NoteOn {
     pub name: Option<PersistentName>,
 }
 
+/// Who did something to a note, and when.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteStamp {
+    pub by: NoteAuthor,
+    /// Milliseconds since the Unix epoch (0 where there is no clock).
+    pub time_ms: u64,
+}
+
 /// Who closed a note, when, and what they answered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteDone {
-    /// The agent that closed it, by the name the agent log knows; `None`
-    /// for the person.
-    pub by: Option<String>,
+    pub by: NoteAuthor,
     /// Milliseconds since the Unix epoch (0 where there is no clock).
     pub time_ms: u64,
     pub reply: Option<String>,
@@ -96,12 +147,14 @@ pub struct Note {
     pub on: Option<NoteOn>,
     /// Where it was put, in model space (the document's length unit).
     pub point: [f64; 3],
-    /// The agent that wrote it, by the name the agent log knows; `None`
-    /// for the person.
-    pub by: Option<String>,
+    /// How it came in.
+    pub by: NoteAuthor,
     /// When it was written: milliseconds since the Unix epoch (0 where
     /// there is no clock).
     pub time_ms: u64,
+    /// Who last changed its text, and when; `None` while it has the text
+    /// it was written with.
+    pub edited: Option<NoteStamp>,
     /// `None` while it is open.
     pub done: Option<NoteDone>,
 }
@@ -124,13 +177,24 @@ impl Notes {
     pub fn open(&self) -> usize {
         self.items.iter().filter(|n| n.done.is_none()).count()
     }
+
+    /// How many are open that an agent wrote: its questions.
+    pub fn open_from_agents(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|n| n.done.is_none() && matches!(n.by, NoteAuthor::Agent(_)))
+            .count()
+    }
 }
 
-/// A note's text, or a reply, as it is kept: line breaks as `\n`, other
-/// white space as it was, invisible format characters (direction marks
-/// and overrides) left out so a text cannot read otherwise where it is
-/// shown, trimmed. Refused: empty, longer than [`MAX_NOTE_CHARS`]
-/// characters, or holding another control character.
+/// A note's text, or a reply, as it is kept: trimmed, line breaks as
+/// `\n` (a carriage return, CR LF, and the line and paragraph separators
+/// U+2028 and U+2029 read as one), a tab as a space, and the
+/// bidirectional formatting characters left out ([`deceives`]: they make
+/// a text read otherwise where it is shown); every other character as it
+/// was (zero-width joiners and non-joiners included). Refused: empty,
+/// longer than [`MAX_NOTE_CHARS`] Unicode code points, or holding another
+/// control character.
 pub fn clean_note_text(text: &str) -> Result<String, String> {
     // Read no further than twice the cap: what is longer is refused
     // whatever trimming would take away.
@@ -147,8 +211,9 @@ pub fn clean_note_text(text: &str) -> Result<String, String> {
                 }
                 '\n'
             }
+            '\u{2028}' | '\u{2029}' => '\n',
             '\t' => ' ',
-            c if invisible(c) => continue,
+            c if deceives(c) => continue,
             c if c.is_control() && c != '\n' => {
                 return Err(format!(
                     "a note's text must not hold the control character U+{:04X}",
@@ -170,21 +235,28 @@ pub fn clean_note_text(text: &str) -> Result<String, String> {
     }
     if cut || trimmed.chars().count() > MAX_NOTE_CHARS {
         return Err(format!(
-            "a note's text is at most {MAX_NOTE_CHARS} characters long (this one is {})",
+            "a note's text is at most {MAX_NOTE_CHARS} Unicode code points long (this one has {})",
             text.chars().count()
         ));
     }
     Ok(trimmed.to_string())
 }
 
-/// Who wrote or closed a note, as it is kept: one line of at most
-/// [`MAX_NOTE_AUTHOR_CHARS`] characters, control and invisible
-/// characters made spaces or left out; `None` when nothing is left.
+/// An agent's name as a note keeps it: one line of at most
+/// [`MAX_NOTE_AUTHOR_CHARS`] Unicode code points, control characters made
+/// spaces and the bidirectional formatting characters left out;
+/// `None` when nothing is left.
 pub fn clean_note_author(name: &str) -> Option<String> {
     let flat: String = name
         .chars()
-        .filter(|c| !invisible(*c))
-        .map(|c| if c.is_control() { ' ' } else { c })
+        .filter(|c| !deceives(*c))
+        .map(|c| {
+            if c.is_control() || c == '\u{2028}' || c == '\u{2029}' {
+                ' '
+            } else {
+                c
+            }
+        })
         .take(MAX_NOTE_AUTHOR_CHARS.saturating_mul(2))
         .collect();
     let flat: String = flat.trim().chars().take(MAX_NOTE_AUTHOR_CHARS).collect();
@@ -192,29 +264,23 @@ pub fn clean_note_author(name: &str) -> Option<String> {
     (!flat.is_empty()).then_some(flat)
 }
 
-/// A direction mark or override, or an invisible format character (as the
-/// agent log leaves out of an intent).
-fn invisible(c: char) -> bool {
+/// A bidirectional formatting character: the marks (U+061C, U+200E,
+/// U+200F), the embeddings and overrides (U+202A to U+202E) and the
+/// isolates (U+2066 to U+2069). Shown, they turn the text around them,
+/// so a note could read otherwise than it is; a note leaves them out.
+pub fn deceives(c: char) -> bool {
     matches!(
         c,
-        '\u{00AD}'
-            | '\u{061C}'
-            | '\u{180E}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{206F}'
-            | '\u{FEFF}'
-            | '\u{FFF9}'..='\u{FFFB}'
-            | '\u{E0001}'
-            | '\u{E0020}'..='\u{E007F}'
+        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
     )
 }
 
-fn check_author(who: &str, what: &str) -> Result<(), String> {
-    if clean_note_author(who).as_deref() != Some(who) {
+fn check_author(who: &NoteAuthor, what: &str) -> Result<(), String> {
+    if let NoteAuthor::Agent(name) = who
+        && clean_note_author(name).as_deref() != Some(name.as_str())
+    {
         return Err(format!(
-            "{what} must be one line of 1 to {MAX_NOTE_AUTHOR_CHARS} characters without control characters"
+            "{what} must be one line of 1 to {MAX_NOTE_AUTHOR_CHARS} Unicode code points without control or bidirectional formatting characters"
         ));
     }
     Ok(())
@@ -224,7 +290,7 @@ fn check_text(text: &str, what: &str) -> Result<(), String> {
     match clean_note_text(text) {
         Ok(clean) if clean == text => Ok(()),
         Ok(_) => Err(format!(
-            "{what} is not as a note keeps it (trimmed, line breaks as \\n, no invisible format characters)"
+            "{what} is not as a note keeps it (trimmed, line breaks as \\n, no tab, no bidirectional formatting characters)"
         )),
         Err(e) => Err(format!("{what}: {e}")),
     }
@@ -277,14 +343,13 @@ impl Document {
     }
 
     /// Adds a note at the end with the next id, and returns that id. The
-    /// text is kept as [`clean_note_text`] gives it, who wrote it as
-    /// [`clean_note_author`] does.
+    /// text is kept as [`clean_note_text`] gives it.
     pub fn add_note(
         &mut self,
         text: &str,
         on: Option<NoteOn>,
         point: [f64; 3],
-        by: Option<&str>,
+        by: NoteAuthor,
         time_ms: u64,
     ) -> Result<u64, DocError> {
         if self.notes.items.len() >= MAX_NOTES {
@@ -294,6 +359,7 @@ impl Document {
         }
         let text = clean_note_text(text).map_err(DocError::Invalid)?;
         check_note_point(point).map_err(DocError::Invalid)?;
+        check_author(&by, "who wrote it").map_err(DocError::Invalid)?;
         if let Some(on) = &on {
             check_on(on, self.next_feature_id)
                 .map_err(|e| DocError::Invalid(format!("a new note: {e}")))?;
@@ -307,8 +373,9 @@ impl Document {
             text,
             on,
             point,
-            by: by.and_then(clean_note_author),
+            by,
             time_ms,
+            edited: None,
             done: None,
         });
         self.notes.next_id = next;
@@ -323,10 +390,22 @@ impl Document {
             .ok_or_else(|| DocError::Invalid(format!("there is no note {id}")))
     }
 
-    /// Gives note `id` a new text.
-    pub fn edit_note_text(&mut self, id: u64, text: &str) -> Result<(), DocError> {
+    /// Gives note `id` a new text, noting who gave it and when; a text the
+    /// same as the one it has changes nothing.
+    pub fn edit_note_text(
+        &mut self,
+        id: u64,
+        text: &str,
+        by: NoteAuthor,
+        time_ms: u64,
+    ) -> Result<(), DocError> {
         let text = clean_note_text(text).map_err(DocError::Invalid)?;
-        self.note_slot(id)?.text = text;
+        check_author(&by, "who changed it").map_err(DocError::Invalid)?;
+        let note = self.note_slot(id)?;
+        if note.text != text {
+            note.text = text;
+            note.edited = Some(NoteStamp { by, time_ms });
+        }
         Ok(())
     }
 
@@ -348,14 +427,13 @@ impl Document {
         Ok(())
     }
 
-    /// Marks note `id` done by `by` (an agent's name, `None` for the
-    /// person) with `reply`, or open again (`done` false: who closed it
-    /// and the reply are taken away).
+    /// Marks note `id` done by `by` with `reply`, or open again (`done`
+    /// false: who closed it and the reply are taken away).
     pub fn resolve_note(
         &mut self,
         id: u64,
         done: bool,
-        by: Option<&str>,
+        by: NoteAuthor,
         reply: Option<&str>,
         time_ms: u64,
     ) -> Result<(), DocError> {
@@ -364,13 +442,10 @@ impl Document {
                 clean_note_text(r).map_err(|e| DocError::Invalid(e.replace("note's text", "reply")))
             })
             .transpose()?;
+        check_author(&by, "who closed it").map_err(DocError::Invalid)?;
         let note = self.note_slot(id)?;
         if done {
-            note.done = Some(NoteDone {
-                by: by.and_then(clean_note_author),
-                time_ms,
-                reply,
-            });
+            note.done = Some(NoteDone { by, time_ms, reply });
         } else {
             note.done = None;
         }
@@ -428,13 +503,12 @@ impl Document {
             if let Some(on) = &note.on {
                 check_on(on, self.next_feature_id).map_err(bad)?;
             }
-            if let Some(by) = &note.by {
-                check_author(by, "who wrote it").map_err(bad)?;
+            check_author(&note.by, "who wrote it").map_err(bad)?;
+            if let Some(edited) = &note.edited {
+                check_author(&edited.by, "who changed it").map_err(bad)?;
             }
             if let Some(done) = &note.done {
-                if let Some(by) = &done.by {
-                    check_author(by, "who closed it").map_err(bad)?;
-                }
+                check_author(&done.by, "who closed it").map_err(bad)?;
                 if let Some(reply) = &done.reply {
                     check_text(reply, "its reply").map_err(bad)?;
                 }
@@ -462,6 +536,10 @@ mod tests {
         }
     }
 
+    fn agent() -> NoteAuthor {
+        NoteAuthor::Agent("Claude Code".into())
+    }
+
     fn document() -> Document {
         let mut doc = Document::new(Units::default());
         doc.add_feature(
@@ -482,16 +560,31 @@ mod tests {
             clean_note_text("  2 mm thicker here \n").unwrap(),
             "2 mm thicker here"
         );
-        assert_eq!(clean_note_text("a\r\nb\rc\td").unwrap(), "a\nb\nc d");
-        assert_eq!(clean_note_text("a\u{202E}b\u{200B}").unwrap(), "ab");
+        assert_eq!(
+            clean_note_text("a\r\nb\rc\td\u{2028}e").unwrap(),
+            "a\nb\nc d\ne"
+        );
+        // Bidirectional formatting goes; joiners, non-joiners and the
+        // other format characters stay (Persian spelling, emoji
+        // sequences).
+        assert_eq!(
+            clean_note_text("a\u{202E}b\u{2066}c\u{200F}").unwrap(),
+            "abc"
+        );
+        let kept = "می\u{200C}خواهم 👩\u{200D}🔧 a\u{200B}b";
+        assert_eq!(clean_note_text(kept).unwrap(), kept);
         for bad in ["", " \n\t ", "a\u{7}b", "a\0b", "\u{202E}"] {
             assert!(clean_note_text(bad).is_err(), "{bad:?}");
         }
         assert!(clean_note_text(&"x".repeat(MAX_NOTE_CHARS)).is_ok());
         assert!(clean_note_text(&"x".repeat(MAX_NOTE_CHARS + 1)).is_err());
+        // Code points, not what is drawn: 1000 e with a combining acute
+        // are 2000 code points.
+        assert!(clean_note_text(&"e\u{301}".repeat(MAX_NOTE_CHARS / 2)).is_ok());
+        assert!(clean_note_text(&"e\u{301}".repeat(MAX_NOTE_CHARS / 2 + 1)).is_err());
         let megabyte = "é".repeat(1 << 20);
         let e = clean_note_text(&megabyte).unwrap_err();
-        assert!(e.contains("at most 2000"), "{e}");
+        assert!(e.contains("at most 2000 Unicode code points"), "{e}");
         assert_eq!(
             clean_note_author(" Claude\nCode ").as_deref(),
             Some("Claude Code")
@@ -504,6 +597,7 @@ mod tests {
                 .count(),
             MAX_NOTE_AUTHOR_CHARS
         );
+        assert_eq!(NoteAuthor::agent_named("\u{202E}"), NoteAuthor::Unknown);
     }
 
     #[test]
@@ -511,34 +605,50 @@ mod tests {
         let mut doc = document();
         let id = doc.features[0].id.0;
         let a = doc
-            .add_note("thicker", Some(face(id, 1)), [0.0, 0.0, 5.0], None, 7)
+            .add_note(
+                "thicker",
+                Some(face(id, 1)),
+                [0.0, 0.0, 5.0],
+                NoteAuthor::Person,
+                7,
+            )
             .unwrap();
         let b = doc
-            .add_note(
-                "why?",
-                Some(face(id, 0)),
-                [1.0, 1.0, 0.0],
-                Some("Claude Code"),
-                8,
-            )
+            .add_note("why?", Some(face(id, 0)), [1.0, 1.0, 0.0], agent(), 8)
             .unwrap();
         assert_eq!((a, b), (1, 2));
         assert!(doc.validate().is_ok());
-        doc.edit_note_text(a, " 2 mm thicker ").unwrap();
+        // The same text changes nothing; another is stamped with who
+        // gave it.
+        doc.edit_note_text(a, " thicker ", agent(), 9).unwrap();
+        assert_eq!(doc.note(a).unwrap().edited, None);
+        doc.edit_note_text(a, "2 mm thicker", agent(), 9).unwrap();
         assert_eq!(doc.note(a).unwrap().text, "2 mm thicker");
-        doc.resolve_note(a, true, Some("Claude Code"), Some("Done: 7 mm now."), 9)
+        assert_eq!(doc.note(a).unwrap().by, NoteAuthor::Person);
+        assert_eq!(
+            doc.note(a).unwrap().edited,
+            Some(NoteStamp {
+                by: agent(),
+                time_ms: 9
+            })
+        );
+        doc.resolve_note(a, true, agent(), Some("Done: 7 mm now."), 9)
             .unwrap();
         assert_eq!(doc.notes.open(), 1);
+        assert_eq!(doc.notes.open_from_agents(), 1);
         assert_eq!(
             doc.note(a).unwrap().done.as_ref().unwrap().reply.as_deref(),
             Some("Done: 7 mm now.")
         );
-        doc.resolve_note(a, false, None, None, 10).unwrap();
+        doc.resolve_note(a, false, NoteAuthor::Unknown, None, 10)
+            .unwrap();
         assert!(doc.note(a).unwrap().done.is_none());
         assert!(doc.remove_notes(&[b, 99]).is_err());
         assert_eq!(doc.notes.items.len(), 2, "all or none");
         assert_eq!(doc.remove_notes(&[b]).unwrap().len(), 1);
-        let c = doc.add_note("again", None, [0.0; 3], None, 11).unwrap();
+        let c = doc
+            .add_note("again", None, [0.0; 3], NoteAuthor::Unknown, 11)
+            .unwrap();
         assert_eq!(c, 3, "a deleted note's id is not given out again");
         assert!(doc.validate().is_ok());
         let (published, count) = doc.without_notes();
@@ -550,34 +660,48 @@ mod tests {
     fn hostile_notes_are_refused_and_a_bad_file_is_too() {
         let mut doc = document();
         let id = doc.features[0].id.0;
+        let unknown = || NoteAuthor::Unknown;
         assert!(
-            doc.add_note("x", Some(face(id, 1)), [f64::NAN, 0.0, 0.0], None, 0)
+            doc.add_note("x", Some(face(id, 1)), [f64::NAN, 0.0, 0.0], unknown(), 0)
                 .is_err()
         );
         assert!(
-            doc.add_note("x", Some(face(id + 5, 1)), [0.0; 3], None, 0)
+            doc.add_note("x", Some(face(id + 5, 1)), [0.0; 3], unknown(), 0)
                 .is_err()
         );
         let mut wrong = face(id, 1);
         wrong.kind = NoteKind::Edge;
-        assert!(doc.add_note("x", Some(wrong), [0.0; 3], None, 0).is_err());
         assert!(
-            doc.add_note("", Some(face(id, 1)), [0.0; 3], None, 0)
+            doc.add_note("x", Some(wrong), [0.0; 3], unknown(), 0)
                 .is_err()
         );
-        assert!(doc.edit_note_text(5, "x").is_err());
-        assert!(doc.resolve_note(5, true, None, None, 0).is_err());
+        assert!(
+            doc.add_note("", Some(face(id, 1)), [0.0; 3], unknown(), 0)
+                .is_err()
+        );
+        assert!(
+            doc.add_note("x", None, [0.0; 3], NoteAuthor::Agent("a\nb".into()), 0)
+                .is_err()
+        );
+        assert!(doc.edit_note_text(5, "x", unknown(), 0).is_err());
+        assert!(doc.resolve_note(5, true, unknown(), None, 0).is_err());
         assert!(doc.notes.is_empty());
-        doc.add_note("x", Some(face(id, 1)), [0.0; 3], None, 0)
+        doc.add_note("x", Some(face(id, 1)), [0.0; 3], unknown(), 0)
             .unwrap();
         // As a file could hold it: each breaks validation.
-        let breaks: [fn(&mut Document); 6] = [
+        let breaks: [fn(&mut Document); 7] = [
             |d| d.notes.next_id = 1,
             |d| d.notes.items[0].text = " x".into(),
             |d| d.notes.items[0].point[2] = f64::INFINITY,
-            |d| d.notes.items[0].by = Some("a\nb".into()),
+            |d| d.notes.items[0].by = NoteAuthor::Agent("a\u{202E}b".into()),
             |d| d.notes.items.push(d.notes.items[0].clone()),
             |d| d.notes.items[0].on.as_mut().unwrap().name = None,
+            |d| {
+                d.notes.items[0].edited = Some(NoteStamp {
+                    by: NoteAuthor::Agent(String::new()),
+                    time_ms: 0,
+                })
+            },
         ];
         for (k, broken) in breaks.iter().enumerate() {
             let mut bad = doc.clone();
@@ -585,9 +709,9 @@ mod tests {
             assert!(bad.validate().is_err(), "case {k}");
         }
         for _ in 1..MAX_NOTES {
-            doc.add_note("x", None, [0.0; 3], None, 0).unwrap();
+            doc.add_note("x", None, [0.0; 3], unknown(), 0).unwrap();
         }
-        let e = doc.add_note("x", None, [0.0; 3], None, 0).unwrap_err();
+        let e = doc.add_note("x", None, [0.0; 3], unknown(), 0).unwrap_err();
         assert!(e.to_string().contains("at most 1000"), "{e}");
     }
 }

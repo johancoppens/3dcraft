@@ -1029,6 +1029,10 @@ pub fn run_on_state(
         };
         let before = session.documents.first().map(|o| o.selection.to_wire());
         session.edit_log = Some(Vec::new());
+        // The notes it writes come in as the host had them.
+        session.author_given = Some(crate::commands_elsewhere::author_from_wire(
+            work.get("author"),
+        ));
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run(session, &command, &params)
         }))
@@ -1038,6 +1042,7 @@ pub fn run_on_state(
                 crate::PANICKED
             )))
         });
+        session.author_given = None;
         for name in &inputs {
             session.take_file(name);
         }
