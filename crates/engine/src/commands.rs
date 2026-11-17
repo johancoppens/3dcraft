@@ -5286,8 +5286,20 @@ fn render_picture(
     // finished picture, as the window's Sketches toggle shows them.
     let drawn_sketches = if sketches && !ids {
         Some(
-            crate::sketch_picture::draw(&mut frame, &camera, &scene, &model)
-                .map_err(|e| CommandError::new(format!("view.render: {e}")))?,
+            crate::sketch_picture::draw(
+                &mut frame,
+                &camera,
+                &scene,
+                &model,
+                // The section's plane as the bodies were cut with it
+                // (a grid is cut there too).
+                render_params
+                    .section
+                    .as_ref()
+                    .and_then(|s| craft3d_render::Cut::new(s, &craft3d_render::section_bounds(all)))
+                    .as_ref(),
+            )
+            .map_err(|e| CommandError::new(format!("view.render: {e}")))?,
         )
     } else {
         None
