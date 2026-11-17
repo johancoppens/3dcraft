@@ -966,7 +966,7 @@ fn a_face_with_a_name_over_512_characters_is_measured() {
     assert!(got["relation"].is_string(), "{got}");
 }
 
-/// A disk of radius 50 drawn as `n` straight segments in two polylines,
+/// A disk of radius 50 drawn as `n` straight segments in polylines,
 /// extruded 5 high ("Poly"): its top and bottom faces have names that
 /// grow with the segments (the review of 2026-11-17, round three: 1700
 /// gave 10112 bytes).
@@ -982,19 +982,15 @@ fn many_sided(n: usize) -> Session {
         "sketch.create",
         json!({"plane": "xy", "name": "Many"}),
     );
-    let half = n / 2;
-    let first: Vec<Value> = (0..=half).map(point).collect();
-    let second: Vec<Value> = (half..=n).map(point).collect();
-    run(
-        &mut s,
-        "sketch.polyline",
-        json!({"sketch": "Many", "points": first}),
-    );
-    run(
-        &mut s,
-        "sketch.polyline",
-        json!({"sketch": "Many", "points": second}),
-    );
+    // A polyline takes at most 1000 points: in pieces of 500 segments.
+    for start in (0..n).step_by(500) {
+        let points: Vec<Value> = (start..=(start + 500).min(n)).map(point).collect();
+        run(
+            &mut s,
+            "sketch.polyline",
+            json!({"sketch": "Many", "points": points}),
+        );
+    }
     run(
         &mut s,
         "feature.extrude",

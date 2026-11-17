@@ -743,18 +743,15 @@ fn faces_named_in_over_8192_bytes_are_measured_and_kept() {
         "sketch.create",
         json!({"plane": "xy", "name": "Many"}),
     );
-    let first: Vec<Value> = (0..=n / 2).map(point).collect();
-    let second: Vec<Value> = (n / 2..=n).map(point).collect();
-    run(
-        &mut session,
-        "sketch.polyline",
-        json!({"sketch": "Many", "points": first}),
-    );
-    run(
-        &mut session,
-        "sketch.polyline",
-        json!({"sketch": "Many", "points": second}),
-    );
+    // A polyline takes at most 1000 points: in pieces of 500 segments.
+    for start in (0..n).step_by(500) {
+        let points: Vec<Value> = (start..=(start + 500).min(n)).map(point).collect();
+        run(
+            &mut session,
+            "sketch.polyline",
+            json!({"sketch": "Many", "points": points}),
+        );
+    }
     run(
         &mut session,
         "feature.extrude",
