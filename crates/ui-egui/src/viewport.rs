@@ -1195,14 +1195,19 @@ struct OutlineTest {
 /// The stretches of the segment `a`-`b` that are in front of every body
 /// and behind one, in order and covering 0 to 1; with `outline`, the
 /// stretches in front are told apart by whether they are an outline,
-/// tested at the middle of each piece like the depth.
+/// tested at the middle of each piece like the depth. The segment is
+/// tested `lift` nearer the eye than it is (in model units): a line on a
+/// surface the mesh follows only within its tolerance
+/// (`SceneSketch::lift`).
 fn stretches(
     map: Option<&DepthMap<'_>>,
     projector: &Projector,
     a: &Projected,
     b: &Projected,
     outline: Option<OutlineTest>,
+    lift: f64,
 ) -> Vec<Stretch> {
+    let lift = if lift.is_finite() { lift.max(0.0) } else { 0.0 };
     let piece = |from: f64, to: f64, hidden: bool| Stretch {
         from,
         to,
@@ -1225,7 +1230,7 @@ fn stretches(
     let pixels = ((b.x - a.x).abs().max((b.y - a.y).abs()) * (last - first)).ceil();
     if !(pixels.is_finite() && last > first) {
         // A dot: one test decides.
-        let hidden = map.covers(a.x, a.y, a.depth);
+        let hidden = map.covers(a.x, a.y, a.depth - lift);
         return vec![piece(0.0, 1.0, hidden)];
     }
     let length = (b.x - a.x).phypot(b.y - a.y);
@@ -1253,7 +1258,7 @@ fn stretches(
         let t = 0.5 * (from + to);
         let (x, y) = (a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
         let depth = projector.depth_between(a, b, t);
-        let hidden = map.covers(x, y, depth);
+        let hidden = map.covers(x, y, depth - lift);
         let outline = !hidden
             && outline.is_some_and(|test| {
                 let allowance = test.step * projector.footprint(depth) + map.slack;
@@ -1391,46 +1396,54 @@ fn build_overlay(
     };
     // `tested`: against the depth buffer; `dimmed`: what is hidden is
     // kept and marked, not left out; `edge`: an edge of a body, whose
-    // stretches in sight are told apart by whether they are its outline.
-    let mut line_of =
-        |a: Vec3, b: Vec3, kind: LineKind, tested: bool, dimmed: bool, edge: Option<EdgeInk>| {
-            let Some((from, to)) = projector.segment(a, b) else {
-                return;
-            };
-            let at = |t: f64| [from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t];
-            let depth_at = |t: f64| projector.depth_between(&from, &to, t.clamp(0.0, 1.0));
-            let outline = edge.map(|_| OutlineTest { step: OUTLINE_STEP });
-            let mut joined = false;
-            for stretch in stretches(map.filter(|_| tested), &projector, &from, &to, outline) {
-                if stretch.hidden && !dimmed {
-                    joined = false;
-                    continue;
-                }
-                out.lines.push(OverlayLine {
-                    // The ends themselves, not the ends computed back.
-                    from: if stretch.from <= 0.0 {
-                        [from.x, from.y]
-                    } else {
-                        at(stretch.from)
-                    },
-                    to: if stretch.to >= 1.0 {
-                        [to.x, to.y]
-                    } else {
-                        at(stretch.to)
-                    },
-                    kind,
-                    hidden: stretch.hidden,
-                    edge: edge.map(|edge| EdgeInk {
-                        silhouette: stretch.outline,
-                        joined,
-                        cut: [stretch.from > 0.0, stretch.to < 1.0],
-                        depth: [depth_at(stretch.from), depth_at(stretch.to)],
-                        ..edge
-                    }),
-                });
-                joined = true;
-            }
+    // stretches in sight are told apart by whether they are its outline;
+    // `lift`: how much nearer than it is the line is tested (a grid's
+    // line on its sheet, `SceneSketch::lift`).
+    let mut line_of = |a: Vec3,
+                       b: Vec3,
+                       kind: LineKind,
+                       tested: bool,
+                       dimmed: bool,
+                       edge: Option<EdgeInk>,
+                       lift: f64| {
+        let Some((from, to)) = projector.segment(a, b) else {
+            return;
         };
+        let at = |t: f64| [from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t];
+        let depth_at = |t: f64| projector.depth_between(&from, &to, t.clamp(0.0, 1.0));
+        let outline = edge.map(|_| OutlineTest { step: OUTLINE_STEP });
+        let mut joined = false;
+        let tested = map.filter(|_| tested);
+        for stretch in stretches(tested, &projector, &from, &to, outline, lift) {
+            if stretch.hidden && !dimmed {
+                joined = false;
+                continue;
+            }
+            out.lines.push(OverlayLine {
+                // The ends themselves, not the ends computed back.
+                from: if stretch.from <= 0.0 {
+                    [from.x, from.y]
+                } else {
+                    at(stretch.from)
+                },
+                to: if stretch.to >= 1.0 {
+                    [to.x, to.y]
+                } else {
+                    at(stretch.to)
+                },
+                kind,
+                hidden: stretch.hidden,
+                edge: edge.map(|edge| EdgeInk {
+                    silhouette: stretch.outline,
+                    joined,
+                    cut: [stretch.from > 0.0, stretch.to < 1.0],
+                    depth: [depth_at(stretch.from), depth_at(stretch.to)],
+                    ..edge
+                }),
+            });
+            joined = true;
+        }
+    };
     // The edges of the bodies first, then the world axes over them (an
     // edge along an axis must not paint it out), then the sketches.
     // In a picture that is cut open an edge is drawn where it is kept, and
@@ -1458,13 +1471,13 @@ fn build_overlay(
                 if let [a, b] = *pair
                     && let Some([a, b]) = kept(a, b)
                 {
-                    line_of(a, b, LineKind::Edge, true, see_through, Some(ink));
+                    line_of(a, b, LineKind::Edge, true, see_through, Some(ink), 0.0);
                 }
             }
         }
     }
     for &[a, b] in marks.into_iter().flat_map(Marks::outline) {
-        line_of(a, b, LineKind::Edge, true, see_through, None);
+        line_of(a, b, LineKind::Edge, true, see_through, None, 0.0);
     }
     let length = camera.distance * AXIS_LENGTH;
     for (axis, direction) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
@@ -1475,43 +1488,46 @@ fn build_overlay(
             false,
             false,
             None,
+            0.0,
         );
     }
     // The datums, tested like a sketch, under the sketches.
     for [a, b] in marks.map(Marks::datum_lines).unwrap_or_default() {
-        line_of(a, b, LineKind::Datum, true, true, None);
+        line_of(a, b, LineKind::Datum, true, true, None, 0.0);
     }
     // The mate markers, tested like a datum, on a hairline; the one
     // pointed at over them, on a halo.
     // (A hairline of no width is left out where the lines are drawn.)
     for &[a, b] in marks.into_iter().flat_map(|marks| &marks.mates) {
-        line_of(a, b, LineKind::MateRestHalo, true, true, None);
+        line_of(a, b, LineKind::MateRestHalo, true, true, None, 0.0);
     }
     for &[a, b] in marks.into_iter().flat_map(|marks| &marks.mates) {
-        line_of(a, b, LineKind::Mate, true, true, None);
+        line_of(a, b, LineKind::Mate, true, true, None, 0.0);
     }
     for &[a, b] in marks.into_iter().flat_map(|marks| &marks.mates_hot) {
-        line_of(a, b, LineKind::MateHalo, true, true, None);
+        line_of(a, b, LineKind::MateHalo, true, true, None, 0.0);
     }
     for &[a, b] in marks.into_iter().flat_map(|marks| &marks.mates_hot) {
-        line_of(a, b, LineKind::MateHot, true, true, None);
+        line_of(a, b, LineKind::MateHot, true, true, None, 0.0);
     }
     for trace in marks.into_iter().flat_map(|marks| &marks.traces) {
         for pair in trace.windows(2) {
             if let [a, b] = *pair {
-                line_of(a, b, LineKind::Trace, true, true, None);
+                line_of(a, b, LineKind::Trace, true, true, None, 0.0);
             }
         }
     }
     for comb in marks.into_iter().flat_map(|marks| &marks.combs) {
         for pair in comb.windows(2) {
             if let [a, b] = *pair {
-                line_of(a, b, LineKind::Comb, true, true, None);
+                line_of(a, b, LineKind::Comb, true, true, None, 0.0);
             }
         }
     }
+    let tolerance = scene.map_or(0.0, |scene| scene.tolerance);
     for sketch in shown_sketches(scene, marks) {
         let chosen = selected == Some(sketch.feature.as_str());
+        let lift = sketch.lift(tolerance);
         for polyline in &sketch.polylines {
             let kind = match (polyline.construction, chosen) {
                 (true, _) => LineKind::Construction,
@@ -1520,7 +1536,7 @@ fn build_overlay(
             };
             for pair in polyline.points.windows(2) {
                 if let [a, b] = *pair {
-                    line_of(a, b, kind, true, true, None);
+                    line_of(a, b, kind, true, true, None, lift);
                 }
             }
         }
@@ -1528,7 +1544,7 @@ fn build_overlay(
     // What is pointed at, over everything else.
     for &[a, b] in marks.into_iter().flat_map(|marks| &marks.lines) {
         if let Some([a, b]) = kept(a, b) {
-            line_of(a, b, LineKind::Highlight, true, true, None);
+            line_of(a, b, LineKind::Highlight, true, true, None, 0.0);
         }
     }
     for sketch in shown_sketches(scene, marks) {
@@ -1537,12 +1553,13 @@ fn build_overlay(
         } else {
             LineKind::Sketch
         };
+        let lift = sketch.lift(tolerance);
         for point in &sketch.points {
             if let Some(p) = projector.project(*point) {
                 out.points.push(OverlayPoint {
                     at: [p.x, p.y],
                     kind,
-                    hidden: map.is_some_and(|map| map.covers(p.x, p.y, p.depth)),
+                    hidden: map.is_some_and(|map| map.covers(p.x, p.y, p.depth - lift)),
                 });
             }
         }
