@@ -1495,8 +1495,9 @@ fn the_spout_of_the_features_chapter_meets_its_volume() {
 }
 
 /// The tip of the features chapter (`features.md` › *Tip*) runs as
-/// written: the rod tipped as long as its radius meets the volume of a
-/// rod with a half ball on its end, and passes the deep check.
+/// written: the rod tipped as long as its radius at its end, and at its
+/// start with the point given in the model, meets the volume of a rod
+/// with a half ball on each end, and passes the deep check.
 #[test]
 fn the_tip_of_the_features_chapter_is_a_half_ball() {
     let text = read_text(&docs().join("guide/features.md"));

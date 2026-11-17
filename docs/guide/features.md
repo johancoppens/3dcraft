@@ -143,7 +143,7 @@ slender blade. The end face is replaced by faces that run on from the faces roun
 without a crease along the old edge, and all reach the point with one tangent plane, parallel to the end.
 An edge that ran into the end (a deck edge, a trailing edge) runs on to the point and fades out there.
 Nothing behind the end changes. A rod lofted through three equal circles, tipped as long as its radius,
-ends in a half ball:
+ends in a half ball; its start, tipped with the point given where it is to be in the model, in another:
 
 ```json
 [
@@ -157,18 +157,33 @@ ends in a half ball:
  ["sketch.circle", {"sketch": "End", "center": [0, 0], "radius": "r"}],
  ["feature.loft", {"sections": ["Base", "Middle", "End"], "name": "Rod"}],
  ["feature.tip", {"face": "Rod:endCap(e2)", "length": "r", "name": "Nose"}],
- ["assert.add", {"name": "half ball", "measure": "volume", "of": "Nose", "eq": "pi * r^2 * len + 2 / 3 * pi * r^3"}]
+ ["feature.tip", {"face": "Rod:startCap(e2)", "length": "r", "at": ["0 mm", "0 mm", "-r"], "name": "Tail"}],
+ ["assert.add", {"name": "two half balls", "measure": "volume", "of": "Tail", "eq": "pi * r^2 * len + 4 / 3 * pi * r^3"}]
 ]
 ```
 
 - **`face`** is the end face by its name, which may be named as an earlier body of the same chain had it.
 - **`length`** is how far beyond the end the point lies, along the end's outward normal. Left out, it is
   the radius of the circle with the end's area, and never more than half the length at which the faces
-  round the end, carried on, would meet.
-- **`at`** is where the point stands over the end: lengths along the end face's own x and y axes from its
-  plane's origin. Left out, the point stands over the middle (the centre of area) of what the faces round
-  the end come to in the point's plane. On an end that is not convex (an L) that middle can lie on or
-  beyond an edge; then give `at`, a place from which the whole end is in view.
+  round the end, carried on, would meet. A length past where they meet is refused, and the refusal says
+  the longest length that fits at the place as it is chosen.
+- **`at`** is where the point stands over the end, in either of two forms, kept as given:
+  - two lengths `[x, y]` along the end face's own x and y axes from its plane's origin;
+  - a point in the model `[x, y, z]`, as `datum.point` takes one. It is taken to the end's plane along the
+    end's normal, so it may lie on the end, at the tip itself, or anywhere between; a point behind the end
+    or beyond the tip is refused with how far it lies.
+
+  Left out, the point stands over the middle (the centre of area) of what the faces round the end come
+  to in the point's plane, whether they narrow, widen, lean or turn: the tip carries on the line through
+  the middles of the body's sections (a cone's axis, a leaning cone's leaning one). Sections drawn about
+  another line (a blade about its stacking line) have their middles off it, and so has the tip: give
+  `at`, for instance the point in the model where the tip is to be. On an end that is not convex (an L),
+  whose middle can lie on or beyond an edge, a tip there is refused, and the point stands over the
+  middle of the places from which the whole end is in view instead.
+- **Where it stands** is in the feature's result and in `document.inspect`, under `tip`: the point,
+  the length, the foot on the end and the same as `at` in the end face's own axes, how the place was
+  found (`placed`), and the end face's own axes in the model (`frame`: origin, x, y and the outward
+  normal). Read `frame` to write `at` in the face's axes, or give the point in the model instead.
 - **`fullness`** is how full the tip is across, from 0.01 to 0.98. The default, 0.4142 (√2 − 1), gives
   quarter ellipses: on any straight prism the tip adds two thirds of the end's area times the length, and
   on a rod as long as its radius it is a half ball. 0.5 gives parabolas (eleven fifteenths); more is
@@ -177,6 +192,10 @@ ends in a half ball:
   radius of the circle with its area) or more. Nearer 0 or 1, and shorter tips, are often refused,
   because their faces cannot yet be meshed or measured; below a hundredth of that radius nearly always.
   A tip is never built creased at the old edge or unmeasurable: it is refused, saying what to change.
+- **The shape it keeps.** A tip continues the faces round the end: it rounds the end off, it does not
+  narrow the outline faster than they do. To end a blade the way its sections draw it, keep the last
+  section a tip's length short of where the blade ends and tip that small end (on a small end the length
+  chosen is short).
 - **Names.** The faces that stay keep their names with a prefix, `F9:copy(0)/...`; a face of the tip is
   named after the face it continues, `F9:tip(0)/F4:side(e2)`. The edges from the old corners to the
   point, and the point, are named by their faces.
@@ -189,7 +208,7 @@ ends in a half ball:
   outline no point sees whole (a crescent, a cambered blade section such as a ship propeller's: a tip
   that closes in one point needs a point that sees all of it; such an end needs a ridge or a blend,
   which is not built); a point that does not see the whole end; a length at which the faces round the
-  end close in before the point (give a shorter one); a tip so short that it is not tangent to the
+  end close in before the point (give a shorter one: the refusal names the longest that fits); a tip so short that it is not tangent to the
   faces round it within the angular tolerance, or that cannot be measured (give a longer one, or a
   fullness nearer the middle); and a tip that runs into another part of the body.
 

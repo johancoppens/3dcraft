@@ -894,6 +894,32 @@ pub struct SweepReport {
     pub stations: usize,
 }
 
+/// What a tip says of itself: where its point stands, and the end face's
+/// own axes, in which a place is given as `at` [x, y]. In model units and
+/// the model's coordinates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TipReport {
+    /// The tip's point.
+    pub point: Vec3,
+    /// How far it lies beyond the end, along the end's outward normal.
+    pub length: f64,
+    /// The length was given; otherwise it was chosen at this regeneration.
+    pub length_given: bool,
+    /// The point of the end's plane the tip stands over, and the same as
+    /// lengths along the end face's own x and y axes.
+    pub foot: Vec3,
+    pub at: [f64; 2],
+    /// How the place was found: given in either form, or chosen.
+    pub placed: craft3d_kernel::tip::TipPlaced,
+    /// The end face's own axes: its plane's origin and x and y axes.
+    pub frame: craft3d_math::Frame,
+    /// The end's outward normal.
+    pub normal: Vec3,
+    pub fullness: f64,
+    /// Four rows across (sides not level), not three.
+    pub general: bool,
+}
+
 /// What a thread says of itself: the face is marked with it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ThreadReport {
@@ -965,6 +991,8 @@ pub struct FeatureResult {
     pub sweep: Option<SweepReport>,
     /// For a thread that was built: what it is.
     pub thread: Option<ThreadReport>,
+    /// For a tip that was built: where it stands.
+    pub tip: Option<TipReport>,
     /// For a developable or an unfold that was built: what it made beside
     /// its body (`developable::Developed`).
     pub developed: Option<Developed>,
@@ -1646,6 +1674,7 @@ fn build_feature(
     let mut placed = None;
     let mut followed = None;
     let mut threaded = None;
+    let mut tipped_at = None;
     let mut developed = None;
     let mut outline = None;
     let mut fades = None;
@@ -2043,10 +2072,11 @@ fn build_feature(
         }
     } else if let FeatureKind::Tip(tipped) = &feature.kind {
         match tip::build(doc, variables, feature.id, tipped, earlier)
-            .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
+            .and_then(|(body, names, report)| checked(doc, body).map(|body| (body, names, report)))
         {
-            Ok((body, made_names)) => {
+            Ok((body, made_names, report)) => {
                 names = made_names.map(Arc::new);
+                tipped_at = Some(report);
                 // The body as a whole does not move; the faces that stay
                 // lie where they lay.
                 instances = Some(Arc::new(vec![Transform::IDENTITY]));
@@ -2116,6 +2146,7 @@ fn build_feature(
             instances,
             sweep: followed,
             thread: threaded,
+            tip: tipped_at,
             developed,
             offset: outline,
             fades,

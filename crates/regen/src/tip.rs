@@ -13,11 +13,13 @@
 //! vertex that was there before answers to the copy of its old name too.
 
 use crate::face_ops::{self, about, explain};
-use crate::{FeatureResult, Kept, Names};
-use craft3d_doc::{Document, FeatureId, PersistentName, Tip};
+use crate::{FeatureResult, Kept, Names, TipReport};
+use craft3d_doc::{Document, FeatureId, PersistentName, Tip, TipAt};
 use craft3d_expr::Evaluation;
+use craft3d_geom::tip::TipForm;
 use craft3d_kernel::KernelError;
-use craft3d_kernel::tip::{ROUND_FULLNESS, TipAsk, TipOrigin, tip};
+use craft3d_kernel::tip::{ROUND_FULLNESS, TipAsk, TipOrigin, TipPlace, tip};
+use craft3d_math::Vec3;
 use craft3d_tess::FaceRole;
 use craft3d_topo::{Body, FaceId};
 use std::collections::BTreeMap;
@@ -30,7 +32,7 @@ pub(crate) fn build(
     feature: FeatureId,
     tipped: &Tip,
     earlier: &[FeatureResult],
-) -> Result<(Body, Option<Names>), String> {
+) -> Result<(Body, Option<Names>, TipReport), String> {
     let source_id = tipped.source();
     let source = face_ops::source(
         doc,
@@ -71,10 +73,15 @@ pub(crate) fn build(
         None => None,
     };
     let at = match &tipped.at {
-        Some([x, y]) => Some([
+        Some(TipAt::Face([x, y])) => Some(TipPlace::Face([
             crate::length(doc, variables, "at.x", x)?,
             crate::length(doc, variables, "at.y", y)?,
-        ]),
+        ])),
+        Some(TipAt::Point([x, y, z])) => Some(TipPlace::Point(Vec3::new(
+            crate::length(doc, variables, "at.x", x)?,
+            crate::length(doc, variables, "at.y", y)?,
+            crate::length(doc, variables, "at.z", z)?,
+        ))),
         None => None,
     };
     let fullness = match &tipped.fullness {
@@ -104,13 +111,21 @@ pub(crate) fn build(
                 edge,
                 blame,
                 reason,
+                longest,
+                off,
             } => {
                 // The end itself is said by its name already.
                 let others: Vec<FaceId> = faces.into_iter().filter(|f| f != end).collect();
                 let at = about(source.body, source.names, &others, edge)
                     .map(|at| format!(" ({at})"))
                     .unwrap_or_default();
-                format!("{blame}: {reason}{at}")
+                let said = craft3d_kernel::tip::said(
+                    &reason,
+                    longest,
+                    off.as_deref(),
+                    &format!(" {unit}"),
+                );
+                format!("{blame}: {said}{at}")
             }
             other => explain(other, "length", 1.0, unit, &source),
         },
@@ -143,7 +158,19 @@ pub(crate) fn build(
         "tipped body",
         "make the tip shorter, or move what it runs into",
     )?;
-    Ok((made.body, names))
+    let report = TipReport {
+        point: made.tip,
+        length: made.length,
+        length_given: length.is_some(),
+        foot: made.foot,
+        at: made.at,
+        placed: made.placed,
+        frame: made.frame,
+        normal: made.normal,
+        fullness,
+        general: made.form == TipForm::General,
+    };
+    Ok((made.body, names, report))
 }
 
 /// The names of the faces of the tipped body, and of its edges and

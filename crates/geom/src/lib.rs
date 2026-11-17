@@ -18,6 +18,7 @@ pub mod offset;
 pub mod pole;
 pub mod projection_proof;
 pub mod refine;
+pub mod span_bounds;
 pub mod support;
 mod surface;
 pub mod tip;

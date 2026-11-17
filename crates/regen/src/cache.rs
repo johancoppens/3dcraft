@@ -943,6 +943,7 @@ pub(crate) fn features(
                                 instances: None,
                                 sweep: None,
                                 thread: None,
+                                tip: None,
                                 developed: None,
                                 offset: None,
                                 fades: None,

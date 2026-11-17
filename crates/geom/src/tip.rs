@@ -1719,7 +1719,24 @@ pub fn longest_tip_length(
     tolerance: f64,
     upto: f64,
 ) -> Result<TipLength, TipError> {
-    let (normal, omega) = checked(normal, fullness, foot)?;
+    checked(normal, fullness, foot)?;
+    longest_tip_length_over(rims, &mut |_| Some(foot), normal, fullness, tolerance, upto)
+}
+
+/// [`longest_tip_length`] where the foot goes with the length: the tip of
+/// each length tried stands at `foot_at(length) + length × normal`, and a
+/// length for which `foot_at` has no foot does not fit. For a place that
+/// is chosen from what the sides come to at the tip's length (the centre
+/// of area of the shoulder).
+pub fn longest_tip_length_over(
+    rims: &[TipRim],
+    foot_at: &mut dyn FnMut(f64) -> Option<Vec3>,
+    normal: Vec3,
+    fullness: f64,
+    tolerance: f64,
+    upto: f64,
+) -> Result<TipLength, TipError> {
+    let (normal, omega) = checked(normal, fullness, Vec3::ZERO)?;
     if !(upto.is_finite() && upto > 0.0) {
         return Err(TipError::Invalid("the length must be positive and finite"));
     }
@@ -1727,6 +1744,9 @@ pub fn longest_tip_length(
     // One allowance of work for the whole search.
     let mut work = Work(MAX_WORK);
     let mut attempt = |length: f64| -> Result<bool, TipError> {
+        let Some(foot) = foot_at(length).filter(|foot| foot.is_finite()) else {
+            return Ok(false);
+        };
         let asked = Asked {
             tip: foot + normal * length,
             normal,
