@@ -234,6 +234,15 @@ pub struct Tokens {
     pub section_hit: f32,
     pub section_dot_radius: f32,
     pub section_snap_reach: f32,
+    /// The relation of two things selected (`shell/dimension.rs`): its
+    /// number at the foot of the side panel, `measure_font` points high;
+    /// in the view one dimension line, `measure_line_width` wide, in the
+    /// accent over the arrow's hairline, its ends marked by heads
+    /// `measure_head` long, an angle's arc `measure_arc` from its corner.
+    pub measure_font: f32,
+    pub measure_line_width: f32,
+    pub measure_head: f32,
+    pub measure_arc: f32,
     /// The view cube's proportions, in units of its half side so that
     /// they scale with it: how deep its edges are cut (a capsule and a
     /// corner's circle are as wide as the cut less the gap), the one gap
@@ -966,6 +975,10 @@ impl Tokens {
             section_hit: 9.0,
             section_dot_radius: 8.0,
             section_snap_reach: 7.0,
+            measure_font: 24.0,
+            measure_line_width: 1.5,
+            measure_head: 7.0,
+            measure_arc: 36.0,
             view_cube_chamfer: 0.22,
             view_cube_gap: 0.062,
             view_cube_face_rounding: 0.9,

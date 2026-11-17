@@ -96,6 +96,10 @@ pub struct Measurement {
     pub tolerance: f64,
     /// The engine's answer as it came: what `ui.get` shows.
     pub answer: Value,
+    /// What is selected, in a few words (`2 faces`), and the name a check
+    /// kept of it takes (`Centre distance Left face – Right face`).
+    pub title: String,
+    pub check_name: String,
 }
 
 impl Measurement {
@@ -106,6 +110,7 @@ impl Measurement {
             "value": self.value,
             "text": self.text,
             "words": self.words,
+            "title": self.title,
             "parts": self.parts,
             "from": self.from,
             "to": self.to,
@@ -194,6 +199,8 @@ pub(crate) fn relation(
             items,
             tolerance: 0.0,
             answer: Value::Null,
+            title: String::new(),
+            check_name: String::new(),
         },
     })
 }
@@ -265,6 +272,36 @@ pub fn measurement_of(answer: &Value, items: [Value; 2], unit: &str) -> Measurem
             .and_then(Value::as_f64)
             .unwrap_or(0.0),
         answer: answer.clone(),
+        title: String::new(),
+        check_name: String::new(),
+    }
+}
+
+/// A relation's name in words, short: what a check kept of it is called
+/// after.
+fn relation_words(relation: &str) -> &'static str {
+    match relation {
+        "distance" => "Distance",
+        "angle" => "Angle",
+        "centerDistance" => "Centre distance",
+        "leastDistance" => "Least distance",
+        "clearance" => "Clearance",
+        _ => "Measure",
+    }
+}
+
+/// A thing of the selection in a few words: a face as the feature that
+/// made it and its own part (`Left face`), an edge or a vertex by its
+/// body, a body by its feature's name.
+fn thing_words(item: &craft3d_engine::SelectionItem, scene: Option<&Scene>) -> String {
+    let feature = scene
+        .and_then(|s| s.features.iter().find(|f| f.id == item.feature))
+        .map_or_else(|| item.feature.clone(), |f| f.name.clone());
+    match item.kind {
+        SelectionKind::Face => face_words(&item.name, scene),
+        SelectionKind::Edge => format!("{feature} edge"),
+        SelectionKind::Vertex => format!("{feature} vertex"),
+        _ => feature,
     }
 }
 
@@ -319,7 +356,16 @@ pub(crate) fn read(
     // Two things: their relation, by itself (the Measure button stays
     // for one face's wall thickness).
     let measurement = match (&second, view.items.len()) {
-        (Some(other), 2) if bodies_here => relation(session, &first, other, &unit),
+        (Some(other), 2) if bodies_here => relation(session, &first, other, &unit).map(|mut m| {
+            m.title = craft3d_engine::selection_summary(&view.items);
+            m.check_name = format!(
+                "{} {} – {}",
+                relation_words(&m.relation),
+                thing_words(&first, scene),
+                thing_words(other, scene)
+            );
+            m
+        }),
         _ => None,
     };
     if first.kind == SelectionKind::Body {
@@ -737,12 +783,94 @@ impl Shell {
         } else {
             0.0
         };
+        // Two things: one large number and a line or two of what it is
+        // in place of the rows.
+        let body = match &props.measurement {
+            Some(m) => {
+                let lines = 1.0
+                    + f32::from(u8::from(m.parts.is_some()))
+                    + f32::from(u8::from(m.refused.is_some()));
+                t.measure_font * 1.5 + lines * t.label_row_height
+            }
+            None => props.rows.len() as f32 * t.label_row_height,
+        };
         t.nav_gap
             + 1.0
             + kit.hit(t.control_height)
-            + (props.rows.len() as f32 + measured) * t.label_row_height
+            + body
+            + measured * t.label_row_height
             + 4.0 * t.nav_spacing
             + kit.hit(t.control_height)
+    }
+
+    /// The relation of two things at the foot of the panel: one large
+    /// number (a click copies it with its unit), what it is in a few
+    /// words, its parts along the axes, why it was not measured; and
+    /// "Keep as a check".
+    fn measurement_ui(&mut self, ui: &mut egui::Ui, m: &Measurement) -> bool {
+        let kit = Kit::panel(&self.tokens);
+        let t = kit.t;
+        let sk = kit.skin;
+        let big = kit.galley(
+            ui,
+            m.text.clone(),
+            egui::FontId::proportional(t.measure_font),
+            sk.text,
+        );
+        let (rect, number) = ui.allocate_exact_size(
+            vec2(ui.available_width(), t.measure_font * 1.5),
+            Sense::click(),
+        );
+        let at = pos2(rect.left(), rect.center().y - big.size().y * 0.5);
+        let ink = if number.hovered() && m.value.is_some() {
+            sk.info_ink
+        } else {
+            sk.text
+        };
+        let shown = egui::Rect::from_min_size(at, big.size());
+        ui.painter().galley(at, big, kit.c(ink));
+        self.side
+            .hits
+            .targets
+            .push(("copy value".to_string(), shown));
+        if m.value.is_some() {
+            if number.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if number.clone().on_hover_text("Copy").clicked() {
+                ui.ctx().copy_text(m.text.clone());
+                self.side.measured = Some(format!("Copied {}", m.text));
+            }
+        }
+        let small = |ui: &mut egui::Ui, text: &str| {
+            let room = ui.available_width();
+            let mut job = egui::text::LayoutJob::simple_singleline(
+                text.to_string(),
+                kit.font(),
+                kit.c(sk.text_dim),
+            );
+            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+            let g = ui.painter().layout_job(job);
+            let cut = g.elided;
+            let (rect, line) =
+                ui.allocate_exact_size(vec2(room, t.label_row_height), Sense::hover());
+            ui.painter().galley(
+                pos2(rect.left(), rect.center().y - g.size().y * 0.5),
+                g,
+                kit.c(sk.text_dim),
+            );
+            if cut {
+                line.on_hover_text(text);
+            }
+        };
+        small(ui, &m.words);
+        if let Some(parts) = &m.parts {
+            small(ui, parts);
+        }
+        if let Some(why) = &m.refused {
+            small(ui, why);
+        }
+        m.check("").is_some()
     }
 
     /// The card of what is selected.
@@ -768,11 +896,17 @@ impl Shell {
                 kit.c(t.face_highlight),
                 &t,
             );
-            let title = kit.galley(ui, props.kind, kit.medium_font(ui), sk.text);
+            let title = props
+                .measurement
+                .as_ref()
+                .map_or_else(|| props.kind.to_string(), |m| m.title.clone());
+            let title = kit.galley(ui, title, kit.medium_font(ui), sk.text);
             let (rect, _) = ui.allocate_exact_size(title.size(), Sense::hover());
             ui.painter().galley(rect.min, title, kit.c(sk.text));
             let mut subtitle = props.subtitle.clone();
-            if props.more > 0 {
+            if props.measurement.is_some() {
+                subtitle.clear();
+            } else if props.more > 0 {
                 subtitle = format!("{subtitle} · +{}", props.more);
             }
             // The target against the right edge first, the subtitle cut
@@ -811,7 +945,16 @@ impl Shell {
         });
         let label_width = (ui.available_width() * 0.32).clamp(56.0, 110.0);
         let mut follow: Option<String> = None;
-        for row in &props.rows {
+        let keepable = match &props.measurement {
+            Some(m) => self.measurement_ui(ui, m),
+            None => false,
+        };
+        let rows: &[PropRow] = if props.measurement.is_some() {
+            &[]
+        } else {
+            &props.rows
+        };
+        for row in rows {
             let style = match row.style {
                 PropStyle::Plain => ValueStyle::Plain,
                 PropStyle::Link => ValueStyle::Link,
@@ -871,7 +1014,25 @@ impl Shell {
         ui.add_space(t.nav_spacing * 2.0);
         let mut measure = false;
         let mut copy = false;
+        let mut keep = false;
         ui.horizontal(|ui| {
+            if props.measurement.is_some() {
+                // Two things: their relation kept as a check of the
+                // document, once.
+                let kept = self.side.kept == self.side.props_for;
+                let k = kit.button(
+                    ui,
+                    Button::primary(if kept {
+                        "Kept as a check"
+                    } else {
+                        "Keep as a check"
+                    })
+                    .enabled(keepable && !kept),
+                );
+                self.side.hits.targets.push(("keep".to_string(), k.rect));
+                keep = k.clicked();
+                return;
+            }
             let m = kit.button(
                 ui,
                 Button::primary("Measure").enabled(props.measure.is_some()),
@@ -885,6 +1046,13 @@ impl Shell {
                 .push(("copy name".to_string(), c.rect));
             copy = c.clicked();
         });
+        if keep
+            && let Some(m) = &props.measurement
+            && let Some(params) = m.check(&self.free_check_name(&m.check_name))
+        {
+            self.side_queue("assert.add", params, None);
+            self.side.kept = self.side.props_for;
+        }
         ui.add_space(t.nav_spacing * 2.0);
         if measure && let Some((command, params)) = props.measure.clone() {
             self.side_queue(command, params, None);
@@ -899,6 +1067,33 @@ impl Shell {
             self.state.selected_feature = Some(id.clone());
             self.queue_select(json!({"items": [{"kind": "feature", "feature": id}]}));
         }
+    }
+}
+
+impl Shell {
+    /// `name`, or with a number after it when a check of the document has
+    /// that name already.
+    fn free_check_name(&self, name: &str) -> String {
+        let taken = |n: &str| self.assertion_rows().iter().any(|a| a.name == n);
+        if !taken(name) {
+            return name.to_string();
+        }
+        (2..1000)
+            .map(|k| format!("{name} {k}"))
+            .find(|n| !taken(n))
+            .unwrap_or_else(|| format!("{name} {}", self.assertion_rows().len() + 1))
+    }
+
+    /// What `ui.get` says under `measurement`: the relation of the two
+    /// things selected, as the foot of the side panel and the view show
+    /// it; `null` without one.
+    pub fn measurement_json(&self) -> Value {
+        self.measurement().map_or(Value::Null, Measurement::json)
+    }
+
+    /// The relation of the two things selected, when there is one.
+    pub fn measurement(&self) -> Option<&Measurement> {
+        self.side.props.as_ref()?.measurement.as_ref()
     }
 }
 

@@ -148,7 +148,9 @@ pub(crate) struct SideMemory {
     checks_for: Option<(u64, u64)>,
     /// What is selected, described, and for which selection.
     pub(crate) props: Option<Props>,
-    props_for: Option<(u64, u64, u64)>,
+    pub(crate) props_for: Option<(u64, u64, u64)>,
+    /// The selection whose relation was kept as a check last.
+    pub(crate) kept: Option<(u64, u64, u64)>,
     /// Commands waiting for the session.
     pending: Vec<SideRequest>,
     /// Errors at fields, by their key.
@@ -280,6 +282,10 @@ impl Shell {
                     self.side.problem = None;
                     if request.command.starts_with("measure.") {
                         self.side.measured = Some(props::measured_line(request.command, &result));
+                    }
+                    if request.command == "assert.add" {
+                        let name = result.get("name").and_then(Value::as_str).unwrap_or("");
+                        self.side.measured = Some(format!("Kept as the check {name}"));
                     }
                     // Clearing a body's face colours says on the status
                     // line how many it cleared (and what it kept).
