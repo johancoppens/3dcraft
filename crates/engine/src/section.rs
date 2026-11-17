@@ -451,10 +451,15 @@ impl Session {
         )
         .map_err(|e| {
             let message = e.message();
-            message
-                .strip_prefix("section: ")
-                .unwrap_or(message)
-                .to_string()
+            let message = message.strip_prefix("section: ").unwrap_or(message);
+            // The window's choice says X, Y and Z, the planes are yz, zx
+            // and xy: an agent that writes the one is told the other.
+            match text.trim().to_ascii_lowercase().as_str() {
+                "x" | "y" | "z" => format!(
+                    "{message} (a section across X lies on the plane yz, across Y on zx, across Z on xy)"
+                ),
+                _ => message.to_string(),
+            }
         })?;
         match reference {
             PlaneRef::World { plane } => Ok((

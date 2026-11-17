@@ -1139,6 +1139,41 @@ impl<'a> DepthMap<'a> {
         Some((a * (1.0 - fu) + b * fu) * (1.0 - fv) + (c * (1.0 - fu) + d * fu) * fv)
     }
 
+    /// How slanting the surface around pixel position (`x`, `y`) is seen,
+    /// as the factor by which a distance across it grows along the view:
+    /// `√(1 + (g / footprint)²)` (the secant of the angle between the view
+    /// and the surface's normal), `g` the change of the distance per pixel
+    /// across the cell of the four samples around the point and
+    /// `footprint` the length a pixel shows at the point's depth; at most
+    /// [`MAX_SLANT`] (a cell across an outline changes by a step, not a
+    /// slope), and 1 where a sample shows nothing or the footprint is no
+    /// length. [`surface_slant`] in numbers.
+    fn slant(&self, x: f64, y: f64, footprint: f64) -> f64 {
+        if !(x.is_finite() && y.is_finite()) || self.width == 0 || self.height == 0 {
+            return 1.0;
+        }
+        let (u, v) = (x - self.sample, y - self.sample);
+        let (i0, j0) = (u.floor(), v.floor());
+        let (wi, hi) = (self.width as f64 - 1.0, self.height as f64 - 1.0);
+        let at = |i: f64, j: f64| {
+            // Clamped into the image, so the casts fit.
+            let (i, j) = (i.clamp(0.0, wi) as usize, j.clamp(0.0, hi) as usize);
+            self.depth
+                .get(j * self.width + i)
+                .copied()
+                .filter(|z| z.is_finite())
+        };
+        match (
+            at(i0, j0),
+            at(i0 + 1.0, j0),
+            at(i0, j0 + 1.0),
+            at(i0 + 1.0, j0 + 1.0),
+        ) {
+            (Some(a), Some(b), Some(c), Some(d)) => surface_slant([a, b, c, d], footprint),
+            _ => 1.0,
+        }
+    }
+
     /// Whether the point at pixel position (`x`, `y`) and `depth` of a
     /// line running along `direction` on the screen (a unit vector) is
     /// an outline: the surface on either side of it steps back
@@ -1165,6 +1200,17 @@ impl<'a> DepthMap<'a> {
                 allowance,
             )
         })
+    }
+
+    /// [`DepthMap::covers`] for a point `lift` (times the surface's
+    /// [`DepthMap::slant`] there, `footprint` the length of a pixel at the
+    /// point) nearer than it is; as `covers` without a lift.
+    fn covers_lifted(&self, x: f64, y: f64, depth: f64, lift: f64, footprint: f64) -> bool {
+        if lift > 0.0 {
+            self.covers(x, y, depth - lift * self.slant(x, y, footprint))
+        } else {
+            self.covers(x, y, depth)
+        }
     }
 
     /// True when a body is in front of the point at pixel position (`x`,
@@ -1215,13 +1261,87 @@ struct OutlineTest {
     step: f64,
 }
 
+/// The most a lifted line's lift is multiplied by for a surface seen
+/// slanting ([`DepthMap::slant`]): a surface at 86° to the view.
+pub const MAX_SLANT: f64 = 16.0;
+
+/// The slant of a surface from the distances `[a, b, c, d]` of the four
+/// samples of a cell (top left, top right, bottom left, bottom right) and
+/// the `footprint` of a pixel there: `√(1 + (g / footprint)²)`, `g` the
+/// length of the cell's mean change per pixel across and down, capped at
+/// [`MAX_SLANT`]; 1 for a footprint that is no length. The GPU's
+/// `lines.wgsl` computes the same.
+pub fn surface_slant([a, b, c, d]: [f64; 4], footprint: f64) -> f64 {
+    if !(footprint.is_finite() && footprint > 0.0) {
+        return 1.0;
+    }
+    let across = 0.5 * ((b - a) + (d - c));
+    let down = 0.5 * ((c - a) + (d - b));
+    let ratio = across.phypot(down) / footprint;
+    let slant = 1.0_f64.phypot(ratio);
+    if slant.is_finite() {
+        slant.min(MAX_SLANT)
+    } else {
+        MAX_SLANT
+    }
+}
+
+/// How many places on either side of the point tested a lifted line's
+/// depth test looks at besides the point, [`LIFTED_STEP`] apart: of the
+/// five, the point is hidden when most are.
+pub const LIFTED_REACH: i32 = 2;
+
+/// The distance between the places a lifted line is tested at, in pixels.
+pub const LIFTED_STEP: f64 = 1.0;
+
+/// Whether the point at `t` of the lifted segment `a`–`b` (`length`
+/// pixels long on the screen) is behind a body: tested `lift` times the
+/// slant of the surface under it ([`DepthMap::slant`]) nearer than it is,
+/// at `2 LIFTED_REACH + 1` places along the line [`LIFTED_STEP`] pixels
+/// apart centred on it (beyond the segment's ends along its direction),
+/// and hidden when most of them are. A line on an exact surface (a
+/// grid's, `SceneSketch::lift`) lies within the lift of the mesh across
+/// the surface, but along the view that grows as the surface is seen
+/// more slanting (twice at 60°, sixteen times at 86°): without the slant
+/// a terrain seen low had its grid in and out of sight pixel by pixel,
+/// wherever it was seen at more than 60°. Where it passes behind a ridge
+/// the difference to the ridge is near the lift for some pixels, and the
+/// facets make it go up and down: the majority takes runs of a pixel or
+/// two in or out away. The GPU's `lines.wgsl` tests a lifted line the
+/// same way.
+fn lifted_hides(
+    map: &DepthMap<'_>,
+    projector: &Projector,
+    (a, b): (&Projected, &Projected),
+    length: f64,
+    t: f64,
+    lift: f64,
+) -> bool {
+    let step = if length > 0.0 && length.is_finite() {
+        LIFTED_STEP / length
+    } else {
+        0.0
+    };
+    let hidden = (-LIFTED_REACH..=LIFTED_REACH)
+        .filter(|&k| {
+            let at = t + f64::from(k) * step;
+            let (x, y) = (a.x + (b.x - a.x) * at, a.y + (b.y - a.y) * at);
+            let depth = projector.depth_between(a, b, at);
+            map.covers_lifted(x, y, depth, lift, projector.footprint(depth))
+        })
+        .count();
+    // Of 2 · LIFTED_REACH + 1 places, more than LIFTED_REACH.
+    hidden > LIFTED_REACH.unsigned_abs() as usize
+}
+
 /// The stretches of the segment `a`-`b` that are in front of every body
 /// and behind one, in order and covering 0 to 1; with `outline`, the
 /// stretches in front are told apart by whether they are an outline,
 /// tested at the middle of each piece like the depth. The segment is
 /// tested `lift` nearer the eye than it is (in model units): a line on a
 /// surface the mesh follows only within its tolerance
-/// (`SceneSketch::lift`).
+/// (`SceneSketch::lift`), by the majority of places along it
+/// ([`lifted_hides`]).
 fn stretches(
     map: Option<&DepthMap<'_>>,
     projector: &Projector,
@@ -1253,7 +1373,7 @@ fn stretches(
     let pixels = ((b.x - a.x).abs().max((b.y - a.y).abs()) * (last - first)).ceil();
     if !(pixels.is_finite() && last > first) {
         // A dot: one test decides.
-        let hidden = map.covers(a.x, a.y, a.depth - lift);
+        let hidden = map.covers_lifted(a.x, a.y, a.depth, lift, projector.footprint(a.depth));
         return vec![piece(0.0, 1.0, hidden)];
     }
     let length = (b.x - a.x).phypot(b.y - a.y);
@@ -1281,7 +1401,11 @@ fn stretches(
         let t = 0.5 * (from + to);
         let (x, y) = (a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
         let depth = projector.depth_between(a, b, t);
-        let hidden = map.covers(x, y, depth - lift);
+        let hidden = if lift > 0.0 {
+            lifted_hides(map, projector, (a, b), length, t, lift)
+        } else {
+            map.covers(x, y, depth)
+        };
         let outline = !hidden
             && outline.is_some_and(|test| {
                 let allowance = test.step * projector.footprint(depth) + map.slack;
@@ -1551,6 +1675,9 @@ fn build_overlay(
     for sketch in shown_sketches(scene, marks) {
         let chosen = selected == Some(sketch.feature.as_str());
         let lift = sketch.lift(tolerance);
+        // A grid's hidden stretches are left out unless see-through
+        // (`SceneSketch::dims_hidden`).
+        let dimmed = sketch.dims_hidden(see_through);
         for polyline in &sketch.polylines {
             let kind = match (polyline.construction, chosen) {
                 (true, _) => LineKind::Construction,
@@ -1559,7 +1686,7 @@ fn build_overlay(
             };
             for pair in polyline.points.windows(2) {
                 if let [a, b] = *pair {
-                    line_of(a, b, kind, true, true, None, lift);
+                    line_of(a, b, kind, true, dimmed, None, lift);
                 }
             }
         }
@@ -1577,12 +1704,19 @@ fn build_overlay(
             LineKind::Sketch
         };
         let lift = sketch.lift(tolerance);
+        let dimmed = sketch.dims_hidden(see_through);
         for point in &sketch.points {
             if let Some(p) = projector.project(*point) {
+                let hidden = map.is_some_and(|map| {
+                    map.covers_lifted(p.x, p.y, p.depth, lift, projector.footprint(p.depth))
+                });
+                if hidden && !dimmed {
+                    continue;
+                }
                 out.points.push(OverlayPoint {
                     at: [p.x, p.y],
                     kind,
-                    hidden: map.is_some_and(|map| map.covers(p.x, p.y, p.depth - lift)),
+                    hidden,
                 });
             }
         }

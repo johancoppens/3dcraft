@@ -197,10 +197,12 @@ fn the_section_is_view_state_that_ui_set_sets_and_the_screenshot_shows() {
     call(&mut shell, &mut session, "ui.fit", json!({"view": "iso"}));
     let (width, height) = (480_u32, 360_u32);
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    // `made`: how the plane was made from the selection, a field since
+    // the fourth button takes one or two faces (2026-11-17).
     assert_eq!(
         got["state"]["section"],
         json!({"on": false, "plane": null, "feature": null, "point": null, "normal": null,
-               "offset": 0.0, "flip": false})
+               "offset": 0.0, "flip": false, "made": null})
     );
     assert_eq!(got["section"], Value::Null);
     let plain = shot(&mut shell, &mut session, width, height);
@@ -599,7 +601,10 @@ fn a_pick_on_the_cut_open_viewport_is_what_is_seen_and_edges_end_at_the_plane() 
 fn the_controls_beside_the_view_cube_set_the_section_and_are_not_the_viewport() {
     let mut session = part();
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
-    let mut window = Window::new(1000.0, 700.0);
+    // The narrow layout: the bar keeps the section's options there only,
+    // since the handle's group in the view has them on wider windows (the
+    // developer's decision of 2026-11-17; `section_handle.rs`). Was 1000.
+    let mut window = Window::new(790.0, 700.0);
     for _ in 0..4 {
         window.frame(&mut shell, &mut session, Vec::new());
     }
@@ -619,7 +624,10 @@ fn the_controls_beside_the_view_cube_set_the_section_and_are_not_the_viewport() 
     assert_eq!(shell.state.section.offset, 10.0);
     assert!(shell.section().is_some());
     let names: Vec<&str> = shell.section_hits().iter().map(|(name, _)| *name).collect();
-    assert_eq!(names, ["toggle", "x", "y", "z", "offset", "flip"]);
+    // The fourth, the plane from the selection, is always there, greyed
+    // while nothing selected gives one (the developer's decision of
+    // 2026-11-17).
+    assert_eq!(names, ["toggle", "x", "y", "z", "face", "offset", "flip"]);
     // Turning it on did not move the toggle.
     assert!((hit(&shell, "toggle").left() - toggle.left()).abs() < 0.5);
     // They read X, Y, Z from the left.

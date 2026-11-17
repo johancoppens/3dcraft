@@ -214,25 +214,32 @@ pub struct Tokens {
     /// How near to an edge or a vertex a click counts as a click on it, in points
     /// (the pick radius of `view.pick`, which is in pixels).
     pub pick_radius: f32,
-    /// The section's handle in the view (`shell/section_handle.rs`), in
-    /// the accent: the plane's outline, `section_outline_width` wide in
-    /// dashes of `section_dash` (on, off); the arrow and the ring over a
-    /// hairline of `plate_fill` at `section_halo_opacity` (0 to 255), so
-    /// they read on the background, a body and the cap; the arrow,
-    /// `section_arrow_length` long seen side on and `section_arrow_width`
-    /// wide; the dots X, Y, Z of `section_dot_radius`. Faint
-    /// (`section_rest_opacity`, 0 to 255) until the pointer is within
-    /// `section_near` of it; the arrow is hit within `section_hit` of it,
-    /// and a drag snaps within `section_snap_reach`. In points.
+    /// The section's handle in the view (`shell/section_handle.rs`): the
+    /// plane's outline in the accent, `section_outline_width` wide in
+    /// dashes of `section_dash` (on, off), faint (`section_rest_opacity`,
+    /// 0 to 255) until the pointer is within `section_near` of the handle;
+    /// the arrow, `section_arrow_length` long seen side on, its shaft
+    /// `section_arrow_width` wide and its head `section_head` long,
+    /// filled with `section_handle_fill` (near white) inside an edge of
+    /// `section_handle_edge`, `section_handle_edge_width` wide, so it reads
+    /// on the cap, a dark body and the background (the accent under the
+    /// pointer and while dragged); its group (the number, X, Y, Z, Flip
+    /// side) on a plate as high as the bar's controls. The arrow is hit
+    /// within `section_hit` of it, and a drag snaps within
+    /// `section_snap_reach`. A dimension line's hairline is `plate_fill`
+    /// at `section_halo_opacity` (0 to 255). In points.
     pub section_outline_width: f32,
     pub section_dash: [f32; 2],
     pub section_arrow_length: f32,
     pub section_arrow_width: f32,
+    pub section_head: f32,
+    pub section_handle_fill: Rgb,
+    pub section_handle_edge: Rgb,
+    pub section_handle_edge_width: f32,
     pub section_halo_opacity: u8,
     pub section_rest_opacity: u8,
     pub section_near: f32,
     pub section_hit: f32,
-    pub section_dot_radius: f32,
     pub section_snap_reach: f32,
     /// The relation of two things selected (`shell/dimension.rs`): its
     /// number at the foot of the side panel, `measure_font` points high;
@@ -967,13 +974,16 @@ impl Tokens {
             pick_radius: 4.0,
             section_outline_width: 1.2,
             section_dash: [5.0, 4.0],
-            section_arrow_length: 54.0,
-            section_arrow_width: 2.0,
+            section_arrow_length: 64.0,
+            section_arrow_width: 5.0,
+            section_head: 16.0,
+            section_handle_fill: [250, 248, 244],
+            section_handle_edge: [22, 21, 20],
+            section_handle_edge_width: 1.25,
             section_halo_opacity: 170,
             section_rest_opacity: 140,
             section_near: 56.0,
             section_hit: 9.0,
-            section_dot_radius: 8.0,
             section_snap_reach: 7.0,
             measure_font: 24.0,
             measure_line_width: 1.5,
@@ -1244,8 +1254,9 @@ impl Tokens {
         t.hit_min = t.hit_min.max(t.touch_target);
         // The section's handle: a finger takes the arrow and the dots.
         t.section_hit = t.section_hit.max(t.touch_target * 0.5);
-        t.section_dot_radius = t.section_dot_radius.max(t.touch_target * 0.3);
         t.section_arrow_length = t.section_arrow_length.max(t.touch_target * 1.8);
+        t.section_arrow_width = t.section_arrow_width.max(t.touch_target * 0.18);
+        t.section_head = t.section_head.max(t.touch_target * 0.5);
         t
     }
 

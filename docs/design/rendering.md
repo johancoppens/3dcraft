@@ -1758,6 +1758,45 @@ orthographic views showed grey on three sides). (5) `Slabs` answer only for a cu
 beside the model, and now gets the outline of the whole mesh (`the_slabs_find_the_whole_outline_among_a_few_
 triangles`; the shell's planes, a face's included, give the same direction to both, bit for bit).
 
+*Round two, the developer's look* (2026-11-17, from his preview build on the Mont Ventoux relief cut across Y:
+"ik vind de gele pijl niet zo duidelijk"; it replaces (4) above). The arrow is no longer the accent: a near-white
+fill (`section_handle_fill`) inside a dark edge (`section_handle_edge`, 1.25 points), 64 points long seen side on,
+its shaft 5 and its head 16 points (72, 7 and 20 at touch sizes), so it reads on the orange cap, on a dark part
+and on the light background; it takes the accent under the pointer and while it is dragged. It stands at a
+corner of the cut, not its middle: the corner of the plane's outline furthest along x − y − z, a rule of the
+model's, so it stays put while the view turns; where that corner is out of the viewport (zoomed in) the arrow's
+foot is the point of the plane between that corner and the cut's middle furthest out that shows 56 points
+inside it and 56 points clear of the plates, the cube and the triad (`into_view`; the last frame's
+`ControlsLayout::parts`), so the line it drags along is still the plane's normal through a point of the plane,
+and a press on it never lands on the view cube (the hostile test's plane a billion millimetres out did). The arrow points into the half that
+is cut away, out of the material, so its shaft is mostly seen against the background. Beside its foot, away
+from the cut's middle and clear of the arrow and of the controls, one group on the controls' dark plate, as high as the bar's
+controls: the number (the axis's letter in the accent), X, Y, Z (and ∥) and ⇅ (Flip side, the bar's symbol);
+the double click on the arrow stays. The group is always drawn in full while the section is on; only the
+dashed outline is faint until the pointer is near. On a window at least as wide as the narrow layout's 800
+points the display bar shows *Section* alone while the section is on: the group has X, Y, Z, the offset and the
+side (`controls_layout` is given the options only when the window is narrow, the same rule that leaves the
+handle out); a wide touch screen gets the handle at touch sizes and the bar with *Section* alone. A `ui.set`
+of a plane named X, Y or Z is refused with the planes' names (across X `yz`, across Y `zx`, across Z `xy`); a
+refused `ui.set` leaves the state as it was, every field (`a_refused_section_changes_nothing_and_says_x_y_z_and_
+the_planes`: the coordinator saw the section on after a refusal in the desktop window; the state is put back
+whole here, and was on `main` too, so what he saw was not reproduced).
+
+*The plane from the selection* (2026-11-17, the developer: "2 vlakken selecteren = snijden onder 45 graden?").
+The fourth button (∥) is always there and takes its plane from what is selected
+(`Shell::sync_face_choice`, once per selection and scene): one flat face, the plane along it as before; two
+flat faces, each face's plane by the engine's own test (`Session::section_plane`: a point of it and its
+outward normal, refused in words when the face is not flat), then `planes_of`. Parallel (the sine of their
+angle at most 1e-9, facing the same way or apart): the plane midway, along the first's normal. Otherwise the two
+bisectors of their angle, through the line where the planes meet: `x · (n1 − n2) = p1 · n1 − p2 · n2`, the
+points as far behind the one face as behind the other, so the one through the material (behind both, where
+both bodies are), first; `x · (n1 + n2) = p1 · n1 + p2 · n2`, square to it, at the next click. Each is kept as
+its point nearest the middle of the two faces' points (near the model, never the far end of a line two nearly
+parallel faces meet on) and its unit normal, in `state.section` as `point` and `normal` with `made` (`face`,
+`mid`, `bisector`), which the handle's number shows in place of an axis and `ui.get` reports; the plane stays
+when the selection changes. Anything else greys the button with why on hover. In the narrow layout the bar's
+choice is four cells wide (X, Y, Z, ∥), so each keeps a finger's width.
+
 ### Per-sample stages on Vulkan (2026-11-16)
 
 *Found.* The window of 0.1.1 and 0.1.2 died within seconds of its start on a Windows 11 laptop with a Core
@@ -2069,5 +2108,15 @@ Every other line has lift 0 and is drawn as before, bit for bit. Pinned by `crat
 grid_shown.rs` (a hollow sheet's grid: points dimmed without the lift, none with it) and `gpu_viewport.rs` ›
 `the_direct_path_draws_a_grid_on_its_sheet_and_matches_the_oracle` (a terrain's grid and a sketch line through
 it, opaque and see-through: 1341 line samples, all agreeing, on the laptop's Intel MTL with 4 samples). Not
-covered: a body meshed coarser than the scene's tolerance (`Scene::coarsened`), and a view more than 60° from the
-surface's normal, where a grid may still be dimmed in places.
+covered: a body meshed coarser than the scene's tolerance (`Scene::coarsened`).
+
+*Round 2 (2026-11-17).* A grid's stretches behind a body are now left out, as a body's hidden edges are, and
+drawn dimmed only see-through (the developer's decision; `SceneSketch::dims_hidden`). Left out, a decision near
+the threshold showed as a line going in and out of sight pixel by pixel, so a lifted line is tested with its
+lift times the slant of the surface under it (`√(1 + (g / footprint)²)` from the depth buffer's cell, at most 16:
+`viewport::surface_slant`, `lines.wgsl` › `slant_at`), the gap between a mesh and its surface growing as the
+secant of the angle it is seen at, and is hidden where most of five places a pixel apart along it are
+(`viewport::lifted_hides`, `lines.wgsl` › `hides`). The relief's short runs in and out of sight fell from 66 to
+9 at the reviewer's camera and from 591 to 24 low at its summit ([`surfacing.md`](surfacing.md) › *Seeing the
+grid*). The terrain of `the_direct_path_draws_a_grid_on_its_sheet_and_matches_the_oracle` now has a ridge that
+hides its back slope: 1039 line samples opaque, all agreeing, 1040 of 1041 see-through (Intel MTL).

@@ -62,6 +62,18 @@ fn height(r: usize, c: usize) -> f64 {
     ][r][c]
 }
 
+/// The key value of the row of the feature `name` (the side panel's,
+/// from the document alone).
+fn key(s: &Session, name: &str) -> String {
+    s.history_view()
+        .unwrap()
+        .features
+        .iter()
+        .find(|f| f.name == name)
+        .map(|f| f.key.clone())
+        .unwrap_or_else(|| panic!("no {name}"))
+}
+
 fn scene(s: &mut Session) -> Arc<Scene> {
     s.scene_with(SceneQuality::display()).unwrap().unwrap()
 }
@@ -144,8 +156,11 @@ fn a_tables_grid_is_drawn_through_its_points_and_switched_with_its_feature() {
     assert!(row.first().unwrap().distance(grid.points[6]) < 1e-9);
     assert!(row.last().unwrap().distance(grid.points[11]) < 1e-9);
     // Lifted against the depth: a grid lies on its sheet, a sketch on its
-    // plane.
+    // plane. What lies behind a body is left out, unless see-through.
     assert_eq!(grid.lift(0.5), SURFACE_LIFT * 0.5);
+    assert!(!grid.dims_hidden(false) && grid.dims_hidden(true));
+    // The feature's row says its size (nothing thinned).
+    assert_eq!(key(&s, "Hill"), "4 rows of 6");
 
     // Hidden with its feature, shown again with it.
     run(
@@ -193,6 +208,8 @@ fn a_tables_grid_is_drawn_through_its_points_and_switched_with_its_feature() {
     );
     let failed = scene(&mut s);
     assert!(grid_of(&failed, "Hill").is_none());
+    // Its row says what it is, without a size.
+    assert_eq!(key(&s, "Hill"), "SurfaceGrid");
     assert!(
         failed
             .features
@@ -306,7 +323,11 @@ fn a_large_grid_is_drawn_every_kth_line_within_its_caps() {
         let given = Vec3::new(x, y, (x / 9.0).psin() + (y / 7.0).pcos());
         assert!(at(r, c).distance(given) < 1e-9, "({r}, {c})");
     }
-    // ui.get and view.render say so.
+    // The feature's row says so, as do ui.get and view.render.
+    assert_eq!(
+        key(&s, "Wave"),
+        "every 2nd row, 4th column · 70 rows of 200"
+    );
     let said = craft3d_engine::grids_json(&shown);
     assert_eq!(
         said,

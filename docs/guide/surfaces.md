@@ -256,10 +256,13 @@ block cut by it keeps the part below: a solid of 12 450 mm³.
   they lie on the sheet and on a block cut by it, and the grid stays drawn after a later feature took the
   sheet. The Sketches toggle over the view shows and hides it with the sketches (`ui.set {"show":
   {"sketches": false}}`); the eye on the feature's row (`feature.visible`) hides one grid, with its
-  sheet when that is still a body of its own. A side of more than 65 points is drawn every k-th line, the
+  sheet when that is still a body of its own. Where the grid runs behind a body, over a ridge or behind a
+  hill, it is left out; with See-through on it shows faintly through the bodies, as a sketch does. The
+  feature's row says how large the grid is (`29 rows of 37`). A side of more than 65 points is drawn every k-th line, the
   first and the last always, the smallest k that keeps 65 lines (a 400 × 300 grid every 7th column and
-  every 5th row), and dots only where drawn lines cross; `ui.get` says so under `scene.grids` (`every`,
-  `thinned`). A picture without a window shows it with `view.render {"sketches": true}`, which says the
+  every 5th row), and dots only where drawn lines cross; the feature's row says so first (`every 5th row,
+  7th column · 300 rows of 400`; the whole on hover where the panel cuts it), and `ui.get` under
+  `scene.grids` (`every`, `thinned`). A picture without a window shows it with `view.render {"sketches": true}`, which says the
   same under `grids`.
 - **Names**: the face is `F1:face(0)`, its edges `edge(0)` to `edge(3)` along the first row, the last row, the
   first column and the last column, its corners `vertex(0)` to `vertex(3)` at the first row's first and last

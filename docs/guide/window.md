@@ -408,13 +408,16 @@ The **display bar** at the bottom of the view:
   drawn.
 - **See-through** makes the bodies transparent (drag its slider), to look at pockets and cavities.
 - **Section** cuts the view open with a plane across X, Y or Z, through the middle of the model at first.
-  **Offset** moves it and **Flip side** keeps the other half.
 
-The section's plane also has a handle in the view: its dashed outline, an arrow pointing into the half that
-is cut away, the distance beside it and the dots **X**, **Y** and **Z**. It stays faint until the pointer
-comes near.
+While the section is on, the view shows its plane: a dashed outline (faint until the pointer comes near),
+an arrow at the cut's edge pointing into the half that is cut away, and beside it one small dark group: the
+distance, **X**, **Y**, **Z** and **⇅** (keep the other half). The arrow is white with a dark edge, so it
+reads on the cut, on a dark part and on the background; under the pointer it turns amber. On a computer
+the display bar then shows only **Section**: the group has the rest. On a phone the group and the arrow
+are left out (a finger's drag in the middle of the model turns it), and the bar keeps **X**, **Y**, **Z**,
+an **Offset** slider and **Flip side**.
 
-![The flange cut open across X through the middle of a bolt hole: the plane's dashed outline, the arrow, X 30.00 mm and the dots X, Y, Z; the Offset slider on the bar says the same](images/section.png)
+![The flange cut open across X through the middle of a bolt hole: the plane's dashed outline, the arrow at the cut's edge, and the group with X 30.00 mm, X, Y, Z and the flip button](images/section.png)
 
 | Do | To |
 |---|---|
@@ -422,17 +425,22 @@ comes near.
 | Double-click the arrow | Keep the other half |
 | Click the number | Type a distance, such as `12.5` or `width / 2`; Enter sets it, Escape leaves it |
 | Click **X**, **Y** or **Z** | Turn the plane across that axis, through the middle of the model |
-| Select a flat face, then click **∥** | Lay the plane on that face: along it, through it, the arrow pointing out of the body; drag the arrow in to cut. The plane stays when you select something else. A face that is not flat greys **∥** and says why |
+| Click **⇅** | Keep the other half |
+| Select a flat face, then click **∥** | Lay the plane on that face: along it, through it, the arrow pointing out of the body; drag the arrow in to cut |
+| Select two flat faces, then click **∥** | Two parallel faces (the two walls of a slot): the plane midway between them. Two faces at an angle: the plane that halves it, through the line where they meet and through the material; click again for the other one, square to it |
 
-The handle and the bar move the same plane, so the slider follows the arrow and the other way round. Seen
-straight along the arrow (a section across Z from the top), it shows as a ring: use the slider or type the
-number.
+The number says what the plane is: **X**, **Y** or **Z**, **∥ face**, **mid** or **bisector**. A plane made
+with **∥** stays when you select something else; anything but one or two flat faces greys **∥**, and it says
+so when you point at it.
+
+Seen straight along the arrow (a section across Z from the top), the arrow is a ring that cannot be dragged:
+type the distance into the group's number, or use its buttons.
 
 The pictures in this guide show a window 1400 points wide (the start screen's 960 high). In a smaller
 one, such as the 1280 × 800 that 3DCraft first opens with, Sketches, Datums and Edges show their icons
 without words, and the start screen scrolls to show its last panels. Narrower still, Fit, Iso, Studio,
-Analysis and Section show their icons only too, and the See-through and Offset sliders lose their
-labels. Hover for the names.
+Analysis and Section show their icons only too, and the See-through slider (and on a phone the Offset
+slider) lose their labels. Hover for the names.
 
 A new document keeps everything that is shown in view as it is built, sketches included. A document you
 open is framed on its bodies (on its sketches when it has no body), and the view keeps them framed as the
@@ -461,7 +469,7 @@ The browser on a phone or a tablet, and any window narrower than about 800 point
   windows only, so a tablet held upright at 820 points keeps the feature list beside the view.
 - Where the display bar has no room for the section's options, they get a row of their own just above it.
   On a phone the section's handle is left out of the view, where a finger's drag turns the model; the
-  slider on that row moves the plane. Once you have touched the screen, the handle's arrow and dots are
+  slider on that row moves the plane. On a wider touch screen the handle's arrow and buttons are
   finger-sized.
 - A model with a history or a motion gets a small player above the bar (play or pause, the steps or the
   slider, and where it is) while the drawer is shut; the drawer holds the whole player. On a phone or a
