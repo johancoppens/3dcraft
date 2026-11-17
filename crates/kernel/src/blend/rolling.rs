@@ -1830,16 +1830,16 @@ fn blend_open(
     Ok(blend_face)
 }
 
-/// The least sine of the angle between the two parameter directions of
-/// a law fillet's face, along the edge and across it, anywhere on it: see
-/// [`turned_back`]. A face that has turned back measures below nothing;
-/// a degree above it, for what lies between the sections and the places
-/// across them that are measured. On a hull's stem every fade whose face
-/// was folded measured −0.03 to −1.0 and the nearest sound one 0.07 (the
-/// built face's own two directions: 0.067, no fold). The bound on a
-/// radius's rate alone leaves 0.32 along a straight edge between faces
-/// at a right angle, 0.09 at 30° and this much only at 7°.
-const TURNED: f64 = 0.02;
+/// What the measure of [`turned_back`] is at most where a law fillet's
+/// face has turned back on itself: nothing. No margin is taken: the
+/// measure falls with the rate of the radius as well as with the turn (a
+/// straight edge between faces at a right angle, the radius changing at
+/// the bound: 0.32 at a border; a radius growing at the bound into the
+/// slanted end of a cone's cut edge: 0.017 at the end section, 0.75
+/// within, and sound), so only its sign says turned. On a hull's stem
+/// every fade whose face was folded measured −0.03 to −1.0, the nearest
+/// sound one 0.07.
+const TURNED: f64 = 0.0;
 
 /// Where the face of a fillet whose radius varies turns back on itself:
 /// the place along the edge (its point there) and the ball's radius
@@ -1861,9 +1861,13 @@ const TURNED: f64 = 0.02;
 /// in the wording of a bug (a hull's stem where it turns into the keel:
 /// radius 5 fading over 5, radius 3 fading over 5 within half a
 /// millimetre of the foot). Measured here on every section the face was
-/// refined through, at five places across, from the exact derivative of
-/// the section: the sine of the angle between the two directions, signed
-/// by the side the normal lies on, against [`TURNED`].
+/// refined through, at nine places across, from the exact derivative of
+/// the section: the part of the face's unit normal along the ball's
+/// radius (the two directions' cross product over their lengths, signed
+/// by the side it lies on in the middle of the fillet), against
+/// [`TURNED`]. It passes through nothing only where the face stops
+/// advancing along the edge: the radius's rate leans the normal from the
+/// ball's radius but never square to it.
 fn turned_back(
     solver: &Solver<'_>,
     data: &Edge,
@@ -1871,8 +1875,8 @@ fn turned_back(
     sections: &[Section],
     middle: f64,
 ) -> Option<law::FadeFault> {
-    // The sine at a place across a section, signed by the side of the
-    // ball's radius the normal lies on.
+    // The part of the face's unit normal along the ball's radius at a
+    // place across a section.
     let side_at = |slope: &slope::Slope, v: f64| -> Option<f64> {
         let (point, along, across) = slope.surface(v)?;
         let ray = (point - slope.centre.0).normalized()?;
@@ -1896,21 +1900,21 @@ fn turned_back(
         let Some(slope) = solver.slope(*s, section) else {
             continue;
         };
-        for j in 0..=4 {
-            let Some(side) = side_at(&slope, f64::from(j) / 4.0) else {
+        for j in 0..=8 {
+            let Some(side) = side_at(&slope, f64::from(j) / 8.0) else {
                 continue;
             };
-            let sine = side * sign;
-            if !sine.is_finite() {
+            let along_ray = side * sign;
+            if !along_ray.is_finite() {
                 continue;
             }
-            if worst.is_none_or(|w| sine < w.0) {
-                worst = Some((sine, *s, slope.radius.0));
+            if worst.is_none_or(|w| along_ray < w.0) {
+                worst = Some((along_ray, *s, slope.radius.0));
             }
         }
     }
-    let (sine, s, radius) = worst?;
-    (sine <= TURNED).then(|| law::FadeFault::TurnsBack {
+    let (along_ray, s, radius) = worst?;
+    (along_ray <= TURNED).then(|| law::FadeFault::TurnsBack {
         at: data.curve.eval(t0 + s * (t1 - t0)),
         radius,
     })
