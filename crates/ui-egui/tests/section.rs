@@ -599,7 +599,10 @@ fn a_pick_on_the_cut_open_viewport_is_what_is_seen_and_edges_end_at_the_plane() 
 fn the_controls_beside_the_view_cube_set_the_section_and_are_not_the_viewport() {
     let mut session = part();
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
-    let mut window = Window::new(1000.0, 700.0);
+    // The narrow layout: the bar keeps the section's options there only,
+    // since the handle's group in the view has them on wider windows (the
+    // developer's decision of 2026-11-17; `section_handle.rs`). Was 1000.
+    let mut window = Window::new(790.0, 700.0);
     for _ in 0..4 {
         window.frame(&mut shell, &mut session, Vec::new());
     }

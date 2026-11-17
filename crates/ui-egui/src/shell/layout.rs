@@ -980,7 +980,12 @@ impl Shell {
         let tokens = self.tokens;
         let painter = ui.painter_at(rect);
         let widths = ControlWidths::measure(&painter, &tokens);
-        let mut layout = controls_layout(rect, &tokens, &widths, self.state.section.on);
+        // The section's options (X, Y, Z, Offset, Flip side) are on the
+        // bar in the narrow layout only: on a wider window the handle's
+        // group in the view has them (the developer's decision of
+        // 2026-11-17), and the bar keeps the Section button.
+        let options = self.state.section.on && self.narrow;
+        let mut layout = controls_layout(rect, &tokens, &widths, options);
         // The narrow layout's compact player, while the drawer with the
         // whole player is shut.
         let timeline = self.timeline.steps > 0 || self.timeline.has_timeline;

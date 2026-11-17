@@ -757,17 +757,15 @@ fn the_plane_goes_parallel_to_a_selected_flat_face_and_stays_when_the_selection_
     assert_eq!(choice.face, slant["name"].as_str().unwrap());
     assert_eq!(choice.refused, None);
     assert_eq!(shell.section_handle().unwrap().dots.len(), 4);
+    // On a window this wide the bar has the Section button alone: the
+    // group in the view has the rest (the developer's decision of
+    // 2026-11-17).
     let names: Vec<&str> = shell.section_hits().iter().map(|(n, _)| *n).collect();
-    assert_eq!(names, ["toggle", "x", "y", "z", "face", "offset", "flip"]);
-    // The bar's cell: the plane through the face, along its outward
-    // normal, nothing cut yet.
-    let cell = shell
-        .section_hits()
-        .iter()
-        .find(|(n, _)| *n == "face")
-        .unwrap()
-        .1;
-    window.click(&mut shell, &mut session, cell.center());
+    assert_eq!(names, ["toggle"]);
+    // The group's fourth button: the plane through the face, along its
+    // outward normal, nothing cut yet.
+    let dot = shell.section_handle().unwrap().dots[3];
+    window.click(&mut shell, &mut session, dot);
     window.frames(&mut shell, &mut session, 3);
     assert_eq!(shell.state.section.plane, Some(choice.face.clone()));
     assert_eq!(shell.state.section.feature, Some(choice.feature.clone()));
@@ -847,7 +845,6 @@ fn the_plane_goes_parallel_to_a_selected_flat_face_and_stays_when_the_selection_
     assert_eq!(shell.state.section.plane, Some(choice.face.clone()));
     assert_eq!(shell.state.section.offset, offset);
     assert_eq!(shell.section_handle().unwrap().dots.len(), 4);
-    assert!(shell.section_hits().iter().any(|(n, _)| *n == "face"));
     // X takes it back across x.
     let x = shell.section_handle().unwrap().dots[0];
     window.click(&mut shell, &mut session, x);
@@ -1119,4 +1116,81 @@ fn on_hundreds_of_plates_every_place_is_kept_and_ui_get_lists_those_near_the_pla
     });
     assert_eq!(snapped, Some(Snapped::Place(SnapKind::Face)));
     assert_eq!(shell.state.section.offset, 599.0);
+}
+
+/// A `ui.set` refused for its section changes nothing of the state, the
+/// section's or any other field's, now or in the frames after; the error
+/// says both the window's X, Y, Z and the planes' yz, zx, xy (seen by the
+/// coordinator on 2026-11-17: `{"on": true, "plane": "y"}`).
+#[test]
+fn a_refused_section_changes_nothing_and_says_x_y_z_and_the_planes() {
+    let mut session = drilled();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1000.0, 700.0);
+    window.frames(&mut shell, &mut session, 3);
+    let before = shell.state.clone();
+    for patch in [
+        json!({"section": {"on": true, "plane": "y"}}),
+        json!({"section": {"on": true, "plane": "Y"}}),
+        json!({"camera": {"yaw": 10}, "transparency": 0.5, "section": {"on": true, "plane": "z"}}),
+    ] {
+        let error = shell
+            .handle_method(&mut session, "ui.set", Some(&patch))
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            error.contains("across X lies on the plane yz, across Y on zx, across Z on xy"),
+            "{patch}: {error}"
+        );
+        assert_eq!(shell.state, before, "{patch}");
+        window.frames(&mut shell, &mut session, 3);
+        assert!(!shell.state.section.on, "{patch}");
+        let got = call(&mut shell, &mut session, "ui.get", json!({}));
+        assert_eq!(got["section"], Value::Null, "{patch}");
+        assert!(shell.section_handle().is_none());
+    }
+    // Before the window has drawn anything at all.
+    let mut fresh = Shell::with_renderer(RendererChoice::Cpu);
+    let untouched = fresh.state.clone();
+    assert!(
+        fresh
+            .handle_method(
+                &mut session,
+                "ui.set",
+                Some(&json!({"section": {"on": true, "plane": "x"}}))
+            )
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(fresh.state.section, untouched.section);
+}
+
+/// On a window as wide as a computer's the bar has the Section button
+/// alone, the group in the view the rest; narrower than the narrow layout
+/// the bar keeps them, and the handle is left out (the developer's
+/// decision of 2026-11-17).
+#[test]
+fn the_bar_keeps_the_section_options_on_a_phone_only() {
+    for (width, wide) in [
+        (1280.0, true),
+        (1000.0, true),
+        (790.0, false),
+        (390.0, false),
+    ] {
+        let mut session = drilled();
+        let (shell, _) = window_on(&mut session, [width, 800.0], "yz", 20.0, "iso");
+        let names: Vec<&str> = shell.section_hits().iter().map(|(n, _)| *n).collect();
+        if wide {
+            assert_eq!(names, ["toggle"], "{width}");
+            let place = shell.section_handle().expect("the group");
+            assert_eq!(place.dots.len(), 3, "{width}");
+        } else {
+            assert_eq!(
+                names,
+                ["toggle", "x", "y", "z", "offset", "flip"],
+                "{width}"
+            );
+            assert!(shell.section_handle().is_none(), "{width}");
+        }
+    }
 }

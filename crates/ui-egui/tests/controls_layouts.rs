@@ -115,7 +115,7 @@ fn every_control_is_reachable() {
                     );
                     names.push(name);
                 }
-                let mut expected = vec![
+                let expected = vec![
                     "sketches",
                     "datums",
                     "edges",
@@ -127,20 +127,22 @@ fn every_control_is_reachable() {
                     "cube",
                     "triad",
                 ];
-                if on {
-                    expected.extend(["axes", "offset", "side"]);
-                }
                 for name in expected {
                     assert!(
                         names.contains(&name),
                         "{label}, section {on}: no {name} in {names:?}"
                     );
                 }
-                assert_eq!(
-                    layout.axes.is_some(),
-                    on,
-                    "{label}: the options only while on"
+                // The section's options (X, Y, Z, Offset, Flip side) are
+                // not on the bar of a window this wide, on or off: the
+                // handle's group in the view has them (the developer's
+                // decision of 2026-11-17; the narrow layout keeps them on
+                // the bar, `mobile.rs`).
+                assert!(
+                    layout.axes.is_none() && layout.offset.is_none() && layout.side.is_none(),
+                    "{label}: the options left the bar"
                 );
+                let _ = on;
                 // Every chip but the display bar's toggles keeps its name
                 // (those three may show their icons in the smaller window).
                 assert!(!layout.compact, "{label}, section {on}");
@@ -194,20 +196,22 @@ fn every_control_is_reachable() {
             assert!(shell.state.camera.distance < 5000.0, "{label}");
             // None of those clicks was a pick in the viewport.
             assert_eq!(shell.state.picked, None, "{label}");
-            // The section: on, its options, an axis, and the side.
+            // The section: on, then an axis and the side from the handle's
+            // group in the view (not the bar, since 2026-11-17).
             let at = hit(shell.section_hits(), "toggle");
             window.click(&mut shell, &mut session, at);
             assert!(shell.state.section.on, "{label}");
             window.frame(&mut shell, &mut session, Vec::new());
             check(&shell, true);
-            let at = hit(shell.section_hits(), "x");
-            window.click(&mut shell, &mut session, at);
+            let place = shell.section_handle().expect("the handle").clone();
+            assert!(viewport.contains_rect(place.group), "{label}");
+            window.click(&mut shell, &mut session, place.dots[0]);
             assert_eq!(shell.state.section.plane.as_deref(), Some("yz"), "{label}");
-            let at = hit(shell.section_hits(), "flip");
-            window.click(&mut shell, &mut session, at);
+            window.frame(&mut shell, &mut session, Vec::new());
+            let place = shell.section_handle().expect("the handle").clone();
+            window.click(&mut shell, &mut session, place.flip);
             assert!(shell.state.section.flip, "{label}");
             assert_eq!(shell.state.picked, None, "{label}");
-            assert!(shell.section_hits().iter().any(|(n, _)| *n == "offset"));
             // And off again: only the toggle is left to click.
             let at = hit(shell.section_hits(), "toggle");
             window.click(&mut shell, &mut session, at);
