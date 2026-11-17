@@ -248,7 +248,7 @@ printf '%s\n' \
 | Method | Params |
 |---|---|
 | `auth` | `{token}`: the first request of every connection |
-| `ui.get` | `{}`: the window's state: `state` (camera, panels, selectedFeature, notice, quality, highlights, transparency, section, picked, show, dialogs, timeline, parameters, export), `viewport`, `document`, `scene`, `features`, `assertions`, `renderer`, `render`, `section`, `lastCommand`, `report`, `recovery`, `problem`, `work`, `workShown`, `tabs`, `closing`, `quitting`, `selection`, `parameters`, `recent`, `startScreen`, `startSection`, `whatsNew`, `timeline`, `export` (each above) |
+| `ui.get` | `{}`: the window's state: `state` (camera, panels, selectedFeature, notice, quality, highlights, transparency, section, picked, show, dialogs, timeline, parameters, export), `viewport`, `document`, `scene`, `features`, `assertions`, `renderer`, `render`, `section`, `measurement`, `lastCommand`, `report`, `recovery`, `problem`, `work`, `workShown`, `tabs`, `closing`, `quitting`, `selection`, `parameters`, `recent`, `startScreen`, `startSection`, `whatsNew`, `timeline`, `export` (each above) |
 | `ui.set` | `{view?, camera?, panels?, selectedFeature?, notice?, quality?, highlight?, highlightEdge?, highlightVertex?, transparency?, section?, show?, dialogs?, timeline?, parameters?, export?}`: changes the fields given; an unknown field or a wrong type is an error, checked before anything changes; numbers out of range are clamped; `picked` cannot be set |
 | `ui.fit` | `{view?, feature? \| selection?}`: frames everything, or a feature, or the selection (*Flying to a feature*) |
 | `ui.pick` | `{x, y, width?, height?, radius?, select?, all?, shift?, alt?}`: what the viewport shows at a pixel (*Pointing*) |
