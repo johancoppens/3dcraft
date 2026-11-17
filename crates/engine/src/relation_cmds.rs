@@ -29,7 +29,6 @@
 
 use crate::commands::{Run, length_unit, spec, vec3};
 use crate::params::Params;
-use crate::select_cmds::query;
 use crate::selection::SelectionKind;
 use crate::verify::{self, Part};
 use crate::verify_cmds::{Ctx, Dim, Outcome, Sampled, feature_of, measured_document, only};
@@ -38,7 +37,7 @@ use craft3d_doc::FeatureId;
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::{Portable, Vec3};
 use craft3d_topo::Body;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use std::sync::Arc;
 
 pub(crate) static SPECS: &[CommandSpec] = &[spec!(
@@ -457,30 +456,42 @@ fn thing(ctx: &Ctx<'_>, value: &Value, key: &str) -> Result<Thing, String> {
                     )?)
                 }
                 "face" | "edge" | "vertex" => {
-                    let name = text(map.get("name"), "the persistent name")?;
+                    // By the item itself, as the selection finds it: never
+                    // through a name pattern, whose length is capped (the
+                    // review of 2026-11-17: a gear's faces have names of
+                    // over 512 characters).
+                    let name = map
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .filter(|n| !n.is_empty())
+                        .ok_or_else(|| format!("`{key}` needs the persistent name"))?;
                     let feature = text(map.get("feature"), "the feature of its body")?;
-                    let found = query(
-                        ctx.doc,
-                        ctx.regen,
-                        Some(&Value::from(kind.as_str())),
-                        Some(&json!({"in": feature, "name": name})),
-                        16,
-                    )?;
-                    let [one] = found.as_slice() else {
-                        return Err(if found.is_empty() {
-                            format!(
-                                "there is no {kind} `{}` in `{feature}` (see document.inspect)",
-                                name.chars().take(120).collect::<String>()
-                            )
-                        } else {
-                            format!("`{key}` names {} {kind}s; name one", found.len())
-                        });
-                    };
+                    let shown: String = name.chars().take(120).collect();
+                    let (id, found, index) = crate::selection::Resolver::new(ctx.doc, ctx.regen)
+                        .locate(name, Some(feature.as_str()))
+                        .map_err(|e| format!("`{key}`: {e}"))?;
+                    if found.name() != kind {
+                        return Err(format!(
+                            "`{key}`: `{shown}` is a {}, not a {kind}",
+                            found.name()
+                        ));
+                    }
+                    // A face a boolean cut into pieces that kept its name:
+                    // every piece.
+                    let mut indices = vec![index];
+                    if found == SelectionKind::Face
+                        && let Some(names) = ctx.regen.feature(id).and_then(|f| f.names.as_ref())
+                        && let Some(own) = names.faces.get(index)
+                    {
+                        indices = (0..names.faces.len())
+                            .filter(|&k| names.faces.get(k) == Some(own))
+                            .collect();
+                    }
                     Ok(Thing {
-                        kind: one.kind,
-                        feature: one.feature,
-                        body: Arc::clone(ctx.body(one.feature)?),
-                        indices: one.indices.clone(),
+                        kind: found,
+                        feature: id,
+                        body: Arc::clone(ctx.body(id)?),
+                        indices,
                     })
                 }
                 other => Err(format!(
@@ -782,24 +793,68 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
                 ) => {
                     if along(*da, *db, angular) {
                         // The second's reach along the first's direction.
-                        let (lo_b, hi_b) = if da.dot(*db) >= 0.0 {
+                        let same_way = da.dot(*db) >= 0.0;
+                        let along_a = |x: f64| if same_way { x } else { -x };
+                        let (lo_bb, hi_bb) = if same_way {
                             (*lo_b, *hi_b)
                         } else {
                             (-*hi_b, -*lo_b)
                         };
-                        // Two holes: where they open, at the end both
-                        // reach (the review of 2026-11-17: at mid-depth
-                        // the line floated inside the block). Two edges:
-                        // the middle of where they run side by side.
+                        // Two edges: the middle of where they run side by
+                        // side. Two holes: where they open, each at its
+                        // rim on a face a person sees, whichever way its
+                        // axis points (the review of 2026-11-17: at
+                        // mid-depth, at the floors of holes drilled from
+                        // above, inside the material for one from each
+                        // side): a level both open at, else one the first
+                        // opens at, else the second's; the upper of two.
                         let level = if *ea {
-                            let (from, to) = (lo_a.max(lo_b), hi_a.min(hi_b));
+                            let (from, to) = (lo_a.max(lo_bb), hi_a.min(hi_bb));
                             if from <= to {
                                 (from + to) * 0.5
                             } else {
                                 ma.lerp(*mb, 0.5).dot(*da)
                             }
                         } else {
-                            hi_a.min(hi_b)
+                            let (a_lo, a_hi) = openings(ctx, a, *ma, *da, (*lo_a, *hi_a));
+                            let (b_lo, b_hi) = openings(ctx, b, *mb, *db, (*lo_b, *hi_b));
+                            let open_a: Vec<f64> = [(a_hi, *hi_a), (a_lo, *lo_a)]
+                                .into_iter()
+                                .filter_map(|(open, x)| open.then_some(x))
+                                .collect();
+                            let open_b: Vec<f64> = [(b_hi, *hi_b), (b_lo, *lo_b)]
+                                .into_iter()
+                                .filter_map(|(open, x)| open.then_some(along_a(x)))
+                                .collect();
+                            let tol = ctx.tolerance.linear;
+                            let close = |x: f64, y: f64| (x - y).abs() <= tol.max(1e-9 * x.abs());
+                            let common: Vec<f64> = open_a
+                                .iter()
+                                .copied()
+                                .filter(|x| open_b.iter().any(|y| close(*x, *y)))
+                                .collect();
+                            // Of two levels, the upper (by Z, then Y, then
+                            // X): a through hole opens at both ends, and
+                            // the line goes where a model is mostly seen
+                            // from, whichever thing came first.
+                            let point = |x: f64| *ma + *da * (x - ma.dot(*da));
+                            let by = |u: f64, v: f64| {
+                                if (u - v).abs() <= tol {
+                                    std::cmp::Ordering::Equal
+                                } else {
+                                    u.total_cmp(&v)
+                                }
+                            };
+                            let upper = |xs: &[f64]| {
+                                xs.iter().copied().max_by(|x, y| {
+                                    let (p, q) = (point(*x), point(*y));
+                                    by(p.z, q.z).then(by(p.y, q.y)).then(by(p.x, q.x))
+                                })
+                            };
+                            upper(&common)
+                                .or_else(|| upper(&open_a))
+                                .or_else(|| upper(&open_b))
+                                .unwrap_or_else(|| hi_a.min(hi_bb))
                         };
                         let at = |m: Vec3| m + *da * (level - m.dot(*da));
                         let (from, to) = (at(*ma), at(*mb));
@@ -878,6 +933,40 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
     }
 }
 
+/// Whether the round face `t` (a hole's or a boss's wall), its axis
+/// through `middle` along the unit `d`, reaching from `lo` to `hi` along
+/// it, opens at each end: just past that end (a tenth of its radius), on
+/// the axis and near the wall, lies outside the body (the hole meets the
+/// air there, at its rim on a face a person sees); a hole's floor does
+/// not, flat or a drill's cone. Neither where the body cannot tell.
+fn openings(ctx: &Ctx<'_>, t: &Thing, middle: Vec3, d: Vec3, (lo, hi): (f64, f64)) -> (bool, bool) {
+    use craft3d_kernel::boolean::probe::{Place, Probe};
+    let Ok(probe) = Probe::new(&t.body, &ctx.tolerance) else {
+        return (false, false);
+    };
+    let points = boundary(&t.body, &t.indices, 8);
+    let at = |x: f64| middle + d * (x - middle.dot(d));
+    // From the axis to the wall at the end `end`: by the boundary's point
+    // nearest that end.
+    let radial = |end: f64| {
+        points
+            .iter()
+            .filter(|p| p.is_finite())
+            .min_by(|p, q| (p.dot(d) - end).abs().total_cmp(&(q.dot(d) - end).abs()))
+            .map(|p| *p - at(p.dot(d)))
+    };
+    let outside = |p: Vec3| p.is_finite() && matches!(probe.place(p), Ok(Place::Outside));
+    let open = |end: f64, sign: f64| {
+        let Some(r) = radial(end) else {
+            return false;
+        };
+        let step = (0.1 * r.length()).max(10.0 * ctx.tolerance.linear);
+        let past = at(end + sign * step);
+        outside(past) && outside(past + r * 0.95)
+    };
+    (open(lo, -1.0), open(hi, 1.0))
+}
+
 /// The closest points of the line through `pa` along `da` and the one
 /// through `pb` along `db` (unit directions, not parallel).
 fn closest(pa: Vec3, da: Vec3, pb: Vec3, db: Vec3) -> (Vec3, Vec3) {
@@ -911,6 +1000,8 @@ fn least(ctx: &Ctx<'_>, a: &Thing, b: &Thing, sa: &Shape, sb: &Shape) -> Result<
             .ok_or_else(|| refused(Relation::LeastDistance, "nothing to measure to"))?;
         let mut found = Found::exact(Relation::LeastDistance, d, words, p, q);
         found.sampled = freeform;
+        // From a point the nearest place is exact: proven, but on freeform.
+        found.at_least = (!freeform).then_some(d);
         return Ok(found);
     }
     if let Some(p) = vertex(b, sb) {
@@ -918,17 +1009,20 @@ fn least(ctx: &Ctx<'_>, a: &Thing, b: &Thing, sa: &Shape, sb: &Shape) -> Result<
             .ok_or_else(|| refused(Relation::LeastDistance, "nothing to measure from"))?;
         let mut found = Found::exact(Relation::LeastDistance, d, words, q, p);
         found.sampled = freeform;
+        found.at_least = (!freeform).then_some(d);
         return Ok(found);
     }
     if let (Some((a0, a1)), Some((b0, b1))) = (segment(a), segment(b)) {
         let (p, q) = closest_segments(a0, a1, b0, b1);
-        return Ok(Found::exact(
+        let mut found = Found::exact(
             Relation::LeastDistance,
             p.distance(q),
             "Least distance between the edges",
             p,
             q,
-        ));
+        );
+        found.at_least = Some(found.value.unwrap_or(0.0));
+        return Ok(found);
     }
     if let (Some(fa), Some(fb)) = (faces_of(a), faces_of(b)) {
         let pa = Part::new(&a.body, Some(&fa), &ctx.tolerance)?;
@@ -953,58 +1047,259 @@ fn least(ctx: &Ctx<'_>, a: &Thing, b: &Thing, sa: &Shape, sb: &Shape) -> Result<
     } else {
         return Err(refused(Relation::LeastDistance, "nothing to measure"));
     };
-    let (d, p, q, freeform) = along_edge(ctx, edge, other)?
+    let along = along_edge(ctx, edge, other)?
         .ok_or_else(|| refused(Relation::LeastDistance, "nothing to measure to"))?;
-    let (from, to) = if flipped { (q, p) } else { (p, q) };
-    let mut found = Found::exact(Relation::LeastDistance, d, words, from, to);
-    found.sampled = freeform;
+    let (from, to) = if flipped {
+        (along.q, along.p)
+    } else {
+        (along.p, along.q)
+    };
+    let mut found = Found::exact(Relation::LeastDistance, along.d, words, from, to);
+    found.at_least = along.at_least;
+    found.sampled = along.freeform || along.at_least.is_none();
     Ok(found)
 }
 
-/// How finely an edge is looked along for the least distance from it:
-/// samples, then halvings of the step about the best.
+/// How finely an edge is looked along first: samples, then golden
+/// sections about the best; at most this many pieces of an edge, pairs of
+/// a piece and a triangle, and pieces narrowed exactly in the proof.
 const ALONG_SAMPLES: u32 = 96;
 const ALONG_REFINE: u32 = 60;
+const ALONG_PIECES: usize = 2048;
+const ALONG_PAIRS: u64 = 4_000_000;
+const ALONG_NARROWED: usize = 48;
+
+/// The least distance from an edge to another thing, as `along_edge`
+/// finds it.
+struct Along {
+    /// Between two real places: the point of the edge and of the other.
+    d: f64,
+    p: Vec3,
+    q: Vec3,
+    /// No less than this, proven (from the edge's pieces and the other's
+    /// triangles, each with how far the exact thing can be from it); none
+    /// where it could not be had (a freeform curve, too much to compare).
+    at_least: Option<f64>,
+    /// Either thing is freeform: what is proven rests on samples.
+    freeform: bool,
+}
+
+/// The point of the triangle `t` nearest `p` (the regions of its corners,
+/// sides and inside in turn); a degenerate one by its corners and sides.
+fn on_triangle(p: Vec3, t: &[Vec3; 3]) -> Vec3 {
+    let [a, b, c] = *t;
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 && d1 - d3 != 0.0 {
+        return a + ab * (d1 / (d1 - d3));
+    }
+    let cp = p - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 && d2 - d6 != 0.0 {
+        return a + ac * (d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    let (e, f) = (d4 - d3, d5 - d6);
+    if va <= 0.0 && e >= 0.0 && f >= 0.0 && e + f != 0.0 {
+        return b + (c - b) * (e / (e + f));
+    }
+    let sum = va + vb + vc;
+    let inside = a + ab * (vb / sum) + ac * (vc / sum);
+    if sum != 0.0 && inside.is_finite() {
+        return inside;
+    }
+    // Degenerate: the nearest of its sides.
+    let mut best = a;
+    for (x, y) in [(a, b), (b, c), (c, a)] {
+        let (q, _) = closest_segments(p, p, x, y);
+        if q.distance(p) < best.distance(p) {
+            best = q;
+        }
+    }
+    best
+}
+
+/// The distance between the segment from `a0` to `a1` and the triangle
+/// `t` (0 where it passes through it), and where along the segment it is
+/// least (0 at `a0`, 1 at `a1`).
+fn segment_to_triangle(a0: Vec3, a1: Vec3, t: &[Vec3; 3]) -> (f64, f64) {
+    let [a, b, c] = *t;
+    let n = (b - a).cross(c - a);
+    let (s0, s1) = ((a0 - a).dot(n), (a1 - a).dot(n));
+    if n.length_squared() > 0.0 && s0 * s1 <= 0.0 && s0 != s1 {
+        let along = s0 / (s0 - s1);
+        let x = a0 + (a1 - a0) * along;
+        if on_triangle(x, t).distance(x) <= 1e-12 * (1.0 + x.length()) {
+            return (0.0, along);
+        }
+    }
+    let span = a1 - a0;
+    let fraction = |p: Vec3| {
+        let f = (p - a0).dot(span) / span.length_squared();
+        if f.is_finite() {
+            f.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+    let mut best = (on_triangle(a0, t).distance(a0), 0.0);
+    let at_end = on_triangle(a1, t).distance(a1);
+    if at_end < best.0 {
+        best = (at_end, 1.0);
+    }
+    for (x, y) in [(a, b), (b, c), (c, a)] {
+        let (p, q) = closest_segments(a0, a1, x, y);
+        let d = p.distance(q);
+        if d < best.0 {
+            best = (d, fraction(p));
+        }
+    }
+    best
+}
+
+/// The box of the points `points`.
+fn box_of(points: &[Vec3]) -> craft3d_math::Bbox3 {
+    craft3d_math::Bbox3::from_points(points.iter().copied())
+}
+
+/// How far apart two boxes are (0 where they meet).
+fn boxes_apart(a: &craft3d_math::Bbox3, b: &craft3d_math::Bbox3) -> f64 {
+    match (a.corners(), b.corners()) {
+        (Some((alo, ahi)), Some((blo, bhi))) => {
+            let gap = |l0: f64, h0: f64, l1: f64, h1: f64| (l1 - h0).max(l0 - h1).max(0.0);
+            let (x, y, z) = (
+                gap(alo.x, ahi.x, blo.x, bhi.x),
+                gap(alo.y, ahi.y, blo.y, bhi.y),
+                gap(alo.z, ahi.z, blo.z, bhi.z),
+            );
+            (x * x + y * y + z * z).sqrt()
+        }
+        _ => f64::INFINITY,
+    }
+}
+
+/// The edge `edge` as pieces of a line: the parameters where each starts
+/// and ends, and how far the edge can be from them; `true` with it when
+/// that far is proven (a straight edge: exact; an arc: its sagitta), not
+/// estimated (other curves).
+fn pieces_of(edge: &craft3d_topo::Edge, chord: f64) -> (Vec<f64>, f64, bool) {
+    let (t0, t1) = edge.range;
+    match &edge.curve {
+        Curve3::Line(_) => {
+            // Exact in one; in pieces of eight chords (at most 64), so each
+            // has its own place to narrow from.
+            let length = (edge.curve.eval(t1) - edge.curve.eval(t0)).length();
+            let n = (length / (8.0 * chord)).ceil();
+            let n = if n.is_finite() && n >= 1.0 {
+                (n as usize).min(64)
+            } else {
+                1
+            };
+            let step = (t1 - t0) / n as f64;
+            ((0..=n).map(|k| t0 + step * k as f64).collect(), 0.0, true)
+        }
+        Curve3::Circle(circle) => {
+            let r = circle.radius();
+            let span = (t1 - t0).abs();
+            // Pieces short enough that their sagitta is within a quarter of
+            // the chord.
+            let sagitta = 0.25 * chord;
+            let most = if r > 0.0 && sagitta > 0.0 && sagitta < r {
+                2.0 * (1.0 - sagitta / r).clamp(-1.0, 1.0).pacos()
+            } else {
+                span / 8.0
+            };
+            let n = if most.is_finite() && most > 0.0 {
+                ((span / most).ceil() as usize).clamp(8, ALONG_PIECES)
+            } else {
+                64
+            };
+            let step = (t1 - t0) / n as f64;
+            let sagitta = r * (1.0 - (0.5 * step.abs()).pcos());
+            (
+                (0..=n).map(|k| t0 + step * k as f64).collect(),
+                sagitta.max(0.0),
+                true,
+            )
+        }
+        _ => {
+            let n = 512_usize;
+            let ts: Vec<f64> = (0..=n)
+                .map(|k| t0 + (t1 - t0) * k as f64 / n as f64)
+                .collect();
+            // Estimated: the farthest a piece's middle lies from its chord,
+            // twice.
+            let mut far = 0.0_f64;
+            for pair in ts.windows(2) {
+                if let [a, b] = *pair {
+                    let (pa, pb, pm) = (
+                        edge.curve.eval(a),
+                        edge.curve.eval(b),
+                        edge.curve.eval(0.5 * (a + b)),
+                    );
+                    let (_, on) = closest_segments(pm, pm, pa, pb);
+                    far = far.max(on.distance(pm));
+                }
+            }
+            (ts, 2.0 * far, false)
+        }
+    }
+}
 
 /// The least distance from the edge `edge` to `other` (faces, a body or
-/// an edge): sampled along the edge, then narrowed about the best sample
-/// by golden sections; the distance, the point of the edge, the point of
-/// the other, and whether either is freeform (then a least that may lie
-/// between the samples).
-fn along_edge(
-    ctx: &Ctx<'_>,
-    edge: &Thing,
-    other: &Thing,
-) -> Result<Option<(f64, Vec3, Vec3, bool)>, String> {
+/// an edge). Found first by samples along the edge narrowed by golden
+/// sections; then proven, as `measure.distance` proves its own: the edge
+/// in pieces of a line (each within its sagitta of the arc) against the
+/// other's triangles (each within the mesh's error of its face) bound the
+/// least from below; every piece whose bound lies under what was found is
+/// narrowed on the exact geometry, so a narrow least the samples stepped
+/// over (a thin pin beside a wall: the review of 2026-11-17) is found.
+/// `None` when there is nothing to measure.
+fn along_edge(ctx: &Ctx<'_>, edge: &Thing, other: &Thing) -> Result<Option<Along>, String> {
     let Some(curve) = edge.indices.first().and_then(|&e| edge.body.edges.get(e)) else {
         return Ok(None);
     };
-    let probe = match faces_of(other) {
-        Some(_) => Some(
-            craft3d_kernel::boolean::probe::Probe::new(&other.body, &ctx.tolerance)
-                .map_err(|e| e.to_string())?,
-        ),
-        None => None,
-    };
     let faces = faces_of(other).unwrap_or_default();
+    let part = if faces.is_empty() {
+        None
+    } else {
+        Some(Part::new(&other.body, Some(&faces), &ctx.tolerance)?)
+    };
     let other_edge = (other.kind == SelectionKind::Edge)
         .then(|| other.indices.first().and_then(|&e| other.body.edges.get(e)))
         .flatten();
-    let mut freeform = matches!(curve.curve, Curve3::Nurbs(_));
+    let mut freeform = matches!(curve.curve, Curve3::Nurbs(_) | Curve3::Ellipse(_));
     if let Some(e) = other_edge {
-        freeform |= matches!(e.curve, Curve3::Nurbs(_));
+        freeform |= matches!(e.curve, Curve3::Nurbs(_) | Curve3::Ellipse(_));
     }
     for &f in &faces {
         if let Some(face) = other.body.faces.get(f) {
             freeform |= matches!(face.surface, Surface::Bezier(_) | Surface::Nurbs(_));
         }
     }
-    // The nearest point of the other to `p`.
-    let nearest = |p: Vec3| -> Result<Option<(f64, Vec3)>, String> {
+    // The nearest point of the other to `p`, over `near` of its faces (all
+    // when `None`) and its edge; a face whose nearest point cannot be had
+    // is left to the proof, whose bound then says how near it may come.
+    let nearest = |p: Vec3, near: Option<&[usize]>| -> Result<Option<(f64, Vec3)>, String> {
         let mut best: Option<(f64, Vec3)> = None;
-        if let Some(probe) = &probe {
-            for &f in &faces {
-                let q = verify::nearest_on_face(probe, f, p)?;
+        if let Some(part) = &part {
+            for &f in near.unwrap_or(&faces) {
+                let Ok(q) = verify::nearest_on_face(&part.probe, f, p) else {
+                    continue;
+                };
                 let d = q.distance(p);
                 if d.is_finite() && best.is_none_or(|(b, _)| d < b) {
                     best = Some((d, q));
@@ -1026,43 +1321,238 @@ fn along_edge(
         return Ok(None);
     }
     let at = |t: f64| curve.curve.eval(t);
-    let mut best: Option<(f64, f64, Vec3, Vec3)> = None;
+    // Narrowed by golden sections between `lo` and `hi`: the least found.
+    let narrow =
+        |lo: f64, hi: f64, near: Option<&[usize]>| -> Result<Option<(f64, Vec3, Vec3)>, String> {
+            // The golden section, (√5 − 1) / 2.
+            let g = 0.618_033_988_749_894_9;
+            let (mut lo, mut hi) = (lo.min(hi), lo.max(hi));
+            let d = |x: f64| -> Result<f64, String> {
+                Ok(nearest(at(x), near)?.map_or(f64::INFINITY, |(d, _)| d))
+            };
+            for _ in 0..ALONG_REFINE {
+                let (x1, x2) = (hi - (hi - lo) * g, lo + (hi - lo) * g);
+                if d(x1)? < d(x2)? {
+                    hi = x2;
+                } else {
+                    lo = x1;
+                }
+            }
+            let t = 0.5 * (lo + hi);
+            let p = at(t);
+            Ok(nearest(p, near)?.map(|(d, q)| (d, p, q)))
+        };
+    // The least found so far, kept where `found` is less.
+    fn keep(best: &mut Option<(f64, Vec3, Vec3)>, found: Option<(f64, Vec3, Vec3)>) {
+        if let Some((d, p, q)) = found
+            && d.is_finite()
+            && best.is_none_or(|(b, ..)| d < b)
+        {
+            *best = Some((d, p, q));
+        }
+    }
+    let mut best: Option<(f64, Vec3, Vec3)> = None;
+    let mut first: Option<(f64, f64)> = None;
     for k in 0..=ALONG_SAMPLES {
         let t = t0 + (t1 - t0) * f64::from(k) / f64::from(ALONG_SAMPLES);
         let p = at(t);
-        if let Some((d, q)) = nearest(p)?
-            && best.is_none_or(|(b, ..)| d < b)
-        {
-            best = Some((d, t, p, q));
+        if let Some((d, q)) = nearest(p, None)? {
+            if first.is_none_or(|(b, _)| d < b) {
+                first = Some((d, t));
+            }
+            keep(&mut best, Some((d, p, q)));
         }
     }
-    let Some((mut d, t, mut p, mut q)) = best else {
+    let Some((_, t)) = first else {
         return Ok(None);
     };
-    // Golden sections about the best sample, a step either side.
     let step = (t1 - t0) / f64::from(ALONG_SAMPLES);
-    let (mut lo, mut hi) = ((t - step).max(t0.min(t1)), (t + step).min(t0.max(t1)));
-    // The golden section, (√5 − 1) / 2.
-    let g = 0.618_033_988_749_894_9;
-    for _ in 0..ALONG_REFINE {
-        let (x1, x2) = (hi - (hi - lo) * g, lo + (hi - lo) * g);
-        let f = |x: f64| -> Result<f64, String> {
-            Ok(nearest(at(x))?.map_or(f64::INFINITY, |(d, _)| d))
-        };
-        if f(x1)? < f(x2)? {
-            hi = x2;
-        } else {
-            lo = x1;
+    keep(
+        &mut best,
+        narrow(
+            (t - step).clamp(t0.min(t1), t0.max(t1)),
+            (t + step).clamp(t0.min(t1), t0.max(t1)),
+            None,
+        )?,
+    );
+    // The proof: the edge's pieces against the other's triangles.
+    let chord = part.as_ref().map_or(ctx.tolerance.linear, |p| p.chord);
+    let (ts, edge_err, edge_proven) = pieces_of(curve, chord);
+    let pieces: Vec<(f64, f64, Vec3, Vec3)> = ts
+        .windows(2)
+        .filter_map(|w| match *w {
+            [a, b] => Some((a, b, at(a), at(b))),
+            _ => None,
+        })
+        .collect();
+    let other_pieces: Vec<(Vec3, Vec3)> = match other_edge {
+        Some(e) => {
+            let (ots, _, _) = pieces_of(e, chord);
+            ots.windows(2)
+                .filter_map(|w| match *w {
+                    [a, b] => Some((e.curve.eval(a), e.curve.eval(b))),
+                    _ => None,
+                })
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    let other_err = other_edge.map_or(0.0, |e| pieces_of(e, chord).1);
+    let upper = |best: &Option<(f64, Vec3, Vec3)>| best.map_or(f64::INFINITY, |(d, ..)| d);
+    let reach = pieces
+        .iter()
+        .map(|(_, _, a, b)| a.length().max(b.length()))
+        .fold(1.0_f64, f64::max);
+    let slack = 16.0 * f64::EPSILON * reach;
+    let mut work = 0_u64;
+    let mut abandoned = false;
+    // Per piece: its least bound, the faces near enough to matter, and
+    // where along it (0 to 1) the triangle or piece that bounds it is
+    // nearest: where its narrowing starts.
+    let mut bounds: Vec<(f64, usize, Vec<usize>, f64)> = Vec::new();
+    let limit = upper(&best) + 2.0 * chord;
+    for (i, (_, _, a, b)) in pieces.iter().enumerate() {
+        let piece_box = box_of(&[*a, *b]);
+        let mut least = f64::INFINITY;
+        let mut seed = 0.5;
+        let mut near: Vec<usize> = Vec::new();
+        if let Some(part) = &part {
+            for &f in &faces {
+                let Some(face_box) = part.boxes.get(&f) else {
+                    continue;
+                };
+                if boxes_apart(&piece_box, face_box) > limit + edge_err {
+                    continue;
+                }
+                near.push(f);
+                let err = part.err(f);
+                for t in part.triangles.get(&f).map(Vec::as_slice).unwrap_or(&[]) {
+                    if boxes_apart(&piece_box, &box_of(t)) > limit + edge_err + err {
+                        continue;
+                    }
+                    work = work.saturating_add(1);
+                    if work > ALONG_PAIRS {
+                        abandoned = true;
+                        break;
+                    }
+                    let (d, along) = segment_to_triangle(*a, *b, t);
+                    let d = d - edge_err - err - slack;
+                    if d < least {
+                        (least, seed) = (d, along);
+                    }
+                }
+                if abandoned {
+                    break;
+                }
+            }
+        }
+        for (x, y) in &other_pieces {
+            let (p, q) = closest_segments(*a, *b, *x, *y);
+            let d = p.distance(q) - edge_err - other_err - slack;
+            if d < least {
+                let span = *b - *a;
+                let along = (p - *a).dot(span) / span.length_squared();
+                (least, seed) = (d, if along.is_finite() { along } else { 0.5 });
+            }
+        }
+        if abandoned {
+            break;
+        }
+        bounds.push((least, i, near, seed));
+    }
+    // Every piece whose bound lies under what was found, the lowest first:
+    // narrowed on the exact geometry, near its own faces: about where its
+    // bound is nearest (a narrow least, a thin pin, lies there), then over
+    // the whole piece.
+    bounds.sort_by(|x, y| x.0.total_cmp(&y.0));
+    for (least, i, near, seed) in bounds.iter().take(ALONG_NARROWED) {
+        if *least >= upper(&best) - ctx.tolerance.linear {
+            break;
+        }
+        if let Some((a, b, pa, pb)) = pieces.get(*i) {
+            let near = (!near.is_empty()).then_some(near.as_slice());
+            let length = pa.distance(*pb);
+            let window = if length > 0.0 {
+                (2.0 * chord / length).clamp(0.0, 0.5)
+            } else {
+                0.5
+            };
+            let seed = seed.clamp(0.0, 1.0);
+            let at = |f: f64| *a + (*b - *a) * f.clamp(0.0, 1.0);
+            keep(
+                &mut best,
+                narrow(at(seed - window), at(seed + window), near)?,
+            );
+            keep(&mut best, narrow(*a, *b, near)?);
         }
     }
-    let t = 0.5 * (lo + hi);
-    let point = at(t);
-    if let Some((dd, qq)) = nearest(point)?
-        && dd < d
-    {
-        (d, p, q) = (dd, point, qq);
+    let Some((d, p, q)) = best else {
+        return Ok(None);
+    };
+    // What the pieces prove: every piece's bound (none where a piece was
+    // left out, or the curve's pieces were estimated).
+    let by_pieces = (!abandoned && edge_proven)
+        .then(|| bounds.iter().map(|(least, ..)| *least).fold(d, f64::min));
+    // What the faces the edge bounds prove: the edge lies on each, so the
+    // least distance from any of them to the other, proven on the exact
+    // faces as `measure.distance` proves its own, is no more than the
+    // edge's (tight where the face comes nearest at the edge, as a rim's
+    // faces do; the mesh's bound is a chord off).
+    let theirs_made;
+    let theirs = match other_edge {
+        Some(_) => {
+            let around = faces_around(&other.body, other.indices.first().copied());
+            theirs_made = Part::new(&other.body, Some(&around), &ctx.tolerance).ok();
+            theirs_made.as_ref()
+        }
+        None => part.as_ref(),
+    };
+    let mut by_faces: Option<f64> = None;
+    if let Some(theirs) = theirs {
+        for f in faces_around(&edge.body, edge.indices.first().copied()) {
+            let Ok(mine) = Part::new(&edge.body, Some(&[f]), &ctx.tolerance) else {
+                continue;
+            };
+            if let Ok(near) = verify::distance_to(
+                std::slice::from_ref(&mine),
+                std::slice::from_ref(theirs),
+                ctx.stop,
+            ) && near.lower.is_finite()
+            {
+                by_faces = Some(by_faces.map_or(near.lower, |b: f64| b.max(near.lower)));
+            }
+        }
     }
-    Ok(Some((d, p, q, freeform)))
+    let at_least = match (by_pieces, by_faces) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (x, y) => x.or(y),
+    }
+    .map(|l| l.clamp(0.0, d));
+    Ok(Some(Along {
+        d,
+        p,
+        q,
+        at_least,
+        freeform: freeform || !edge_proven || abandoned,
+    }))
+}
+
+/// The faces of `body` the edge `edge` bounds, each once.
+fn faces_around(body: &Body, edge: Option<usize>) -> Vec<usize> {
+    let Some(edge) = edge else {
+        return Vec::new();
+    };
+    let mut faces: Vec<usize> = craft3d_topo::edge_faces(body)
+        .get(edge)
+        .map(|fs| {
+            fs.iter()
+                .filter_map(|f| usize::try_from(f.0).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    faces.sort_unstable();
+    faces.dedup();
+    faces
 }
 
 /// The measure `name` of an assertion or an output: `between`, a length
@@ -1125,7 +1615,10 @@ pub(crate) fn take(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Str
         out.detail.insert("atLeast".into(), at_least.into());
     }
     if found.sampled {
+        // Searched on samples (a freeform curve or face, or no bound to be
+        // had): the answer says so.
         out.sampled = Sampled::OpenBelow;
+        out.detail.insert("sampled".into(), true.into());
     }
     out.detail
         .insert("relation".into(), found.relation.name().into());

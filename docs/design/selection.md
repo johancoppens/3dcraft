@@ -67,15 +67,22 @@ what their relation is (`relation_cmds.rs`, `measure.between`, the same command 
 exact geometry, from what the two are. Two flat faces: parallel, the distance between their planes; at an
 angle, the angle between the half-planes from the line the planes meet in toward each face (0 to 180°, so a
 45° chamfer meets the top at 135°). Axes (of cylinders and cones) and centres (circular edges, spheres):
-the centre distance, with its parts along X, Y and Z; two parallel axes drawn at the end both reach, where
-holes open. Two straight edges: parallel, the distance between them; meeting, or their lines crossing within
+the centre distance, with its parts along X, Y and Z; two parallel axes drawn where the holes open (below). Two straight edges: parallel, the distance between them; meeting, or their lines crossing within
 the tolerance, the angle from where they meet toward each; skew, the least distance between the segments
 (their closest points, clamped). An axis and a flat face: their distance when parallel, else their angle.
 Two vertices: the distance between them. A vertex, a circular edge or a sphere with anything else: the
 least distance between the two as they are, never from a centre (the review of 2026-11-17 found a rim
 measured from its centre under the words "Least distance"): from a vertex exactly (the curve's or the
 face's nearest point); along an edge, sampled at 96 points and narrowed about the best by golden sections,
-to the faces or the edge of the other. Two bodies: the clearance (`measure.clearance`). Anything else: the
+to the faces or the edge of the other, then proven as `measure.distance` proves its own (round two of the
+review: a thin pin 0.1 from a rim was stepped over for a wall at 0.15): the edge in pieces of a line, each
+within its sagitta of the arc (a straight edge exactly; another curve by an estimate, then not proven),
+against the other's triangles, each within the mesh's error of its face, bound the least from below; every
+piece whose bound lies under the least found is narrowed on the exact geometry near its own faces, and the
+least bound is `atLeast`. The things are found by the selection's own items (`Resolver::locate`), never
+through a name pattern; a name pattern without `*` may be as long as a name can be (a gear's faces have names
+of over 512 characters). Two parallel holes are drawn where they open: just past each end of a hole, on its
+axis, the body tells inside from outside, and the line goes to a level both open at, else the first's. Two bodies: the clearance (`measure.clearance`). Anything else: the
 least distance (`measure.distance`). Each
 answer carries the two ends of a dimension line (for an angle its corner and a point toward each side) and
 the document's tolerance, linear or angular. As an assertion it is the measure `between`, or
@@ -83,7 +90,9 @@ the document's tolerance, linear or angular. As an assertion it is the measure `
 
 The window asks once per selection and revision, on a thread of its own (`Session::between_later`, a
 `BetweenJob` the side panel polls; the card says *Measuring…* meanwhile: on the window's thread two gear
-bodies held a frame up about 180 ms), prints numbers to the document's tolerance without trailing zeros
+bodies held a frame up about 180 ms), one at a time (a newer selection waits, an older answer is dropped;
+a least not proven within the tolerance shows the range it is proven in, or *about* without a bound, and
+*Keep as a check* keeps that range), prints numbers to the document's tolerance without trailing zeros
 (the same text shown and copied), and shows one large number
 at the panel's foot in place of the first thing's rows, and draws the dimension line with egui over the
 picture (`shell/dimension.rs`, as the section's handle is drawn; neither renderer draws it): the accent over

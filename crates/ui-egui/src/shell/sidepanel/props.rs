@@ -341,6 +341,9 @@ pub struct Measurement {
     /// kept of it takes (`Centre distance Left face – Right face`).
     pub title: String,
     pub check_name: String,
+    /// No less than this, proven, where the relation is a least searched
+    /// for (a least distance, a clearance).
+    pub at_least: Option<f64>,
     /// Being measured, on a thread of its own (`Session::between_later`):
     /// the card says so and nothing is drawn or kept yet.
     pub measuring: bool,
@@ -367,6 +370,7 @@ impl Measurement {
             answer: Value::Null,
             title: String::new(),
             check_name: String::new(),
+            at_least: None,
             measuring: true,
             unit: unit.to_string(),
             things,
@@ -407,6 +411,8 @@ impl Measurement {
     pub fn json(&self) -> Value {
         json!({
             "measuring": self.measuring,
+            "atLeast": self.at_least,
+            "proven": self.proven(),
             "relation": if self.relation.is_empty() { Value::Null } else { self.relation.clone().into() },
             "value": self.value,
             "text": self.text,
@@ -421,12 +427,41 @@ impl Measurement {
         })
     }
 
+    /// Whether the value is what it is within the tolerance: a least
+    /// searched for (a least distance, a clearance) only with a proven
+    /// bound that close below it (the review of 2026-11-17: "a number
+    /// shown as a least distance is either proven or says what it is").
+    pub fn proven(&self) -> bool {
+        let searched = matches!(self.relation.as_str(), "leastDistance" | "clearance");
+        !searched
+            || self
+                .value
+                .zip(self.at_least)
+                .is_some_and(|(v, least)| least >= v - self.tolerance)
+    }
+
     /// The parameters of `assert.add` that keep this as a check named
     /// `name`: the relation of the two things, the value now, the
-    /// document's tolerance. `None` for what has no value (two bodies
-    /// that overlap, a refusal).
+    /// document's tolerance; where the value is not proven, what is (no
+    /// more than the value found between real places, no less than the
+    /// bound). `None` for what has no value (two bodies that overlap, a
+    /// refusal).
     pub fn check(&self, name: &str) -> Option<Value> {
         let value = self.value.filter(|v| v.is_finite())?;
+        if !self.proven() && !self.relation.is_empty() {
+            let mut kept = json!({
+                "name": name,
+                "measure": "between",
+                "from": self.items[0],
+                "to": self.items[1],
+                "relation": self.relation,
+                "max": value,
+            });
+            if let (Some(least), Some(map)) = (self.at_least, kept.as_object_mut()) {
+                map.insert("min".into(), least.into());
+            }
+            return Some(kept);
+        }
         if self.relation == "angle" {
             Some(json!({
                 "name": name,
@@ -458,16 +493,16 @@ fn item_json(item: &craft3d_engine::SelectionItem) -> Value {
 }
 
 /// The relation of `a` and `b` (`measure.between`), in the document's
-/// `unit`, started on a thread of its own (`job`; the review of
-/// 2026-11-17: on the window's thread it held a frame up); `None` for
-/// kinds it does not take (a feature, a sketch, a datum).
+/// `unit`, being measured: the parameters to measure it with go to
+/// `wanted`, for the panel to measure on a thread of its own, one at a
+/// time (the review of 2026-11-17: on the window's thread it held a frame
+/// up); `None` for kinds it does not take (a feature, a sketch, a datum).
 pub(crate) fn relation(
-    session: &mut Session,
     a: &craft3d_engine::SelectionItem,
     b: &craft3d_engine::SelectionItem,
     unit: &str,
     things: [String; 2],
-    job: &mut Option<craft3d_engine::BetweenJob>,
+    wanted: &mut Option<Value>,
 ) -> Option<Measurement> {
     let measured = |kind: SelectionKind| {
         matches!(
@@ -479,16 +514,8 @@ pub(crate) fn relation(
         return None;
     }
     let items = [item_json(a), item_json(b)];
-    let waiting = Measurement::measuring(items.clone(), unit, things);
-    Some(
-        match session.between_later(&json!({"from": items[0], "to": items[1]})) {
-            Ok(started) => {
-                *job = Some(started);
-                waiting
-            }
-            Err(e) => waiting.settled(Err(e.message().to_string())),
-        },
-    )
+    *wanted = Some(json!({"from": items[0], "to": items[1]}));
+    Some(Measurement::measuring(items, unit, things))
 }
 
 /// `v` as the window prints a measure: to the decimals `tolerance` holds
@@ -548,8 +575,25 @@ pub fn measurement_of(answer: &Value, items: [Value; 2], unit: &str) -> Measurem
         .get("tolerance")
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
+    let at_least = answer.get("atLeast").and_then(Value::as_f64);
+    let searched = matches!(relation.as_str(), "leastDistance" | "clearance");
+    let unproven = searched && value.zip(at_least).is_none_or(|(v, l)| l < v - tolerance);
     let text = match value {
         Some(v) if angle => format!("{}°", number_to(v, tolerance.to_degrees())),
+        // Not proven within the tolerance: the range it is proven in, or
+        // "about" where there is no bound.
+        Some(v) if unproven => match at_least {
+            Some(l) => length_text(v, tolerance, unit).replacen(
+                &number_to(v, tolerance),
+                &format!(
+                    "{} – {}",
+                    number_to(l.max(0.0), tolerance),
+                    number_to(v, tolerance)
+                ),
+                1,
+            ),
+            None => format!("about {}", length_text(v, tolerance, unit)),
+        },
         Some(v) => length_text(v, tolerance, unit),
         None if answer.get("overlap").and_then(Value::as_bool) == Some(true) => {
             "Overlap".to_string()
@@ -591,6 +635,7 @@ pub fn measurement_of(answer: &Value, items: [Value; 2], unit: &str) -> Measurem
         answer: answer.clone(),
         title: String::new(),
         check_name: String::new(),
+        at_least,
         measuring: false,
         unit: unit.to_string(),
         things: [String::new(), String::new()],
@@ -649,7 +694,7 @@ pub(crate) fn read(
     session: &mut Session,
     scene: Option<&Scene>,
     bodies_here: bool,
-    job: &mut Option<craft3d_engine::BetweenJob>,
+    wanted: &mut Option<Value>,
 ) -> Option<Props> {
     let view = session.selection();
     let first = view.items.first()?.clone();
@@ -679,7 +724,7 @@ pub(crate) fn read(
     let measurement = match (&second, view.items.len()) {
         (Some(other), 2) if bodies_here => {
             let things = [thing_words(&first, scene), thing_words(other, scene)];
-            relation(session, &first, other, &unit, things, job).map(|mut m| {
+            relation(&first, other, &unit, things, wanted).map(|mut m| {
                 m.title = craft3d_engine::selection_summary(&view.items);
                 m
             })
@@ -1589,5 +1634,34 @@ mod tests {
             ),
             "Thickness 7 mm"
         );
+    }
+
+    /// The review of 2026-11-17, round two: a least not proven within the
+    /// tolerance says what it is (the range it is proven in, or "about"
+    /// without a bound) and is kept as what is proven; proven, the value.
+    #[test]
+    fn a_least_not_proven_says_so_and_keeps_what_is_proven() {
+        let items = [json!("A"), json!("B")];
+        let answer = |at_least: Value| {
+            json!({"relation": "leastDistance", "value": 0.1, "atLeast": at_least,
+                "tolerance": 1e-6, "words": "Least distance", "from": [0, 0, 0], "to": [0.1, 0, 0]})
+        };
+        let loose = measurement_of(&answer(json!(0.05)), items.clone(), "mm");
+        assert_eq!(loose.text, "0.05 – 0.1 mm");
+        assert!(!loose.proven());
+        let kept = loose.check("Least").unwrap();
+        assert_eq!(
+            (kept["min"].as_f64(), kept["max"].as_f64()),
+            (Some(0.05), Some(0.1))
+        );
+        assert!(kept.get("eq").is_none(), "{kept}");
+        let none = measurement_of(&answer(Value::Null), items.clone(), "mm");
+        assert_eq!(none.text, "about 0.1 mm");
+        let kept = none.check("Least").unwrap();
+        assert_eq!((kept.get("min"), kept["max"].as_f64()), (None, Some(0.1)));
+        let tight = measurement_of(&answer(json!(0.1 - 1e-9)), items, "mm");
+        assert_eq!(tight.text, "0.1 mm");
+        assert!(tight.proven());
+        assert_eq!(tight.check("Least").unwrap()["eq"].as_f64(), Some(0.1));
     }
 }

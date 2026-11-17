@@ -62,7 +62,7 @@ by itself when two things are selected ([The window › Features](window.md#feat
 | Two straight edges | Parallel: `centerDistance`, the distance between them; meeting (or their lines crossing): the `angle` between them; skew: `leastDistance` between the edges themselves |
 | An axis and a flat face | `distance` when parallel, else the `angle` between them |
 | Two vertices | `distance` |
-| A vertex, a circular edge or a ball with anything else | `leastDistance` between the two as they are: the rim itself, the ball's surface, never their centres |
+| A vertex, a circular edge or a ball with anything else | `leastDistance` between the two as they are: the rim itself, the ball's surface, never their centres; with `atLeast`, what is proven (where it is less than the value by more than the tolerance, the window shows the range), and `sampled: true` where the search rests on samples (a freeform curve or face) |
 | Two bodies | `clearance`, as `measure.clearance` |
 | Anything else of faces and bodies | `leastDistance`, as `measure.distance` |
 

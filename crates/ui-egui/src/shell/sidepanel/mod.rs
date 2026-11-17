@@ -153,9 +153,14 @@ pub(crate) struct SideMemory {
     /// document and selection serial ([`SideMemory::kept_key`]), and the
     /// check's name.
     pub(crate) kept: Option<((u64, u64), String)>,
-    /// The relation of the two things selected, being measured on a
-    /// thread of its own.
-    pub(crate) between: Option<craft3d_engine::BetweenJob>,
+    /// The relation of two things selected being measured on a thread of
+    /// its own, for the card of `props_for` it was asked for; and the one
+    /// waiting for it to finish (the newest asked, replacing any before):
+    /// one runs, one waits, an answer for an older card is dropped (the
+    /// review of 2026-11-17: a quick run of selections ran them side by
+    /// side).
+    pub(crate) between: Option<((u64, u64, u64), craft3d_engine::BetweenJob)>,
+    waiting: Option<((u64, u64, u64), Value)>,
     /// Commands waiting for the session.
     pending: Vec<SideRequest>,
     /// Errors at fields, by their key.
@@ -439,32 +444,66 @@ impl Shell {
             self.side.props_for = Some(props_key);
             self.side.measured = None;
             self.side.checks_asked = false;
-            // A new selection or revision: what was being measured for the
-            // last one is left to finish and forgotten.
-            self.side.between = None;
+            let mut wanted = None;
             self.side.props = if self.selection().items.is_empty() {
                 None
             } else {
-                props::read(session, scene, bodies_here, &mut self.side.between)
+                props::read(session, scene, bodies_here, &mut wanted)
             };
+            // One measure runs at a time: a newer one waits for it.
+            self.side.waiting = None;
+            if let Some(params) = wanted {
+                let busy = self
+                    .side
+                    .between
+                    .as_ref()
+                    .is_some_and(|(_, job)| job.answer().is_none());
+                if busy {
+                    self.side.waiting = Some((props_key, params));
+                } else {
+                    self.start_between(session, props_key, &params);
+                }
+            }
         }
-        // The relation being measured: its answer, once it is there.
-        if let Some(answer) = self
+        // The relation being measured: its answer, once it is there, for
+        // the card it was asked for only; then the one waiting.
+        if let Some((key, answer)) = self
             .side
             .between
             .as_ref()
-            .and_then(craft3d_engine::BetweenJob::answer)
+            .and_then(|(key, job)| Some((*key, job.answer()?)))
         {
             self.side.between = None;
-            if let Some(m) = self
-                .side
-                .props
-                .as_mut()
-                .and_then(|p| p.measurement.as_mut())
-                && m.measuring
-            {
-                *m = m.settled(answer);
+            if self.side.props_for == Some(key) {
+                self.settle_measurement(answer);
             }
+            if let Some((key, params)) = self.side.waiting.take()
+                && self.side.props_for == Some(key)
+            {
+                self.start_between(session, key, &params);
+            }
+        }
+    }
+
+    /// Starts measuring `params` (`measure.between`'s) for the card of
+    /// `key` on a thread of its own; refused at once, the card says why.
+    fn start_between(&mut self, session: &mut Session, key: (u64, u64, u64), params: &Value) {
+        match session.between_later(params) {
+            Ok(job) => self.side.between = Some((key, job)),
+            Err(e) => self.settle_measurement(Err(e.message().to_string())),
+        }
+    }
+
+    /// The card's relation, measured.
+    fn settle_measurement(&mut self, answer: Result<Value, String>) {
+        if let Some(m) = self
+            .side
+            .props
+            .as_mut()
+            .and_then(|p| p.measurement.as_mut())
+            && m.measuring
+        {
+            *m = m.settled(answer);
         }
     }
 

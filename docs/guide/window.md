@@ -274,7 +274,9 @@ panel or on the line, to copy it with its unit. Another selection, or Escape, ta
 
 **Keep as a check** keeps that relation as a check of the document: named after the two things (*Centre
 distance Left face – Right face*), its value now, within the document's tolerance. It shows under
-**Checks**, is measured again after every change, and is one step to undo.
+**Checks**, is measured again after every change, and is one step to undo. A least distance shown as a
+range (*0.098 – 0.1 mm*: the least found between real places, and no less than the first number, proven)
+or as *about* a number (no bound could be had) is not proven within the tolerance; it is kept as that range.
 
 ![A hole selected: the foot of the side panel names its surface, its area and axis, the feature that made it and its name](images/selection.png)
 

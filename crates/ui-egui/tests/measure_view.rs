@@ -556,7 +556,7 @@ fn every_character_the_measuring_prints_is_in_the_windows_fonts() {
         "Distance between the points",
         "Angle between the faces Angle between the edges",
         "Angle between the axes Angle between the axis and the face",
-        "Least distance Least distance between the edges Clearance",
+        "Least distance Least distance between the edges Clearance about",
         "Keep as a check Kept as a check Copy",
     ];
     for text in printed {
@@ -655,4 +655,72 @@ fn the_cards_measure_button_measures_a_faces_wall() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     let text = got.to_string();
     assert!(!text.contains("there is no feature named"), "{text}");
+}
+
+/// Frames until the relation is measured: every text the card showed
+/// settled on the way.
+fn shown_until_settled(
+    window: &mut Window,
+    shell: &mut Shell,
+    session: &mut Session,
+) -> Vec<String> {
+    let mut seen = Vec::new();
+    for _ in 0..5000 {
+        window.frame(shell, session, Vec::new());
+        if let Some(m) = shell.measurement().filter(|m| !m.measuring) {
+            seen.push(m.text.clone());
+        }
+        if !shell.measuring() && !seen.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    seen
+}
+
+/// The review of 2026-11-17, round two: one measure runs at a time and an
+/// answer for an older selection or revision is never shown. Two holes,
+/// then the right one moved before the answer came: only its new centre
+/// distance; two holes, then two parallel faces at once: only the faces'
+/// distance; then a quick run of selections: only the last one's.
+#[test]
+fn an_answer_for_an_older_selection_or_revision_is_never_shown() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    let holes = json!({"in": "Bevel", "hole": true});
+    select(&mut session, "face", holes.clone(), 2);
+    window.frame(&mut shell, &mut session, Vec::new());
+    run(
+        &mut session,
+        "feature.edit",
+        json!({"feature": "Right", "position": [47, 20, -5]}),
+    );
+    let seen = shown_until_settled(&mut window, &mut shell, &mut session);
+    assert!(
+        !seen.is_empty() && seen.iter().all(|t| t == "32 mm"),
+        "{seen:?}"
+    );
+    let faces =
+        json!({"in": "Bevel", "any": [{"normal": {"along": "z"}}, {"normal": {"along": "-z"}}]});
+    select(&mut session, "face", holes.clone(), 2);
+    window.frame(&mut shell, &mut session, Vec::new());
+    select(&mut session, "face", faces.clone(), 2);
+    let seen = shown_until_settled(&mut window, &mut shell, &mut session);
+    assert!(
+        !seen.is_empty() && seen.iter().all(|t| t == "20 mm"),
+        "{seen:?}"
+    );
+    for _ in 0..3 {
+        select(&mut session, "face", holes.clone(), 2);
+        window.frame(&mut shell, &mut session, Vec::new());
+        select(&mut session, "face", faces.clone(), 2);
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    let seen = shown_until_settled(&mut window, &mut shell, &mut session);
+    assert!(
+        !seen.is_empty() && seen.iter().all(|t| t == "20 mm"),
+        "{seen:?}"
+    );
 }
