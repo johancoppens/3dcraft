@@ -202,7 +202,7 @@ fn the_relation_of_two_things_is_chosen_from_what_they_are_and_measured_exactly(
         let corner = item(
             &mut s,
             "vertex",
-            json!({"in": "Bevel", "inside": [[-1.0 * k, -1.0 * k, -1.0 * k], [1.0 * k, 1.0 * k, 1.0 * k]]}),
+            json!({"in": "Bevel", "inside": [[-k, -k, -k], [k, k, k]]}),
         );
         let got = between(&mut s, &corner, &side);
         assert_eq!(got["relation"], "leastDistance", "{got}");
