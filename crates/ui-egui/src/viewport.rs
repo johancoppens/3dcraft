@@ -1655,6 +1655,9 @@ fn build_overlay(
         // A grid's hidden stretches are left out unless see-through
         // (`SceneSketch::dims_hidden`).
         let dimmed = sketch.dims_hidden(see_through);
+        // A grid is cut by the section where the bodies are
+        // (`SceneSketch::cut_by_section`); a sketch is drawn whole.
+        let cut = sketch.cut_by_section();
         for polyline in &sketch.polylines {
             let kind = match (polyline.construction, chosen) {
                 (true, _) => LineKind::Construction,
@@ -1663,7 +1666,10 @@ fn build_overlay(
             };
             for pair in polyline.points.windows(2) {
                 if let [a, b] = *pair {
-                    line_of(a, b, kind, true, dimmed, None, lift);
+                    let piece = if cut { kept(a, b) } else { Some([a, b]) };
+                    if let Some([a, b]) = piece {
+                        line_of(a, b, kind, true, dimmed, None, lift);
+                    }
                 }
             }
         }
@@ -1682,7 +1688,11 @@ fn build_overlay(
         };
         let lift = sketch.lift(tolerance);
         let dimmed = sketch.dims_hidden(see_through);
+        let cut = sketch.cut_by_section();
         for point in &sketch.points {
+            if cut && kept(*point, *point).is_none() {
+                continue;
+            }
             if let Some(p) = projector.project(*point) {
                 let hidden = map.is_some_and(|map| {
                     map.covers_lifted(p.x, p.y, p.depth, lift, projector.footprint(p.depth))

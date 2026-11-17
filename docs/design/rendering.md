@@ -1992,3 +1992,8 @@ secant of the angle it is seen at, and is hidden where most of five places a pix
 9 at the reviewer's camera and from 591 to 24 low at its summit ([`surfacing.md`](surfacing.md) › *Seeing the
 grid*). The terrain of `the_direct_path_draws_a_grid_on_its_sheet_and_matches_the_oracle` now has a ridge that
 hides its back slope: 1039 line samples opaque, all agreeing, 1040 of 1041 see-through (Intel MTL).
+
+*Round 3 (2026-11-17).* A section cuts a grid where it cuts the bodies (`SceneSketch::cut_by_section`): its
+segments are clipped at the plane by the clip the bodies' edges get (`Cut::clip_segment`, from the window's
+`SectionCut`), on the CPU before the GPU's segments are made, so both paths draw the same pieces; its points
+beyond the plane are left out. Sketches, helices and datums are still drawn whole under a section.
