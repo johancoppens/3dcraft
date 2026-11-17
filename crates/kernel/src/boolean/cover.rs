@@ -466,8 +466,11 @@ fn pieces(surface: &Surface) -> Option<Vec<(Rect, RationalBezierPatch)>> {
             if s.weights().iter().any(|w| w.is_nan() || *w <= 0.0) {
                 return None;
             }
-            // Counted before a piece is copied: a face of more has no
-            // cover anyway.
+            // Counted from the knots before a span is made: a face of
+            // more has no cover anyway.
+            if super::freeform::span_count(surface).is_none_or(|count| count > MOST_PIECES) {
+                return None;
+            }
             let spans = s.bezier_spans_shared().ok()?;
             if spans.len() > MOST_PIECES {
                 return None;

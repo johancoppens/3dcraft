@@ -66,18 +66,50 @@ pub(super) const POLES_BOTH_WAYS: Reason = "a freeform face whose patch closes i
 pub(super) const POLE_SHAPE: Reason = "a freeform face that closes into a point too sharply or too unevenly for the directions around that point to be told apart (a cusp, or a point the surface folds back over)";
 /// [`MAX_SPANS`]: the number written out, as the reason has no room for
 /// a number worked out (`craft3d_regen` adds the face's own).
+#[cfg(not(target_arch = "wasm32"))]
 pub const TOO_MANY_SPANS: Reason =
     "a freeform face of more than 262144 Bézier spans, more than a boolean indexes";
+#[cfg(target_arch = "wasm32")]
+pub const TOO_MANY_SPANS: Reason = "a freeform face of more than 32768 Bézier spans, more than a boolean indexes in the browser (the desktop program takes up to 262144)";
+#[cfg(not(target_arch = "wasm32"))]
 const _: () = assert!(MAX_SPANS == 262_144);
+#[cfg(target_arch = "wasm32")]
+const _: () = assert!(MAX_SPANS == 32_768 && MAX_SPANS_DESKTOP == 262_144);
+/// [`MAX_INDEX_BYTES`]: the number written out (`craft3d_regen` adds the
+/// face's spans, degrees and bytes).
+pub const TOO_LARGE_INDEX: Reason = "a freeform face whose Bézier spans and their index would take more than the 1 GiB one face may";
+const _: () = assert!(MAX_INDEX_BYTES == 1 << 30);
 
 /// The most Bézier spans of a freeform face a boolean takes (a tree
-/// indexes): as many as the points of the largest grid surface
-/// (`craft3d_geom::grid::MAX_GRID_POINTS`, so more than its spans).
-/// Until 2026-11-17 it was [`MAX_LEAVES`], 32 768, a grid of 184 × 184
-/// points: what one tree took was capped by its leaves, and every search
-/// took every span's box (*Groups of spans*, [`Group`]). A tree of the
-/// most spans takes some 200 MB (a bicubic's leaf about 800 bytes).
-pub const MAX_SPANS: usize = 1 << 18;
+/// indexes) in the desktop program: as many as the points of the largest
+/// grid surface (`craft3d_geom::grid::MAX_GRID_POINTS`, so more than its
+/// spans), and no more than [`MAX_INDEX_BYTES`] for the spans and their
+/// tree. Until 2026-11-17 it was [`MAX_LEAVES`], 32 768, a grid of 184 ×
+/// 184 points: what one tree took was capped by its leaves, and every
+/// search took every span's box (*Groups of spans*, [`Group`]).
+pub const MAX_SPANS_DESKTOP: usize = 1 << 18;
+/// The most Bézier spans of a freeform face a boolean takes here: in a
+/// browser (WebAssembly, whose memory is the module's 4 GiB at most and
+/// what the browser grants, and where a failed allocation ends the
+/// module) the cap of before 2026-11-17, [`MAX_LEAVES`]: a tree of the
+/// desktop's cap and the spans it is made from take some 380 MB for a
+/// bicubic, with the sheet's own spans, mesh and the operation's other
+/// trees beside them more than a browser can be counted on to grant.
+#[cfg(not(target_arch = "wasm32"))]
+pub const MAX_SPANS: usize = MAX_SPANS_DESKTOP;
+#[cfg(target_arch = "wasm32")]
+pub const MAX_SPANS: usize = MAX_LEAVES;
+
+/// The most memory the index of one freeform face of more than
+/// [`MAX_LEAVES`] spans may take: its Bézier spans (kept with the
+/// surface) and the tree over them ([`index_bytes`], worked out from the
+/// knots and degrees before either is made). A tree of up to `MAX_LEAVES`
+/// spans is held by its leaves, as before 2026-11-17 (at most some 1.15 GB
+/// at the highest degree, 32). A bicubic's spans and tree take about 1.5
+/// KB a span, some 380 MB at the grid's cap; past the leaves, a face of degree
+/// 5 × 5 takes up to [`MAX_SPANS`] spans, of degree 7 × 7 about 240 000,
+/// of degree 15 × 15 about 64 000.
+pub const MAX_INDEX_BYTES: usize = 1 << 30;
 
 /// How many times a Bézier span is quartered at most, and how many leaves
 /// quartering may make for a whole surface: a surface of more spans than
@@ -185,6 +217,27 @@ fn question(tree: u64, kind: u64, key: &[u64]) -> (u64, u64) {
         .iter()
         .fold(group, |h, w| (h ^ w).wrapping_mul(0x0100_0000_01b3));
     (group, thing)
+}
+
+/// In place of [`MAX_INDEX_BYTES`] when not zero ([`set_index_budget`]).
+static INDEX_BYTES_SET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Makes the trees built from now on held to `bytes` for a face's spans
+/// and index past [`MAX_LEAVES`] spans, or to [`MAX_INDEX_BYTES`]
+/// (`None`): for the tests of a face just under the budget, which would
+/// take a gigabyte at the real one.
+#[doc(hidden)]
+pub fn set_index_budget(bytes: Option<usize>) {
+    INDEX_BYTES_SET.store(bytes.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The budget of a face's spans and index, as [`set_index_budget`] left
+/// it.
+fn index_budget() -> usize {
+    match INDEX_BYTES_SET.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => MAX_INDEX_BYTES,
+        set => set,
+    }
 }
 
 /// What the control points of a patch take.
@@ -736,6 +789,40 @@ impl Slope {
 
 pub(super) fn is_freeform(surface: &Surface) -> bool {
     matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_))
+}
+
+/// What the index of a freeform face on `surface` takes when its spans
+/// are its leaves (past a quarter of [`MAX_LEAVES`] spans, never
+/// quartered): its Bézier spans as the surface keeps them and the tree
+/// over them, a node, a patch and a span a span and the groups over them
+/// (more groups than there are, so never less than it takes; the tree's
+/// part is what [`PatchTree::base_bytes`] counts), from its knots and
+/// degrees alone; `None` for an analytic surface.
+pub fn index_bytes(surface: &Surface) -> Option<usize> {
+    let spans = span_count(surface)?;
+    let (p, q) = match surface {
+        Surface::Bezier(b) => (b.degree_u(), b.degree_v()),
+        Surface::Nurbs(s) => s.degrees(),
+        _ => return None,
+    };
+    Some(index_bytes_of(spans, p, q))
+}
+
+/// [`index_bytes`] of a surface of `spans` spans of degrees `p` × `q`.
+pub const fn index_bytes_of(spans: usize, p: usize, q: usize) -> usize {
+    let patch = p
+        .saturating_add(1)
+        .saturating_mul(q.saturating_add(1))
+        .saturating_mul(4 * std::mem::size_of::<f64>());
+    let span = std::mem::size_of::<Node>()
+        .saturating_add(std::mem::size_of::<craft3d_geom::BezierSpan>())
+        .saturating_add(patch.saturating_mul(2));
+    // Groups: a third of the spans for a grid two by two at every level,
+    // more where a level's rows or columns are odd: half and 64 is above
+    // either.
+    spans
+        .saturating_mul(span)
+        .saturating_add((spans / 2 + 64).saturating_mul(std::mem::size_of::<Group>()))
 }
 
 /// How many Bézier spans a freeform surface has (one for a Bézier patch,
@@ -1998,6 +2085,13 @@ const EXTRA_DEPTH: usize = 40;
 /// computed to within some units in the last place of the coordinates,
 /// a hundred thousand times less.
 const SEGMENT_GROUP_MARGIN: f64 = 1e-10;
+/// The largest coordinate a segment and a surface may have for the
+/// segment's bound to take the groups of spans
+/// ([`PatchTree::segment_lower_bound`]): the squares of differences of
+/// such coordinates, and their sums, stay far below the largest number
+/// (1.2e301 at most against 1.8e308); a coordinate that is no number is
+/// not modest either.
+const MODEST: f64 = 1e150;
 /// How many pieces a query for a segment may split: a segment that runs
 /// on the surface would otherwise split every piece along it down to the
 /// resolution.
@@ -2358,8 +2452,8 @@ fn keep_within_budget(shelf: &mut Shelf) {
 /// ([`holding`]): their nodes and the pieces their leaves keep
 /// ([`PatchTree::base_bytes`]), each tree counted once. A boolean holds the
 /// tree of every freeform face of both operands it looks at while it
-/// works, and each tree is capped (by [`MAX_LEAVES`], about 22 MB, and
-/// [`MAX_SPANS`], some 200 MB for a bicubic surface), but their
+/// works, and each tree is capped (by [`MAX_LEAVES`], about 22 MB for a
+/// bicubic, and past them by [`MAX_INDEX_BYTES`] with its spans), but their
 /// number is not: a spur gear of twenty teeth drawn from formulas, its hub
 /// covering the face the teeth end in, held 160 trees and 2.2 GB, and one
 /// of a hundred teeth took a laptop's memory (2026-10-23). The impeller of
@@ -2391,9 +2485,9 @@ pub(super) const TOO_MUCH_HELD: Reason = "the freeform faces it meets need more 
 /// **What this bounds, honestly.** It is an estimate of memory, not a
 /// hard ceiling. A tree is counted by [`PatchTree::base_bytes`] once it is
 /// built or found (a tree's size is known only when it is built), so each
-/// waiting operation holds one tree not counted yet (at most about 22 MB,
-/// [`MAX_LEAVES`], or some 200 MB at [`MAX_SPANS`]); what a tree
-/// remembers later (its memos) is not
+/// waiting operation holds one tree not counted yet (at most about 22 MB
+/// for a bicubic at [`MAX_LEAVES`], or [`MAX_INDEX_BYTES`] with its spans
+/// past them); what a tree remembers later (its memos) is not
 /// counted; and a tree asked for outside any operation (an outline made
 /// outside a boolean) counts nowhere but on the shelf. So the trees of
 /// the process stay below about `HELD_TOGETHER + HELD_BYTES` plus the
@@ -2903,10 +2997,16 @@ impl PatchTree {
 
     /// [`Self::new`]: the building.
     fn built(surface: &Surface) -> Result<PatchTree, Reason> {
-        // Counted from the knots before the spans are made: a surface of
-        // more is refused without the memory its spans would take.
-        if span_count(surface).is_some_and(|count| count > MAX_SPANS) {
-            return Err(TOO_MANY_SPANS);
+        // Counted from the knots and degrees before the spans are made: a
+        // surface of more spans, or whose spans and index would take more
+        // than one face may, is refused without the memory they would take.
+        if let Some(count) = span_count(surface) {
+            if count > MAX_SPANS {
+                return Err(TOO_MANY_SPANS);
+            }
+            if count > MAX_LEAVES && index_bytes(surface).is_some_and(|b| b > index_budget()) {
+                return Err(TOO_LARGE_INDEX);
+            }
         }
         // A spline's spans as it keeps them (`bezier_spans_shared`), not a
         // copy: some 150 MB for the 259 081 spans of the largest grid.
@@ -4152,9 +4252,22 @@ impl PatchTree {
                 .fold(0.0, f64::max);
             (gap.length() - SEGMENT_GROUP_MARGIN * size).max(0.0)
         };
+        // Where a coordinate of the segment or of the surface is so large
+        // that the squares of the distances to the boxes may overflow
+        // (a span's distance is then infinite or no number, below which
+        // no group's distance stays), the spans are searched as before
+        // the groups, one by one.
+        let modest = |q: Vec3| q.is_finite() && q.x.abs().max(q.y.abs()).max(q.z.abs()) <= MODEST;
+        let grouped = modest(a)
+            && modest(b)
+            && self
+                .groups
+                .last()
+                .and_then(|top| top.bbox.corners())
+                .is_some_and(|(lo, hi)| modest(lo) && modest(hi));
         self.bound_by(
             &|slab| segment_box_distance(&slab.local, slab.to_local(a), slab.to_local(b)),
-            (a.is_finite() && b.is_finite()).then_some(&group as &dyn Fn(&Bbox3) -> f64),
+            grouped.then_some(&group as &dyn Fn(&Bbox3) -> f64),
             resolution,
             SEGMENT_BUDGET,
             threshold,
@@ -6982,6 +7095,114 @@ mod tests {
                 _ => 1,
             };
             assert_eq!(span_count(&surface), Some(made));
+        }
+    }
+
+    /// A flat sheet of degree `degree` over `spans` × `spans` knot spans.
+    fn flat_sheet(degree: usize, spans: usize) -> Surface {
+        let n = spans + degree;
+        let mut knots = vec![0.0; degree + 1];
+        for k in 1..spans {
+            knots.push(k as f64 / spans as f64);
+        }
+        knots.extend(std::iter::repeat_n(1.0, degree + 1));
+        let ctrl = (0..n * n)
+            .map(|k| Vec3::new((k / n) as f64, (k % n) as f64, 0.01 * (k % 7) as f64))
+            .collect();
+        Surface::Nurbs(
+            NurbsSurface::new(
+                degree,
+                degree,
+                knots.clone(),
+                knots,
+                n,
+                n,
+                ctrl,
+                vec![1.0; n * n],
+            )
+            .unwrap(),
+        )
+    }
+
+    /// What a face's spans and index take is worked out from its knots and
+    /// degrees before they are made ([`index_bytes`]): no less than the
+    /// spans and the tree then made take, and within a tenth of them, at
+    /// degrees 1 and 3 past [`MAX_LEAVES`] spans; and the budget refuses
+    /// a face one byte over it and takes one at it ([`set_index_budget`];
+    /// the real budget's gigabyte is `tests/boolean_index_budget.rs`'s).
+    #[test]
+    fn the_index_of_a_face_is_counted_before_it_is_made_and_held_to_the_budget() {
+        for degree in [1, 3] {
+            let surface = flat_sheet(degree, 182);
+            let counted = index_bytes(&surface).unwrap();
+            let tree = PatchTree::new(&surface).unwrap();
+            let Surface::Nurbs(n) = &surface else {
+                panic!("a spline")
+            };
+            let spans: usize = n
+                .bezier_spans_shared()
+                .unwrap()
+                .iter()
+                .map(|s| {
+                    std::mem::size_of::<craft3d_geom::BezierSpan>()
+                        + s.patch.control_points().len() * 4 * std::mem::size_of::<f64>()
+                })
+                .sum();
+            let made = tree.base_bytes + spans;
+            assert!(
+                counted >= made && (counted as f64) <= 1.1 * made as f64,
+                "degree {degree}: counted {counted}, made {made}"
+            );
+            set_index_budget(Some(counted - 1));
+            let over = PatchTree::new(&surface).err();
+            set_index_budget(Some(counted));
+            let at = PatchTree::new(&surface).is_ok();
+            set_index_budget(None);
+            assert_eq!(over, Some(TOO_LARGE_INDEX));
+            assert!(at);
+        }
+        // Within the leaves' budget a face is held by its leaves, as before.
+        set_index_budget(Some(1));
+        let small = PatchTree::new(&flat_sheet(3, 180)).is_ok();
+        set_index_budget(None);
+        assert!(small);
+    }
+
+    /// A segment whose ends or whose surface's coordinates are so large
+    /// that the squares of their distances may overflow is bounded without
+    /// the groups, as before them: the same answer and work with groups as
+    /// without, ends up to the largest number (the review of 2026-11-17
+    /// found the grouped bound +inf where the flat one was 0 past 1e299).
+    #[test]
+    fn a_segment_of_huge_coordinates_is_bounded_as_without_groups() {
+        use craft3d_geom::allowance::measured;
+        let huge = [1e100, 1e150, 1e160, 1e299, 1e300, 0.5 * f64::MAX, f64::MAX];
+        for scale in [1.0, 1e140, 1e200] {
+            let surface = hills(33, scale, Vec3::ZERO, false, false);
+            UNGROUPED.set(true);
+            let flat = PatchTree::new(&surface);
+            UNGROUPED.set(false);
+            let grouped = PatchTree::new(&surface);
+            let (Ok(flat), Ok(grouped)) = (flat, grouped) else {
+                continue;
+            };
+            for &h in &huge {
+                for (p, q) in [
+                    (Vec3::ZERO, Vec3::new(h, -h, 0.0)),
+                    (Vec3::new(h, h, h), Vec3::new(-h, 0.5 * h, 0.0)),
+                    (Vec3::new(0.3, 0.2, 0.1) * scale, Vec3::new(0.0, 0.0, h)),
+                ] {
+                    for threshold in [f64::INFINITY, 1e-3 * scale] {
+                        let ask = |tree: &PatchTree| {
+                            let (b, w) = measured(|| {
+                                tree.segment_lower_bound(p, q, 1e-3 * scale, threshold)
+                            });
+                            (b.to_bits(), w)
+                        };
+                        assert_eq!(ask(&flat), ask(&grouped), "{p:?} {q:?} at {scale}");
+                    }
+                }
+            }
         }
     }
 

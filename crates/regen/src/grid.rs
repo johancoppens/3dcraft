@@ -35,12 +35,19 @@ pub struct Gridded {
     pub warnings: Vec<String>,
 }
 
-// Every grid's sheet is taken by a boolean: it has fewer Bézier spans than
-// points (`(rows − 3) (columns − 3)` for a cubic), and a boolean takes as
-// many spans as the largest grid has points (2026-11-17; until then 32 768,
-// and a sheet of more was warned of). A grid cap raised past it brings
-// that warning back.
+// In the desktop program every grid's sheet is taken by a boolean: it has
+// fewer Bézier spans than points (`(rows − 3) (columns − 3)` for a cubic),
+// a boolean takes as many spans as the largest grid has points (since
+// 2026-11-17; 32 768 before, as in a browser still), and a bicubic's spans
+// and index at that cap stay within what one face may take. A sheet of
+// more spans than a boolean takes here (in a browser) is warned of.
+#[cfg(not(target_arch = "wasm32"))]
 const _: () = assert!(grid::MAX_GRID_POINTS <= craft3d_kernel::boolean::MAX_FREEFORM_SPANS);
+#[cfg(not(target_arch = "wasm32"))]
+const _: () = assert!(
+    craft3d_kernel::boolean::index_bytes_of(grid::MAX_GRID_POINTS, 3, 3)
+        <= craft3d_kernel::boolean::MAX_INDEX_BYTES
+);
 
 // The document's caps are the geometry's: one number each, written twice
 // because the document does not depend on the geometry.
@@ -279,6 +286,9 @@ pub(crate) fn build(
     drop(pts);
     let (deviation, bound, reach) = (made.deviation, made.bound, made.reach);
     let (u, v) = (made.u, made.v);
+    let (pu, pv) = made.surface.degrees();
+    let spans = (columns - pu).saturating_mul(rows - pv);
+    let most = craft3d_kernel::boolean::MAX_FREEFORM_SPANS;
     let mut warnings = Vec::new();
     if bound > tol.linear {
         warnings.push(format!(
@@ -289,6 +299,13 @@ pub(crate) fn build(
     if steep > STEEP {
         warnings.push(format!(
             "the heights rise up to {steep:.0} times the step between neighbours: is the factor right (heights in metres over steps of millimetres want the map's scale)?"
+        ));
+    }
+    if spans > most {
+        warnings.push(format!(
+            "the sheet has {spans} spans, more than the {most} of a face a boolean takes here: feature.boolean will refuse it (a cut by it, the solid under it); a grid of at most {side} × {side} points is taken, and the desktop program takes up to {}",
+            craft3d_kernel::boolean::MAX_FREEFORM_SPANS_DESKTOP,
+            side = boolean_side(most),
         ));
     }
     let body = sheet(made.surface, rows, columns, turned)?;
@@ -319,6 +336,12 @@ pub(crate) fn build(
             warnings,
         },
     ))
+}
+
+/// The most points a side of a square cubic grid may have for a boolean to
+/// take its sheet: `(n − 3)² ≤ most`.
+fn boolean_side(most: usize) -> usize {
+    (0..=most).take_while(|k| k * k <= most).last().unwrap_or(0) + 3
 }
 
 /// A table's rises between neighbours above this many times the step are

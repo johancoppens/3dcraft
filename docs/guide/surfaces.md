@@ -275,8 +275,9 @@ block cut by it keeps the part below: a solid of 12 450 mm³.
 - **How large**: a table holds 1 024 heights a row (1 025 columns with its key) and 10 000 rows, and all
   the tables of a document a million cells; a grid has at most 262 144 points, 1 024 a side, as a table or
   given outright. The relief of Mont Ventoux every 87.5 m, 145 heights a row and 113 rows, is one table. A solid under the sheet is made by a
-  boolean, which takes the sheet of any grid (a face of up to 262 144 spans: a grid of 512 × 512 points is
-  259 081). `feature.plate` gives a small sheet a thickness; on a large one (150 × 120 points) plate, thicken and
+  boolean, which in the desktop program takes the sheet of any grid (a face of up to 262 144 spans: a grid of
+  512 × 512 points is 259 081); in a browser it takes a sheet of up to 184 × 184 points (the result warns past
+  it). `feature.plate` gives a small sheet a thickness; on a large one (150 × 120 points) plate, thicken and
   shell are refused. `feature.extrude` with `upTo` does not take a sheet's face.
 - **Rough sheets**: a sheet whose heights zigzag several steps up and down between neighbours (±12 at every
   point, or random within ±3 steps) is built, but cannot be measured or meshed yet: `document.check` says it

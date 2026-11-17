@@ -105,8 +105,54 @@ pub(crate) fn combine(
                 })
                 .collect();
             format!(
-                "{operation} does not support this: a freeform face of more Bézier spans than the {} a boolean indexes{}; build it of fewer spans (a grid of fewer points, or the face in parts)",
+                "{operation} does not support this: a freeform face of more Bézier spans than the {} a boolean indexes{}{}; build it of fewer spans (a grid of fewer points, or the face in parts)",
                 craft3d_kernel::boolean::MAX_FREEFORM_SPANS,
+                if cfg!(target_arch = "wasm32") {
+                    format!(
+                        " in the browser (the desktop program takes up to {})",
+                        craft3d_kernel::boolean::MAX_FREEFORM_SPANS_DESKTOP
+                    )
+                } else {
+                    String::new()
+                },
+                if named.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", named.join(", "))
+                }
+            )
+        }
+        // A face whose spans and index would take more memory than one
+        // face may: which, its spans and degrees, and the bytes.
+        KernelError::Unsupported {
+            operation,
+            reason,
+            faces,
+        } if reason == craft3d_kernel::boolean::TOO_LARGE_INDEX => {
+            let named: Vec<String> = faces
+                .iter()
+                .map(|&(operand, face)| {
+                    let body = if number(operand) == 0 { target } else { tool };
+                    let surface = body.face(face).map(|f| &f.surface);
+                    let spans = surface.and_then(craft3d_kernel::boolean::span_count);
+                    let bytes = surface.and_then(craft3d_kernel::boolean::index_bytes);
+                    let degrees = match surface {
+                        Some(craft3d_geom::Surface::Nurbs(s)) => Some(s.degrees()),
+                        _ => None,
+                    };
+                    match (spans, degrees, bytes) {
+                        (Some(spans), Some((p, q)), Some(bytes)) => format!(
+                            "{} ({spans} spans of degree {p} × {q}: {} MiB)",
+                            face_name(operand, face),
+                            bytes.div_ceil(1 << 20)
+                        ),
+                        _ => face_name(operand, face),
+                    }
+                })
+                .collect();
+            format!(
+                "{operation} does not support this: a freeform face whose Bézier spans and their index would take more than the {} MiB one face may{}; build it of fewer spans or of a lower degree",
+                craft3d_kernel::boolean::MAX_INDEX_BYTES >> 20,
                 if named.is_empty() {
                     String::new()
                 } else {
@@ -322,6 +368,63 @@ mod tests {
         assert!(
             refused.contains("face 0 of the tool (262656 spans)")
                 && refused.contains("than the 262144 a boolean indexes"),
+            "{refused}"
+        );
+    }
+
+    /// A face of fewer spans than that but of a degree whose spans and
+    /// index would take more than one face may is refused with its spans,
+    /// its degrees, the memory and the budget: degree 15 over 254 × 254
+    /// knot spans, some 1.1 GB against 1 GiB.
+    #[test]
+    fn a_face_whose_index_would_take_too_much_is_named_with_its_bytes() {
+        let (degree, spans) = (15_usize, 254_usize);
+        let n = spans + degree;
+        let mut knots = vec![0.0; degree + 1];
+        for k in 1..spans {
+            knots.push(k as f64 / spans as f64);
+        }
+        knots.extend(std::iter::repeat_n(1.0, degree + 1));
+        let mut ctrl = Vec::with_capacity(n * n);
+        for c in 0..n {
+            for r in 0..n {
+                ctrl.push(Vec3::new(c as f64 * 0.2, r as f64 * 0.2, 1.0));
+            }
+        }
+        let surface = NurbsSurface::new(
+            degree,
+            degree,
+            knots.clone(),
+            knots,
+            n,
+            n,
+            ctrl,
+            vec![1.0; n * n],
+        )
+        .unwrap();
+        let bytes =
+            craft3d_kernel::boolean::index_bytes(&craft3d_geom::Surface::Nurbs(surface.clone()))
+                .unwrap();
+        assert!(bytes > craft3d_kernel::boolean::MAX_INDEX_BYTES, "{bytes}");
+        let sheet = crate::grid::sheet(surface, n, n, false).unwrap();
+        let side = 0.2 * (n - 1) as f64;
+        let block = craft3d_kernel::primitives::block(&Frame::WORLD, side, side, 4.0).unwrap();
+        let tolerance = Tolerance::new(1e-3, 1e-6).unwrap();
+        let refused = combine(
+            &block,
+            &sheet,
+            BooleanOp::Intersect,
+            &tolerance,
+            1.0,
+            [None, None],
+        )
+        .err()
+        .expect("refused");
+        let mib = bytes.div_ceil(1 << 20);
+        assert!(
+            refused.contains(&format!(
+                "face 0 of the tool (64516 spans of degree 15 × 15: {mib} MiB)"
+            )) && refused.contains("more than the 1024 MiB one face may"),
             "{refused}"
         );
     }
