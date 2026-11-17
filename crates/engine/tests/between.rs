@@ -701,7 +701,7 @@ fn a_narrow_least_beside_a_broad_one_is_found_and_proven() {
             let edge = item(
                 &mut s,
                 "edge",
-                json!({"in": "Bar", "inside": [[-1.0 * k, 0.9 * k, 0.9 * k], [97.0 * k, 1.1 * k, 1.1 * k]]}),
+                json!({"in": "Bar", "inside": [[-k, 0.9 * k, 0.9 * k], [97.0 * k, 1.1 * k, 1.1 * k]]}),
             );
             let got = between(&mut s, &edge, &json!("Other"));
             check(&got, "the straight edge");
@@ -715,11 +715,15 @@ fn a_narrow_least_beside_a_broad_one_is_found_and_proven() {
 /// hole each way: at the top (z = 20), not at a floor; one from the top and
 /// one from the bottom: at one of the rims (z = 20 or 0), both ends level,
 /// never inside the material. Either thing first.
+/// A cylinder cut as a hole: its x, the z it starts at, its height and
+/// which way along Z its axis points.
+type Cylinder = (f64, f64, f64, f64);
+
 #[test]
 fn two_holes_line_is_drawn_where_they_open() {
     // (what, the two cylinders as (x, z start, height, axis z), the z the
     // line is at, or `None`: at a rim)
-    let cases: [(&str, [(f64, f64, f64, f64); 2], Option<f64>); 4] = [
+    let cases: [(&str, [Cylinder; 2], Option<f64>); 4] = [
         (
             "from the top, depths 8 and 15",
             [(15.0, 12.0, 10.0, 1.0), (45.0, 5.0, 17.0, 1.0)],
