@@ -2909,6 +2909,7 @@ fn a_fillet_is_written_like_this_and_round_trips() {
             ],
             radius: Expr::new("width / 20"),
             chain: false,
+            fade: Vec::new(),
         }),
     )
     .unwrap();
@@ -2999,6 +3000,7 @@ fn edges_by_their_own_names_are_written_like_this_and_round_trip() {
             ],
             radius: Expr::new("1 mm"),
             chain: false,
+            fade: Vec::new(),
         }),
     )
     .unwrap();
@@ -3250,6 +3252,7 @@ fn an_offset_profile_is_written_like_this_and_round_trips() {
             edges: vec![EdgeRef::Faces([side.clone(), corner.clone()])],
             radius: Expr::new("1 mm"),
             chain: false,
+            fade: Vec::new(),
         }),
     )
     .unwrap();
@@ -5733,6 +5736,7 @@ fn an_older_file_naming_a_sheet_metal_rim_or_edge_warns_by_name() {
             edges: vec![EdgeRef::Faces([name(&rim), name(&skin)])],
             radius: Expr::new("1 mm"),
             chain: false,
+            fade: Vec::new(),
         }),
     )
     .unwrap();

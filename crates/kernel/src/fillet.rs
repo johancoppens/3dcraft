@@ -57,7 +57,9 @@ pub enum FilletFace {
 
 /// A filleted body and where each of its entities came from: `faces[i]`
 /// belongs to `FaceId(i)` of `body`, and so on. An edge or a vertex has
-/// the id it had in the body when it is one of that body.
+/// the id it had in the body when it is one of that body; what is left of
+/// an edge beyond a fillet's tip short of its end ([`Fade::tip`]) has the
+/// id of that edge, shortened.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FilletResult {
     pub body: Body,
@@ -248,6 +250,45 @@ pub fn fillet_by_law_capped(
         |at| fillet_requests(body, &requests, at),
         loose_sources,
     )
+}
+
+/// The length of the edge `edge` of `body` along its curve, as a radius
+/// law measures it ([`RadiusLaw`]: a fade's `over` and `back` are lengths
+/// along the edge, and together no longer than this), at the linear
+/// tolerance `tolerance`. `None` when the body has no such edge or its
+/// length cannot be had.
+pub fn law_length(body: &Body, edge: EdgeId, tolerance: f64) -> Option<f64> {
+    let data = body.edge(edge)?;
+    blend::law::Along::new(
+        RadiusLaw::constant(1.0),
+        edge,
+        &data.curve,
+        data.range,
+        tolerance,
+    )
+    .ok()
+    .map(|along| along.length())
+}
+
+/// Where [`fillet_by_law`] ends the fillet of `edge` of `body` in a point
+/// at the end `end` of the edge (0: its start, 1: its end) by the law
+/// `law`: the point of the edge `back` short of that end along it, when
+/// the fade there runs to nothing ([`Fade::tip`]). `None` without such a
+/// fade, and when the law is refused along the edge.
+pub fn tip_point(
+    body: &Body,
+    edge: EdgeId,
+    law: RadiusLaw,
+    end: usize,
+    tolerance: f64,
+) -> Option<craft3d_math::Vec3> {
+    let data = body.edge(edge)?;
+    let along =
+        blend::law::Along::new(law, edge, &data.curve, data.range, tolerance).ok()?;
+    let s = along.tip(end)?;
+    let (t0, t1) = data.range;
+    let point = data.curve.eval(t0 + s * (t1 - t0));
+    point.is_finite().then_some(point)
 }
 
 /// What `loose_op` needs of a result: its body and where its entities

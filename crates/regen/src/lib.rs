@@ -923,6 +923,26 @@ pub struct ThreadReport {
     pub tap_drill: Option<f64>,
 }
 
+/// Where a fillet fades, as built (`craft3d_doc::FilletFade`): the point
+/// its face closes in, and the lengths it was built with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FadeReport {
+    /// The vertex at the end of the edge, as the fade gives it.
+    pub at: PersistentName,
+    /// The place of the edge's reference in the fillet's `edges`.
+    pub edge: usize,
+    /// The point on the edge the fillet face closes in.
+    pub tip: Vec3,
+    /// The name of the vertex there in the filleted body.
+    pub vertex: Option<PersistentName>,
+    /// The length along the edge over which the radius falls to nothing.
+    pub over: f64,
+    /// How far short of `at` along the edge the point lies.
+    pub back: f64,
+    /// The length of the edge along its curve, when it could be had.
+    pub length: Option<f64>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FeatureResult {
     pub id: FeatureId,
@@ -951,6 +971,8 @@ pub struct FeatureResult {
     /// For an offset of the profiles of a sketch that was built: its
     /// outline.
     pub offset: Option<Arc<OffsetResult>>,
+    /// For a fillet that fades and was built: where each fade ends.
+    pub fades: Option<Arc<Vec<FadeReport>>>,
     /// The later feature this feature's body went into. The body is then
     /// no longer one of the document's bodies; it stays here because names
     /// are resolved against it.
@@ -1626,6 +1648,7 @@ fn build_feature(
     let mut threaded = None;
     let mut developed = None;
     let mut outline = None;
+    let mut fades = None;
     let mut passed = None;
     let switch = if rolled_back {
         Ok(None)
@@ -1912,11 +1935,14 @@ fn build_feature(
             Err(reason) => (Status::Failed(reason), None),
         }
     } else if let FeatureKind::Fillet(fillet) = &feature.kind {
-        match fillet::build(doc, variables, feature.id, fillet, earlier)
-            .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
-        {
-            Ok((body, made_names)) => {
+        match fillet::build(doc, variables, feature.id, fillet, earlier).and_then(
+            |(body, names, reports)| checked(doc, body).map(|body| (body, names, reports)),
+        ) {
+            Ok((body, made_names, reports)) => {
                 names = made_names.map(Arc::new);
+                if !reports.is_empty() {
+                    fades = Some(Arc::new(reports));
+                }
                 // The body does not move: a face lies where the face it
                 // came from lies.
                 instances = Some(Arc::new(vec![Transform::IDENTITY]));
@@ -2092,6 +2118,7 @@ fn build_feature(
             thread: threaded,
             developed,
             offset: outline,
+            fades,
             consumed_by: None,
             followed: None,
             passed,

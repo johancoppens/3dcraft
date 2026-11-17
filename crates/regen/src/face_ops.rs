@@ -105,6 +105,10 @@ pub(crate) fn blends(
         let Some(FeatureKind::Fillet(made)) = doc.feature(root.feature).map(|f| &f.kind) else {
             continue;
         };
+        // A fillet that fades has no one radius.
+        if !made.fade.is_empty() {
+            continue;
+        }
         let Ok(radius) = crate::length(doc, variables, "radius", &made.radius) else {
             continue;
         };

@@ -277,6 +277,11 @@ pub enum FadeFault {
     /// is the least that is built (or nothing: the tip in the edge's own
     /// vertex).
     BackTooSmall { back: f64, least: f64 },
+    /// Towards a point the fillet ends in, no ball touching both faces was
+    /// found past `at`, `before` along the edge short of that point: the
+    /// faces there come together too tightly, turn too sharply under the
+    /// ball or fold (as the two halves of a hull do at its forefoot).
+    NoBall { at: Vec3, before: f64 },
     /// The edge's curvature jumps at `at`, a place the fillet runs
     /// through (its curve has only a continuous tangent there): not
     /// built with a radius by a law.

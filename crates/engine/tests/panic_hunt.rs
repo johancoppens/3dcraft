@@ -226,6 +226,14 @@ fn adversarial() -> Vec<Value> {
         json!([["F7:lateralEdge(e5,e6)", "F7:lateralEdge(e6,e7)"]]),
         json!(["F7:lateralEdge(e5,e6)", ["F7:side(e5)", "F7:side(e6)"]]),
         json!(["F99:edge(0)", "F0:edge(18446744073709551615)"]),
+        // Fades of a fillet, as `fade` takes them: at a vertex of the
+        // plate, at no vertex, with lengths that are not lengths, twice
+        // at one end.
+        json!([{"at": "F1:vertex(4)", "over": 5}]),
+        json!([{"at": "F1:vertex(4)", "over": "width / 0", "back": "-1 mm"}]),
+        json!([{"at": "F7:side(e5)", "over": 1e308, "back": 5e-324}]),
+        json!([{"at": "F1:vertex(0)", "over": 1}, {"at": "F1:vertex(0)", "over": 1}]),
+        json!([{"at": "F99:vertex(0)", "over": "nope"}, {"over": 1}, 7]),
         json!("e5[99]"),
         json!("e5[-1]"),
         json!("e5[last"),
@@ -665,6 +673,7 @@ fn no_command_panics_on_adversarial_parameters() {
             ("path", json!("hunt.stl")),
             ("size", json!([1, 2, 3])),
             ("radius", json!(1)),
+            ("fade", json!([{"at": "F1:vertex(4)", "over": 5}])),
             ("major", json!(5)),
             ("axis", json!([0, 0, 1])),
             ("id", json!(SEED_ID)),

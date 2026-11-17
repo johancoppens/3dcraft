@@ -16,8 +16,8 @@ use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::identity;
 use craft3d_doc::{
-    Chamfer, ChamferSize, EdgeRef, Expr, FeatureKind, Fillet, MAX_CHAMFER_EDGES, MAX_FILLET_EDGES,
-    PersistentName,
+    Chamfer, ChamferSize, EdgeRef, Expr, FeatureKind, Fillet, FilletFade, MAX_CHAMFER_EDGES,
+    MAX_FILLET_EDGES, MAX_FILLET_FADES, PersistentName,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -25,8 +25,8 @@ use std::sync::Arc;
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.chamfer", "Chamfer", r#"{"edges": [[face name, face name] or edge name or [edge name, face name], ...], "distance": expr, "second": expr, "angle": expr, "chain": boolean = false, "name": string = automatic, "when": expr = always on}"#,
         "Adds a feature that replaces edges of a body by flat or conical faces (feature.fillet makes rounded ones): the two faces next to an edge are cut back by a distance each, measured along the face from the edge, and a new face joins the two cut lines. An outside edge loses material, an inside edge gains it. Each edge is the two faces it lies between, by their names (document.edges lists every edge of a body with them under faces), and such a pair means every edge between those two faces; or one edge by its own name (document.edges lists it under name, view.pick gives it), which picks one of several edges between the same two faces, written [edge name, face name] to say which of its faces the first distance is measured along (needed with second or angle); a name is taken only when every part of it is of a kind proven to stay with its edge (a primitive's or an import's entities, a sweep's by sketch entities, copies, names by faces with no number at the end); any other (a number after its brackets, \"...](1)\", a blend's face such as \"fillet(0,1)\" or \"chamfer(0)\", a glyph of a text, a developable's face, a plate's rim, a lump a split chose by place) is refused, since an edit could move it to another edge, and the refusal says what names that edge instead. All are edges of one body, which goes into this feature; a name of an earlier body of the same chain, such as \"F1:face(0)\" after that body went into later features, is followed to the newest body before this feature, an edge's name to the edge each later feature kept of it. Three forms: distance alone (the same along both faces); distance and second (distance along the first face of each pair, second along the other); distance and angle (distance along the first face, and the new face leaves that face at angle). chain takes with each edge the edges that continue it smoothly (the whole rim of a slot from one of its edges). Works on straight edges between flat faces, or between a flat face and a cylinder along the edge (the cut edge of a halved tube), and on circular edges between a flat face, a cylinder or a cone about the circle's axis (the end of a rod, the mouth of a hole); any other edge (next to a cone, between lofted or spline faces) gets a ruled spline face within the document's tolerance when each of its ends is a corner of three faces (or it is closed, as the mouth of a slanted hole) and no other chamfered edge ends there, and fails with the reason otherwise. Where three chamfered edges meet the corner is a flat triangle through the points where the cut lines cross; two meet in a mitre. A distance too large for a face fails with the edge, the face and the largest distance that fits. Faces keep their names with a prefix, \"F9:copy(0)/...\"; the new face of the edge at place k of edges is \"F9:chamfer(k)\" (\"F9:chamfer(k,0)\", \"F9:chamfer(k,1)\" when the pair gave several edges), a corner \"F9:chamferCorner(i,j,k)\". Change it with feature.edit: edges, distance, second, angle, chain.", doc: true, names: ["edges"], feature_chamfer),
-    spec!("feature.fillet", "Fillet", r#"{"edges": [[face name, face name] or edge name or [edge name, face name], ...], "radius": expr, "chain": boolean = false, "name": string = automatic, "when": expr = always on}"#,
-        "Adds a feature that rounds edges of a body with one radius: each edge is replaced by the face a ball of that radius touches as it rolls along the edge against both faces, which runs into both without a crease. An outside edge loses material, an inside edge gains it. Each edge is the two faces it lies between, by their names (document.edges lists every edge of a body with them under faces), in either order, and such a pair means every edge between those two faces; or one edge by its own name (document.edges lists it under name, view.pick gives it), which picks one of several edges between the same two faces ([edge name, face name], as feature.chamfer takes it, is the same edge: the face must be one of its two and says nothing more here); a name is taken only when every part of it is of a kind proven to stay with its edge (a primitive's or an import's entities, a sweep's by sketch entities, copies, names by faces with no number at the end); any other (a number after its brackets, \"...](1)\", a blend's face such as \"fillet(0,1)\" or \"chamfer(0)\", a glyph of a text, a developable's face, a plate's rim, a lump a split chose by place) is refused, since an edit could move it to another edge, and the refusal says what names that edge instead. All are edges of one body, which goes into this feature; a name of an earlier body of the same chain, such as \"F1:face(0)\" after that body went into later features, is followed to the newest body before this feature, an edge's name to the edge each later feature kept of it. chain takes with each edge the edges that continue it smoothly (the whole rim of a slot from one of its edges). Works on straight edges between flat faces at any angle, or next to a cylinder along the edge (the cut edge of a halved tube, the tip of a two-arc blade; the new face is a piece of a cylinder), and on circular edges between a flat face, a cylinder or a cone about the circle's axis (the end of a rod, the mouth of a hole, the foot of a boss: a piece of a torus); any other edge (next to a cone, between lofted or spline faces) gets a spline face within the document's tolerance, tangent to both faces, when each of its ends is a corner of three faces (or it is closed, as the mouth of a slanted hole) and no other filleted edge ends there, and fails with the reason otherwise. Where three straight filleted edges meet the corner is a piece of a ball of the same radius; two that meet at a corner whose third edge stays sharp run out into each other. Not built, and refused with the reason: three fillets at a corner with a circular edge or a fourth edge, an outside and an inside fillet that meet, a radius of half a rod's or more on its rim. A radius too large for a face fails with the edge, the face and the largest radius that fits. Faces keep their names with a prefix, \"F9:copy(0)/...\"; the new face of the edge at place k of edges is \"F9:fillet(k)\" (\"F9:fillet(k,0)\", \"F9:fillet(k,1)\" when the pair gave several edges or a chain), the ball in a corner \"F9:filletCorner(i,j,k)\". Change it with feature.edit: edges, radius, chain.", doc: true, names: ["edges"], feature_fillet),
+    spec!("feature.fillet", "Fillet", r#"{"edges": [[face name, face name] or edge name or [edge name, face name], ...], "radius": expr, "chain": boolean = false, "fade": [{at: vertex name, over: expr, back: expr = 0}, ...] = none, "name": string = automatic, "when": expr = always on}"#,
+        "Adds a feature that rounds edges of a body with one radius: each edge is replaced by the face a ball of that radius touches as it rolls along the edge against both faces, which runs into both without a crease. An outside edge loses material, an inside edge gains it. Each edge is the two faces it lies between, by their names (document.edges lists every edge of a body with them under faces), in either order, and such a pair means every edge between those two faces; or one edge by its own name (document.edges lists it under name, view.pick gives it), which picks one of several edges between the same two faces ([edge name, face name], as feature.chamfer takes it, is the same edge: the face must be one of its two and says nothing more here); a name is taken only when every part of it is of a kind proven to stay with its edge (a primitive's or an import's entities, a sweep's by sketch entities, copies, names by faces with no number at the end); any other (a number after its brackets, \"...](1)\", a blend's face such as \"fillet(0,1)\" or \"chamfer(0)\", a glyph of a text, a developable's face, a plate's rim, a lump a split chose by place) is refused, since an edit could move it to another edge, and the refusal says what names that edge instead. All are edges of one body, which goes into this feature; a name of an earlier body of the same chain, such as \"F1:face(0)\" after that body went into later features, is followed to the newest body before this feature, an edge's name to the edge each later feature kept of it. chain takes with each edge the edges that continue it smoothly (the whole rim of a slot from one of its edges). Works on straight edges between flat faces at any angle, or next to a cylinder along the edge (the cut edge of a halved tube, the tip of a two-arc blade; the new face is a piece of a cylinder), and on circular edges between a flat face, a cylinder or a cone about the circle's axis (the end of a rod, the mouth of a hole, the foot of a boss: a piece of a torus); any other edge (next to a cone, between lofted or spline faces) gets a spline face within the document's tolerance, tangent to both faces, when each of its ends is a corner of three faces (or it is closed, as the mouth of a slanted hole) and no other filleted edge ends there, and fails with the reason otherwise. Where three straight filleted edges meet the corner is a piece of a ball of the same radius; two that meet at a corner whose third edge stays sharp run out into each other. Not built, and refused with the reason: three fillets at a corner with a circular edge or a fourth edge, an outside and an inside fillet that meet, a radius of half a rod's or more on its rim. A radius too large for a face fails with the edge, the face and the largest radius that fits. Faces keep their names with a prefix, \"F9:copy(0)/...\"; the new face of the edge at place k of edges is \"F9:fillet(k)\" (\"F9:fillet(k,0)\", \"F9:fillet(k,1)\" when the pair gave several edges or a chain), the ball in a corner \"F9:filletCorner(i,j,k)\". fade ends the fillet in a point on its edge (a hull's stem rounded from the deck down and dying out above the forefoot): per end, at is the vertex there by its name (document.edges lists the vertices of a body), over the length along the edge over which the radius falls smoothly to nothing, back how far short of the vertex the face closes in its point (0: in the vertex; the edge beyond stays sharp); the face stays tangent to both faces all the way. A faded edge is rounded on its own: an open edge, no chain, no other rounded edge ending in its vertices, its other end a corner of three faces or a fade, over at least the radius (the least that builds is said otherwise); the result lists under fades each fade's tip (the point), vertex (its name), over, back and the edge's length. Change it with feature.edit: edges, radius, chain, fade (null for one radius all along).", doc: true, names: ["edges", "fade"], feature_fillet),
 ];
 
 /// The edges of a chamfer: pairs of face names, or edges by their names.
@@ -163,6 +163,22 @@ pub(crate) fn numbered_refused(
                 craft3d_regen::numbered_face(&doc, face, noun)
             ));
         }
+    }
+    // A vertex a fillet fades at, the same way: an edit could move the
+    // fade to another end.
+    if found.is_none()
+        && let FeatureKind::Fillet(fillet) = kind
+        && let Some((index, fade)) = fillet
+            .fade
+            .iter()
+            .enumerate()
+            .find(|(_, fade)| identity::unproven(&doc, &fade.at).is_some())
+        && let Some(why) = identity::unproven(&doc, &fade.at)
+    {
+        return fail(format!(
+            "{command}: `fade.{index}.at`: {}; a fillet does not fade at it: give the vertex by a name that is proven (document.edges lists the vertices of a body), or leave the fade out",
+            why.reason(&doc, &fade.at)
+        ));
     }
     let Some((index, name)) = found else {
         return Ok(());
@@ -386,18 +402,108 @@ fn feature_chamfer(session: &mut Session, params: &Value) -> Run {
     add_feature(session, ID, p.str("name")?, kind)
 }
 
-/// `feature.edit` for a fillet: `edges` (`radius` is a plain expression
-/// and `chain` a plain flag, set where the others are).
+/// What a fade is given as, for what is refused.
+const FADE_FORM: &str = "each fade is {\"at\": the vertex at the end of an edge the fillet rounds, by its name (document.edges lists the vertices of a body), \"over\": the length along the edge over which the radius falls to nothing, \"back\": how far short of the vertex the fillet ends in its point (0 when left out)}";
+
+/// A length of a fade: an expression, a string or a finite number.
+fn fade_length(command: &str, key: &str, value: &Value) -> Result<Expr, CommandError> {
+    match value {
+        Value::String(text) if !text.trim().is_empty() => Ok(Expr::new(text.clone())),
+        Value::Number(number) => match number.as_f64().filter(|x| x.is_finite()) {
+            Some(x) => Ok(Expr::new(x.to_string())),
+            None => fail(format!(
+                "{command}: `{key}` must be an expression, such as \"15 mm\""
+            )),
+        },
+        _ => fail(format!(
+            "{command}: `{key}` must be an expression, such as \"15 mm\""
+        )),
+    }
+}
+
+/// The fades of a fillet: a list of `{at, over, back}`, `null` or `[]`
+/// for none. Each `at` a vertex's name, given once.
+pub(crate) fn fade_value(command: &str, value: &Value) -> Result<Vec<FilletFade>, CommandError> {
+    let items = match value {
+        Value::Null => return Ok(Vec::new()),
+        Value::Array(items) => items,
+        _ => {
+            return fail(format!(
+                "{command}: `fade` must be a list of fades; {FADE_FORM}"
+            ));
+        }
+    };
+    if items.len() > MAX_FILLET_FADES {
+        return fail(format!(
+            "{command}: `fade` has {} fades; one fillet takes {MAX_FILLET_FADES} at most (one per end of an edge)",
+            items.len()
+        ));
+    }
+    let mut out: Vec<FilletFade> = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let key = |field: &str| format!("fade.{index}.{field}");
+        let Value::Object(map) = item else {
+            return fail(format!(
+                "{command}: `fade.{index}` must be an object; {FADE_FORM}"
+            ));
+        };
+        if let Some(other) = map
+            .keys()
+            .find(|k| !matches!(k.as_str(), "at" | "over" | "back"))
+        {
+            return fail(format!(
+                "{command}: `fade.{index}` has no parameter `{other}`; {FADE_FORM}"
+            ));
+        }
+        let Some(at) = map.get("at").filter(|v| !v.is_null()) else {
+            return fail(format!(
+                "{command}: `fade.{index}` needs `at`; {FADE_FORM}"
+            ));
+        };
+        let at = name_value(command, &key("at"), at, "a vertex's name")?;
+        if !at.is_vertex() {
+            return fail(format!(
+                "{command}: `{}`: {at} is not a vertex; a fade is at a vertex that ends an edge the fillet rounds (document.edges lists the vertices of a body under vertices)",
+                key("at")
+            ));
+        }
+        let Some(over) = map.get("over").filter(|v| !v.is_null()) else {
+            return fail(format!(
+                "{command}: `fade.{index}` needs `over`; {FADE_FORM}"
+            ));
+        };
+        let over = fade_length(command, &key("over"), over)?;
+        let back = match map.get("back").filter(|v| !v.is_null()) {
+            Some(back) => Some(fade_length(command, &key("back"), back)?),
+            None => None,
+        };
+        if let Some(earlier) = out.iter().position(|f| f.at == at) {
+            return fail(format!(
+                "{command}: `{}`: the fillet already fades at {at} (fade.{earlier}); give one fade per end of an edge",
+                key("at")
+            ));
+        }
+        out.push(FilletFade { at, over, back });
+    }
+    Ok(out)
+}
+
+/// `feature.edit` for a fillet: `edges` and `fade` (`radius` is a plain
+/// expression and `chain` a plain flag, set where the others are). A
+/// `fade` of `null` or `[]` takes every fade away.
 pub(crate) fn edit_fillet(p: &Params, fillet: &mut Fillet) -> Result<(), CommandError> {
     if let Some(value) = p.get("edges") {
         fillet.edges = edges_of("feature.edit", value, "fillet", MAX_FILLET_EDGES)?;
+    }
+    if p.has("fade") {
+        fillet.fade = fade_value("feature.edit", p.get("fade").unwrap_or(&Value::Null))?;
     }
     Ok(())
 }
 
 fn feature_fillet(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "feature.fillet";
-    let p = Params::new(ID, params, &["edges", "radius", "chain", "name"])?;
+    let p = Params::new(ID, params, &["edges", "radius", "chain", "fade", "name"])?;
     // The document has to be there before anything is said of the
     // parameters.
     session.document()?;
@@ -409,12 +515,40 @@ fn feature_fillet(session: &mut Session, params: &Value) -> Run {
         return Err(p.missing("radius"));
     };
     let chain = p.bool("chain")?.unwrap_or(false);
+    let fade = match p.get("fade") {
+        Some(value) => fade_value(ID, value)?,
+        None => Vec::new(),
+    };
     let kind = FeatureKind::Fillet(Fillet {
         edges,
         radius: Expr::new(radius),
         chain,
+        fade,
     });
     numbered_refused(ID, session, &kind)?;
     of_one_body(ID, session, &kind)?;
     add_feature(session, ID, p.str("name")?, kind)
+}
+
+/// Where a fillet's fades end, as the result and `document.inspect` give
+/// them: per fade the vertex it is at, the place of the edge's reference,
+/// the tip (the point the face closes in) and the name of its vertex,
+/// over, back and the edge's length, in the document's unit.
+pub(crate) fn fades_json(reports: &[craft3d_regen::FadeReport]) -> Value {
+    Value::Array(
+        reports
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "at": r.at.to_string(),
+                    "edge": r.edge,
+                    "tip": [r.tip.x, r.tip.y, r.tip.z],
+                    "vertex": r.vertex.as_ref().map(ToString::to_string),
+                    "over": r.over,
+                    "back": r.back,
+                    "length": r.length,
+                })
+            })
+            .collect(),
+    )
 }

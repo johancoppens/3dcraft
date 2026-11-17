@@ -971,11 +971,17 @@ pub enum FeatureKind {
     /// the body is that of the feature the first name starts with. With
     /// `chain` each edge stands for the edges that continue it smoothly
     /// as well.
+    ///
+    /// `fade` (format version 76): ends of edges where the fillet fades,
+    /// its radius running to nothing and its face closing in a point on
+    /// the edge. Absent: one radius all along.
     Fillet {
         edges: Vec<EdgeRef>,
         radius: String,
         #[serde(default)]
         chain: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        fade: Vec<FilletFade>,
     },
     /// Faces of the body of an earlier feature moved along their normals
     /// by `distance` (outward positive), the faces next to them
@@ -1960,6 +1966,18 @@ impl<'de> Deserialize<'de> for EdgeRef {
         }
         deserializer.deserialize_any(Visitor)
     }
+}
+
+/// One end of a filleted edge where the fillet fades (format version
+/// 76): at the vertex `at`, over the length `over` along the edge, ending
+/// in a point `back` short of the vertex (absent: at the vertex itself).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilletFade {
+    pub at: Name,
+    pub over: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back: Option<String>,
 }
 
 /// The faces an edge or a vertex is named by.

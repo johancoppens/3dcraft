@@ -399,10 +399,15 @@ fn key_value(shown: &Shown<'_>, kind: &FeatureKind) -> (String, Option<KeyEdit>)
         }
         FeatureKind::Fillet(f) => (
             format!(
-                "R{} · {} edge{}",
+                "R{} · {} edge{}{}",
                 shown.length(&f.radius),
                 f.edges.len(),
-                if f.edges.len() == 1 { "" } else { "s" }
+                if f.edges.len() == 1 { "" } else { "s" },
+                match f.fade.len() {
+                    0 => String::new(),
+                    1 => " · fades at 1 end".to_string(),
+                    n => format!(" · fades at {n} ends"),
+                }
             ),
             edit("radius", "Radius", &f.radius),
         ),

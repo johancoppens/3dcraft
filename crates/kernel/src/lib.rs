@@ -904,7 +904,7 @@ pub fn spindle_text(radius: f64, below: f64, own: f64, unit: &str) -> String {
 /// significant digits of the largest of them (a place is known to about
 /// the tolerance, and a coordinate that is rounding noise beside the
 /// others reads 0), followed by `unit`.
-fn place_text(at: craft3d_math::Vec3, unit: &str) -> String {
+pub fn place_text(at: craft3d_math::Vec3, unit: &str) -> String {
     let largest = at.x.abs().max(at.y.abs()).max(at.z.abs());
     let magnitude = if largest.is_finite() && largest > 0.0 {
         largest.plog10().floor()
@@ -952,6 +952,12 @@ pub fn fillet_fade_text(fault: fillet::FadeFault, unit: &str) -> String {
             "the radius at the end of the fade, {}{unit}, is not more than the tolerance tells from nothing: an end radius has to be more than {}{unit} (16 tolerances), as a fillet's radius has",
             short(to),
             short(least)
+        ),
+        fillet::FadeFault::NoBall { at, before } => format!(
+            "no ball touching both faces was found past {}, {}{unit} along the edge before the point the fillet is to end in: the faces there come together too tightly, turn too sharply under the ball, or fold (as the two halves of a hull do at its forefoot); end the fillet before that place (a back larger by {}{unit}), or fade over a longer length",
+            place_text(at, unit),
+            short(before),
+            fits_at_least(before)
         ),
     }
 }

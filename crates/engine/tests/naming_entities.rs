@@ -1655,3 +1655,63 @@ fn a_numbered_edge_an_operand_had_answers_to_the_name_it_had_there() {
         }
     }
 }
+
+/// A fillet that fades (docs/design/blends.md › *A fillet that ends in a
+/// point*) makes a vertex where its face closes and, short of the edge's
+/// end, keeps what is left of the edge beyond it. Both are named by their
+/// faces with no number, the tip by the fillet's face among them, the
+/// edge beyond also by the edge it is a piece of; through edits of the
+/// block's size and of the fade the names stay on the tip and on that
+/// edge, and a fade taken away fails what named its tip, naming it.
+#[test]
+fn a_fillet_that_fades_names_its_tip_and_the_edge_beyond_through_edits() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(&mut s, "variable.set", json!({"name": "h", "expr": "40 mm"}));
+    run(&mut s, "variable.set", json!({"name": "back", "expr": "6 mm"}));
+    built(&mut s, "feature.block", json!({"size": [40, 30, "h"], "name": "Box"}));
+    let made = built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": ["Box:edge(9)"], "radius": 3, "name": "Round",
+               "fade": [{"at": "Box:vertex(4)", "over": 15, "back": "back"}]}),
+    );
+    let tip = made["fades"][0]["vertex"].as_str().unwrap().to_string();
+    assert_eq!(
+        tip,
+        "F2:corner[F2:copy(0)/F1:face(2),F2:copy(0)/F1:face(4),F2:fillet(0)]"
+    );
+    let beyond = "F2:between[F2:copy(0)/F1:face(2),F2:copy(0)/F1:face(4)]";
+    built(&mut s, "datum.point", json!({"vertex": tip, "name": "Tip"}));
+    let edge_of = |s: &mut Session| -> Value {
+        let listing = ask(s, "document.edges", json!({"feature": "Round"}));
+        listing["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == beyond)
+            .unwrap_or_else(|| panic!("no edge {beyond} in {listing}"))
+            .clone()
+    };
+    for (h, back) in [(40.0, 6.0), (55.0, 6.0), (55.0, 2.5), (30.0, 10.0)] {
+        run(&mut s, "variable.set", json!({"name": "h", "expr": format!("{h} mm")}));
+        run(&mut s, "variable.set", json!({"name": "back", "expr": format!("{back} mm")}));
+        let point = feature(&mut s, "Tip");
+        assert_eq!(point["status"], "ok", "{point}");
+        let at = &point["datum"]["at"];
+        assert!(
+            at[0].as_f64().unwrap().abs() < 1e-9
+                && at[1].as_f64().unwrap().abs() < 1e-9
+                && (at[2].as_f64().unwrap() - (h - back)).abs() < 1e-9,
+            "h {h}, back {back}: {point}"
+        );
+        let edge = edge_of(&mut s);
+        assert_eq!(edge["aliases"], json!(["F2:copy(0)/F1:edge(9)"]), "{edge}");
+        assert!((edge["length"].as_f64().unwrap() - back).abs() < 1e-9, "{edge}");
+    }
+    // No fade: no tip, and what named it fails with the name it lost.
+    built(&mut s, "feature.edit", json!({"feature": "Round", "fade": null}));
+    let point = feature(&mut s, "Tip");
+    assert_eq!(point["status"], "failed", "{point}");
+    assert!(point["error"].as_str().unwrap().contains(&tip), "{point}");
+}

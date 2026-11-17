@@ -1573,11 +1573,32 @@ fn blend_open(
         // To a tip: sections up to it, and the point itself.
         if let Some(tip) = tips.get(index).ok_or_else(lost)? {
             let solver = solvers.get(home).ok_or_else(lost)?;
-            let more = march_short_of(solver, (centre, seed), tip.at, steps.inside)
-                .ok_or_else(unsolvable)?;
-            let last = more.last().map_or(seed, |(_, section)| *section);
+            // Where no ball is found on the way, or none at the point, the
+            // last place one was found and how far short of the point.
+            let no_ball = |reached: Option<f64>| {
+                let (t0, t1) = data.range;
+                let before = reached.zip(law).and_then(|(reached, law)| {
+                    let before = (law.length_to(tip.at)? - law.length_to(reached)?).abs();
+                    before.is_finite().then_some((reached, before))
+                });
+                match before {
+                    Some((reached, before)) => BlendError::Fade {
+                        edge,
+                        fault: law::FadeFault::NoBall {
+                            at: data.curve.eval(t0 + reached * (t1 - t0)),
+                            before,
+                        },
+                    },
+                    None => unsolvable(),
+                }
+            };
+            let more =
+                march_short_of(solver, (centre, seed), tip.at, steps.inside).map_err(no_ball)?;
+            let (reached, last) = more.last().copied().unwrap_or((centre, seed));
             tagged.extend(more.into_iter().map(|(s, x)| (s, home, x)));
-            let pole = solver.pole(tip.point, &last).ok_or_else(unsolvable)?;
+            let pole = solver
+                .pole(tip.point, &last)
+                .ok_or_else(|| no_ball(Some(reached)))?;
             tagged.push((tip.at, home, pole));
             continue;
         }
@@ -1929,11 +1950,11 @@ fn march_short_of(
     from: (f64, Section),
     to: f64,
     step: f64,
-) -> Option<Vec<(f64, Section)>> {
+) -> Result<Vec<(f64, Section)>, Option<f64>> {
     let (s0, mut last) = from;
     let count = ((to - s0).abs() / step).ceil();
     if !(count.is_finite() && count >= 0.0 && count < MAX_SAMPLES as f64) {
-        return None;
+        return Err(None);
     }
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let count = (count as usize).max(1);
@@ -1941,11 +1962,14 @@ fn march_short_of(
     let mut previous = s0;
     for i in 1..count {
         let s = s0 + (to - s0) * (i as f64 / count as f64);
-        last = solver.follow(previous, &last, s, FOLLOW_DEPTH)?;
+        // (Not followed: the last place a ball was found.)
+        last = solver
+            .follow(previous, &last, s, FOLLOW_DEPTH)
+            .ok_or(Some(previous))?;
         out.push((s, last));
         previous = s;
     }
-    Some(out)
+    Ok(out)
 }
 
 /// Sections from `from` to `to` in even steps of at most `step`, each
@@ -3907,11 +3931,42 @@ fn blend_items(
         .map(|&i| faces.get(i).cloned().unwrap_or(Face::Kept(Vec::new())))
         .collect();
     let replaced: std::collections::BTreeSet<EdgeId> = requests.iter().map(|r| r.edge).collect();
+    // What is left of an edge beyond a tip short of its end
+    // (`keep_beyond`) is that edge, shortened: the one new edge on the
+    // edge's own curve, within its range.
+    let shortened = |made: &Edge| -> Option<EdgeId> {
+        requests
+            .iter()
+            .filter(|r| match r.size {
+                Size::Law(law) => law
+                    .fades
+                    .iter()
+                    .flatten()
+                    .any(|f| f.is_tip() && f.back > 0.0),
+                _ => false,
+            })
+            .find(|r| {
+                body.edge(r.edge).is_some_and(|was| {
+                    let (low, high) = (was.range.0.min(was.range.1), was.range.0.max(was.range.1));
+                    was.curve == made.curve
+                        && [made.range.0, made.range.1]
+                            .iter()
+                            .all(|t| *t >= low && *t <= high)
+                })
+            })
+            .map(|r| r.edge)
+    };
     let edges = edge_was
         .iter()
-        .map(|&i| {
+        .enumerate()
+        .map(|(now, &i)| {
             let id = EdgeId(u32::try_from(i).unwrap_or(u32::MAX));
-            (i < body.edges.len() && !replaced.contains(&id) && !merged.contains(&id)).then_some(id)
+            if i >= body.edges.len() {
+                return out
+                    .edge(EdgeId(u32::try_from(now).unwrap_or(u32::MAX)))
+                    .and_then(shortened);
+            }
+            (!replaced.contains(&id) && !merged.contains(&id)).then_some(id)
         })
         .collect();
     let vertices = vertex_was
