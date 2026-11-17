@@ -77,6 +77,12 @@
 //! WebGPU reports them to the console without unwinding.
 
 mod cut;
+/// Diagnostics of the graphics driver, by environment variable: a trace of
+/// what the driver is asked to build (`CRAFT3D_GPU_TRACE`), the viewport's
+/// samples per pixel (`CRAFT3D_SAMPLES`), the form of the see-through and
+/// section stages (`CRAFT3D_PEEL_VARIANT`), and the order of the window's
+/// graphics interfaces (`CRAFT3D_BACKEND_ORDER`).
+pub mod diag;
 mod mesh;
 mod offscreen;
 mod onscreen;
@@ -84,6 +90,7 @@ mod peel;
 mod readback;
 mod renderer;
 mod studio;
+mod variant;
 
 pub use mesh::{GpuMesh, MAX_TRIANGLES, MeshPart, drawn_bounds};
 pub use offscreen::{AdapterSummary, Offscreen};

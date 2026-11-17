@@ -719,6 +719,57 @@ pub enum RecoveryAction {
 /// Most recoverable documents the bar lists; `recovery.list` has them all.
 pub const RECOVERY_ROWS: usize = 6;
 
+/// The frame that says the studio look is being prepared
+/// ([`Shell::direct_frame`]): from its count so far (0 not yet said, 1 said
+/// in the last frame, 2 done), whether the studio look is to be drawn now
+/// and whether the device makes pipelines slowly (OpenGL), the next count
+/// and whether this frame says it, drawn in the plain look, instead of
+/// drawing the studio look. Said once, on a slow device only; a look that
+/// is no longer asked for before it was drawn takes the saying back, so the
+/// plate never stays over the plain look.
+fn announce_step(count: u8, studio: bool, slow: bool) -> (u8, bool) {
+    match (count, studio, slow) {
+        (2.., _, _) | (_, _, false) => (count, false),
+        (0, true, true) => (1, true),
+        (1, true, true) => (2, false),
+        (_, false, true) => (0, false),
+    }
+}
+
+/// A notice about the graphics interface the window draws through: one
+/// passed over because it ended an earlier start (the desktop app's
+/// graphics start journal, `apps/craft3d/src/graphics_start.rs`). Shown in
+/// a bar under the menu, the recovery bar's kind, until dismissed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphicsNotice {
+    /// The line the bar says.
+    pub text: String,
+    /// What Details shows: the adapters, the journal, how to choose.
+    pub details: String,
+    /// The label of the button that tries the interface passed over again
+    /// at the next start; empty for none.
+    pub retry: String,
+}
+
+/// What a button of the graphics notice asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphicsNoticeAction {
+    /// Try the interface passed over again at the next start.
+    Retry,
+    /// Hide the notice, and do not show it again for that interface.
+    Dismiss,
+}
+
+/// A button of the graphics notice's bar, where it was drawn
+/// ([`Shell::graphics_hits`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphicsButton {
+    /// Opens or closes the details under the line.
+    Details,
+    Retry,
+    Dismiss,
+}
+
 /// What the status bar says about autosave: the text, and whether it is a
 /// problem. Why autosave fails, whichever document it failed for; else
 /// when the recovery file of `document` (the one shown, by its
@@ -837,6 +888,30 @@ pub struct Shell {
     recovery_hits: Vec<(RecoveryAction, egui::Rect)>,
     /// The discard that was clicked once and waits for its second click.
     discard_armed: Option<RecoveryAction>,
+    /// The graphics notice and whether its details are open.
+    graphics_notice: Option<GraphicsNotice>,
+    graphics_details: bool,
+    /// The graphics notice's button clicked, for the host to act on.
+    graphics_action: Option<GraphicsNoticeAction>,
+    /// Where the graphics notice's buttons were drawn in the last frame.
+    graphics_hits: Vec<(GraphicsButton, egui::Rect)>,
+    /// The device errors the window's handler took, as last told
+    /// ([`Shell::device_errors`]).
+    device_errors_seen: u64,
+    /// The studio look gave way to the plain look after a device error,
+    /// for the rest of this session.
+    look_withdrawn: bool,
+    /// The graphics notice shown is the device error's: its Dismiss only
+    /// hides it.
+    device_notice: bool,
+    /// A device error's notice was shown once this session.
+    device_notice_said: bool,
+    /// The first studio frame on the window's device: 0 not yet drawn, 1
+    /// drawn (its presentation is noted at the next frame), 2 noted.
+    studio_first: u8,
+    /// The frame that says the studio look is being prepared, on a device
+    /// whose pipelines take long to make: 0 not yet, 1 this frame, 2 done.
+    studio_announce: u8,
     /// How many picks were made in the viewport ([`Picked::serial`]).
     picks: u64,
     /// Viewport size in pixels, and pixels per point.
@@ -1404,7 +1479,16 @@ impl Shell {
     /// look is drawn meanwhile), or something moving into place
     /// ([`Self::animating`]). A picture of the window waits for both.
     pub fn look_settling(&self, ctx: &egui::Context, now: f64) -> bool {
-        !self.look_ready() || self.animating(ctx, now)
+        !self.look_ready() || self.animating(ctx, now) || self.studio_announcing()
+    }
+
+    /// Whether the frame that says the studio look is being prepared is
+    /// still to come or shown ([`Self::direct_frame`]): the studio look
+    /// asked for on a device whose pipelines take long to make.
+    fn studio_announcing(&self) -> bool {
+        self.state.look.is_studio()
+            && self.direct.as_ref().is_some_and(Direct::slow_pipelines)
+            && self.studio_announce < 2
     }
 
     /// Whether the window's own animations are under way at egui's time
@@ -1461,6 +1545,16 @@ impl Shell {
             recovery: RecoveryOverview::default(),
             recovery_hits: Vec::new(),
             discard_armed: None,
+            graphics_notice: None,
+            graphics_details: false,
+            graphics_action: None,
+            graphics_hits: Vec::new(),
+            device_errors_seen: 0,
+            look_withdrawn: false,
+            device_notice: false,
+            device_notice_said: false,
+            studio_first: 0,
+            studio_announce: 0,
             picks: 0,
             size: DEFAULT_VIEWPORT,
             pixels_per_point: 1.0,
@@ -3145,6 +3239,25 @@ impl Shell {
             self.recovery_hits.clear();
             self.discard_armed = None;
         }
+        self.graphics_hits.clear();
+        if self.graphics_notice.is_some() {
+            egui::Panel::top("craft3d-graphics-notice")
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(color(tokens.attention_fill))
+                        .stroke(egui::Stroke::new(1.0, color(tokens.attention)))
+                        .inner_margin(egui::Margin::symmetric(
+                            tokens.inset.clamp(0.0, 32.0) as i8,
+                            tokens.nav_spacing.clamp(0.0, 16.0) as i8,
+                        )),
+                )
+                .show(ui, |ui| {
+                    ui.style_mut().visuals = tokens.panel_visuals();
+                    self.graphics_bar(ui);
+                });
+        }
         if !full {
             // No tab row in `view` and `form`: the page shows what it
             // opened.
@@ -3572,6 +3685,169 @@ impl Shell {
             text: text.chars().take(160).collect(),
         });
         self.sync(session);
+    }
+
+    /// Shows `notice` in a bar under the menu from the next frame on, or
+    /// none.
+    pub fn set_graphics_notice(&mut self, notice: Option<GraphicsNotice>) {
+        self.graphics_notice = notice;
+        self.graphics_details = false;
+        self.device_notice = false;
+    }
+
+    /// The device errors the window's handler took so far (`count`; the
+    /// last one's text from `last`), told every frame. A new one while the
+    /// studio look is on makes it give way to the plain look for the rest
+    /// of this session, and a bar under the menu says so; the studio look
+    /// asked for again later gives way again. Any other error is said in
+    /// the bar once. True when something changed, for a repaint.
+    pub fn device_errors(&mut self, count: u64, last: impl FnOnce() -> String) -> bool {
+        let new = count > self.device_errors_seen;
+        self.device_errors_seen = self.device_errors_seen.max(count);
+        let studio = self.state.look.is_studio();
+        if !(studio && (new || self.look_withdrawn)) && !(new && !self.device_notice_said) {
+            return false;
+        }
+        let text = last();
+        let details = format!(
+            "The graphics driver reported: {text} 3DCraft caught it and carries on: nothing of \
+             your work is lost. Graphics errors in this session: {count}."
+        );
+        let line = if studio {
+            self.look_withdrawn = true;
+            self.state.look.mode = "plain".to_string();
+            craft3d_gpu::diag::note(
+                "look",
+                &format!(
+                    "the studio look gives way to the plain look for this session, after \
+                     device error {count}"
+                ),
+            );
+            "The studio look is off for this session: this computer's graphics could not \
+             finish its pictures in time. The plain look is shown."
+        } else {
+            "The graphics driver reported an error; 3DCraft caught it and carries on. If \
+             the view looks wrong, resize the window or start 3DCraft again."
+        };
+        self.graphics_notice = Some(GraphicsNotice {
+            text: line.to_string(),
+            details,
+            retry: String::new(),
+        });
+        self.graphics_details = false;
+        self.device_notice = true;
+        self.device_notice_said = true;
+        true
+    }
+
+    /// Whether the first studio frame on the window's device was drawn and
+    /// handed to the window to be presented.
+    pub fn studio_presented(&self) -> bool {
+        self.studio_first == 2
+    }
+
+    /// The graphics notice shown, if any.
+    pub fn graphics_notice(&self) -> Option<&GraphicsNotice> {
+        self.graphics_notice.as_ref()
+    }
+
+    /// Where the graphics notice's buttons were drawn in the last frame;
+    /// none while it is not shown.
+    pub fn graphics_hits(&self) -> &[(GraphicsButton, egui::Rect)] {
+        &self.graphics_hits
+    }
+
+    /// Whether the graphics notice's details are open.
+    pub fn graphics_details_open(&self) -> bool {
+        self.graphics_details
+    }
+
+    /// The graphics notice's button clicked since the last call, for the
+    /// host to act on (the bar is gone by then).
+    pub fn take_graphics_notice_action(&mut self) -> Option<GraphicsNoticeAction> {
+        let action = self.graphics_action.take();
+        // A device error's notice is only hidden: the start's journal is
+        // not its business.
+        if self.device_notice {
+            self.device_notice = self.graphics_notice.is_some();
+            return None;
+        }
+        action
+    }
+
+    /// The bar of the graphics notice: the warning, the line, Details
+    /// (which opens the details under it), the retry and Dismiss.
+    fn graphics_bar(&mut self, ui: &mut egui::Ui) {
+        use crate::kit::{Button, Glyph, Kit};
+        let Some(notice) = self.graphics_notice.clone() else {
+            return;
+        };
+        let tokens = self.tokens;
+        let kit = Kit::panel(&tokens);
+        let mut clicked = None;
+        let mut hits = Vec::new();
+        ui.add_space(tokens.inset * 0.2);
+        ui.horizontal(|ui| {
+            let side = tokens.nav_icon_size;
+            let (icon, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+            crate::kit::glyphs::paint(
+                ui.painter(),
+                Glyph::Warning,
+                icon,
+                color(tokens.attention),
+                &tokens,
+            );
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(&notice.text)
+                        .font(kit.medium_font(ui))
+                        .color(color(tokens.text)),
+                )
+                .truncate(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let dismiss = kit.button(ui, Button::quiet("Dismiss"));
+                hits.push((GraphicsButton::Dismiss, dismiss.rect));
+                if dismiss.clicked() {
+                    clicked = Some(GraphicsNoticeAction::Dismiss);
+                }
+                if !notice.retry.is_empty() {
+                    let retry = kit.button(ui, Button::quiet(&notice.retry));
+                    hits.push((GraphicsButton::Retry, retry.rect));
+                    if retry.clicked() {
+                        clicked = Some(GraphicsNoticeAction::Retry);
+                    }
+                }
+                let label = if self.graphics_details {
+                    "Hide details"
+                } else {
+                    "Details…"
+                };
+                let details = kit.button(ui, Button::quiet(label));
+                hits.push((GraphicsButton::Details, details.rect));
+                if details.clicked() {
+                    self.graphics_details = !self.graphics_details;
+                }
+            });
+        });
+        if self.graphics_details {
+            ui.horizontal(|ui| {
+                ui.add_space(tokens.nav_icon_size + ui.spacing().item_spacing.x);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&notice.details).color(color(tokens.text_dim)),
+                    )
+                    .wrap(),
+                );
+            });
+        }
+        ui.add_space(tokens.inset * 0.2);
+        self.graphics_hits = hits;
+        if let Some(action) = clicked {
+            self.graphics_action = Some(action);
+            self.graphics_notice = None;
+            ui.ctx().request_repaint();
+        }
     }
 
     /// The bar under the menu that offers what a crashed 3DCraft left
@@ -4913,6 +5189,10 @@ impl Shell {
         // window's device, every frame in full; the other paths make a
         // preview here and the sharp image elsewhere.
         self.direct_shown = self.direct_frame(scene, &key);
+        if self.studio_announce == 1 {
+            // The studio look is made in the next frame.
+            ui.ctx().request_repaint();
+        }
         if !self.direct_shown {
             self.refresh(ui.ctx(), shared, &key, moving);
         } else if self.direct.as_ref().is_some_and(Direct::converging) {
@@ -4929,6 +5209,18 @@ impl Shell {
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         if let Some(id) = self.direct_texture() {
             painter.image(id, rect, uv, egui::Color32::WHITE);
+            if self.studio_announce == 1 {
+                let galley = painter.layout_no_wrap(
+                    "Preparing the studio look… this can take a minute".to_string(),
+                    egui::TextStyle::Heading.resolve(ui.style()),
+                    color(tokens.text),
+                );
+                let at = rect.center() - galley.size() * 0.5;
+                let plate = egui::Rect::from_min_size(at, galley.size())
+                    .expand(tokens.inset.clamp(0.0, 32.0));
+                painter.rect_filled(plate, tokens.radius, color(tokens.panel_fill));
+                painter.galley(at, galley, color(tokens.text));
+            }
         } else {
             if let Some(texture) = &self.texture {
                 painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
@@ -5346,7 +5638,25 @@ impl Shell {
     /// when the picture on screen is now the direct path's; false when
     /// there is no direct path, or this frame has to be made another way.
     fn direct_frame(&mut self, scene: Option<&Scene>, key: &FrameKey) -> bool {
-        let studio = self.studio();
+        let mut studio = self.studio();
+        if self.studio_first == 1 {
+            self.studio_first = 2;
+            craft3d_gpu::diag::note(
+                "look",
+                "the first studio frame was presented (in the frame before this one)",
+            );
+        }
+        // Where making the studio look's pipelines holds the window (a
+        // minute through OpenGL on an older Intel card), one frame of the
+        // plain look first says so; the next makes them.
+        let slow = self.direct.as_ref().is_some_and(Direct::slow_pipelines);
+        let (count, say) = announce_step(self.studio_announce, studio.is_some(), slow);
+        self.studio_announce = count;
+        if say {
+            craft3d_gpu::diag::note("look", "preparing the studio look: said first");
+            studio = None;
+        }
+        let drawn_studio = studio.is_some();
         let marks = self.frame_marks(scene, key);
         // Smaller while the camera moves, where the host asked for it.
         let divisor = if self.interacting_light() && studio.is_some() {
@@ -5378,6 +5688,16 @@ impl Shell {
             Ok(None) => true,
             Ok(Some(frame)) => {
                 self.renders = self.renders.saturating_add(1);
+                if drawn_studio && self.studio_first == 0 {
+                    self.studio_first = 1;
+                    craft3d_gpu::diag::note(
+                        "look",
+                        &format!(
+                            "the first studio frame was drawn in {:.1} ms",
+                            frame.milliseconds
+                        ),
+                    );
+                }
                 self.stats = Some(RenderStats {
                     width: frame.width,
                     height: frame.height,
@@ -5875,5 +6195,33 @@ fn paint_overlay(
             viewport::opacity(point.hidden, tokens),
         );
         painter.circle_filled(place(point.at), point.kind.dot_radius(tokens), tint);
+    }
+}
+
+#[cfg(test)]
+mod announce_tests {
+    use super::announce_step;
+
+    #[test]
+    fn the_studio_look_is_announced_once_on_a_slow_device_only() {
+        // A fast device: never said, the studio look drawn at once.
+        assert_eq!(announce_step(0, true, false), (0, false));
+        // A slow one: said in one frame, the studio look made in the next,
+        // and never said again.
+        assert_eq!(announce_step(0, true, true), (1, true));
+        assert_eq!(announce_step(1, true, true), (2, false));
+        assert_eq!(announce_step(2, true, true), (2, false));
+        assert_eq!(announce_step(2, false, true), (2, false));
+        // Nothing to say while the studio look is not asked for.
+        assert_eq!(announce_step(0, false, true), (0, false));
+    }
+
+    #[test]
+    fn a_studio_look_taken_back_before_it_was_drawn_takes_the_plate_back() {
+        // Said, then the plain look asked for at once: the plate goes, and
+        // the studio look asked for later is said again.
+        assert_eq!(announce_step(0, true, true), (1, true));
+        assert_eq!(announce_step(1, false, true), (0, false));
+        assert_eq!(announce_step(0, true, true), (1, true));
     }
 }

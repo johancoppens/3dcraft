@@ -26,6 +26,20 @@
 //! smoke test, which reads `3DCraft.exe --version`), the window answers
 //! there.
 //!
+//! A window that crashes within [`START_UP`] (on Windows an exception's
+//! exit code, such as an access violation inside a graphics driver) while
+//! it was still starting on its graphics interface is started again, with
+//! the same arguments but `--reset-graphics`, at most [`RESTARTS`] times
+//! in a row ([`restart`]): the window keeps a journal of its graphics
+//! starts and passes over an interface that ended the one before
+//! (`apps/craft3d/src/graphics_start.rs`), so the next start takes the next
+//! interface without the person doing anything. Whether it was still
+//! starting is its own lock file in the state folder, which it holds from
+//! the choice of its interface until its first frames or its close
+//! ([`was_starting`]); any other crash is said as before, never blamed on
+//! graphics. Only when every start failed is the failure said, with the
+//! last exit code and where the journal is.
+//!
 //! Everything but the start itself and the box is in portable functions
 //! with tests here; `main.rs` only joins them.
 
@@ -51,6 +65,10 @@ pub const LOG_SWITCH: &str = "CRAFT3D_LAUNCHER_LOG";
 /// was killed or crashed after work, and leaves its recovery files, which
 /// the next start offers.
 pub const START_UP: Duration = Duration::from_secs(60);
+
+/// How often in a row a window that crashed at start is started again
+/// ([`restart`]).
+pub const RESTARTS: u32 = 3;
 
 /// The most of the window's error output read back: its last message is
 /// at its end.
@@ -239,6 +257,132 @@ pub fn exit_code_text(code: Option<i32>) -> String {
     }
 }
 
+/// Whether `code` is a Windows exception's NTSTATUS (severity error,
+/// 0xC0000000 and above as an unsigned number): an access violation, a
+/// stack overrun, a missing DLL; a crash, not an exit the window chose.
+/// Not `STATUS_CONTROL_C_EXIT` (0xC000013A): a window ended at log-off or
+/// by Ctrl+C.
+pub fn is_exception_code(code: i32) -> bool {
+    let code = u32::from_ne_bytes(code.to_ne_bytes());
+    code >= 0xC000_0000 && code != 0xC000_013A
+}
+
+/// The window's state folder for `args` and the environment (`env`), as
+/// the window finds it: `--state-dir DIR` (or `--state-dir=DIR`, before a
+/// `--`), else `CRAFT3D_STATE_DIR`, else `3dcraft` in the platform's
+/// per-user state folder (`%LOCALAPPDATA%` on Windows; macOS
+/// `~/Library/Application Support`; elsewhere `$XDG_STATE_HOME` or
+/// `~/.local/state`); `None` when none is named.
+pub fn state_folder(args: &[OsString], env: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let mut given = None;
+    let mut at = args.iter();
+    while let Some(arg) = at.next() {
+        if arg == "--" {
+            break;
+        }
+        if arg == "--state-dir" {
+            given = at.next().cloned();
+        } else if let Some(value) = arg.to_str().and_then(|a| a.strip_prefix("--state-dir=")) {
+            given = Some(OsString::from(value));
+        }
+    }
+    if let Some(dir) = given.filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(dir) = env("CRAFT3D_STATE_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    let var = |name: &str| {
+        env(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
+    let base = if cfg!(windows) {
+        var("LOCALAPPDATA")?
+    } else if cfg!(target_os = "macos") {
+        var("HOME")?.join("Library").join("Application Support")
+    } else {
+        match var("XDG_STATE_HOME") {
+            Some(state) => state,
+            None => var("HOME")?.join(".local").join("state"),
+        }
+    };
+    Some(base.join("3dcraft"))
+}
+
+/// Whether the window of process `pid` was still starting on its graphics
+/// interface when it ended: its lock file in the state folder `state` is
+/// there (`graphics-start.<pid>.lock`; the window removes it once its
+/// first frames are drawn, or when it closes before them).
+pub fn was_starting(state: Option<&Path>, pid: u32) -> bool {
+    state.is_some_and(|state| state.join(format!("graphics-start.{pid}.lock")).is_file())
+}
+
+/// The arguments of a restart: `args` without `--reset-graphics` (before a
+/// `--`), so the journal the first start began is kept.
+pub fn restart_args(args: &[OsString]) -> Vec<OsString> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut ended = false;
+    for arg in args {
+        if arg == "--" {
+            ended = true;
+        }
+        if ended || arg != "--reset-graphics" {
+            out.push(arg.clone());
+        }
+    }
+    out
+}
+
+/// Whether the window ended with `status` by crashing: on Windows with an
+/// exception's code ([`is_exception_code`]), elsewhere by the signal of a
+/// crash (SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV).
+pub fn crashed(status: ExitStatus) -> bool {
+    #[cfg(windows)]
+    {
+        status.code().is_some_and(is_exception_code)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        // SIGBUS is 7 on Linux and 10 on macOS.
+        matches!(status.signal(), Some(4 | 6 | 7 | 8 | 10 | 11))
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = status;
+        false
+    }
+}
+
+/// Whether the launcher starts the window again: it crashed
+/// ([`crashed`]) within [`START_UP`] (`ran`) while it was still starting on
+/// its graphics interface (`starting`, [`was_starting`]), and was started
+/// again fewer than [`RESTARTS`] times in a row so far (`restarts`).
+pub fn restart(crashed: bool, starting: bool, ran: Duration, restarts: u32) -> bool {
+    crashed && starting && ran < START_UP && restarts < RESTARTS
+}
+
+/// What is added to the failure said after `starts` starts that crashed:
+/// how often, and where the window's graphics start journal and the trace
+/// (`trace`, `CRAFT3D_GPU_TRACE`) are.
+pub fn restarts_text(starts: u32, trace: Option<&OsStr>) -> String {
+    let mut text = format!(
+        "3DCraft was started {starts} times; each start passes over a graphics interface that \
+         ended the one before. What it learnt is in graphics-start.json in 3DCraft's state \
+         folder (%LOCALAPPDATA%\\3dcraft unless --state-dir or CRAFT3D_STATE_DIR says \
+         otherwise)."
+    );
+    if let Some(trace) = trace.filter(|t| !t.is_empty()) {
+        text.push_str(&format!(
+            " The trace of what the graphics card was asked to build: {}.",
+            Path::new(trace).display()
+        ));
+    }
+    text
+}
+
 /// What the launcher says when the window it started ended with `status`
 /// after `ran`, having written `errors`: `None` when there is nothing to
 /// say (it ended well, or ran for longer than [`START_UP`]). Always with
@@ -307,36 +451,64 @@ pub fn launch(launcher: &Path, args: Vec<OsString>) -> Ended {
             launcher.display()
         ));
     }
-    let errors = error_file();
-    let (errors_path, errors_file) = match errors {
-        Some((path, file)) => (Some(path), Some(file)),
-        None => (None, None),
-    };
-    let started = Instant::now();
-    let spawned = window_command(&window, args, errors_file).spawn();
-    let result = match spawned {
-        Err(error) => Ended::said(format!(
-            "3DCraft could not start {}: {error}",
-            window.display()
-        )),
-        Ok(mut child) => match child.wait() {
-            Err(error) => Ended::said(format!(
-                "3DCraft could not wait for {}: {error}",
+    let state = state_folder(&args, &|name| std::env::var_os(name));
+    let mut args = args;
+    let mut restarts = 0;
+    loop {
+        let errors = error_file();
+        let (errors_path, errors_file) = match errors {
+            Some((path, file)) => (Some(path), Some(file)),
+            None => (None, None),
+        };
+        let started = Instant::now();
+        let spawned = window_command(&window, args.iter().cloned(), errors_file).spawn();
+        let mut pid = 0;
+        let waited = match spawned {
+            Err(error) => Err(format!(
+                "3DCraft could not start {}: {error}",
                 window.display()
             )),
-            Ok(status) => {
-                let said = errors_path.as_deref().map(tail_of).unwrap_or_default();
-                Ended {
-                    code: status.code(),
-                    say: start_up_failure(status, started.elapsed(), &said),
-                }
+            Ok(mut child) => {
+                pid = child.id();
+                child.wait().map_err(|error| {
+                    format!("3DCraft could not wait for {}: {error}", window.display())
+                })
             }
-        },
-    };
-    if let Some(path) = errors_path {
-        let _ = std::fs::remove_file(path);
+        };
+        let said = errors_path.as_deref().map(tail_of).unwrap_or_default();
+        if let Some(path) = errors_path {
+            let _ = std::fs::remove_file(path);
+        }
+        let status = match waited {
+            Err(say) => return Ended::said(say),
+            Ok(status) => status,
+        };
+        let ran = started.elapsed();
+        if restart(
+            crashed(status),
+            was_starting(state.as_deref(), pid),
+            ran,
+            restarts,
+        ) {
+            restarts += 1;
+            args = restart_args(&args);
+            continue;
+        }
+        let mut say = start_up_failure(status, ran, &said);
+        if restarts > 0
+            && let Some(text) = say.as_mut()
+        {
+            text.push_str("\n\n");
+            text.push_str(&restarts_text(
+                restarts.saturating_add(1),
+                std::env::var_os("CRAFT3D_GPU_TRACE").as_deref(),
+            ));
+        }
+        return Ended {
+            code: status.code(),
+            say,
+        };
     }
-    result
 }
 
 /// Says `message`: with the switch (`log`, the value of [`LOG_SWITCH`])

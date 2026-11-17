@@ -2203,6 +2203,13 @@ struct Viewer {
     desktop_theme: crate::desktop_theme::DesktopTheme,
     /// Whether the window had the focus in the last frame.
     focused: bool,
+    /// The start on the graphics interface: its first frames make it "ok"
+    /// in the journal, and its notice's buttons act on the journal
+    /// (`graphics_start`).
+    start: Rc<RefCell<crate::graphics_start::Start>>,
+    /// The errors of the window's device (`device_errors`), told to the
+    /// shell every frame.
+    errors: Arc<crate::device_errors::DeviceErrors>,
 }
 
 impl eframe::App for Viewer {
@@ -2217,6 +2224,27 @@ impl eframe::App for Viewer {
         if desk.turn().changed {
             // Show what changed, and look for more.
             ctx.request_repaint();
+        }
+        // A device error: the studio look gives way, a bar says so.
+        let errors = &self.errors;
+        if desk
+            .host
+            .shell
+            .device_errors(errors.count(), || errors.last())
+        {
+            ctx.request_repaint();
+        }
+        if let Ok(mut start) = self.start.try_borrow_mut() {
+            // The first frames are drawn at once, idle or not: they make
+            // the start "ok" in the graphics start journal.
+            if start.frame() {
+                ctx.request_repaint();
+            }
+            match desk.host.shell.take_graphics_notice_action() {
+                Some(craft3d_ui_egui::GraphicsNoticeAction::Retry) => start.retry(),
+                Some(craft3d_ui_egui::GraphicsNoticeAction::Dismiss) => start.dismiss(),
+                None => {}
+            }
         }
         desk.host.shell.set_desktop_theme(self.desktop_theme.get());
         let focused = ctx.input(|i| i.focused);
@@ -2306,6 +2334,9 @@ struct Driver<'a> {
     desk: Rc<RefCell<Desk>>,
     /// Set once the window's shell exists: nothing is answered before.
     context: Arc<OnceLock<egui::Context>>,
+    /// The surface configured again after a device error
+    /// (`device_errors`).
+    recovery: crate::device_errors::Recovery,
 }
 
 impl Driver<'_> {
@@ -2346,7 +2377,11 @@ impl ApplicationHandler<UserEvent> for Driver<'_> {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // egui's painter configures the surface at a resize; an error
+        // raised meanwhile leaves it to be configured again.
+        let (resized, before) = self.recovery.before(id, &event);
         self.eframe.window_event(event_loop, id, event);
+        self.recovery.after(resized, before);
         // A frame may have answered `ui.quit`.
         self.serve(event_loop);
     }
@@ -2368,6 +2403,22 @@ impl ApplicationHandler<UserEvent> for Driver<'_> {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.eframe.about_to_wait(event_loop);
+        let presented = self
+            .desk
+            .try_borrow()
+            .is_ok_and(|desk| desk.host.shell.studio_presented());
+        if let Some((id, size)) = self.recovery.fault_due(presented) {
+            self.window_event(event_loop, id, WindowEvent::Resized(size));
+        }
+        // The surface configured again, once the device is idle: the same
+        // resize handed to egui's painter.
+        let before = self.recovery.errors();
+        if let Some((id, size)) = self.recovery.due(Instant::now()) {
+            self.eframe
+                .window_event(event_loop, id, WindowEvent::Resized(size));
+            self.recovery.configured(before);
+        }
+        self.recovery.schedule(event_loop);
     }
 
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
@@ -2480,6 +2531,14 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
     let title = window_title(host.session.document_status().as_ref());
     let picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
     let agents_picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
+    // The window's device gets a handler of our own for the errors no
+    // error scope catches: wgpu's default panics (`device_errors`).
+    let device_errors = Arc::new(crate::device_errors::DeviceErrors::default());
+    let window_device: Rc<std::cell::OnceCell<eframe::wgpu::Device>> = Rc::default();
+    // `CRAFT3D_GPU_TOUR` (`tour.rs`), a diagnostic: the window drives
+    // itself through every kind of picture once, by its own requests.
+    let tour = crate::tour::from_env(&env)
+        .map(|mode| (mode, agents.request_sender(), device_errors.counter()));
     let mut desk = Desk::new(host, requests, picker)
         .with_engine_thread(Arc::clone(&wake))
         .with_agents(agents)
@@ -2488,13 +2547,29 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         desk.set_window_points([w as f32, h as f32]);
     }
     let desk = Rc::new(RefCell::new(desk));
-    let native = eframe::NativeOptions {
+    let mut native = eframe::NativeOptions {
         viewport: viewport(options, &title),
         ..Default::default()
     };
+    // The graphics interface: chosen by the order and by what the journal
+    // in the state folder says of earlier starts, which this start adds to
+    // (`graphics_start`); and the trace's first lines (`gpu_diag`).
+    let start = Rc::new(RefCell::new(crate::graphics_start::Start::new(
+        options.state_dir.as_deref(),
+        env!("CARGO_PKG_VERSION"),
+        options.reset_graphics,
+    )));
+    if let Ok(start) = start.try_borrow() {
+        crate::gpu_diag::prepare(&mut native.wgpu_options, &env, &start);
+    }
+    let trace = env(craft3d_gpu::diag::TRACE_VAR).filter(|t| !t.is_empty());
+    let for_start = Rc::clone(&start);
+    let present_mode = native.wgpu_options.surface.present_mode;
+    let frame_latency = native.wgpu_options.surface.desired_maximum_frame_latency;
     let renderer = options.renderer;
     let failure = failures();
     let (for_viewer, for_context) = (Rc::clone(&desk), Arc::clone(&context));
+    let (for_errors, for_device) = (Arc::clone(&device_errors), Rc::clone(&window_device));
     let eframe = eframe::create_native(
         TITLE,
         native,
@@ -2505,6 +2580,19 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             // `--renderer cpu` asks for outright. The window never waits
             // for the CPU renderer: its sharp images are made on the
             // shell's own thread.
+            crate::gpu_diag::render_state_ready(
+                creation.wgpu_render_state.as_ref(),
+                present_mode,
+                frame_latency,
+            );
+            // Before the shell makes anything on the device: an error no
+            // scope catches is the handler's from here on. egui-wgpu has
+            // made its renderer and configured the surface once already;
+            // an error there still meets wgpu's default handler (owed).
+            if let Some(state) = creation.wgpu_render_state.as_ref() {
+                crate::device_errors::install(&state.device, Arc::clone(&for_errors));
+                let _ = for_device.set(state.device.clone());
+            }
             let mut shell = Shell::threaded_with_gpu(renderer, creation.wgpu_render_state.as_ref());
             shell.set_recent_files(recent);
             shell.set_data_folder(data_folder);
@@ -2512,6 +2600,7 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             // Help menu has it always.
             shell.set_whats_new(notes);
             shell.set_agent_setup(agent);
+            craft3d_gpu::diag::note("viewport", &shell.renderer_report().describe());
             announce(&format!(
                 "viewport renderer: {}",
                 shell.renderer_report().describe()
@@ -2522,6 +2611,17 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             if let Ok(mut desk) = for_viewer.try_borrow_mut() {
                 desk.attach_recorder(creation.wgpu_render_state.as_ref());
             }
+            if let (Ok(mut desk), Ok(start)) = (for_viewer.try_borrow_mut(), for_start.try_borrow())
+                && let Some((text, details, retry)) = start.notice(trace.as_deref())
+            {
+                desk.host
+                    .shell
+                    .set_graphics_notice(Some(craft3d_ui_egui::GraphicsNotice {
+                        text,
+                        details,
+                        retry,
+                    }));
+            }
             let viewer = Viewer {
                 mirror: None,
                 desk: for_viewer,
@@ -2530,7 +2630,12 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
                 desktop_theme: crate::desktop_theme::DesktopTheme::start(Some(
                     creation.egui_ctx.clone(),
                 )),
+                start: for_start,
+                errors: Arc::clone(&for_errors),
             };
+            if let Some((mode, requests, errors)) = tour {
+                crate::tour::start(mode, requests, Arc::clone(&wake), errors, &env);
+            }
             // Requests that arrived before the window existed are waiting
             // in the channel; they are answered from here on.
             let _ = for_context.set(creation.egui_ctx.clone());
@@ -2539,15 +2644,24 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         }),
         &event_loop,
     );
+    let fault = crate::device_errors::fault_asked(env(crate::device_errors::FAULT_VAR).as_deref());
     let mut driver = Driver {
         eframe,
         desk,
         context: Arc::clone(&context),
+        recovery: crate::device_errors::Recovery::new(device_errors, window_device, fault),
     };
     let ran = event_loop.run_app(&mut driver);
     // The window goes at once, also when work is still running.
     let desk = Rc::clone(&driver.desk);
     drop(driver);
+    // A window that was made and closed before its first frames were
+    // drawn was closed on purpose: no failure of its graphics interface.
+    if context.get().is_some()
+        && let Ok(mut start) = start.try_borrow_mut()
+    {
+        start.closing();
+    }
     // The window was closed, or could not be made: either way the
     // application ends on purpose, and leaves no recovery files. (A crash
     // or a kill never gets here, and leaves them.) Work that is still
