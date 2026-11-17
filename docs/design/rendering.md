@@ -12,7 +12,7 @@ Pictures: the CPU reference renderer (`craft3d-render`, the display oracle), the
 
 **The viewport.** The window draws on the GPU through `ui_egui::direct::Direct` on its own device, only when something the frame depends on changed; edges, sketches, axes and datums are lines drawn over it and tested against its depth. Where that cannot run, the shell falls back to the GPU on a device of its own read back, or to the CPU renderer (`--renderer cpu`), and says why. `ui.screenshot` always renders on the CPU: it is the oracle. The model's truth is the B-rep, not the picture: geometry is tested geometrically ([`../testing.md`](../testing.md)).
 
-**Drivers that fail** (2026-11-16). A graphics driver can end the process while the window starts (an access violation inside the driver: no panic, nothing to catch), so three answers sit around the renderer. (1) No driver is handed a stage its interface forbids: on Vulkan, on every system, the see-through's and the section's multisampled stages are drawn per sample, without a sample mask, since naga writes a sample-mask output into SPIR-V as a scalar, which Vulkan forbids and Intel's and AMD's drivers on Windows crash on (`craft3d_gpu::diag::auto_choice` and `stages`, `variant.rs`); a Vulkan device that cannot shade per sample draws its viewport with one sample per pixel; every other backend keeps the masked stages, byte for byte. (2) On Windows the window keeps a journal of its graphics starts in its state folder and passes over an interface that ended one, in the order Vulkan, OpenGL, DirectX 12, and the launcher starts it again by itself (`apps/craft3d/src/graphics_start.rs`, `apps/craft3d-launcher`); on Linux and macOS the window chooses as it always did. (3) `CRAFT3D_GPU_TRACE` writes, synced, what the driver is asked to build, so the last line of the file names what it was building when the process died, and `CRAFT3D_GPU_TOUR` makes one start ask for every pipeline (`craft3d_gpu::diag`, `apps/craft3d/src/tour.rs`). See the three findings of 2026-11-16.
+**Drivers that fail** (2026-11-16). A graphics driver can end the process while the window starts (an access violation inside the driver: no panic, nothing to catch), so three answers sit around the renderer. (1) No driver is handed a stage its interface forbids: on Vulkan, on every system, the see-through's and the section's multisampled stages are drawn per sample, without a sample mask, since naga writes a sample-mask output into SPIR-V as a scalar, which Vulkan forbids and Intel's and AMD's drivers on Windows crash on (`craft3d_gpu::diag::auto_choice` and `stages`, `variant.rs`); a Vulkan device that cannot shade per sample draws its viewport with one sample per pixel; every other backend keeps the masked stages, byte for byte. (2) On Windows the window keeps a journal of its graphics starts in its state folder and passes over an interface that ended one, in the order Vulkan, OpenGL, DirectX 12, and the launcher starts it again by itself (`apps/craft3d/src/graphics_start.rs`, `apps/craft3d-launcher`); on Linux and macOS the window chooses as it always did. (3) `CRAFT3D_GPU_TRACE` writes, synced, what the driver is asked to build, so the last line of the file names what it was building when the process died, and `CRAFT3D_GPU_TOUR` makes one start ask for every pipeline (`craft3d_gpu::diag`, `apps/craft3d/src/tour.rs`). (4) A device error no error scope catches never ends the window: the window's device has a handler of its own on every system, a surface whose configure failed is configured again once the device is idle, and the studio look gives way to the plain look with a bar that says so (`apps/craft3d/src/device_errors.rs`, `Shell::device_errors`). See the four findings of 2026-11-16.
 
 **Surface analysis** (2026-10-30, class-A stage 1; `craft3d_render::analysis`, on the GPU `scene.wgsl` › `analysis_of`). Zebra stripes, highlight lines, a curvature map with values per vertex from the exact surfaces, and draft, drawn in place of the plain shading by both renderers, with combs as overlay lines; view state only. The stripes are filtered over each sample's footprint in phase (2026-10-31), so where they are finer than a pixel they fade to their mean instead of a moiré. Method, tolerance and tests in [`surfacing.md`](surfacing.md) › *Stage 1: analysis*.
 
@@ -1875,3 +1875,92 @@ cached check.
 - **`CRAFT3D_PEEL_VARIANT=auto|today|persample`.** The form of the see-through and section stages (above).
 - **`CRAFT3D_BACKEND_ORDER=dx12,vulkan,gl`.** The interfaces to try, in order (*A graphics interface that kills the
   start*, above).
+
+### A device error never ends the window (2026-11-16)
+
+**What was seen.** On a Windows 10 laptop with Intel UHD Graphics 615 (driver 27.20.100.8681, of 2020), which
+0.1.2's start sends to OpenGL because its Vulkan driver crashes, the window vanished after the studio look was
+switched on: its pipelines were made (36 s, and 47 s in a second run; "craft3d occlusion" alone 18.5 s, the
+window not answering meanwhile), and then the process ended with exit code 101 and `wgpu error: Validation
+Error … In Surface::configure: Failed to wait for GPU to come idle before reconfiguring the Surface`. With a
+document of three features the window lived; with the moka pot example (32 434 lines in the frame) it died 48 s
+after the look was switched on, right after the last pipeline, with no resize by a person.
+
+**Why** (read in wgpu 30.0.1, wgpu-core and wgpu-hal 30.0.1, egui-wgpu and eframe 0.36.2).
+
+- *Who configures the surface.* egui-wgpu's `Painter::configure_surface`, called from `on_window_resized` (eframe,
+  at every winit `WindowEvent::Resized` with a size above zero), from `paint_and_update_textures` after a
+  `Suboptimal` frame or a changed `RenderState::surface_config`, and when `get_current_texture` gives `Outdated`
+  (egui-wgpu's default `on_surface_status`). Through OpenGL on Windows (WGL, `wgpu-hal` `gles/wgl.rs`,
+  `acquire_texture`) an acquire always succeeds and is never suboptimal, so there only a resize configures.
+  With no person resizing, the likely sender is Windows itself: a window that does not answer for five seconds
+  is replaced by a ghost and put back when it answers again, and that comes with a `WM_SIZE` of the same size.
+  This is inferred, not seen; the window now writes a trace line for every resize it hands on (below).
+- *What times out.* wgpu-core's `Device::configure_surface` first waits for every submission
+  (`maintain(PollType::wait_indefinitely())`). Through OpenGL "indefinitely" becomes `u32::MAX` nanoseconds
+  (`gles/device.rs`, `wait`), clamped to `i32::MAX` for `glClientWaitSync` (`gles/fence.rs`): 2.1 s. The first
+  studio frames of a large model take that card longer, so the wait ends in `WaitIdleError::Timeout`, which
+  becomes `ConfigureSurfaceError::GpuWaitTimeout`; `Surface::configure` hands it to the device's error sink
+  (`wgpu/src/backend/wgpu_core.rs`, line 3981), and wgpu's default handler for an error no scope catches
+  panics. The configure stops before it touches the surface: the old configuration stays.
+- *Why the tour lived.* It installed a handler of its own, which counted; the window in normal use had none
+  (the offscreen renderer and the web page had theirs). The tour's two "the device did not finish the frame:
+  The requested Wait timed out" were the same slowness met by `ui.screenshot`'s own wait, which returns an
+  error and never panicked.
+- `eframe::Frame::set_wgpu_surface_config` cannot ask for a configure: it changes the frame's copy of the
+  `RenderState`, while the painter compares its own.
+
+**The method** (for 0.1.3; `apps/craft3d/src/device_errors.rs`, `Shell::device_errors`).
+
+- The window's device gets the window's handler in eframe's creation of the app, on every system, before the
+  shell makes anything on it: an error no scope caught is counted and kept (its text on one line) and said on
+  standard error and in the trace (the first 20, then every hundredth). The GPU tour counts with the same counter.
+  egui-wgpu has made its renderer and configured the surface once before that: an error there still meets wgpu's
+  default handler, as in 0.1.2.
+- The event loop's driver (`app.rs`, `Driver`) knows when it hands a resize to eframe. An error raised meanwhile
+  means the painter's configure failed and the surface kept its old size, so a configure is owed
+  (`device_errors::Recovery`): at the next `about_to_wait` the driver waits at most 1 s for the device to come
+  idle (`Device::poll`) and hands the same size again as a resize, so egui's painter configures the surface
+  again. A try that fails waits 2, 4, … up to 60 s for the next, the event loop woken for it: an error that
+  repeats is counted, never looped on.
+- The shell, told the count every frame: a new error while the studio look is on turns the look off for the rest
+  of the session (`look.mode` becomes `plain`, as `ui.get` says) and a bar under the menu says so in a user's
+  words; the studio look asked for again gives way again. Any other device error is said in the bar once. The
+  bar is the graphics notice of 0.1.2; for a device error its Dismiss only hides it and leaves the start's
+  journal alone. With the look the studio frames stop, so the window is not kept alive behind frames the card
+  cannot finish. On Windows eframe paints at once inside a resize, so the frame right after the error is plain.
+- Through OpenGL, whose driver compiles and links every program as it is made, the first studio frame of a
+  session is preceded by one frame of the plain look with "Preparing the studio look… this can take a minute"
+  over the viewport, on every OpenGL device, fast or slow, so a window that then stops answering shows why. A
+  studio look taken back before it was drawn takes the plate back (`announce_step`, unit-tested). Every other
+  interface draws as before; a picture of the window (`ui.screenshot {window: true}`) waits until that frame has
+  passed.
+- Trace lines (`CRAFT3D_GPU_TRACE`): `device` (an error taken; the surface owed; each try; configured again),
+  `window` (each resize handed on: the first 20, then every hundredth) and `look` (preparing said first; the first
+  studio frame drawn, with its time, and presented; the look giving way).
+- The proof is `apps/craft3d/tests/device_error.rs`: a device error raised on a device of the machine panics with
+  wgpu's default handler and is counted with the window's; and the window under a headless compositor with
+  `CRAFT3D_GPU_FAULT=configure` (an invalid buffer made on the window's device inside the resize the driver hands
+  to eframe, once the first studio frame was presented: where the painter's configure raised its error) lives,
+  its look gives way, its trace has each line, and its surface is configured again.
+
+**Owed.**
+
+- The studio look's pipelines are still made in one frame (36 to 47 s on that card through OpenGL): making them
+  over several frames or on a thread is owed. DirectX 12 (FXC: minutes) has no announcing frame yet.
+- A studio frame that is merely slow, with no configure meanwhile, is not noticed: the look stays and each frame
+  is as slow as the card. Turning the look off by the GPU's time per frame is owed.
+- A lost device reaches the device-lost callback, not this handler (wgpu-core: `ErrorType::DeviceLost` is not
+  sent to the sink), and eframe cannot make a new device: the window then cannot draw, though it does not panic
+  through this path. Making a new device is owed.
+- egui-wgpu panics of its own remain: `configure_surface`'s `expect("The surface isn't supported by this
+  adapter")`, and `get_current_texture` on a surface never configured (`handle_error_fatal`). Neither was seen.
+- The handler is installed after egui-wgpu made its renderer and configured the surface the first time: an error
+  there still meets wgpu's default handler. Installing it earlier needs a hook eframe 0.36 does not have.
+- `Recovery::due`'s `Device::poll(Wait)` (`device_errors.rs`) panics inside wgpu when the backend reports a lost
+  device (not on OpenGL, whose wait cannot report one).
+- The look withdrawn for the session and the device error's bar are kept in the shell, not in `state.rs`, so
+  `ui.get` does not show them (rule 9); `ui.get` shows only `look.mode` turned plain.
+- The window test is skipped where there is no compositor (the build server), and its injected fault is a buffer
+  validation error raised inside the resize, not a configure that failed: the path from the error to the look and
+  the surface is the same, the error is not.

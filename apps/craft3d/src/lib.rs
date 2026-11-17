@@ -37,6 +37,7 @@ pub mod args;
 pub mod consent;
 pub mod control;
 pub mod desktop_theme;
+pub mod device_errors;
 pub mod files;
 pub mod gpu_diag;
 pub mod graphics_start;

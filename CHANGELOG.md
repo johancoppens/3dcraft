@@ -81,6 +81,19 @@ What 3DCraft answered before can differ now: a measure, a proof, a check, or a b
 - **A STEP cone given as a line turned about its axis imports at every size.** Where the line ran from a point of the cone up towards its tip, a small part (a millimetre across) was refused ("cannot tell which way the swept surface's normal points"): the way its surface faces was looked at a fixed distance along the line, past the tip.
 - **An imported part refused because an edge could not be proven on its faces says what would read it.** Where the edge lies within the cap on an entity's tolerance at the 1025 places it is measured at, the message now gives that distance and says that the document's own linear tolerance set to at least that (and how many times its present one that is, `document.setTolerance`) accepts the edge on those places, counted as unproven. A composite curve whose segments do not meet is refused naming the segment, and an edge on a hyperbola whose vertices lie on its other branch is refused saying so.
 
+## [0.1.3] - 2026-11-16
+
+One fix: the window no longer closes when the graphics card cannot keep up with the studio look, which happened on Windows computers with older Intel graphics, the ones 0.1.2 draws through OpenGL on. Files of 0.1.0, 0.1.1 and 0.1.2 open unchanged.
+
+### Fixed
+
+- **The window no longer closes when the graphics card cannot keep up with the studio look** (seen on Windows, with older Intel graphics drawing through OpenGL). There, a minute after the studio look was switched on for a large model, 3DCraft closed without a word: the graphics library stopped the program when the card did not finish a picture within about two seconds. 3DCraft now catches such errors on every system and carries on. When the graphics card reports an error while the studio look is on, the look is turned off for the rest of the session, a bar under the menu says so, and the window keeps working in the plain look. When 3DCraft draws through OpenGL, the viewport says *Preparing the studio look…* the first time the studio look is switched on, because preparing it can take a minute there and the window does not answer meanwhile.
+
+### Known limitations
+
+- On a computer whose graphics card cannot finish the studio look's pictures in time (measured: Intel UHD Graphics 615 with a driver of 2020, drawing through OpenGL), the studio look is not available for a large model: it is turned off for the session and the plain look is shown. A small model is drawn in the studio look there. Preparing the studio look still holds the window for up to a minute on such a computer, after the viewport said so.
+- The known limitations of [0.1.2](https://github.com/johancoppens/3dcraft/releases/tag/v0.1.2) and of [0.1.0](https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0) still hold.
+
 ## [0.1.2] - 2026-11-16
 
 Fixes for the first things a new user meets: on many Windows computers the window no longer closes at once (measured: Intel and AMD graphics), no console window opens beside 3DCraft any more, the web version's page says what it is, and the MCP server says more about itself to the tools that connect to it. Files of 0.1.0 and 0.1.1 open unchanged.
@@ -229,7 +242,8 @@ The first release for people outside the project. 3DCraft is a parametric 3D CAD
 - An AI agent cannot drive the web version yet.
 - Some modelling cases are refused rather than built (the message says which): among them some booleans and freeform fillets, curved sheet-metal bends along a spline and some sharp ones, curved origami creases, and text wrapped onto a surface other than a cylinder or a cone. Text is laid out glyph by glyph with kerning; shaping for complex scripts (such as Arabic or the Indic scripts) is for a later version. Every refusal reported helps.
 
-[Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/johancoppens/3dcraft/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/johancoppens/3dcraft/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/johancoppens/3dcraft/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0
