@@ -269,8 +269,9 @@ block cut by it keeps the part below: a solid of 12 450 mm³.
   refusal says whether a row runs back there or the proof could not decide), and a grid so far from the origin
   that no model there holds the tolerance (from 1.126e9 mm at the default tolerance of 1e-6 mm; from about
   6.5e7 mm on it is built and warned of: work nearer the origin, or in metres).
-- **How large**: a table holds at most 63 heights a row (64 columns with its key) and 10 000 rows; give a
-  wider grid's points outright (at most 262 144 points, 1 024 a side). A solid under the sheet is made by a
+- **How large**: a table holds 1 024 heights a row (1 025 columns with its key) and 10 000 rows, and all
+  the tables of a document a million cells; a grid has at most 262 144 points, 1 024 a side, as a table or
+  given outright. The relief of Mont Ventoux every 87.5 m, 145 heights a row and 113 rows, is one table. A solid under the sheet is made by a
   boolean, which takes a sheet of at most 32 768 spans: a grid of 184 × 184 points (the result warns past
   it). `feature.plate` gives a small sheet a thickness; on a large one (150 × 120 points) plate, thicken and
   shell are refused. `feature.extrude` with `upTo` does not take a sheet's face.

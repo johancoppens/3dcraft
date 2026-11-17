@@ -1656,6 +1656,7 @@ fn build_shown(
                 instances: None,
                 sweep: None,
                 thread: None,
+                tip: None,
                 developed: None,
                 offset: None,
                 consumed_by: None,

@@ -73,8 +73,9 @@ says otherwise), names the rows.
   when it changes: it keeps its key when rows move, and when its key is removed it becomes 0 (no choice) and
   `table.set` warns under `parameterWarnings`. `param.set` takes a key as the value; a JSON number is always
   the row's number. Keys that are numbers are looked up by how they are written: `t["2.5"]`.
-- A cell is a number or a short text (at most 64 characters, no quotes); at most 10 000 rows and 64
-  columns. A table and a variable never share a name.
+- A cell is a number or a short text (at most 64 characters, no quotes); at most 10 000 rows and 1 025
+  columns (a key and a row of the widest grid surface), and a million cells in all the tables of a document.
+  A table and a variable never share a name.
 
 ## Switching parts on and off
 
