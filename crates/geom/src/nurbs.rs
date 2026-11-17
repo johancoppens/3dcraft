@@ -1063,11 +1063,19 @@ pub struct NurbsSurface {
     /// The surface's Bézier spans, once made ([`Self::bezier_spans_shared`]):
     /// derived from its numbers alone, so not part of its value either.
     spans: SpansCache,
+    /// Bounds on the derivatives of each whole span, once made
+    /// ([`Self::whole_span_bounds`]): not part of the value either.
+    pub(crate) bounds: crate::span_bounds::BoundsCache,
 }
 
-/// Where a NURBS surface keeps its Bézier spans once made.
+/// Where a NURBS surface keeps its Bézier spans once made: shared by its
+/// clones (a clone has the same numbers), so that a surface handed on
+/// before its spans were asked for (the faces of a boolean's result)
+/// makes them once.
 #[derive(Clone, Default)]
-struct SpansCache(std::sync::OnceLock<Result<std::sync::Arc<Vec<BezierSpan>>, GeomError>>);
+struct SpansCache(
+    std::sync::Arc<std::sync::OnceLock<Result<std::sync::Arc<Vec<BezierSpan>>, GeomError>>>,
+);
 
 impl PartialEq for NurbsSurface {
     fn eq(&self, o: &Self) -> bool {
@@ -1130,6 +1138,7 @@ impl NurbsSurface {
             homogeneous,
             project_grid: GridCache::default(),
             spans: SpansCache::default(),
+            bounds: crate::span_bounds::BoundsCache::default(),
         })
     }
 
@@ -1606,8 +1615,8 @@ fn all_inserted(init: &[H], plan: &[Insertion], p: usize) -> Option<Vec<H>> {
         for c in 0..4 {
             let x = coordinate(init.get(m)?, c);
             let at = if negative_zero(x) {
-                match (clear.get(m + 1), moved.get(m)) {
-                    (Some(next), Some(&until)) if next[c] < until => next[c] + 1,
+                match (clear.get(m + 1).and_then(|next| next.get(c)), moved.get(m)) {
+                    (Some(&next), Some(&until)) if next < until => next + 1,
                     _ => NEVER,
                 }
             } else if x.is_sign_negative() {
@@ -1622,7 +1631,7 @@ fn all_inserted(init: &[H], plan: &[Insertion], p: usize) -> Option<Vec<H>> {
     let read = |m: usize, t: usize| -> Option<H> {
         let mut h = *init.get(m)?;
         for c in 0..4 {
-            if negative_zero(coordinate(&h, c)) && clear.get(m)?[c] <= t {
+            if negative_zero(coordinate(&h, c)) && *clear.get(m)?.get(c)? <= t {
                 h = cleared(h, c);
             }
         }
@@ -2734,6 +2743,7 @@ impl Bits for NurbsSurface {
             homogeneous: _,
             project_grid: _,
             spans: _,
+            bounds: _,
         } = self;
         degree_u.push_bits(out);
         degree_v.push_bits(out);

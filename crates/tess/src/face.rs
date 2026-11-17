@@ -3266,81 +3266,13 @@ fn grid_within(nu: f64, nv: f64, limit: f64) -> Result<(f64, f64), f64> {
 /// bounds are made of lose their digits on a patch much narrower.
 const LEAST_PART: f64 = 1.0 / 16.0;
 
-/// How often a patch is cut in halves before its derivatives are bounded
-/// ([`patch_second_bounds`]). Measured on surfaces of revolution, whose
-/// rational arcs around the axis are where the hull of the control net
-/// is loosest (`tests::the_bounds_on_a_spline_surface_are_above_its_second_differences`):
-/// uncut, the bounds are 2.7 to 4.7 times the largest second
-/// differences; cut three times 1.6 to 2.4 times, four times 1.5 to 2.1
-/// times, six times 1.4 to 1.8 times (on a polynomial surface 1.2 times,
-/// cut or not). The cells of the grid go by the root of that. Every cut
-/// doubles the pieces, and both ways of cutting are tried: 60 nets are
-/// bounded for four cuts, 252 for six.
-const HALVINGS: u32 = 4;
-
-/// Bounds `(Muu, Muv, Mvv)` on the second derivatives of `patch`, which
-/// is a part of a surface `width` wide in the surface's parameters.
-///
-/// The bound of a patch is that of the hull of its control net
-/// (`RationalBezierPatch::derivative_bounds`), which is the nearer to
-/// the patch the smaller the patch is; so the patch is cut in halves
-/// [`HALVINGS`] times, each time across the parameter in which that
-/// brings the bounds down most (a surface of revolution gains by being
-/// cut around its axis, where its weights vary, and nothing along it),
-/// and the bound is the largest over the pieces. Every round bounds the
-/// same patch, so the smallest bound of all rounds stands.
-pub(crate) fn patch_second_bounds(
-    patch: craft3d_geom::RationalBezierPatch,
-    width: (f64, f64),
-) -> Option<(f64, f64, f64)> {
-    use craft3d_geom::RationalBezierPatch;
-    let over = |pieces: &[RationalBezierPatch], width: (f64, f64)| -> Option<(f64, f64, f64)> {
-        let (mut uu, mut uv, mut vv) = (0.0_f64, 0.0_f64, 0.0_f64);
-        for piece in pieces {
-            let bounds = piece.derivative_bounds()?.over(width.0, width.1);
-            uu = uu.max(bounds.second_uu);
-            uv = uv.max(bounds.second_uv);
-            vv = vv.max(bounds.second_vv);
-        }
-        Some((uu, uv, vv))
-    };
-    // What the cells of the grid go by.
-    let weight = |(uu, uv, vv): (f64, f64, f64)| uu + 2.0 * uv + vv;
-    let mut pieces = vec![patch];
-    let mut width = width;
-    let mut best = over(&pieces, width)?;
-    for _ in 0..HALVINGS {
-        let in_u: Vec<RationalBezierPatch> = pieces
-            .iter()
-            .flat_map(|piece| {
-                let (a, b) = piece.split_u(0.5);
-                [a, b]
-            })
-            .collect();
-        let in_v: Vec<RationalBezierPatch> = pieces
-            .iter()
-            .flat_map(|piece| {
-                let (a, b) = piece.split_v(0.5);
-                [a, b]
-            })
-            .collect();
-        let (half_u, half_v) = ((width.0 / 2.0, width.1), (width.0, width.1 / 2.0));
-        let (bound_u, bound_v) = (over(&in_u, half_u)?, over(&in_v, half_v)?);
-        let bound = if weight(bound_u) <= weight(bound_v) {
-            (pieces, width) = (in_u, half_u);
-            bound_u
-        } else {
-            (pieces, width) = (in_v, half_v);
-            bound_v
-        };
-        best = (
-            best.0.min(bound.0),
-            best.1.min(bound.1),
-            best.2.min(bound.2),
-        );
-    }
-    Some(best)
-}
+// The bounds of a patch, and how far its derivatives travel, are
+// `craft3d_geom::span_bounds`'s (moved there on 2026-11-17, unchanged), so
+// that a spline surface keeps those of its whole spans
+// (`NurbsSurface::whole_span_bounds`).
+pub(crate) use craft3d_geom::span_bounds::{
+    second_bounds as patch_second_bounds, travel as patch_travel,
+};
 
 /// The stretches of `low..high` as they lie in the range `from..to` of a
 /// parameter: the one stretch within the range, or, when the surface
@@ -3395,9 +3327,10 @@ fn stretches(
 /// the patch and its weights). The bound is the largest over the parts.
 ///
 /// A part is never cut narrower than [`LEAST_PART`] of its span; a wider
-/// part bounds a narrower one. Each part is bounded in [`HALVINGS`]
-/// rounds of halves, which brings the bound nearer to the surface. Infinite when no bound is found (a span
-/// that cannot be split out), which ends as `TessError::TooFine`.
+/// part bounds a narrower one. Each part is bounded in
+/// [`craft3d_geom::span_bounds::HALVINGS`] rounds of halves, which brings
+/// the bound nearer to the surface. Infinite when no bound is found (a
+/// span that cannot be split out), which ends as `TessError::TooFine`.
 #[cfg(test)]
 fn spline_second_bounds(
     surface: &craft3d_geom::NurbsSurface,
@@ -3484,7 +3417,7 @@ fn spline_parts(
         ))
     };
     let mut parts = Vec::new();
-    for span in spans.iter() {
+    for (index, span) in spans.iter().enumerate() {
         for &stretch_u in &across_u {
             let Some((s0, s1)) = part(span.u, stretch_u) else {
                 continue;
@@ -3493,26 +3426,39 @@ fn spline_parts(
                 let Some((t0, t1)) = part(span.v, stretch_v) else {
                     continue;
                 };
-                // The patch over `s0..s1` by `t0..t1`.
-                let mut patch = span.patch.clone();
-                if s0 > 0.0 {
-                    patch = patch.split_u(s0).1;
-                }
-                if s1 < 1.0 {
-                    patch = patch.split_u((s1 - s0) / (1.0 - s0)).0;
-                }
-                if t0 > 0.0 {
-                    patch = patch.split_v(t0).1;
-                }
-                if t1 < 1.0 {
-                    patch = patch.split_v((t1 - t0) / (1.0 - t0)).0;
-                }
                 let width = (
                     (span.u.1 - span.u.0) * (s1 - s0),
                     (span.v.1 - span.v.0) * (t1 - t0),
                 );
-                let travel = patch_travel(&patch, width);
-                let (mut uu, mut uv, mut vv) = patch_second_bounds(patch, width)?;
+                // A whole span's bounds are kept with the surface
+                // (`NurbsSurface::whole_span_bounds`, the same numbers);
+                // a part's are made here.
+                let whole = (s0, s1, t0, t1) == (0.0, 1.0, 0.0, 1.0);
+                let kept = whole.then(|| surface.whole_span_bounds(index)).flatten();
+                let (travel, second) = match kept {
+                    Some(kept) => (kept.travel, kept.second),
+                    None => {
+                        // The patch over `s0..s1` by `t0..t1`.
+                        let mut patch = span.patch.clone();
+                        if s0 > 0.0 {
+                            patch = patch.split_u(s0).1;
+                        }
+                        if s1 < 1.0 {
+                            patch = patch.split_u((s1 - s0) / (1.0 - s0)).0;
+                        }
+                        if t0 > 0.0 {
+                            patch = patch.split_v(t0).1;
+                        }
+                        if t1 < 1.0 {
+                            patch = patch.split_v((t1 - t0) / (1.0 - t0)).0;
+                        }
+                        (
+                            patch_travel(&patch, width),
+                            patch_second_bounds(patch, width),
+                        )
+                    }
+                };
+                let (mut uu, mut uv, mut vv) = second?;
                 // A span slim beside the surface's range (`SLIM`): its
                 // Bézier net's differences are rounding, so the bound of
                 // the B-spline's own derivative nets over the whole span
@@ -3543,42 +3489,6 @@ fn spline_parts(
         }
     }
     (!parts.is_empty()).then_some(parts)
-}
-
-/// [`PartBound::travel`] of a part `width` wide.
-fn patch_travel(patch: &craft3d_geom::RationalBezierPatch, width: (f64, f64)) -> (f64, f64) {
-    let unknown = (f64::INFINITY, f64::INFINITY);
-    let Some((along_u, along_v)) = patch.derivative_nets() else {
-        return unknown;
-    };
-    let (m, n) = patch.degrees();
-    // `∂²S/∂u² = (m − 1) Σ_k B_k(u) Σ_j B_j(v) ΔQ_kj` (Bernstein bases of
-    // degrees m − 2 and n, `ΔQ_kj = Q_{k+1,j} − Q_kj` of the net of
-    // ∂/∂u), and `∫₀¹ B_k(u) du = 1/(m − 1)`. Along a segment on which
-    // `u` moves one way, the `v` of each point blends the `ΔQ_kj` of
-    // column `k` with weights that sum to one, so `∫ |∂²S/∂u²| du` is at
-    // most `Σ_k max_j |ΔQ_kj|`. The net of ∂/∂u has `m` rows of `n + 1`
-    // (`i (n + 1) + j`), that of ∂/∂v `m + 1` rows of `n` (`i n + j`).
-    let travel = |net: &[Vec3], steps: usize, lines: usize, at: &dyn Fn(usize, usize) -> usize| {
-        let mut sum = 0.0_f64;
-        for k in 1..steps {
-            let mut most = 0.0_f64;
-            for l in 0..lines {
-                let (Some(&a), Some(&b)) = (net.get(at(k - 1, l)), net.get(at(k, l))) else {
-                    return f64::INFINITY;
-                };
-                most = most.max(a.distance(b));
-            }
-            sum += most;
-        }
-        sum
-    };
-    let in_u = travel(&along_u, m, n + 1, &|k, l| k * (n + 1) + l);
-    let in_v = travel(&along_v, n, m + 1, &|k, l| l * n + k);
-    // Local parameters run over 0..1: a derivative in them is `width`
-    // times the surface's.
-    let known = |t: f64| if t.is_finite() { t } else { f64::INFINITY };
-    (known(in_u / width.0), known(in_v / width.1))
 }
 
 /// Bounds on the second derivatives that a grid of cells `step` wide
