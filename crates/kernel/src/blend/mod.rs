@@ -541,6 +541,10 @@ pub(crate) enum BlendError {
         /// Smaller sizes, tried, fail the same way.
         smaller_fails: bool,
     },
+    /// A fade of the law of `edge`'s fillet that is not built: its radius
+    /// changes too fast, or runs to less than the tolerance tells from
+    /// nothing ([`law::FadeFault`], with what would be built).
+    Fade { edge: EdgeId, fault: law::FadeFault },
     /// The two faces of `edge` are tangent at a place strictly inside it,
     /// though not all along it: a fillet's section runs to nothing there
     /// ([`along`]); for a chamfer, the place is the edge's middle, where
@@ -2619,6 +2623,10 @@ fn named_before(
             Some(edge) => BlendError::Pinched { edge, pinch },
             None => lost(),
         },
+        BlendError::Fade { edge, fault } => match edge_was(edge) {
+            Some(edge) => BlendError::Fade { edge, fault },
+            None => lost(),
+        },
     }
 }
 
@@ -3069,7 +3077,8 @@ impl From<BlendError> for Failure {
             BlendError::Boolean { edge, .. }
             | BlendError::TooLarge { edge, .. }
             | BlendError::Spindle { edge, .. }
-            | BlendError::Pinched { edge, .. } => Some(*edge),
+            | BlendError::Pinched { edge, .. }
+            | BlendError::Fade { edge, .. } => Some(*edge),
             BlendError::Kernel(_) => None,
         };
         Failure { edge, error }

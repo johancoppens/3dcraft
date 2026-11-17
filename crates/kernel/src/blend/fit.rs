@@ -78,7 +78,8 @@ fn sized(error: &BlendError) -> bool {
         | BlendError::TooLarge { .. }
         | BlendError::Spindle { .. }
         // Tangent faces leave no width at any size.
-        | BlendError::Pinched { .. } => false,
+        | BlendError::Pinched { .. }
+        | BlendError::Fade { .. } => false,
         BlendError::Kernel(_) => true,
         BlendError::Refused { reason, .. } => matches!(
             reason,

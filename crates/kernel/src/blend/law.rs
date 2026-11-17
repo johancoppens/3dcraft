@@ -22,21 +22,49 @@
 //! the law goes on as
 //!
 //! ```text
-//! r = to + (radius − to) · g(τ),   g(τ) = 3τ / (1 + τ + d τ²)
+//! r = to + A · (1 − exp(a τ + b τ²)),   a = −3 (radius − to) / A,
+//!                                       b = (6 (radius − to) / A − a²) / 2
 //! ```
 //!
 //! which joins the cubic with its value, its first and its second
-//! derivative (`g(0) = 0`, `g′(0) = 3`, `g″(0) = −6`), turns back at
-//! `τ = −1/√d` and levels off at `to`: past the end the radius never
-//! differs from `to` by more than `3 |radius − to| / (2√d − 1)`. With
-//! `d = max(4, ((6 |radius − to| / to + 1) / 2)²)` that is no more than
-//! `|radius − to|` and no more than half of `to`, so the radius neither
-//! runs to nothing nor grows without bound however far the blend is
-//! followed. (The cubic itself, continued, does both within a few of its
-//! lengths: along a cone's cut edge a radius growing from 0.15 to 0.2 over
-//! 0.3 reached 0.38 two steps past the end and no ball was found.) The
-//! continuation is this file's choice: the design of the fade gives the
-//! law up to the end only.
+//! derivative, and runs on one way only (`b` is below zero, so the
+//! exponent falls all the way): towards `to + A` and never past it. `A`
+//! is `−to` where the radius falls towards the end (past it the radius
+//! goes on falling towards nothing and never reaches it) and
+//! `to − radius` where it grows (past it the radius goes on growing by no
+//! more than it grew over the fade). So the radius neither runs to
+//! nothing nor grows without bound however far the blend is followed, and
+//! the borders past the end go on the way they came. (The cubic itself,
+//! continued, does both within a few of its lengths: along a cone's cut
+//! edge a radius growing from 0.15 to 0.2 over 0.3 reached 0.38 two steps
+//! past the end and no ball was found. A continuation that turned back to
+//! `to`, `3τ / (1 + τ + dτ²)`, was there first: it left a notch in the
+//! surface just past the end, which the validity check's nearest points
+//! fell into, and a fade from 3 to 1 over 1 came back as an invalid body,
+//! its borders half a unit off their own surface.) The continuation is
+//! this file's choice: the design of the fade gives the law up to the end
+//! only.
+//!
+//! **How fast the radius may change.** A fade has to be at least as long
+//! as the radius changes over it: `over ≥ |radius − to|`. The cubic is
+//! steepest at the end of the edge, three times its average, so the
+//! radius then changes at most three times as fast as the length along
+//! the edge. The reason is the face's own parametrisation: a border of
+//! the fillet leaves each section at the angle whose tangent is
+//! `1 / (|dr/da| tan(φ/2))` (a foot lies `r tan(φ/2)` from the edge
+//! between faces whose normals turn by `φ`, and the arc leaves its foot
+//! square to the edge), and as the radius changes faster the border lies
+//! down along the section and the face's two parameter directions close
+//! up along its borders: 18° between them at a right angle at the bound,
+//! 3° at ten times as fast. What reads a face through its parameters then
+//! fails by degrees: the tessellator's grid grows with the rate (a block
+//! with one fillet from 3 to 1: 1,898 triangles at normal quality over
+//! 10, 14,440 over 1, 368,922 over 0.1), at 150 times as fast (over 0.04)
+//! the measure's boundary integral does not settle, and from over 0.03
+//! the self-check cannot mesh the body. Refused well short of that, with
+//! the least `over` that is built. And an end radius, and a fade's
+//! length, has to be more than what the tolerance tells apart
+//! ([`LEAST`] tolerances), as a radius of the closed forms has.
 //!
 //! **Along the edge** is by arc length: the law is a statement about the
 //! edge, not about how its curve happens to be parametrised. The length of
@@ -59,7 +87,7 @@
 use super::{BlendError, Reason, refused};
 use crate::KernelError;
 use craft3d_geom::Curve3;
-use craft3d_math::Vec3;
+use craft3d_math::{Portable, Vec3};
 use craft3d_topo::EdgeId;
 
 /// How a fillet's radius runs to another radius at one end of its edge.
@@ -153,6 +181,23 @@ const GAUSS: [(f64, f64); 8] = [
     (0.960_289_856_497_536_3, 0.101_228_536_290_376_3),
 ];
 
+/// The least an end radius and a fade's length may be, in tolerances: as
+/// the least radius of a fillet in closed form is (what the rest of the
+/// kernel tells apart).
+pub(crate) const LEAST: f64 = 16.0;
+
+/// What is wrong with a fade of a law, with what would be built.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FadeFault {
+    /// The radius changes too fast along the edge: by `change` over
+    /// `over`. `least` is the least length over which that change is
+    /// built.
+    TooShort { change: f64, over: f64, least: f64 },
+    /// The radius at the end, `to`, is not more than the tolerance tells
+    /// from nothing: `least` is the least that is built.
+    EndTooSmall { to: f64, least: f64 },
+}
+
 /// Pieces a span between two knots is cut into, and the range of a curve
 /// that has none.
 const PER_SPAN: u32 = 4;
@@ -175,16 +220,42 @@ pub(crate) struct Along<'a> {
 
 impl<'a> Along<'a> {
     /// `law` along the edge `edge`, whose curve is `curve` over `range`
-    /// (from its start to its end). Refused: a number in the law that is
-    /// not a size, a curve whose length cannot be had, and fades that are
-    /// together longer than the edge.
+    /// (from its start to its end), at the linear tolerance `tol`.
+    /// Refused: a number in the law that is not a size, a fade over which
+    /// the radius changes too fast or whose end radius or length the
+    /// tolerance does not tell from nothing, a curve whose length cannot
+    /// be had, and fades that are together longer than the edge.
     pub(crate) fn new(
         law: RadiusLaw,
         edge: EdgeId,
         curve: &'a Curve3,
         range: (f64, f64),
+        tol: f64,
     ) -> Result<Along<'a>, BlendError> {
         let law = law.checked()?;
+        for fade in law.fades.iter().flatten() {
+            let least = LEAST * tol;
+            if fade.to <= least {
+                return Err(BlendError::Fade {
+                    edge,
+                    fault: FadeFault::EndTooSmall { to: fade.to, least },
+                });
+            }
+            // At least as long as the radius changes over it (the module
+            // documentation), and more than the tolerance tells apart.
+            let change = (law.radius - fade.to).abs();
+            let needed = change.max(least);
+            if fade.over < needed * (1.0 - 1e-12) {
+                return Err(BlendError::Fade {
+                    edge,
+                    fault: FadeFault::TooShort {
+                        change,
+                        over: fade.over,
+                        least: needed,
+                    },
+                });
+            }
+        }
         let unmeasured = || refused(edge, Reason::FreeSurface);
         let (t0, t1) = range;
         if !(t0.is_finite() && t1.is_finite() && t0 != t1) {
@@ -343,11 +414,15 @@ impl<'a> Along<'a> {
             let change = radius - fade.to;
             if tau < 0.0 {
                 // Past the end: levelling off (the module documentation).
-                let reach = 0.5 * (6.0 * change.abs() / fade.to + 1.0);
-                let d = (reach * reach).max(4.0);
-                let bottom = 1.0 + tau + d * tau * tau;
-                r = fade.to + change * 3.0 * tau / bottom;
-                rate = sign * change * 3.0 * (1.0 - d * tau * tau) / (bottom * bottom) / fade.over;
+                let room = if change > 0.0 { -fade.to } else { -change };
+                if room == 0.0 {
+                    continue;
+                }
+                let a = -3.0 * change / room;
+                let b = 0.5 * (6.0 * change / room - a * a);
+                let left = (a * tau + b * tau * tau).pexp();
+                r = fade.to + room * (1.0 - left);
+                rate = sign * -room * (a + 2.0 * b * tau) * left / fade.over;
             } else if tau < 1.0 {
                 let m = 1.0 - tau;
                 r = fade.to + change * (1.0 - m * m * m);
@@ -416,7 +491,14 @@ mod tests {
     fn the_length_of_a_line_and_of_an_arc_is_the_closed_form() {
         let line =
             Curve3::Line(Line::new(Vec3::new(1.0, 2.0, 3.0), Vec3::new(0.0, 3.0, 4.0)).unwrap());
-        let along = Along::new(RadiusLaw::constant(1.0), EdgeId(0), &line, (2.0, 12.0)).unwrap();
+        let along = Along::new(
+            RadiusLaw::constant(1.0),
+            EdgeId(0),
+            &line,
+            (2.0, 12.0),
+            1e-6,
+        )
+        .unwrap();
         assert_eq!(along.length(), 10.0);
         for (s, length) in [(0.25, 2.5), (1.0, 10.0), (-0.1, -1.0), (1.3, 13.0)] {
             let got = along.length_to(s).unwrap();
@@ -430,6 +512,7 @@ mod tests {
             EdgeId(0),
             &circle,
             (0.2, 0.2 + quarter),
+            1e-6,
         )
         .unwrap();
         for s in [0.0, 0.1, 0.5, 0.77, 1.0, -0.05, 1.2] {
@@ -454,7 +537,14 @@ mod tests {
         let knots = vec![0.0, 0.0, 0.0, 0.0, 0.3, 0.7, 1.0, 1.0, 1.0, 1.0];
         let spline = NurbsCurve::new(3, knots, points, vec![1.0, 1.0, 2.0, 0.5, 1.0, 1.0]).unwrap();
         let curve = Curve3::Nurbs(spline);
-        let along = Along::new(RadiusLaw::constant(1.0), EdgeId(0), &curve, (0.0, 1.0)).unwrap();
+        let along = Along::new(
+            RadiusLaw::constant(1.0),
+            EdgeId(0),
+            &curve,
+            (0.0, 1.0),
+            1e-6,
+        )
+        .unwrap();
         let chords = |to: f64, count: u32| -> f64 {
             (0..count)
                 .map(|k| {
@@ -471,7 +561,14 @@ mod tests {
             assert!((got - limit).abs() <= 1e-10, "{s}: {got} against {limit}");
         }
         // Against its curve the lengths are the same from the other end.
-        let back = Along::new(RadiusLaw::constant(1.0), EdgeId(0), &curve, (1.0, 0.0)).unwrap();
+        let back = Along::new(
+            RadiusLaw::constant(1.0),
+            EdgeId(0),
+            &curve,
+            (1.0, 0.0),
+            1e-6,
+        )
+        .unwrap();
         assert!((back.length() - along.length()).abs() <= 1e-13);
         let part = back.length_to(0.25).unwrap();
         let same = along.length() - along.length_to(0.75).unwrap();
@@ -488,6 +585,7 @@ mod tests {
             EdgeId(0),
             &line,
             (0.0, 40.0),
+            1e-6,
         )
         .unwrap();
         let r = |x: f64| along.radius(x / 40.0).unwrap();
@@ -521,12 +619,15 @@ mod tests {
             let off = r(x + way * h) - 3.0;
             assert!(off.abs() <= 2.0 * h * h * h, "{x}: {off}");
         }
-        // Past an end it levels off: never further from the radius at the
-        // end than half of it, however far.
-        for past in [0.01, 0.1, 0.5, 1.0, 3.0, 10.0, 30.0] {
-            let (low, high) = (r(-past), r(40.0 + past));
-            assert!((0.5..1.0).contains(&low), "{past}: {low}");
-            assert!(high > 5.0 && high <= 7.0 + 1e-12, "{past}: {high}");
+        // Past an end it goes on the way it came and levels off: falling
+        // towards nothing and never there, growing by no more than it
+        // grew over the fade, however far.
+        let (mut low, mut high) = (1.0, 5.0);
+        for past in [0.01, 0.1, 0.5, 1.0, 2.0, 3.0] {
+            let (lower, higher) = (r(-past), r(40.0 + past));
+            assert!(lower < low && lower > 0.0, "{past}: {lower}");
+            assert!(higher > high && higher <= 7.0, "{past}: {higher}");
+            (low, high) = (lower, higher);
         }
         // And joins the cubic with no jump to the second derivative.
         for (x, way, to) in [(0.0, -1.0, 1.0), (40.0, 1.0, 5.0)] {
@@ -543,7 +644,7 @@ mod tests {
     #[test]
     fn a_law_that_is_not_one_is_refused() {
         let line = Curve3::Line(Line::new(Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0)).unwrap());
-        let make = |law: RadiusLaw| Along::new(law, EdgeId(3), &line, (0.0, 40.0));
+        let make = |law: RadiusLaw| Along::new(law, EdgeId(3), &line, (0.0, 40.0), 1e-6);
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert!(make(RadiusLaw::constant(bad)).is_err(), "{bad}");
             assert!(make(law(3.0, Some((bad, 5.0)), None)).is_err(), "{bad}");
@@ -555,6 +656,34 @@ mod tests {
         // Longer than the edge, and two that overlap: refused.
         assert!(make(law(3.0, Some((1.0, 40.001)), None)).is_err());
         assert!(make(law(3.0, Some((1.0, 25.0)), Some((2.0, 15.001)))).is_err());
+        // A radius that changes by more than the length it changes over:
+        // refused with that length; just as long: taken.
+        use super::FadeFault;
+        use crate::blend::BlendError;
+        let too_short = |law: RadiusLaw| match make(law) {
+            Err(BlendError::Fade {
+                fault: FadeFault::TooShort { least, .. },
+                ..
+            }) => Some(least),
+            _ => None,
+        };
+        assert_eq!(too_short(law(3.0, Some((1.0, 1.999)), None)), Some(2.0));
+        assert_eq!(too_short(law(3.0, None, Some((4.5, 1.0)))), Some(1.5));
+        assert!(make(law(3.0, Some((1.0, 2.0)), Some((4.5, 1.5)))).is_ok());
+        // An end radius, and a length, the tolerance does not tell from
+        // nothing: 16 tolerances and less.
+        assert!(matches!(
+            make(law(3.0, Some((1.6e-5, 10.0)), None)),
+            Err(BlendError::Fade {
+                fault: FadeFault::EndTooSmall { .. },
+                ..
+            })
+        ));
+        assert!(make(law(3.0, Some((1.7e-5, 10.0)), None)).is_ok());
+        assert_eq!(
+            too_short(law(3.0, Some((3.0 - 1e-9, 1e-5)), None)),
+            Some(1.6e-5)
+        );
         // Constant: no fade, or one that changes nothing.
         assert!(RadiusLaw::constant(2.0).is_constant());
         assert!(law(2.0, Some((2.0, 5.0)), None).is_constant());

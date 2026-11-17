@@ -397,7 +397,14 @@ mod tests {
         );
         // A law: 1 along it, from 0.4 over 5 at its start to 1.6 over 4 at
         // its end.
-        let along = Along::new(law(1.0, (0.4, 5.0), (1.6, 4.0)), EdgeId(0), &rim, range).unwrap();
+        let along = Along::new(
+            law(1.0, (0.4, 5.0), (1.6, 4.0)),
+            EdgeId(0),
+            &rim,
+            range,
+            1e-6,
+        )
+        .unwrap();
         let varying = solver(&rim, range, sides, 1.6, Some(&along));
         let r = along.radius(0.5).unwrap();
         held(
@@ -488,7 +495,14 @@ mod tests {
             &one.section(0.5, &seed(0.5)).unwrap(),
             &[0.2, 0.5, 0.8],
         );
-        let along = Along::new(law(0.5, (0.2, 1.5), (0.8, 1.2)), EdgeId(0), &edge, range).unwrap();
+        let along = Along::new(
+            law(0.5, (0.2, 1.5), (0.8, 1.2)),
+            EdgeId(0),
+            &edge,
+            range,
+            1e-6,
+        )
+        .unwrap();
         let varying = solver(&edge, range, sides, 0.8, Some(&along));
         let r = along.radius(0.5).unwrap();
         held(

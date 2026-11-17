@@ -326,6 +326,14 @@ pub enum KernelError {
         why: FilletPinch,
         places: usize,
     },
+    /// A fillet of `edge` whose radius varies along it by a law one of
+    /// whose fades is not built: the radius changes too fast over it, or
+    /// runs to less than the tolerance tells from nothing. `fault` says
+    /// which, with the least length or radius that is built.
+    FilletFade {
+        edge: craft3d_topo::EdgeId,
+        fault: fillet::FadeFault,
+    },
     /// The boolean refused the tool of a filleted edge; `smaller_fails`
     /// when smaller radii were tried and fail the same way.
     FilletBoolean {
@@ -720,6 +728,12 @@ impl fmt::Display for KernelError {
                 edge.0,
                 fillet_pinched_text(*at, *why, *places, "")
             ),
+            KernelError::FilletFade { edge, fault } => write!(
+                f,
+                "fillet of edge {}: {}",
+                edge.0,
+                fillet_fade_text(*fault, "")
+            ),
             KernelError::FilletBoolean {
                 edge,
                 error,
@@ -909,6 +923,40 @@ fn place_text(at: craft3d_math::Vec3, unit: &str) -> String {
         if text == "-0" { "0".to_string() } else { text }
     };
     format!("({}, {}, {}){unit}", one(at.x), one(at.y), one(at.z))
+}
+
+/// What [`KernelError::FilletFade`] says, its sizes followed by `unit`
+/// (" mm"; empty for numbers alone).
+pub fn fillet_fade_text(fault: fillet::FadeFault, unit: &str) -> String {
+    match fault {
+        fillet::FadeFault::TooShort {
+            change,
+            over,
+            least,
+        } => format!(
+            "the radius changes too fast along the edge: by {}{unit} over a length of {}{unit}. A fade has to be at least as long as the radius changes over it (and longer than the tolerance tells from nothing), so that the radius changes at most three times as fast as the length along the edge where it is steepest; faster, the fillet face's borders lie down along its sections and the face can no longer be measured or meshed: give an over of at least {}{unit}, or a smaller change of the radius",
+            short(change),
+            short(over),
+            fits_at_least(least)
+        ),
+        fillet::FadeFault::EndTooSmall { to, least } => format!(
+            "the radius at the end of the fade, {}{unit}, is not more than the tolerance tells from nothing: an end radius has to be more than {}{unit} (16 tolerances), as a fillet's radius has",
+            short(to),
+            short(least)
+        ),
+    }
+}
+
+/// A least size as a message gives it: to six significant digits, rounded
+/// up, so that the number given is itself enough.
+fn fits_at_least(value: f64) -> String {
+    if !(value.is_finite() && value > 0.0) {
+        return short(value);
+    }
+    let magnitude = value.plog10().floor();
+    let step = 10f64.ppowf(magnitude - 5.0);
+    let up = (value / step - 1e-9).ceil() * step;
+    short(up)
 }
 
 /// What [`KernelError::FilletPinched`] says, its place followed by `unit`
