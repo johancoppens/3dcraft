@@ -221,6 +221,13 @@ fn a_section_that_means_no_plane_is_an_error_that_says_why() {
     for (section, says) in [
         (json!({}), "needs `plane`"),
         (json!({"plane": "nowhere"}), "there is no plane"),
+        // The window's X, Y, Z are not the planes' names: the error says
+        // both.
+        (
+            json!({"plane": "Y"}),
+            "across X lies on the plane yz, across Y on zx, across Z on xy",
+        ),
+        (json!({"plane": "x"}), "across X lies on the plane yz"),
         (json!({"plane": "Block"}), "not a datumPlane"),
         (json!({"plane": "F1:face(99)"}), "no body has a face"),
         (

@@ -1,10 +1,13 @@
 //! The section's handle in the view (the developer's design of
-//! 2026-11-17, `docs/guide/window.md` › *Looking around*): while the
-//! section is on, the plane's outline (thin, dashed), one arrow at its
-//! middle along its normal, pointing into the half that is cut away, the
-//! offset beside it as a number with the axis and the document's unit,
-//! and three dots X, Y, Z. All in the accent, faint until the pointer
-//! comes near, gone when the section is off.
+//! 2026-11-17 and his second look the same day, `docs/guide/window.md` ›
+//! *Looking around*): while the section is on, the plane's outline (thin,
+//! dashed, faint until the pointer comes near), one arrow at a corner of
+//! it along its normal, pointing into the half that is cut away (light
+//! with a dark edge, so it reads on any background; the accent under the
+//! pointer), and beside it one group on a dark plate: the offset as a
+//! number with the axis and the document's unit, the buttons X, Y, Z (and
+//! ∥) and Flip side. Gone when the section is off; the arrow and the
+//! group keep clear of the plates, the cube and the triad.
 //!
 //! - A drag on the arrow moves the plane: the pointer's ray is taken to
 //!   the nearest point of the line through the arrow ([`nearest_on_line`]),
@@ -14,21 +17,24 @@
 //!   `craft3d_engine::SectionPlane::snaps`, found once per scene and
 //!   plane), else to a round value of the model's size, else to about a
 //!   point's worth; a small tick says it snapped. **Alt** held: none.
-//! - A double click on the arrow keeps the other half (Flip side).
+//! - A double click on the arrow, or the Flip button, keeps the other half.
 //! - A click on the number types a value, as on the Offset slider: Enter
 //!   sets it, Escape leaves it.
-//! - A dot turns the plane across X, Y or Z, as the display bar's choice
-//!   does.
+//! - X, Y or Z turns the plane across that axis through the middle of the
+//!   model; ∥ lays it on the selected flat face.
 //!
 //! The handle is a view of `state.section` and changes nothing else: the
 //! slider, the display bar and `ui.set` drive the same state, and an
 //! agent reads it with `ui.get`. It is hit before the model's faces, and
 //! the plates over the viewport before it. Seen end on (the normal
-//! pointing at the viewer) the arrow is a ring, and only the slider and
-//! the number move the plane. The narrow layout (a phone) leaves the
-//! handle out and keeps the slider: there a finger's drag in the middle
-//! of the model is a turn of the view. Once a finger has touched the
-//! screen, the arrow and the dots are a finger's size (`Tokens::touch`).
+//! pointing at the viewer) the arrow is a ring, and the number and the
+//! buttons still work. On a window at least as wide as the narrow layout
+//! the display bar shows Section alone while the section is on; the
+//! narrow layout (a phone) leaves the handle out and keeps X, Y, Z, the
+//! Offset slider and Flip side on the bar: there a finger's drag in the
+//! middle of the model is a turn of the view. Once a finger has touched
+//! the screen, the arrow and the buttons are a finger's size
+//! (`Tokens::touch`).
 
 use super::Shell;
 use super::controls::{SECTION_PLANES, choose_axis, chosen_axis};
@@ -68,23 +74,20 @@ const END_ON: f64 = 0.3;
 /// number and from each other, and the handle from the viewport's edge,
 /// in points.
 const GAP: f32 = 8.0;
-const DOT_GAP: f32 = 4.0;
 const EDGE: f32 = 6.0;
 /// How the number is padded on its plate, in points.
 const PAD: Vec2 = vec2(7.0, 3.0);
-/// How much wider than the accent's strokes the dark hairline under the
-/// arrow and the ring is, in points: so the accent reads on the cap's
-/// orange and on a body.
-const HALO: f32 = 2.5;
 
 /// A part of the handle a pointer can be on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HandlePart {
     Arrow,
     Number,
-    /// The dot of X, Y or Z (0, 1, 2), or [`FACE_DOT`]: the plane
+    /// The button of X, Y or Z (0, 1, 2), or [`FACE_DOT`]: the plane
     /// parallel to the selected flat face.
     Dot(usize),
+    /// The button that keeps the other half (Flip side).
+    Flip,
 }
 
 /// The fourth dot's place among the dots, and the bar's fourth cell's
@@ -138,10 +141,16 @@ pub struct PlaneFrame {
     /// The sides of the plane's outline, as far as they are in front of
     /// the eye, in the window's points.
     pub outline: Vec<[Pos2; 2]>,
-    /// The middle of the plane (the model's box projected onto it), in
-    /// space and on the screen.
+    /// The arrow's foot: a corner of the plane's outline, the same one
+    /// however the view turns (the one furthest along x, then against y
+    /// and z), moved along the plane into the viewport where it is out of
+    /// it; in space and on the screen. The line the arrow is dragged
+    /// along goes through it.
     pub middle: Vec3,
     pub at: Pos2,
+    /// The middle of the cut on the screen: what the group keeps away
+    /// from.
+    pub centre: Pos2,
     /// The unit normal into the half that is cut away, and how long the
     /// arrow is along it, in model units.
     pub normal: Vec3,
@@ -159,46 +168,45 @@ pub struct PlaneFrame {
 #[derive(Clone, Debug, PartialEq)]
 pub struct HandlePlace {
     pub frame: PlaneFrame,
-    /// The number's plate.
+    /// The group's plate, and in it the number.
+    pub group: Rect,
     pub number: Rect,
-    /// The middles of the dots X, Y and Z (and the face's, while there is
-    /// one: [`FACE_DOT`]), and their radius.
+    /// The middles of the buttons X, Y and Z (and the face's, while there
+    /// is one: [`FACE_DOT`]), and of Flip side; half their side.
     pub dots: Vec<Pos2>,
+    pub flip: Pos2,
     pub dot_radius: f32,
     /// How near the arrow a press takes it.
     pub hit: f32,
 }
 
 impl HandlePlace {
-    /// The part of the handle at `p`: the number, a dot, then the arrow.
+    /// The part of the handle at `p`: the number, a button, then the
+    /// arrow.
     pub fn part_at(&self, p: Pos2) -> Option<HandlePart> {
-        if self.number.expand(2.0).contains(p) {
+        if self.number.expand(1.0).contains(p) {
             return Some(HandlePart::Number);
         }
-        // The nearest dot within its radius or the reach of a press (a
-        // finger's is larger than the dot).
-        let reach = (self.dot_radius + 2.0).max(self.hit);
-        if let Some((k, _)) = self
-            .dots
-            .iter()
-            .map(|d| d.distance(p))
-            .enumerate()
-            .filter(|(_, d)| *d <= reach)
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-        {
+        let cell =
+            |c: Pos2| Rect::from_center_size(c, egui::Vec2::splat(self.dot_radius * 2.0 + 2.0));
+        if let Some(k) = self.dots.iter().position(|&d| cell(d).contains(p)) {
             return Some(HandlePart::Dot(k));
+        }
+        if cell(self.flip).contains(p) {
+            return Some(HandlePart::Flip);
+        }
+        if self.group.contains(p) {
+            return None;
         }
         let [a, b] = self.frame.arrow?;
         (distance_to_segment(p, a, b) <= self.hit).then_some(HandlePart::Arrow)
     }
 
     /// Whether `p` is within `reach` of the handle: of the arrow (or the
-    /// ring), the number or the dots.
+    /// ring) or the group.
     pub fn near(&self, p: Pos2, reach: f32) -> bool {
         let [a, b] = self.frame.arrow.unwrap_or([self.frame.at; 2]);
-        distance_to_segment(p, a, b) <= reach
-            || self.number.expand(reach).contains(p)
-            || self.dots.iter().any(|d| d.distance(p) <= reach)
+        distance_to_segment(p, a, b) <= reach || self.group.expand(reach).contains(p)
     }
 }
 
@@ -296,16 +304,95 @@ fn box_cut(
     Some(points)
 }
 
+/// How far inside the viewport's edge the arrow's foot is kept, in
+/// points: room for the arrow and its group.
+const INSIDE: f32 = 56.0;
+
+/// `p`, a point of the plane through `origin` with unit normal `normal`,
+/// when it shows inside the viewport less [`INSIDE`], [`INSIDE`] clear of
+/// each of `keep_out` (the controls over the view); else the point
+/// between it and `centre` (the cut's middle, on the plane too) furthest
+/// toward it that shows there; where the middle does not show either, the
+/// point of the plane that shows at the nearest place inside it clear of
+/// `keep_out` (on the way to the viewport's middle). `None`
+/// where none of these is (the plane edge on and out of view).
+fn into_view(
+    projector: &Projector,
+    viewport: Rect,
+    keep_out: &[Rect],
+    p: Vec3,
+    centre: Vec3,
+    origin: Vec3,
+    normal: Vec3,
+) -> Option<Vec3> {
+    let room = viewport.shrink(
+        INSIDE
+            .min(viewport.width() * 0.25)
+            .min(viewport.height() * 0.25),
+    );
+    let shows = |q: Vec3| {
+        projector.project(q).is_some_and(|s| {
+            let at = pos2(s.x as f32 + viewport.left(), s.y as f32 + viewport.top());
+            room.contains(at) && keep_out.iter().all(|r| !r.expand(INSIDE).contains(at))
+        })
+    };
+    if shows(p) {
+        return Some(p);
+    }
+    // Toward the cut's middle, as far out as still shows: on the plane,
+    // also where it is seen edge on.
+    if shows(centre) {
+        let (mut inside, mut outside) = (0.0_f64, 1.0_f64);
+        for _ in 0..30 {
+            let half = (inside + outside) * 0.5;
+            if shows(centre.lerp(p, half)) {
+                inside = half;
+            } else {
+                outside = half;
+            }
+        }
+        return Some(centre.lerp(p, inside));
+    }
+    let seen = projector.project(p);
+    let (x, y) = match seen {
+        Some(s) => (s.x as f32 + viewport.left(), s.y as f32 + viewport.top()),
+        None => (viewport.center().x, viewport.center().y),
+    };
+    let inside = pos2(
+        x.clamp(room.left(), room.right()),
+        y.clamp(room.top(), room.bottom()),
+    );
+    // Clear of the controls: toward the viewport's middle as far as it
+    // takes.
+    let inside = (0..=16)
+        .map(|k| inside.lerp(room.center(), k as f32 / 16.0))
+        .find(|at| keep_out.iter().all(|r| !r.expand(INSIDE).contains(*at)))
+        .unwrap_or(inside);
+    let (start, way) = projector.ray(
+        f64::from(inside.x - viewport.left()),
+        f64::from(inside.y - viewport.top()),
+    );
+    let across = way.dot(normal);
+    if across.abs() <= 1e-9 * way.length() {
+        return None;
+    }
+    let t = (origin - start).dot(normal) / across;
+    let q = start + way * t;
+    (t > 0.0 && q.is_finite()).then_some(q)
+}
+
 /// Where `plane` and its arrow are in the `viewport` (in the window's
 /// points) seen by `camera`: the outline of where it passes through the
 /// model's box `bounds` (the box laid onto it where it passes by), a
-/// little larger, and the arrow at its middle,
+/// little larger, and the arrow at a corner of it, clear of `keep_out`
+/// (the controls over the view) where it can be,
 /// [`Tokens::section_arrow_length`] long seen side on. `None` for an
 /// empty box, a camera that looks nowhere, a middle behind the eye, or a
 /// number that is not one.
 pub fn plane_frame(
     camera: &CameraState,
     viewport: Rect,
+    keep_out: &[Rect],
     plane: &SectionPlane,
     bounds: &Bbox3,
     tokens: &Tokens,
@@ -385,7 +472,24 @@ pub fn plane_frame(
             Some([to_window(a.x, a.y)?, to_window(b.x, b.y)?])
         })
         .collect();
-    let seen = projector.project(middle)?;
+    let centre = projector.project(middle).and_then(|p| to_window(p.x, p.y));
+    // The arrow's foot: the corner furthest along x - y - z, a rule of
+    // the model's, so it stays where it is while the view turns.
+    let corner = corners
+        .iter()
+        .copied()
+        .max_by(|a, b| (a.x - a.y - a.z).total_cmp(&(b.x - b.y - b.z)))?;
+    let foot = into_view(
+        &projector,
+        viewport,
+        keep_out,
+        corner,
+        middle,
+        origin,
+        plane.along,
+    )
+    .unwrap_or(corner);
+    let seen = projector.project(foot)?;
     let at = to_window(seen.x, seen.y)?;
     let length = f64::from(tokens.section_arrow_length) * projector.footprint(seen.depth);
     let normal = plane.normal;
@@ -393,14 +497,15 @@ pub fn plane_frame(
         return None;
     }
     let tip = projector
-        .project(middle + normal * length)
+        .project(foot + normal * length)
         .and_then(|p| to_window(p.x, p.y));
     let shown = tip.map_or(0.0, |tip| f64::from(tip.distance(at)));
     let side_on = shown >= END_ON * f64::from(tokens.section_arrow_length);
     Some(PlaneFrame {
         outline,
-        middle,
+        middle: foot,
         at,
+        centre: centre.unwrap_or(at),
         normal,
         length,
         arrow: tip.filter(|_| side_on).map(|tip| [at, tip]),
@@ -409,83 +514,56 @@ pub fn plane_frame(
     })
 }
 
-/// Where the number (`size`, its plate) and the dots go beside `frame`
-/// in the `viewport`: at the edge of the plane's outline, on the side
-/// with room, at the height of the arrow's foot (or above or below it,
-/// over the foot), so that it never sits over the cut; where the outline
-/// leaves no room in the viewport, past
-/// the arrow's tip (beside the ring seen end on), clear of its head. The
-/// dots in a row right of the number; within the viewport.
-pub fn label_place(
-    frame: &PlaneFrame,
-    viewport: Rect,
-    size: Vec2,
-    dot_radius: f32,
-    count: usize,
-) -> (Rect, Vec<Pos2>) {
-    let n = count as f32;
-    let dots_width = 2.0 * n * dot_radius + (n - 1.0).max(0.0) * DOT_GAP;
-    let group = vec2(size.x + GAP + dots_width, size.y.max(2.0 * dot_radius));
+/// Where the group (`size`: the number and the buttons on one plate)
+/// goes beside the arrow's foot in the `viewport`: away from the cut's
+/// middle, so it never covers it, on the first side that keeps clear of
+/// the arrow (outward from the middle, then square to the arrow, then
+/// back along it) and of `keep_out` (the controls over the view); within
+/// the viewport.
+pub fn group_place(frame: &PlaneFrame, viewport: Rect, keep_out: &[Rect], size: Vec2) -> Rect {
     let room = viewport.shrink(EDGE);
-    // The outline on the screen, as far as it is in the viewport.
-    let outline = frame
-        .outline
-        .iter()
-        .flatten()
-        .fold(Rect::NOTHING, |r, p| r.union(Rect::from_min_max(*p, *p)))
-        .intersect(room);
-    let y = frame
-        .at
-        .y
-        .clamp(outline.top(), outline.bottom().max(outline.top()));
-    let right = Rect::from_min_size(pos2(outline.right() + GAP, y - group.y * 0.5), group);
-    let left = Rect::from_min_size(
-        pos2(outline.left() - GAP - group.x, y - group.y * 0.5),
-        group,
-    );
-    // Above or below it where neither side has room (a wide outline).
-    let x = frame.at.x - group.x * 0.5;
-    let above = Rect::from_min_size(pos2(x, outline.top() - GAP - group.y), group);
-    let below = Rect::from_min_size(pos2(x, outline.bottom() + GAP), group);
-    let beside = [right, left, above, below].into_iter().find(|r| {
-        outline.width() >= 0.0
-            && outline.height() >= 0.0
-            && room.contains_rect(*r)
-            && frame
-                .arrow
-                .is_none_or(|[a, b]| distance_to_segment(r.center(), a, b) > r.width() * 0.5)
-    });
-    let mut place = beside.unwrap_or_else(|| match frame.arrow {
-        // Past the tip, as far again as the group reaches along the
-        // arrow, so the head never touches it.
-        Some([a, b]) => {
-            let way = (b - a).normalized();
-            let reach = way.x.abs() * group.x * 0.5 + way.y.abs() * group.y * 0.5;
-            Rect::from_center_size(b + way * (GAP + reach), group)
-        }
-        None => {
-            egui::Align2::LEFT_CENTER.anchor_size(frame.at + vec2(dot_radius + GAP, 0.0), group)
-        }
-    });
-    // Within the viewport, where it fits.
-    let shift = vec2(
-        (room.left() - place.left()).max(0.0) - (place.right() - room.right()).max(0.0),
-        (room.top() - place.top()).max(0.0) - (place.bottom() - room.bottom()).max(0.0),
-    );
-    if shift.x.is_finite() && shift.y.is_finite() {
-        place = place.translate(shift);
+    let at = frame.at;
+    let out = (at - frame.centre).normalized();
+    let out = if out.x.is_finite() && out.length() > 0.5 {
+        out
+    } else {
+        vec2(1.0, 0.5).normalized()
+    };
+    let arrow = frame.arrow.map(|[a, b]| (b - a).normalized());
+    let mut ways = vec![out];
+    if let Some(way) = arrow {
+        let across = vec2(-way.y, way.x);
+        let across = if across.dot(out) >= 0.0 {
+            across
+        } else {
+            -across
+        };
+        ways.extend([across, -across, -way]);
     }
-    let number = Rect::from_min_size(pos2(place.left(), place.center().y - size.y * 0.5), size);
-    let first = number.right() + GAP + dot_radius;
-    let dots = (0..count)
-        .map(|k| {
-            pos2(
-                first + k as f32 * (2.0 * dot_radius + DOT_GAP),
-                place.center().y,
-            )
-        })
-        .collect();
-    (number, dots)
+    let placed = |way: Vec2| {
+        let reach = way.x.abs() * size.x * 0.5 + way.y.abs() * size.y * 0.5;
+        let mut place = Rect::from_center_size(at + way * (GAP + reach), size);
+        let shift = vec2(
+            (room.left() - place.left()).max(0.0) - (place.right() - room.right()).max(0.0),
+            (room.top() - place.top()).max(0.0) - (place.bottom() - room.bottom()).max(0.0),
+        );
+        if shift.x.is_finite() && shift.y.is_finite() {
+            place = place.translate(shift);
+        }
+        place
+    };
+    let clear = |place: &Rect| {
+        frame.arrow.is_none_or(|[a, b]| {
+            let grown = place.expand(GAP * 0.5);
+            // Clear of the arrow: none of points along it inside.
+            (0..=8).all(|k| !grown.contains(a.lerp(b, k as f32 / 8.0)))
+        }) && !place.expand(GAP * 0.5).contains(at)
+            && keep_out.iter().all(|r| !r.intersects(*place))
+    };
+    ways.iter()
+        .map(|&way| placed(way))
+        .find(clear)
+        .unwrap_or_else(|| placed(out))
 }
 
 /// How the outline is drawn: as one closed path when its sides join,
@@ -898,6 +976,7 @@ impl Shell {
                 }
             }
             HandlePart::Dot(axis) => choose_axis(&mut section, axis, scene),
+            HandlePart::Flip => section.flip = !section.flip,
         }
         self.commit_section(ui, section);
         ui.ctx().request_repaint();
@@ -907,11 +986,19 @@ impl Shell {
     /// Paints the section's handle over the viewport `rect`, and keeps
     /// where it went for the next frame's pointer.
     pub(super) fn paint_section_handle(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        // The plates, the cube and the triad (as the last frame laid them
+        // out): the arrow and its group keep clear of them.
+        let keep_out: Vec<Rect> = self
+            .controls_layout
+            .as_ref()
+            .map(|layout| layout.parts().into_iter().map(|(_, r)| r).collect())
+            .unwrap_or_default();
         let frame = if self.handle_shown() {
             self.section_cache.as_ref().and_then(|cache| {
                 plane_frame(
                     &self.state.camera,
                     rect,
+                    &keep_out,
                     &cache.plane,
                     &cache.bounds,
                     &self.tokens,
@@ -955,135 +1042,177 @@ impl Shell {
         let letter_width = letter_galley
             .as_ref()
             .map_or(0.0, |g| g.size().x + PAD.x * 0.7);
-        let mut text = vec2(
-            letter_width + number_galley.size().x,
-            number_galley.size().y,
-        );
+        let mut text_width = letter_width + number_galley.size().x;
         if typing {
-            text.x = text.x.max(96.0);
+            text_width = text_width.max(96.0);
         }
-        let size = text + PAD * 2.0;
-        let dot_radius = tokens.section_dot_radius;
-        let count = if self.face_option() { 4 } else { 3 };
-        let (number_rect, dots) = label_place(&frame, rect, size, dot_radius, count);
+        // The group: the number, then the buttons X, Y, Z (and ∥), then
+        // Flip side, on one plate as high as the controls on the bar.
+        let height = tokens.nav_height;
+        let inset = 2.0;
+        let side = height - 2.0 * inset;
+        let buttons = if self.face_option() { 5 } else { 4 };
+        let number_width = text_width + PAD.x * 2.0;
+        let size = vec2(
+            number_width + buttons as f32 * (side + inset) + inset,
+            height,
+        );
+        let group = group_place(&frame, rect, &keep_out, size);
+        let number_rect = Rect::from_min_size(group.min, vec2(number_width, height));
+        let centre_of = |k: usize| {
+            pos2(
+                group.left() + number_width + inset + side * 0.5 + k as f32 * (side + inset),
+                group.center().y,
+            )
+        };
         let place = HandlePlace {
             frame,
+            group,
             number: number_rect,
-            dots,
-            dot_radius,
+            dots: (0..buttons - 1).map(centre_of).collect(),
+            flip: centre_of(buttons - 1),
+            dot_radius: side * 0.5,
             hit: tokens.section_hit,
         };
         let dragging = self.section_handle.drag.as_ref().is_some_and(|d| !d.spent);
+        let under = pointer
+            .filter(|p| rect.contains(*p))
+            .and_then(|p| place.part_at(p));
         let near = dragging
             || typing
             || pointer.is_some_and(|p| rect.contains(p) && place.near(p, tokens.section_near));
-        let alpha = if near {
+        let painter = ui.painter_at(rect);
+        // The outline, dashed, in the accent alone, faint until the pointer
+        // is near: one path, one dash pattern, one line seen edge on.
+        let outline_alpha = if near {
             255
         } else {
             tokens.section_rest_opacity
         };
-        let fade = f32::from(alpha) / 255.0;
-        let accent = color_alpha(tokens.accent, alpha);
-        let halo = color_alpha(
-            tokens.plate_fill,
-            (f32::from(tokens.section_halo_opacity) * fade).round() as u8,
-        );
-        let painter = ui.painter_at(rect);
-        // The outline, dashed, in the accent alone: one path, one dash
-        // pattern, one line where it is seen edge on.
         let [dash, gap] = tokens.section_dash;
-        let width = tokens.section_outline_width;
         for path in outline_paths(&place.frame.outline) {
             painter.extend(egui::Shape::dashed_line(
                 &path,
-                egui::Stroke::new(width, accent),
+                egui::Stroke::new(
+                    tokens.section_outline_width,
+                    color_alpha(tokens.accent, outline_alpha),
+                ),
                 dash,
                 gap,
             ));
         }
-        // The arrow, or the ring seen end on.
+        // The arrow, or the ring seen end on: a light fill with a dark
+        // edge, so it reads on the cap, a body and the background; the
+        // accent under the pointer and while it is dragged.
+        let hot = dragging || under == Some(HandlePart::Arrow);
+        let fill = color(if hot {
+            tokens.accent
+        } else {
+            tokens.section_handle_fill
+        });
+        let edge = egui::Stroke::new(
+            tokens.section_handle_edge_width,
+            color(tokens.section_handle_edge),
+        );
         let w = tokens.section_arrow_width;
         let at = place.frame.at;
         match place.frame.arrow {
             Some([a, b]) => {
                 let way = (b - a).normalized();
                 let across = vec2(-way.y, way.x);
-                let head = 4.0 * w + 3.0;
+                let head = tokens.section_head;
                 let neck = b - way * head;
-                let tip = [
-                    b + way * 0.6,
+                let half = w * 0.5;
+                let shaft = vec![
+                    a + across * half,
+                    neck + across * half,
+                    neck - across * half,
+                    a - across * half,
+                ];
+                let tip = vec![
+                    b,
                     neck + across * (head * 0.5),
                     neck - across * (head * 0.5),
                 ];
-                for (ink, extra) in [(halo, HALO), (accent, 0.0)] {
-                    painter.line_segment([a, neck], egui::Stroke::new(w + extra, ink));
-                    painter.circle_filled(a, w * 1.6 + extra * 0.5, ink);
-                    painter.add(egui::Shape::convex_polygon(
-                        tip.to_vec(),
-                        ink,
-                        egui::Stroke::new(extra * 0.5, ink),
-                    ));
+                // The edge first, all round, then the fill over it.
+                let mut round = vec![
+                    a + across * half,
+                    neck + across * half,
+                    neck + across * (head * 0.5),
+                    b,
+                    neck - across * (head * 0.5),
+                    neck - across * half,
+                    a - across * half,
+                ];
+                if let Some(&first) = round.first() {
+                    round.push(first);
                 }
+                painter.add(egui::Shape::line(
+                    round,
+                    egui::Stroke::new(edge.width * 2.0, edge.color),
+                ));
+                painter.circle(a, w * 0.9, fill, edge);
+                painter.add(egui::Shape::convex_polygon(shaft, fill, egui::Stroke::NONE));
+                painter.add(egui::Shape::convex_polygon(tip, fill, egui::Stroke::NONE));
                 // A snap: a short tick across the arrow's foot.
                 if dragging && self.section_handle.snapped.is_some() {
-                    let reach = across * (w * 3.0 + 3.0);
-                    painter.line_segment([a - reach, a + reach], egui::Stroke::new(w + 1.5, halo));
+                    let reach = across * (w + 5.0);
                     painter
-                        .line_segment([a - reach, a + reach], egui::Stroke::new(w * 0.75, accent));
+                        .line_segment([a - reach, a + reach], egui::Stroke::new(3.5, edge.color));
+                    painter.line_segment([a - reach, a + reach], egui::Stroke::new(1.5, fill));
                 }
             }
             None => {
-                let r = dot_radius * 0.8;
-                for (ink, extra) in [(halo, HALO), (accent, 0.0)] {
-                    painter.circle_stroke(at, r, egui::Stroke::new(w * 0.75 + extra, ink));
-                }
+                let r = tokens.section_head * 0.6;
+                painter.circle(at, r, fill, edge);
                 if place.frame.toward {
-                    painter.circle_filled(at, w * 1.4, accent);
+                    painter.circle_filled(at, r * 0.3, edge.color);
                 } else {
-                    let d = r * 0.55;
+                    let d = r * 0.45;
                     for [p, q] in [
                         [at + vec2(-d, -d), at + vec2(d, d)],
                         [at + vec2(-d, d), at + vec2(d, -d)],
                     ] {
-                        painter.line_segment([p, q], egui::Stroke::new(w * 0.75, accent));
+                        painter.line_segment([p, q], egui::Stroke::new(1.6, edge.color));
                     }
                 }
             }
         }
-        // The number on its plate, or the field it is typed into.
-        let plate_alpha = (f32::from(tokens.plate_opacity) * fade).round() as u8;
+        // The group's plate, always legible while the section is on.
         let radius = egui::CornerRadius::same(tokens.radius);
+        painter.rect_filled(
+            place.group,
+            radius,
+            color_alpha(tokens.plate_fill, tokens.plate_opacity),
+        );
+        painter.rect_stroke(
+            place.group,
+            radius,
+            egui::Stroke::new(1.0, color_alpha(tokens.plate_rim, tokens.plate_rim_opacity)),
+            egui::StrokeKind::Inside,
+        );
         if typing {
             let fresh = self.section_handle.fresh;
             kit.typed_field(
                 ui,
                 ui.id().with("section-number"),
-                place.number,
+                place.number.shrink(inset),
                 self.length_unit,
                 &mut self.typing,
                 fresh,
             );
         } else {
-            painter.rect_filled(
-                place.number,
-                radius,
-                color_alpha(tokens.plate_fill, plate_alpha),
-            );
             let mut x = place.number.left() + PAD.x;
             let y = place.number.center().y - number_galley.size().y * 0.5;
             if let Some(galley) = letter_galley {
-                painter.galley(pos2(x, y), galley, accent);
+                painter.galley(pos2(x, y), galley, color(tokens.accent));
                 x += letter_width;
             }
-            painter.galley(
-                pos2(x, y),
-                number_galley,
-                color_alpha(tokens.plate_text, alpha),
-            );
+            painter.galley(pos2(x, y), number_galley, color(tokens.plate_text));
         }
-        // The dots: the axis the plane is across filled with the accent;
-        // the fourth, the plane parallel to the selected face, greyed
-        // when that face is not flat.
+        // The buttons: the axis the plane is across, and Flip side while it
+        // is flipped, filled with the accent; ∥ greyed when the face
+        // selected is not flat.
         let chosen = if self.section_on_face() {
             Some(FACE_DOT)
         } else {
@@ -1094,65 +1223,75 @@ impl Shell {
             .face
             .as_ref()
             .and_then(|f| f.refused.clone());
-        let small = egui::FontId::proportional((dot_radius * 1.15).clamp(8.0, 16.0));
-        for (k, &middle) in place.dots.iter().enumerate() {
-            let on = chosen == Some(k);
-            let greyed = k == FACE_DOT && !on && refused.is_some();
-            let (fill, ink) = if on {
-                (accent, color_alpha(tokens.plate_fill, alpha))
+        let segment = egui::CornerRadius::same(tokens.nav_segment_radius);
+        let letters = egui::FontId::proportional(tokens.control_font);
+        let mut cells: Vec<(HandlePart, Pos2, bool)> = place
+            .dots
+            .iter()
+            .enumerate()
+            .map(|(k, &c)| (HandlePart::Dot(k), c, chosen == Some(k)))
+            .collect();
+        cells.push((HandlePart::Flip, place.flip, self.state.section.flip));
+        for (part, middle, on) in cells {
+            let cell = Rect::from_center_size(middle, egui::Vec2::splat(side));
+            let greyed = part == HandlePart::Dot(FACE_DOT) && !on && refused.is_some();
+            if on {
+                painter.rect_filled(cell, segment, color(tokens.accent));
+            } else if under == Some(part) && !greyed {
+                painter.rect_filled(
+                    cell,
+                    segment,
+                    color_alpha(tokens.glass, tokens.control_opacity),
+                );
+            }
+            let ink = color(if on {
+                tokens.knob
+            } else if greyed {
+                tokens.plate_text_dim
             } else {
-                let ink = if greyed {
-                    tokens.plate_text_dim
-                } else {
-                    tokens.plate_text
-                };
-                (
-                    color_alpha(tokens.plate_fill, plate_alpha),
-                    color_alpha(ink, alpha),
-                )
-            };
-            painter.circle_filled(middle, dot_radius, fill);
-            let rim = if greyed {
-                color_alpha(tokens.plate_text_dim, alpha)
-            } else {
-                accent
-            };
-            painter.circle_stroke(middle, dot_radius, egui::Stroke::new(1.0, rim));
-            match SECTION_PLANES.get(k) {
-                Some((name, _)) => {
-                    painter.text(
-                        middle,
-                        egui::Align2::CENTER_CENTER,
-                        name.to_uppercase(),
-                        small.clone(),
-                        ink,
-                    );
-                }
-                // Parallel to a face: two slanted strokes.
-                None => {
-                    let (w, h) = (dot_radius * 0.22, dot_radius * 0.5);
-                    for dx in [-0.28, 0.28] {
-                        let x = middle.x + dot_radius * dx;
-                        painter.line_segment(
-                            [pos2(x - w, middle.y + h), pos2(x + w, middle.y - h)],
-                            egui::Stroke::new(1.3, ink),
+                tokens.plate_text
+            });
+            match part {
+                HandlePart::Dot(k) if k < SECTION_PLANES.len() => {
+                    if let Some((name, _)) = SECTION_PLANES.get(k) {
+                        painter.text(
+                            middle - vec2(0.0, 1.0),
+                            egui::Align2::CENTER_CENTER,
+                            name.to_uppercase(),
+                            letters.clone(),
+                            ink,
                         );
                     }
                 }
+                HandlePart::Dot(_) => {
+                    super::icons::paint(
+                        &painter,
+                        super::icons::Icon::Parallel,
+                        cell.shrink(side * 0.22),
+                        ink,
+                        &tokens,
+                    );
+                }
+                _ => {
+                    super::icons::paint(
+                        &painter,
+                        super::icons::Icon::Flip,
+                        cell.shrink(side * 0.2),
+                        ink,
+                        &tokens,
+                    );
+                }
             }
         }
-        // What the pointer would take, and why the fourth dot cannot.
-        if !dragging
-            && let Some(at) = pointer.filter(|p| rect.contains(*p))
-            && let Some(part) = place.part_at(at)
-        {
+        // What the pointer would take, and what a button does.
+        if !dragging && let Some(part) = under {
             ui.ctx().set_cursor_icon(match part {
                 HandlePart::Arrow => egui::CursorIcon::Grab,
                 HandlePart::Number => egui::CursorIcon::Text,
                 HandlePart::Dot(FACE_DOT) if refused.is_some() && chosen != Some(FACE_DOT) => {
                     egui::CursorIcon::NotAllowed
                 }
-                HandlePart::Dot(_) => egui::CursorIcon::PointingHand,
+                HandlePart::Dot(_) | HandlePart::Flip => egui::CursorIcon::PointingHand,
             });
             let words = match part {
                 HandlePart::Dot(FACE_DOT) => Some(
@@ -1160,14 +1299,21 @@ impl Shell {
                         .clone()
                         .unwrap_or_else(|| "Parallel to the selected face".to_string()),
                 ),
+                HandlePart::Flip => Some("Keep the other half".to_string()),
                 _ => None,
             };
-            if let Some(words) = words
-                && let Some(&dot) = place.dots.get(FACE_DOT)
-            {
+            if let Some(words) = words {
                 let galley =
                     painter.layout_no_wrap(words, kit.small_font(), color(tokens.notice_text));
-                let at = dot + vec2(-galley.size().x * 0.5, dot_radius + 6.0);
+                let below = place.group.bottom() + 6.0;
+                let at = if below + galley.size().y + 6.0 < rect.bottom() {
+                    pos2(place.group.left(), below)
+                } else {
+                    pos2(
+                        place.group.left(),
+                        place.group.top() - 6.0 - galley.size().y,
+                    )
+                };
                 let back = Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 3.0));
                 painter.rect_filled(
                     back,
@@ -1342,16 +1488,25 @@ mod tests {
         };
         camera.set_view("front").unwrap();
         camera.fit(&bounds, 800.0 / 600.0);
-        let frame = plane_frame(&camera, viewport, &plane, &bounds, &tokens).unwrap();
+        let frame = plane_frame(&camera, viewport, &[], &plane, &bounds, &tokens).unwrap();
         // From the front, across x: the arrow points right, as long as the
-        // tokens say, from the middle of the box at x = 30.
+        // tokens say, from the corner of the outline furthest along
+        // x - y - z: the one at (30, 0, 0), grown out of the box's cut.
         let [a, b] = frame.arrow.unwrap();
         assert!(
             (b.x - a.x - tokens.section_arrow_length).abs() < 1e-3,
             "{a:?} {b:?}"
         );
         assert!((b.y - a.y).abs() < 1e-3);
-        assert!((frame.middle.x - 30.0).abs() < 1e-9 && (frame.middle.z - 10.0).abs() < 1e-9);
+        assert!(
+            (frame.middle.x - 30.0).abs() < 1e-9
+                && frame.middle.y < 0.0
+                && frame.middle.z < 0.0
+                && frame.middle.y > -2.0
+                && frame.middle.z > -2.0,
+            "{:?}",
+            frame.middle
+        );
         assert!(viewport.contains(a));
         // Seen edge on, the outline is the plane's trace: two vertical sides.
         assert_eq!(frame.outline.len(), 4);
@@ -1361,39 +1516,47 @@ mod tests {
                 "{p:?} {q:?}"
             );
         }
-        let (number, dots) = label_place(
-            &frame,
-            viewport,
-            vec2(80.0, 20.0),
-            tokens.section_dot_radius,
-            3,
+        // The group: in view, clear of the arrow and of the cut's middle.
+        let size = vec2(200.0, 28.0);
+        let group = group_place(&frame, viewport, &[], size);
+        assert!(viewport.contains_rect(group), "{group:?}");
+        // A control over where the arrow would stand: the arrow moves
+        // toward the cut's middle, clear of it, and so does the group.
+        let control = Rect::from_center_size(a, vec2(40.0, 40.0));
+        let moved = plane_frame(&camera, viewport, &[control], &plane, &bounds, &tokens).unwrap();
+        let [ma, mb] = moved.arrow.unwrap();
+        assert!(!control.expand(INSIDE - 1.0).contains(ma), "{ma:?}");
+        assert!((moved.middle.x - 30.0).abs() < 1e-9, "on the plane");
+        assert!(!control.contains(mb));
+        let clear = group_place(&moved, viewport, &[control], size);
+        assert!(!clear.intersects(control), "{clear:?}");
+        assert!((0..=8).all(|k| !group.contains(a.lerp(b, k as f32 / 8.0))));
+        assert!(
+            !group.contains(frame.centre),
+            "{group:?} {:?}",
+            frame.centre
         );
+        let number = Rect::from_min_size(group.min, vec2(80.0, 28.0));
+        let dots: Vec<Pos2> = (0..3)
+            .map(|k| pos2(number.right() + 14.0 + 26.0 * k as f32, group.center().y))
+            .collect();
         let place = HandlePlace {
             frame: frame.clone(),
+            group,
             number,
             dots: dots.clone(),
-            dot_radius: tokens.section_dot_radius,
+            flip: pos2(number.right() + 14.0 + 26.0 * 3.0, group.center().y),
+            dot_radius: 12.0,
             hit: tokens.section_hit,
         };
-        // The number at the outline's edge (here, seen edge on, a line
-        // through the arrow's foot), on the side the arrow leaves free:
-        // clear of the arrow, the dots right of it, all in view.
-        assert!(
-            number.right() < a.x && viewport.contains_rect(number),
-            "{number:?} {a:?}"
-        );
-        assert!(distance_to_segment(number.center(), a, b) > number.width() * 0.5);
-        assert!(
-            dots.iter()
-                .all(|d| d.x > number.right() && viewport.contains(*d))
-        );
         assert_eq!(place.part_at(a.lerp(b, 0.5)), Some(HandlePart::Arrow));
         assert_eq!(
-            place.part_at(a.lerp(b, 0.5) + vec2(0.0, tokens.section_hit + 1.0)),
+            place.part_at(a.lerp(b, 0.5) - vec2(0.0, tokens.section_hit + 1.0)),
             None
         );
         assert_eq!(place.part_at(number.center()), Some(HandlePart::Number));
         assert_eq!(place.part_at(dots[2]), Some(HandlePart::Dot(2)));
+        assert_eq!(place.part_at(place.flip), Some(HandlePart::Flip));
         assert!(place.near(a + vec2(0.0, 30.0), tokens.section_near));
         assert!(!place.near(pos2(110.0, 60.0), tokens.section_near));
         // A ray through a point on the arrow lands on the arrow's line at
@@ -1406,7 +1569,7 @@ mod tests {
 
         // Looking along the normal: a ring, no arrow to drag.
         camera.set_view("right").unwrap();
-        let end_on = plane_frame(&camera, viewport, &plane, &bounds, &tokens).unwrap();
+        let end_on = plane_frame(&camera, viewport, &[], &plane, &bounds, &tokens).unwrap();
         assert_eq!(end_on.arrow, None);
         assert!(
             end_on.toward,
@@ -1414,7 +1577,7 @@ mod tests {
         );
         camera.set_view("left").unwrap();
         assert!(
-            !plane_frame(&camera, viewport, &plane, &bounds, &tokens)
+            !plane_frame(&camera, viewport, &[], &plane, &bounds, &tokens)
                 .unwrap()
                 .toward
         );
@@ -1422,13 +1585,13 @@ mod tests {
         // Nothing to draw: an empty box, a camera that looks nowhere, a
         // plane that is not one.
         assert_eq!(
-            plane_frame(&camera, viewport, &plane, &Bbox3::EMPTY, &tokens),
+            plane_frame(&camera, viewport, &[], &plane, &Bbox3::EMPTY, &tokens),
             None
         );
         let mut nowhere = camera;
         nowhere.distance = f64::NAN;
         assert_eq!(
-            plane_frame(&nowhere, viewport, &plane, &bounds, &tokens),
+            plane_frame(&nowhere, viewport, &[], &plane, &bounds, &tokens),
             None
         );
         let broken = SectionPlane {
@@ -1436,7 +1599,7 @@ mod tests {
             ..plane
         };
         assert_eq!(
-            plane_frame(&camera, viewport, &broken, &bounds, &tokens),
+            plane_frame(&camera, viewport, &[], &broken, &bounds, &tokens),
             None
         );
         let none = SectionPlane {
@@ -1445,7 +1608,7 @@ mod tests {
             ..plane
         };
         assert_eq!(
-            plane_frame(&camera, viewport, &none, &bounds, &tokens),
+            plane_frame(&camera, viewport, &[], &none, &bounds, &tokens),
             None
         );
     }

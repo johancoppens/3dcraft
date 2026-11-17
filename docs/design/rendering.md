@@ -1758,6 +1758,30 @@ orthographic views showed grey on three sides). (5) `Slabs` answer only for a cu
 beside the model, and now gets the outline of the whole mesh (`the_slabs_find_the_whole_outline_among_a_few_
 triangles`; the shell's planes, a face's included, give the same direction to both, bit for bit).
 
+*Round two, the developer's look* (2026-11-17, from his preview build on the Mont Ventoux relief cut across Y:
+"ik vind de gele pijl niet zo duidelijk"; it replaces (4) above). The arrow is no longer the accent: a near-white
+fill (`section_handle_fill`) inside a dark edge (`section_handle_edge`, 1.25 points), 64 points long seen side on,
+its shaft 5 and its head 16 points (72, 7 and 20 at touch sizes), so it reads on the orange cap, on a dark part
+and on the light background; it takes the accent under the pointer and while it is dragged. It stands at a
+corner of the cut, not its middle: the corner of the plane's outline furthest along x − y − z, a rule of the
+model's, so it stays put while the view turns; where that corner is out of the viewport (zoomed in) the arrow's
+foot is the point of the plane between that corner and the cut's middle furthest out that shows 56 points
+inside it and 56 points clear of the plates, the cube and the triad (`into_view`; the last frame's
+`ControlsLayout::parts`), so the line it drags along is still the plane's normal through a point of the plane,
+and a press on it never lands on the view cube (the hostile test's plane a billion millimetres out did). The arrow points into the half that
+is cut away, out of the material, so its shaft is mostly seen against the background. Beside its foot, away
+from the cut's middle and clear of the arrow and of the controls, one group on the controls' dark plate, as high as the bar's
+controls: the number (the axis's letter in the accent), X, Y, Z (and ∥) and ⇅ (Flip side, the bar's symbol);
+the double click on the arrow stays. The group is always drawn in full while the section is on; only the
+dashed outline is faint until the pointer is near. On a window at least as wide as the narrow layout's 800
+points the display bar shows *Section* alone while the section is on: the group has X, Y, Z, the offset and the
+side (`controls_layout` is given the options only when the window is narrow, the same rule that leaves the
+handle out); a wide touch screen gets the handle at touch sizes and the bar with *Section* alone. A `ui.set`
+of a plane named X, Y or Z is refused with the planes' names (across X `yz`, across Y `zx`, across Z `xy`); a
+refused `ui.set` leaves the state as it was, every field (`a_refused_section_changes_nothing_and_says_x_y_z_and_
+the_planes`: the coordinator saw the section on after a refusal in the desktop window; the state is put back
+whole here, and was on `main` too, so what he saw was not reproduced).
+
 ### Per-sample stages on Vulkan (2026-11-16)
 
 *Found.* The window of 0.1.1 and 0.1.2 died within seconds of its start on a Windows 11 laptop with a Core

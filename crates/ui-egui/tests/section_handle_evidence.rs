@@ -496,3 +496,134 @@ fn pictures_of_the_section_handle() {
     }
     println!("pictures in {}", dir.display());
 }
+
+/// A document opened from a file outside the repository (the examples'
+/// relief, the website's drone), `None` when it is not there.
+fn opened(path: &str) -> Option<Session> {
+    let path = PathBuf::from(path);
+    let dir = path.parent()?.to_path_buf();
+    if !path.exists() {
+        println!("not here: {}", path.display());
+        return None;
+    }
+    let mut s = Session::new(Workspace {
+        read: craft3d_engine::Access::Root(dir),
+        write: craft3d_engine::Access::None,
+    });
+    let name = path.file_name()?.to_string_lossy().to_string();
+    s.execute("file.open", &json!({"path": name})).ok()?;
+    Some(s)
+}
+
+/// The second round's pictures (the developer's decisions of 2026-11-17):
+/// the arrow light with a dark edge at a corner of the cut, the group on
+/// its dark plate beside it, the bar with Section alone on a computer and
+/// with the options on a phone; the relief across Y and across Z, a dark
+/// model, light and dark panels. In `$CRAFT3D_PICS/round2`.
+#[test]
+#[ignore = "writes pictures for a person to look at; run with --ignored"]
+fn pictures_of_the_section_handle_round_two() {
+    let state = match headless_render_state() {
+        Ok(state) => state,
+        Err(e) => {
+            println!("no graphics adapter, no pictures: {e}");
+            return;
+        }
+    };
+    let dir = std::env::var("CRAFT3D_PICS")
+        .map_or_else(
+            |_| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/evidence/section-handle")
+            },
+            PathBuf::from,
+        )
+        .join("round2");
+    std::fs::create_dir_all(&dir).unwrap();
+    let relief =
+        "/home/johan/code/3dcraft-examples/examples/21-ventoux-relief/ventoux-relief.3dcraft";
+    let drone = "/home/johan/code/3dcraft-website/examples/models/fpv-drone-frame.3dcraft";
+    type Make = Box<dyn Fn() -> Option<Session>>;
+    let docs: Vec<(&str, Make)> = vec![
+        ("relief", Box::new(move || opened(relief))),
+        ("drone", Box::new(move || opened(drone))),
+        ("drilled", Box::new(|| Some(drilled()))),
+        ("gear", Box::new(|| Some(example("gear")))),
+    ];
+    for (name, make) in &docs {
+        for (case, size, patch, pointer) in [
+            (
+                "y-iso",
+                [1400, 900],
+                json!({"view": "iso", "section": {"on": true, "plane": "zx"}}),
+                "away",
+            ),
+            (
+                "y-iso-near",
+                [1400, 900],
+                json!({"view": "iso", "section": {"on": true, "plane": "zx"}}),
+                "arrow",
+            ),
+            (
+                "z-iso",
+                [1400, 900],
+                json!({"view": "iso", "section": {"on": true, "plane": "xy"}}),
+                "away",
+            ),
+            (
+                "z-iso-dark",
+                [1400, 900],
+                json!({"view": "iso", "appearance": "dark", "section": {"on": true, "plane": "xy"}}),
+                "away",
+            ),
+            (
+                "x-front",
+                [1400, 900],
+                json!({"view": "front", "section": {"on": true, "plane": "yz"}}),
+                "away",
+            ),
+            (
+                "z-top-ring",
+                [1400, 900],
+                json!({"view": "top", "section": {"on": true, "plane": "xy"}}),
+                "away",
+            ),
+            (
+                "y-phone",
+                [390, 844],
+                json!({"view": "iso", "section": {"on": true, "plane": "zx"}}),
+                "away",
+            ),
+        ] {
+            if *name != "relief" && case.starts_with("z-top") {
+                continue;
+            }
+            let Some(mut session) = make() else {
+                continue;
+            };
+            let mut w = Window {
+                state: &state,
+                ctx: egui::Context::default(),
+                time: 0.0,
+                size,
+                jobs: Vec::new(),
+                dir: dir.clone(),
+            };
+            let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+            w.frames(&mut shell, &mut session, 3);
+            set(&mut shell, &mut session, patch);
+            w.frames(&mut shell, &mut session, 10);
+            let at = match (pointer, shell.section_handle()) {
+                ("arrow", Some(place)) => place
+                    .frame
+                    .arrow
+                    .map_or(place.frame.at, |[a, b]| a.lerp(b, 0.55)),
+                _ => Pos2::new(40.0, size[1] as f32 * 0.5),
+            };
+            w.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
+            w.frames(&mut shell, &mut session, 2);
+            w.save(&format!("{name}-{case}"));
+        }
+    }
+    println!("pictures in {}", dir.display());
+}
