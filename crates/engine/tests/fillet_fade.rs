@@ -199,13 +199,11 @@ fn the_names_of_a_faded_fillet_hold_through_an_edit_a_save_and_an_undo() {
     );
     assert_eq!(beyond["count"], 1, "{beyond}");
     let edge = beyond["edges"][0]["name"].as_str().unwrap().to_string();
-    // What is left of the edge is the edge, shortened: it answers to the
-    // block's name of it too.
-    assert_eq!(
-        beyond["edges"][0]["aliases"],
-        json!(["F2:copy(0)/F1:edge(9)"]),
-        "{beyond}"
-    );
+    // Named by the end it belongs to (the top face near it), and not by
+    // the edge's own name, which would stay on the piece beyond a fade
+    // moved to the other end.
+    assert!(edge.ends_with("|F2:copy(0)/F1:face(1)]"), "{edge}");
+    assert!(beyond["edges"][0].get("aliases").is_none(), "{beyond}");
     close(&beyond["edges"][0]["length"], 6.0, 1e-9, "the edge beyond");
     built(&mut s, "datum.point", json!({"vertex": tip, "name": "Tip"}));
     // Taller: the tip moves up with the top, every name holds.
@@ -328,7 +326,7 @@ fn hostile_fades_are_refused_with_what_to_change() {
         json!({"edges": [EDGE], "radius": 3, "fade": [{"at": "Other:vertex(4)", "over": 15}]}),
     );
     assert!(
-        reason.contains("fade.0.at") && reason.contains("is a vertex of F2"),
+        reason.contains("fade.0.at") && reason.contains("is a vertex of `Other`"),
         "{reason}"
     );
     // Not a vertex at all.
@@ -686,4 +684,149 @@ fn feature_edit_changes_and_clears_the_fades() {
             .get("fades")
             .is_none()
     );
+}
+
+/// Rule 4 (the coordinator's decision on the review of this slice): the
+/// tip short of the vertex and the edge beyond it are named by the end
+/// they belong to, so a fade moved to the other end of the edge takes
+/// their names with it. A datum point at the tip then fails naming the
+/// vertex, and a note on the edge beyond comes loose of it, where named by
+/// their faces alone both would have moved to the new tip and piece
+/// without a word; moved back, both are where they were.
+#[test]
+fn a_fade_moved_to_the_other_end_takes_its_names_with_it() {
+    let mut s = session();
+    block(&mut s);
+    built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [EDGE], "radius": 3, "name": "Round",
+               "fade": [{"at": TOP, "over": 15, "back": 6}]}),
+    );
+    let tip = common::checked::feature(&mut s, "Round")["fades"][0]["vertex"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let beyond = run(
+        &mut s,
+        "document.edges",
+        json!({"feature": "Round", "between": ["F2:copy(0)/F1:face(2)", "F2:copy(0)/F1:face(4)"]}),
+    );
+    let edge = beyond["edges"][0]["name"].as_str().unwrap().to_string();
+    built(&mut s, "datum.point", json!({"vertex": tip, "name": "Tip"}));
+    run(
+        &mut s,
+        "note.add",
+        json!({"text": "sharp from here up", "on": edge}),
+    );
+    let attachment = |s: &mut Session| {
+        let notes = run(s, "note.list", json!({}));
+        notes["notes"][0]["attachment"].clone()
+    };
+    assert_eq!(attachment(&mut s), "attached");
+    // To the foot of the edge.
+    built(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Round", "fade": [{"at": BOTTOM, "over": 15, "back": 6}]}),
+    );
+    let moved = common::checked::feature(&mut s, "Round");
+    let new_tip = moved["fades"][0]["vertex"].as_str().unwrap();
+    assert_ne!(new_tip, tip, "{moved}");
+    let point = common::checked::feature(&mut s, "Tip");
+    assert_eq!(point["status"], "failed", "{point}");
+    assert!(point["error"].as_str().unwrap().contains(&tip), "{point}");
+    assert_eq!(attachment(&mut s), "detached");
+    // Back to the top: the tip and the edge beyond are what they were.
+    built(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Round", "fade": [{"at": TOP, "over": 15, "back": 6}]}),
+    );
+    let point = common::checked::feature(&mut s, "Tip");
+    assert_eq!(point["status"], "ok", "{point}");
+    close(
+        &point["datum"]["at"][2],
+        SIZE[2] - 6.0,
+        1e-9,
+        "the tip again",
+    );
+    assert_eq!(attachment(&mut s), "attached");
+}
+
+/// The review's dead end: after an earlier fillet rounded an edge that
+/// ends at the vertex, the vertex is gone from the body (the end of the
+/// edge is a vertex named after that fillet's face), and the refusal
+/// offered that name, which a fade then refused as not proven. Now it says
+/// what cannot be faded and why, and offers only names a fade takes: the
+/// other end of the edge, which is then taken as an end.
+#[test]
+fn a_fade_at_an_end_an_earlier_fillet_rounded_is_refused_without_a_dead_end() {
+    let mut s = session();
+    block(&mut s);
+    built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": ["Box:edge(4)"], "radius": 2, "name": "First"}),
+    );
+    let reason = failed(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [EDGE], "radius": 3, "name": "Round",
+               "fade": [{"at": TOP, "over": 15}]}),
+    );
+    assert!(
+        reason.starts_with("fade.0.at: F1:vertex(4) is a vertex of `Box`")
+            && reason.contains("went into `First`")
+            && reason.contains("is not built yet"),
+        "{reason}"
+    );
+    assert!(!reason.contains("give the vertex by its name"), "{reason}");
+    // What it offers is taken as an end of the edge.
+    let offered = reason
+        .split("that a fade takes: ")
+        .nth(1)
+        .and_then(|rest| rest.split("; not ").next())
+        .unwrap_or_else(|| panic!("nothing offered: {reason}"));
+    assert!(!offered.contains("fillet("), "{reason}");
+    for name in offered.split(", ") {
+        run(&mut s, "edit.undo", json!({}));
+        let made = run(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [EDGE], "radius": 3, "name": "Round",
+                   "fade": [{"at": name, "over": 15}]}),
+        );
+        if made["status"] != "ok" {
+            let why = made["error"].as_str().unwrap();
+            assert!(
+                !why.starts_with("fade.0.at") && !why.contains("internal error"),
+                "{name}: {why}"
+            );
+        }
+    }
+}
+
+/// The review's minor findings: a huge length is said as `1e300`, not in
+/// three hundred digits; a feature's name that names none is refused at
+/// the fade's own place.
+#[test]
+fn huge_lengths_and_unknown_features_are_said_where_they_are() {
+    let mut s = session();
+    block(&mut s);
+    let reason = failed(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [EDGE], "radius": 3, "fade": [{"at": TOP, "over": "1e300 mm"}]}),
+    );
+    assert!(
+        reason.contains("over and back take 1e300 mm") && !reason.contains("0000000000"),
+        "{reason}"
+    );
+    let message = error(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [EDGE], "radius": 3, "fade": [{"at": "Nope:vertex(4)", "over": 15}]}),
+    );
+    assert!(message.contains("`fade.0.at`"), "{message}");
 }

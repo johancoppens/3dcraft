@@ -767,6 +767,22 @@ impl Names {
         Ok(())
     }
 
+    /// Writes the faces `near` (by their index) into the name of vertex
+    /// `index` (`vertex`) or edge `index` as faces near it
+    /// (`entity::ByFaces::add_near`), for a body that names its edges and
+    /// vertices by its faces; nothing for any other.
+    pub(crate) fn add_near(
+        &mut self,
+        vertex: bool,
+        index: usize,
+        near: &[usize],
+    ) -> Result<(), String> {
+        match &mut self.entities {
+            Entities::ByFaces(by) => by.add_near(vertex, index, near, &self.faces),
+            _ => Ok(()),
+        }
+    }
+
     /// The edges of this body the kernel kept of edge `edge` of the body
     /// an instance came from, for the instances `from` accepts (a
     /// boolean's target or tool, whichever that body was): one when the

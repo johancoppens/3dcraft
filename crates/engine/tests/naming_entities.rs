@@ -1659,10 +1659,11 @@ fn a_numbered_edge_an_operand_had_answers_to_the_name_it_had_there() {
 /// A fillet that fades (docs/design/blends.md › *A fillet that ends in a
 /// point*) makes a vertex where its face closes and, short of the edge's
 /// end, keeps what is left of the edge beyond it. Both are named by their
-/// faces with no number, the tip by the fillet's face among them, the
-/// edge beyond also by the edge it is a piece of; through edits of the
-/// block's size and of the fade the names stay on the tip and on that
-/// edge, and a fade taken away fails what named its tip, naming it.
+/// faces with no number, the tip by the fillet's face among them, and by
+/// the end they belong to (the face at the vertex the fade is at, near
+/// them); through edits of the block's size and of the fade the names
+/// stay on the tip and on that edge, and a fade taken away fails what
+/// named its tip, naming it.
 #[test]
 fn a_fillet_that_fades_names_its_tip_and_the_edge_beyond_through_edits() {
     let mut s = session();
@@ -1691,9 +1692,9 @@ fn a_fillet_that_fades_names_its_tip_and_the_edge_beyond_through_edits() {
     let tip = made["fades"][0]["vertex"].as_str().unwrap().to_string();
     assert_eq!(
         tip,
-        "F2:corner[F2:copy(0)/F1:face(2),F2:copy(0)/F1:face(4),F2:fillet(0)]"
+        "F2:corner[F2:copy(0)/F1:face(2),F2:copy(0)/F1:face(4),F2:fillet(0)|F2:copy(0)/F1:face(1)]"
     );
-    let beyond = "F2:between[F2:copy(0)/F1:face(2),F2:copy(0)/F1:face(4)]";
+    let beyond = "F2:between[F2:copy(0)/F1:face(2),F2:copy(0)/F1:face(4)|F2:copy(0)/F1:face(1)]";
     built(&mut s, "datum.point", json!({"vertex": tip, "name": "Tip"}));
     let edge_of = |s: &mut Session| -> Value {
         let listing = ask(s, "document.edges", json!({"feature": "Round"}));
@@ -1726,7 +1727,9 @@ fn a_fillet_that_fades_names_its_tip_and_the_edge_beyond_through_edits() {
             "h {h}, back {back}: {point}"
         );
         let edge = edge_of(&mut s);
-        assert_eq!(edge["aliases"], json!(["F2:copy(0)/F1:edge(9)"]), "{edge}");
+        // Not the edge's own name too: that would stay on the piece
+        // beyond a fade moved to the other end.
+        assert!(edge.get("aliases").is_none(), "{edge}");
         assert!(
             (edge["length"].as_f64().unwrap() - back).abs() < 1e-9,
             "{edge}"

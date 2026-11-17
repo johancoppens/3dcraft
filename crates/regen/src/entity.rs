@@ -336,6 +336,77 @@ impl ByFaces {
             .iter()
             .position(|item| self.is(faces, item, name, NameRole::Corner))
     }
+
+    /// Writes the faces `near` (by their index among this body's faces,
+    /// whose names are `faces`) into the name of vertex `index` (`vertex`)
+    /// or of edge `index` as faces near it, beside those it lists already
+    /// and without those it lies on: its name then says them whether or
+    /// not another entity lies on the same faces (a fillet's tip short of
+    /// its vertex, by the end it belongs to: `crate::fillet`). Nothing
+    /// changes where they are listed already, or where the name would
+    /// list more faces than a name may.
+    pub(crate) fn add_near(
+        &mut self,
+        vertex: bool,
+        index: usize,
+        near: &[usize],
+        faces: &[PersistentName],
+    ) -> Result<(), String> {
+        let items = if vertex { &self.vertices } else { &self.edges };
+        let Some(item) = items.get(index).copied() else {
+            return Ok(());
+        };
+        let start = item.start as usize;
+        let on_end = start.saturating_add(usize::from(item.on));
+        let near_end = on_end.saturating_add(usize::from(item.near));
+        let on: Vec<u32> = self.ranks.get(start..on_end).unwrap_or(&[]).to_vec();
+        let mut listed: BTreeSet<u32> = self
+            .ranks
+            .get(on_end..near_end)
+            .unwrap_or(&[])
+            .iter()
+            .copied()
+            .collect();
+        let before = listed.len();
+        for face in near {
+            let Some(name) = faces.get(*face) else {
+                continue;
+            };
+            // The rank of the face's name: where a face of that name is
+            // in `ranked`.
+            let rank = self
+                .ranked
+                .iter()
+                .position(|f| faces.get(*f as usize) == Some(name))
+                .and_then(|r| u32::try_from(r).ok());
+            if let Some(rank) = rank
+                && !on.contains(&rank)
+            {
+                listed.insert(rank);
+            }
+        }
+        if listed.len() == before || on.len().saturating_add(listed.len()) > MAX_NAME_FACES {
+            return Ok(());
+        }
+        let start = u32::try_from(self.ranks.len()).map_err(|_| TOO_MANY.to_string())?;
+        let near_count = u16::try_from(listed.len()).map_err(|_| TOO_MANY.to_string())?;
+        self.ranks.extend_from_slice(&on);
+        self.ranks.extend(listed);
+        let items = if vertex {
+            &mut self.vertices
+        } else {
+            &mut self.edges
+        };
+        if let Some(slot) = items.get_mut(index) {
+            *slot = Item {
+                start,
+                on: item.on,
+                near: near_count,
+                number: item.number,
+            };
+        }
+        Ok(())
+    }
 }
 
 /// One edge or vertex as it is told from the others.

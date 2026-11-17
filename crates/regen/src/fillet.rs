@@ -7,7 +7,7 @@ use crate::blend::{self, Picked, Roles};
 use crate::datum::named_body_of;
 use crate::derive::source_body;
 use crate::{FadeReport, FeatureResult, Names, length};
-use craft3d_doc::{Document, FeatureId, Fillet, NameRole};
+use craft3d_doc::{Document, FeatureId, Fillet, NameRole, identity};
 use craft3d_expr::Evaluation;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::fillet::{
@@ -106,8 +106,20 @@ struct Faded {
     fade: usize,
     pick: usize,
     end: usize,
+    /// The vertex of the body at that end.
+    vertex: craft3d_topo::VertexId,
     over: f64,
     back: f64,
+}
+
+/// A length as a message says it: as the kernel's messages do, and past
+/// what nine digits say in the form `1e300` (not three hundred digits).
+fn length_text(value: f64) -> String {
+    if value.is_finite() && value.abs() >= 1e9 {
+        format!("{value:e}")
+    } else {
+        craft3d_kernel::short_number(value)
+    }
 }
 
 /// The fades of `fillet` on the edges `picked` of `body`: each `at` a
@@ -126,6 +138,7 @@ fn fades(
     source: FeatureId,
     made_by: &str,
     linear: f64,
+    earlier: &[FeatureResult],
 ) -> Result<Vec<Faded>, String> {
     let unit = doc.units.length.symbol();
     let vertex_called = |vertex: craft3d_topo::VertexId| {
@@ -133,20 +146,46 @@ fn fades(
             .vertex_name(vertex.0 as usize)
             .map_or_else(|| format!("vertex {}", vertex.0), |n| n.to_string())
     };
-    // The ends of the picked edges, for what is refused.
+    // The ends of the picked edges, for what is refused: those a fade
+    // takes (named in a way proven to stay with their vertex), and those
+    // it does not, said as such, so that no refusal offers a name another
+    // refusal then turns down.
     let ends_listed = || {
-        let mut listed: Vec<String> = Vec::new();
+        let (mut taken, mut not): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
         for pick in picked {
             if let Some(edge) = body.edge(pick.edge) {
                 for v in [edge.start, edge.end] {
+                    let name = names.vertex_name(v.0 as usize);
+                    let proven = name
+                        .as_ref()
+                        .is_some_and(|n| identity::unproven(doc, n).is_none());
                     let called = vertex_called(v);
-                    if !listed.contains(&called) {
-                        listed.push(called);
+                    let list = if proven { &mut taken } else { &mut not };
+                    if !list.contains(&called) {
+                        list.push(called);
                     }
                 }
             }
         }
-        listed.join(", ")
+        let mut text = if taken.is_empty() {
+            "no end of the edges this fillet rounds has a name a fade takes".to_string()
+        } else {
+            format!(
+                "the ends of the edges this fillet rounds that a fade takes: {}",
+                taken.join(", ")
+            )
+        };
+        if !not.is_empty() {
+            text.push_str(&format!(
+                "; not {}, named after the face of a blend or by where it lies, which is not proven to stay with its vertex: a fade at such an end (one an earlier fillet or chamfer has rounded) is not built yet",
+                not.join(", ")
+            ));
+        }
+        text
+    };
+    let called = |id: FeatureId| {
+        doc.feature(id)
+            .map_or_else(|| id.to_string(), |f| f.name.clone())
     };
     let mut out: Vec<Faded> = Vec::with_capacity(fillet.fade.len());
     for (index, fade) in fillet.fade.iter().enumerate() {
@@ -155,7 +194,7 @@ fn fades(
         if !(over.is_finite() && over > 0.0) {
             return Err(format!(
                 "{role}.over: the length over which the radius falls to nothing has to be more than zero, got {}",
-                craft3d_kernel::short_number(over)
+                length_text(over)
             ));
         }
         let back = match &fade.back {
@@ -165,7 +204,7 @@ fn fades(
         if !(back.is_finite() && back >= 0.0) {
             return Err(format!(
                 "{role}.back: how far short of the vertex the fillet ends has to be zero or more, got {}",
-                craft3d_kernel::short_number(back)
+                length_text(back)
             ));
         }
         let at = &fade.at;
@@ -175,11 +214,22 @@ fn fades(
             ));
         }
         if at.feature != source {
-            return Err(format!(
-                "{role}.at: {at} is a vertex of {}, and the edges are of `{made_by}`; give a vertex of the body the fillet rounds: {}",
-                at.feature,
-                ends_listed()
-            ));
+            // Of a body that went into this one on the way (its name could
+            // not be followed: `follow::vertex`), or of another body.
+            let went_in = crate::follow::chain(earlier, at.feature).contains(&source);
+            return Err(if went_in {
+                format!(
+                    "{role}.at: {at} is a vertex of `{}`, whose body went into `{made_by}` before this fillet, and `{made_by}` has no vertex that is it any more (a feature on the way, a blend or a cut, took it or moved it); {}",
+                    called(at.feature),
+                    ends_listed()
+                )
+            } else {
+                format!(
+                    "{role}.at: {at} is a vertex of `{}`, and the edges this fillet rounds are of `{made_by}`; {}",
+                    called(at.feature),
+                    ends_listed()
+                )
+            });
         }
         let Some(vertex) = names
             .vertex_named(at)
@@ -187,7 +237,7 @@ fn fades(
             .map(craft3d_topo::VertexId)
         else {
             return Err(format!(
-                "{role}.at: `{made_by}` has no vertex {at} (any more); the ends of the edges this fillet rounds are: {}",
+                "{role}.at: `{made_by}` has no vertex {at} (any more); {}",
                 ends_listed()
             ));
         };
@@ -212,7 +262,7 @@ fn fades(
             [one] => *one,
             [] => {
                 return Err(format!(
-                    "{role}.at: {at} is not an end of an edge this fillet rounds; the ends of its edges are: {}",
+                    "{role}.at: {at} is not an end of an edge this fillet rounds; {}",
                     ends_listed()
                 ));
             }
@@ -239,6 +289,7 @@ fn fades(
             fade: index,
             pick,
             end,
+            vertex,
             over,
             back,
         });
@@ -303,9 +354,9 @@ fn fades(
             return Err(format!(
                 "{}: over and back take {} {unit} along {}, which is {} {unit} long: give a shorter over or back",
                 which.join(" and "),
-                craft3d_kernel::short_number(taken),
+                length_text(taken),
                 blend::role_of(&fillet.edges, pick.reference),
-                craft3d_kernel::short_number(long)
+                length_text(long)
             ));
         }
     }
@@ -431,6 +482,7 @@ pub(crate) fn build(
             source_id,
             &made_by,
             tolerance.linear,
+            earlier,
         )?;
         let requests: Vec<FilletLawEdge> = (0..picked.len())
             .filter_map(|i| {
@@ -456,7 +508,7 @@ pub(crate) fn build(
             }
             other => explain(other, fillet, &picked, names, unit),
         })?;
-        (shortened(made, body, &picked, &faded), faded)
+        (made, faded)
     };
     let faces: Vec<blend::Made<'_>> = made
         .faces
@@ -467,7 +519,7 @@ pub(crate) fn build(
             FilletFace::Corner(vertex) => blend::Made::Corner(*vertex),
         })
         .collect();
-    let named = blend::name(
+    let mut named = blend::name(
         feature,
         ROLES,
         body,
@@ -479,6 +531,17 @@ pub(crate) fn build(
         &made.vertices,
         tolerance.linear,
     )?;
+    if let Some(named) = named.as_mut() {
+        by_their_end(
+            named,
+            &made,
+            body,
+            &picked,
+            &faded,
+            radius,
+            tolerance.linear,
+        )?;
+    }
     blend::not_through_itself(
         &made.body,
         &faces,
@@ -519,50 +582,86 @@ pub(crate) fn build(
     Ok((made.body, named, reports))
 }
 
-/// `made` with what is left of a faded edge beyond a tip short of its end
-/// said to be that edge, shortened: the kernel puts it back as a new edge
-/// on the edge's own curve, within its range (`kernel::blend::rolling`'s
-/// `keep_beyond`), and reports it as made from nothing. Named as a piece
-/// of the edge, it answers to the edge's kept names and a name of the edge
-/// is followed onto it, as a piece a boolean keeps of an edge is.
-fn shortened(
-    mut made: kernel::FilletResult,
-    body: &Body,
+/// The tip of each fade short of its vertex, and what is left of the edge
+/// beyond it, named by the end they belong to (AGENTS.md rule 4): the
+/// faces at the vertex the fade is at, other than those the tip lies on,
+/// are written into both names as faces near them. Named by their faces
+/// alone they would be the same at either end of the edge, and a fade
+/// moved to the other end would carry a datum point at its tip, or a note
+/// on the edge beyond, to the new place without a word; so the old names
+/// are gone, and what referred to them fails with the name. (Where the
+/// vertex has no face but the edge's two, as a hull's forefoot, the names
+/// are those of the faces alone, and differ from those at an end that
+/// has one.)
+fn by_their_end(
+    named: &mut Names,
+    made: &kernel::FilletResult,
+    source: &Body,
     picked: &[Picked],
     faded: &[Faded],
-) -> kernel::FilletResult {
+    radius: f64,
+    linear: f64,
+) -> Result<(), String> {
     for f in faded.iter().filter(|f| f.back > 0.0) {
         let Some(pick) = picked.get(f.pick) else {
             continue;
         };
-        let Some(was) = body.edge(pick.edge) else {
+        let law = law_of(radius, faded, f.pick);
+        let Some(tip) = kernel::tip_point(source, pick.edge, law, f.end, linear) else {
             continue;
         };
-        let (low, high) = (was.range.0.min(was.range.1), was.range.0.max(was.range.1));
-        let found: Vec<usize> = made
+        let Some(tip_index) = made
             .body
-            .edges
+            .vertices
             .iter()
             .enumerate()
-            .filter(|(now, e)| {
-                made.edges.get(*now).is_some_and(Option::is_none)
-                    && e.curve == was.curve
-                    && [e.range.0, e.range.1]
-                        .iter()
-                        .all(|t| *t >= low && *t <= high)
-            })
-            .map(|(now, _)| now)
-            .collect();
-        // (With a tip short of both ends there are two pieces: neither
-        // then answers to the edge's names, `entity::kept_names`, and
-        // following the edge's name says it is more than one edge.)
-        for now in found {
-            if let Some(slot) = made.edges.get_mut(now) {
-                *slot = Some(pick.edge);
-            }
+            .map(|(i, v)| (i, v.point.distance(tip)))
+            .filter(|(_, d)| *d <= 10.0 * linear)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+        else {
+            continue;
+        };
+        let Some(at_index) = made.vertices.iter().position(|v| *v == Some(f.vertex)) else {
+            continue;
+        };
+        let at_faces = faces_at(&made.body, at_index);
+        let tip_faces = faces_at(&made.body, tip_index);
+        let near: Vec<usize> = at_faces.difference(&tip_faces).copied().collect();
+        if near.is_empty() {
+            continue;
+        }
+        named.add_near(true, tip_index, &near)?;
+        let beyond = made.body.edges.iter().position(|e| {
+            let ends = [e.start.0 as usize, e.end.0 as usize];
+            ends.contains(&tip_index) && ends.contains(&at_index)
+        });
+        if let Some(edge) = beyond {
+            named.add_near(false, edge, &near)?;
         }
     }
-    made
+    Ok(())
+}
+
+/// The faces of `body` an edge of which ends in vertex `vertex`, by
+/// their index.
+fn faces_at(body: &Body, vertex: usize) -> std::collections::BTreeSet<usize> {
+    let mut out = std::collections::BTreeSet::new();
+    for (index, face) in body.faces.iter().enumerate() {
+        let touches = face
+            .loops
+            .iter()
+            .filter_map(|l| body.loop_(*l))
+            .flat_map(|l| &l.coedges)
+            .any(|c| {
+                body.edge(c.edge)
+                    .is_some_and(|e| e.start.0 as usize == vertex || e.end.0 as usize == vertex)
+            });
+        if touches {
+            out.insert(index);
+        }
+    }
+    out
 }
 
 /// The radius law of the picked edge `pick`: `radius`, and a fade to

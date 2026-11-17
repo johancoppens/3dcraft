@@ -540,6 +540,26 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
             );
             run("assembly.pack", json!({}));
         }
+        // A fillet that fades (docs/design/blends.md › *A fillet that
+        // fades, as a command*), in a state of its own: in the healthy
+        // part every case would rebuild it (the review measured the hunt
+        // there 21 → 51 s, its peak 2.6 → 5.2 GB). A block's upright edge
+        // rounded 3 mm, fading over 15 mm to a point 2 mm short of its top
+        // vertex, and the same block's other upright edge fading at its
+        // foot; the tip's vertex, the edge beyond it and the fillet face
+        // all there to be named.
+        5 => {
+            run("file.new", json!({}));
+            run(
+                "feature.block",
+                json!({"name": "Box", "size": [40, 30, 40]}),
+            );
+            run(
+                "feature.fillet",
+                json!({"name": "Faded", "edges": ["Box:edge(9)", "Box:edge(11)"], "radius": 3,
+                       "fade": [{"at": "Box:vertex(4)", "over": 15, "back": 2}, {"at": "Box:vertex(3)", "over": 10}]}),
+            );
+        }
         // A document full of things that fail: bad formulas, a cycle, a
         // suppressed and a rolled-back feature, undo and redo stacks.
         _ => {
@@ -635,7 +655,7 @@ fn no_command_panics_on_adversarial_parameters() {
     let dir = workdir("hunt");
     let values = adversarial();
     let commands = Session::commands();
-    let templates: Vec<Session> = (0..5).map(|state| session(&dir, state)).collect();
+    let templates: Vec<Session> = (0..6).map(|state| session(&dir, state)).collect();
     let seed = seed_recovery(&dir);
     // One case per command, state and adversarial value: the value as the
     // params itself, under each parameter, under all of them at once, and
@@ -645,7 +665,7 @@ fn no_command_panics_on_adversarial_parameters() {
     let mut light = Vec::new();
     let mut heavy = Vec::new();
     for (c, spec) in commands.iter().enumerate() {
-        for state in 0..5 {
+        for state in 0..6 {
             for v in 0..values.len() {
                 if HEAVY.contains(&spec.id) {
                     heavy.push((c, state, v));

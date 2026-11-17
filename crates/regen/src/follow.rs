@@ -612,8 +612,8 @@ fn vertex_copies(names: &Names, taker: FeatureId, name: &PersistentName) -> BTre
 /// copy of its name (`T:copy(k)/name`: a body of copies, or a vertex a
 /// primitive or a sweep named that the taker kept). A vertex named by its
 /// faces has no such copy in a body that names its vertices by its faces
-/// (a boolean's, a blend's): following it fails with the reason, which
-/// names the body whose vertex to give. `None` when that body is its own
+/// (a boolean's, a blend's): following it fails (a fillet then says why
+/// that is no vertex of its body: `crate::fillet`). `None` when that body is its own
 /// still.
 pub(crate) fn vertex(
     doc: &Document,
@@ -665,9 +665,8 @@ pub(crate) fn vertex(
                 current = PersistentName::copy(taker, *k, current);
             }
             [] => {
-                let newest = called(doc, newest_body(earlier, taker));
                 return Err(format!(
-                    "{role}: the vertex {name} of `{from}` cannot be followed into `{by}`, a {kind} the body went into, which names its vertices by their faces: give the vertex by its name in `{newest}` (document.edges lists its vertices under vertices)"
+                    "{role}: the vertex {name} of `{from}` cannot be followed into `{by}`, a {kind} the body went into: no vertex there answers to it"
                 ));
             }
             several => {
@@ -703,7 +702,11 @@ fn fades(
                 why.reason(doc, &fade.at)
             ));
         }
-        if let Some(followed) = vertex(doc, earlier, &fade.at, &role)? {
+        // Where it cannot be followed, it stays as given, and building the
+        // fillet says why it is no vertex of the body (with the ends a
+        // fade does take there: `crate::fillet`), never offering a name
+        // that is then refused.
+        if let Ok(Some(followed)) = vertex(doc, earlier, &fade.at, &role) {
             fade.at = followed;
             changed = true;
         }
