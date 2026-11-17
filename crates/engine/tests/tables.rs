@@ -318,9 +318,11 @@ fn bad_tables_are_refused_with_a_reason() {
         json!({"name": "t", "columns": columns, "rows": many}),
     );
     assert!(e.contains("at most 10000 rows"), "{e}");
-    let wide: Vec<String> = (0..65).map(|i| format!("c{i}")).collect();
+    // At most a key and 1024 values a row (the developer's decision of
+    // 2026-11-17, from 64 columns): `a_table_holds_a_row_of_the_widest_grid`.
+    let wide: Vec<String> = (0..1026).map(|i| format!("c{i}")).collect();
     let e = refused(&mut s, "table.set", json!({"name": "t", "columns": wide}));
-    assert!(e.contains("at most 64 columns"), "{e}");
+    assert!(e.contains("at most 1025 columns, got 1026"), "{e}");
     for (id, params) in [
         ("table.delete", json!({"name": "nope"})),
         ("table.rename", json!({"name": "nope", "to": "x"})),
@@ -376,4 +378,87 @@ fn bad_tables_are_refused_with_a_reason() {
         .clone();
     assert_eq!(got, json!(40.0));
     run(&mut s, "param.set", json!({"values": {"pick": "4"}}));
+}
+
+/// A table holds a key and 1024 values a row, the widest row of a grid
+/// surface (`craft3d_expr::MAX_COLUMNS`, 1025 since 2026-11-17, from 64):
+/// such a table is set, looked up at its last column, saved and opened
+/// the same; one column more is refused saying how many it may have; rows
+/// with more cells than a document may hold are refused before they are
+/// read; and a file of an older version, whose tables had at most 64
+/// columns, still opens with its table.
+#[test]
+fn a_table_holds_a_row_of_the_widest_grid() {
+    let dir = common::workdir("tables", "wide");
+    let mut s = common::session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let mut columns = vec![json!("row")];
+    columns.extend((1..=1024).map(|c| json!({"name": format!("c{c:04}"), "unit": "mm"})));
+    let rows: Vec<Value> = (1..=3)
+        .map(|r| {
+            let mut row = vec![json!(r)];
+            row.extend((1..=1024).map(|c| json!(r * 10_000 + c)));
+            Value::Array(row)
+        })
+        .collect();
+    let made = run(
+        &mut s,
+        "table.set",
+        json!({"name": "wide", "columns": columns, "rows": rows}),
+    );
+    assert_eq!(made["columns"].as_array().unwrap().len(), 1025, "{made}");
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "last", "expr": "wide[3].c1024"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": ["last / 1000", "1 mm", "1 mm"], "name": "B"}),
+    );
+    assert!(close(volume(&mut s), 31.024), "{}", volume(&mut s));
+    run(&mut s, "file.save", json!({"path": "wide.3dcraft"}));
+    run(&mut s, "file.open", json!({"path": "wide.3dcraft"}));
+    let listed = run(&mut s, "table.list", json!({"name": "wide"}));
+    assert_eq!(listed["columns"].as_array().unwrap().len(), 1025);
+    assert!(close(volume(&mut s), 31.024));
+    // One column more: refused, saying how many a table may have.
+    let mut over = columns.clone();
+    over.push(json!("c1025"));
+    let e = refused(
+        &mut s,
+        "table.set",
+        json!({"name": "wider", "columns": over, "rows": []}),
+    );
+    assert!(
+        e.contains("a table has at most 1025 columns, got 1026"),
+        "{e}"
+    );
+    // More cells than a document holds: refused before they are read.
+    let row: Vec<Value> = (0..1025).map(|c| json!(c)).collect();
+    let many: Vec<Value> = (0..976).map(|_| Value::Array(row.clone())).collect();
+    let e = refused(
+        &mut s,
+        "table.set",
+        json!({"name": "huge", "columns": columns, "rows": many}),
+    );
+    assert!(
+        e.contains("at most 1000000 cells together, and these rows have 1000400"),
+        "{e}"
+    );
+    // A file of format version 33, when tables came, opens with its table.
+    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../format/tests/fixtures/versions/v33.3dcraft");
+    std::fs::copy(&fixture, dir.join("v33.3dcraft")).unwrap();
+    run(&mut s, "file.open", json!({"path": "v33.3dcraft"}));
+    let listed = run(&mut s, "table.list", json!({}));
+    let tables = listed["tables"].as_array().unwrap();
+    assert!(!tables.is_empty(), "{listed}");
+    assert!(
+        tables
+            .iter()
+            .all(|t| t["columns"].as_array().is_some_and(|c| c.len() <= 64)),
+        "{listed}"
+    );
 }

@@ -2008,9 +2008,9 @@ struct Steps {
     outside: f64,
     most_out: f64,
     /// Past an end each step is as long as all before it together, from
-    /// `outside`: a blend whose radius varies is followed past an end no
-    /// further than it has to be.
-    doubling: bool,
+    /// `outside`, and no longer than this: a blend whose radius varies is
+    /// followed past an end no further than it has to be.
+    doubling: Option<f64>,
 }
 
 impl Steps {
@@ -2020,7 +2020,7 @@ impl Steps {
             inside,
             outside: inside.min(0.5 * size / length),
             most_out: 8.0 * size / length,
-            doubling: false,
+            doubling: None,
         }
     }
 
@@ -2032,11 +2032,15 @@ impl Steps {
     /// face is followed no further than where a whole section has left
     /// the third face, which a first short step finds there and the
     /// doubling finds, in a few steps more, where the face is at a slant.
+    /// No step is longer than half the size there (nor than a step along
+    /// the edge): doubling on, the face of a radius that grows towards a
+    /// slanted end was followed to where its ball no longer fitted (the
+    /// cone's cut edge, 1.2 growing to 2.4 over 1.2).
     fn past(self, relative: f64, first: f64) -> Steps {
         Steps {
             outside: first,
             most_out: 8.0 * relative,
-            doubling: true,
+            doubling: Some(self.inside.min(0.5 * relative).max(first)),
             ..self
         }
     }
@@ -2168,10 +2172,9 @@ fn march_out(
     loop {
         let past = (s - end) * direction;
         let step = if past >= -1e-12 {
-            if steps.doubling {
-                steps.outside.max(past)
-            } else {
-                steps.outside
+            match steps.doubling {
+                Some(longest) => steps.outside.max(past).min(longest),
+                None => steps.outside,
             }
         } else {
             steps.inside
@@ -3996,7 +3999,7 @@ mod tests {
             inside: 0.01,
             outside: 0.01,
             most_out: f64::INFINITY,
-            doubling: false,
+            doubling: None,
         };
         let third = Side {
             surface: &away,

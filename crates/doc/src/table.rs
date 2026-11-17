@@ -153,9 +153,11 @@ impl Table {
         if self.rows.len() > MAX_ROWS {
             return Err(format!("a table has at most {MAX_ROWS} rows"));
         }
-        for (i, column) in self.columns.iter().enumerate() {
+        // (A set: a table may have a thousand columns.)
+        let mut names = std::collections::BTreeSet::new();
+        for column in &self.columns {
             check_column_name(&column.name)?;
-            if self.columns.iter().take(i).any(|c| c.name == column.name) {
+            if !names.insert(column.name.as_str()) {
                 return Err(format!("two columns are named `{}`", column.name));
             }
             if let Some(unit) = &column.unit

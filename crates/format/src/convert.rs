@@ -1785,9 +1785,16 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
             }) => manifest::FeatureKind::Tip {
                 face: name_to_manifest(face),
                 length: length.as_ref().map(expr_to_manifest),
-                at: at
-                    .as_ref()
-                    .map(|[x, y]| [expr_to_manifest(x), expr_to_manifest(y)]),
+                at: at.as_ref().map(|at| match at {
+                    doc::TipAt::Face([x, y]) => {
+                        manifest::TipAt::Face([expr_to_manifest(x), expr_to_manifest(y)])
+                    }
+                    doc::TipAt::Point([x, y, z]) => manifest::TipAt::Point([
+                        expr_to_manifest(x),
+                        expr_to_manifest(y),
+                        expr_to_manifest(z),
+                    ]),
+                }),
                 fullness: fullness.as_ref().map(expr_to_manifest),
             },
             doc::FeatureKind::Shell(doc::Shell {
@@ -3921,7 +3928,12 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
             } => doc::FeatureKind::Tip(doc::Tip {
                 face: name_to_doc(face),
                 length: length.map(doc::Expr),
-                at: at.map(|[x, y]| [doc::Expr(x), doc::Expr(y)]),
+                at: at.map(|at| match at {
+                    manifest::TipAt::Face([x, y]) => doc::TipAt::Face([doc::Expr(x), doc::Expr(y)]),
+                    manifest::TipAt::Point([x, y, z]) => {
+                        doc::TipAt::Point([doc::Expr(x), doc::Expr(y), doc::Expr(z)])
+                    }
+                }),
                 fullness: fullness.map(doc::Expr),
             }),
             manifest::FeatureKind::Shell {

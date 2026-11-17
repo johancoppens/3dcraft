@@ -387,12 +387,18 @@ pub enum KernelError {
     /// A tip cannot close this face ([`tip`]): `faces` are the end face
     /// and, where it is about one, the side behind an edge of its loop;
     /// `edge` that edge, when there is one; `blame` the input to change
-    /// (`face`, `length` or `at`).
+    /// (`face`, `length` or `at`); `longest` the longest length found to
+    /// fit over the place as it is chosen, where a length given is too
+    /// long; `off` where a point given lies behind the end or beyond the
+    /// tip. The lengths are model units, said by [`tip::said`] with the
+    /// unit a caller gives.
     Tip {
         faces: Vec<craft3d_topo::FaceId>,
         edge: Option<craft3d_topo::EdgeId>,
         blame: &'static str,
         reason: String,
+        longest: Option<f64>,
+        off: Option<Box<tip::TipOff>>,
     },
     /// A plate cannot be made of these faces with these joints
     /// ([`plate`]): `edge` is the edge of the faces it is about, when
@@ -778,11 +784,13 @@ impl fmt::Display for KernelError {
                 faces,
                 edge,
                 reason,
+                longest,
+                off,
                 ..
             } => {
                 write!(f, "tip")?;
                 face_op_entities(f, faces, *edge)?;
-                write!(f, ": {reason}")
+                write!(f, ": {}", tip::said(reason, *longest, off.as_deref(), ""))
             }
             KernelError::Loft { reason, .. }
             | KernelError::Sweep { reason, .. }
@@ -945,7 +953,7 @@ pub fn fillet_fade_text(fault: fillet::FadeFault, unit: &str) -> String {
             short(least)
         ),
         fillet::FadeFault::CurvatureJump { at } => format!(
-            "the edge's curvature jumps at {} (its curve has only a continuous tangent there), a place the fillet runs through: a fillet whose radius varies is not built along an edge with such a place yet (where the radius is changing the face would crease across it); end the fillet in a point before that place, or draw the edge so that its curvature runs on smoothly (one curve, not pieces that are only tangent)",
+            "the edge's curvature jumps at {} (its curve has only a continuous tangent there, and turns markedly tighter on one side than on the other), a place the fillet runs through: a fillet whose radius varies is not built across such a place yet (its sections bunch up there, and where the radius is changing the face would crease across it); end the fillet in a point before that place, or draw the edge so that its curvature runs on smoothly (one curve, not pieces that are only tangent)",
             place_text(at, unit)
         ),
         fillet::FadeFault::EndTooSmall { to, least } => format!(

@@ -1,0 +1,12 @@
+[
+ ["variable.set", {"name": "r", "expr": "5 mm"}],
+ ["sketch.create", {"name": "S0", "plane": "xy"}],
+ ["sketch.circle", {"sketch": "S0", "center": [0, 0], "radius": "r"}],
+ ["sketch.create", {"name": "S1", "plane": "xy", "offset": "10 mm"}],
+ ["sketch.circle", {"sketch": "S1", "center": [0, 0], "radius": "r"}],
+ ["sketch.create", {"name": "S2", "plane": "xy", "offset": "20 mm"}],
+ ["sketch.circle", {"sketch": "S2", "center": [0, 0], "radius": "r"}],
+ ["feature.loft", {"sections": ["S0", "S1", "S2"], "name": "Rod"}],
+ ["feature.tip", {"face": "Rod:endCap(e2)", "length": "r", "at": ["0 mm", "0 mm", "20 mm + r"], "name": "Nose"}],
+ ["feature.tip", {"face": "Rod:startCap(e2)", "length": "r", "at": ["0 mm", "0 mm", "0 mm"], "name": "Tail"}]
+]
