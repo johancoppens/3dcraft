@@ -959,6 +959,67 @@ fn the_direct_path_draws_datums_and_matches_the_oracle() {
     }
 }
 
+/// A terrain: a sheet through a grid of 7 × 5 heights from a table, a
+/// ridge and a hollow, cut into a block; the grid it was made through is
+/// drawn over the block's top (docs/design/surfacing.md › *Seeing the
+/// grid*). And a sketch line through the block, dimmed inside it, so the
+/// comparison has lines of every kind.
+fn terrain_with_grid() -> Session {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let rows: Vec<Value> = (0..5)
+        .map(|r| {
+            let mut row = vec![json!(r + 1)];
+            for c in 0..7 {
+                let (x, y) = (c as f64, r as f64);
+                row.push(json!(6.0 + 3.0 * (x * 0.9).sin() * (y * 0.7).cos()));
+            }
+            Value::Array(row)
+        })
+        .collect();
+    run(
+        &mut s,
+        "table.set",
+        json!({"name": "terrain", "columns": ["row", "a", "b", "c", "d", "e", "f", "g"], "rows": rows}),
+    );
+    run(
+        &mut s,
+        "feature.surface.grid",
+        json!({"table": "terrain", "step": ["10 mm", "10 mm"], "factor": "1 mm", "name": "Sheet"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Base", "size": [60, 40, 20], "position": [0, 0, -5]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "intersect", "target": "Base", "tool": "Sheet", "name": "Terrain"}),
+    );
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "yz", "offset": 30, "name": "Through"}),
+    );
+    run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Through", "from": [-15, 1], "to": [55, 1]}),
+    );
+    s
+}
+
+/// The grid of a grid surface drawn by the window's device against the
+/// oracle: its lines and points on the terrain, tested a lift nearer
+/// than they are by both (`SceneSketch::lift`), opaque and see-through.
+#[test]
+fn the_direct_path_draws_a_grid_on_its_sheet_and_matches_the_oracle() {
+    for transparency in [0.0, 0.5] {
+        direct_path_against_the_oracle_of(terrain_with_grid(), "viewport-grid", transparency);
+    }
+}
+
 /// A four-bar assembly (a bar part, four instances, a fixed mate and four
 /// revolutes), in a folder of its own. The joints' axes start under the
 /// bars, so that the markers run up through them and are drawn dimmed

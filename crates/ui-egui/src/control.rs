@@ -324,6 +324,9 @@ impl Shell {
                 "bbox": scene.bbox.corners().map(|(lo, hi)| json!([vec3(lo), vec3(hi)])),
                 "problems": scene.problems,
                 "notices": scene.notices,
+                // The grids of grid surfaces drawn among the sketches, and
+                // whether each is thinned.
+                "grids": craft3d_engine::grids_json(scene),
             })
         });
         let features: Vec<Value> = self

@@ -97,6 +97,11 @@ pub struct Segment {
     /// one side steps back, faded where it is short on screen or where
     /// edges crowd ([`EdgeLook`]), and counted in how crowded they are.
     pub edge: Option<EdgeSegment>,
+    /// How much nearer the eye than it is the segment is tested against
+    /// the depth buffer, in model units: 0 for a line that lies where the
+    /// mesh does; more for one on a surface the mesh follows only within
+    /// its tolerance (the grid of a grid surface on its sheet).
+    pub lift: f32,
 }
 
 /// What a segment of an edge of a body has besides ([`Segment::edge`]).
@@ -243,13 +248,13 @@ impl Default for DrawOptions {
     }
 }
 
-/// Largest accepted number of segments (71 MB of instance data).
+/// Largest accepted number of segments (75 MB of instance data).
 pub const MAX_SEGMENTS: usize = 1 << 20;
 /// One instance per segment: two ends (3 × `f32` each), the colour
 /// (`u32`), the width (`f32`), the flags (`u32`), the outline's colour
-/// (`u32`) and width (`f32`), and the corners of the edge's box (3 × `f32`
-/// each).
-const SEGMENT_BYTES: usize = 68;
+/// (`u32`) and width (`f32`), the corners of the edge's box (3 × `f32`
+/// each) and the lift (`f32`).
+const SEGMENT_BYTES: usize = 72;
 /// Two triangles, made from the vertex index.
 const VERTICES_PER_SEGMENT: u32 = 6;
 /// Number of `f32` in the lines uniform block (six `vec4`).
@@ -380,6 +385,12 @@ fn pack_segment(segment: &Segment, origin: Vec3, axis_length: f64) -> Option<[u8
     bytes.extend_from_slice(&float_bytes(&[
         low[0], low[1], low[2], high[0], high[1], high[2],
     ]));
+    let lift = if segment.lift.is_finite() {
+        segment.lift.max(0.0)
+    } else {
+        0.0
+    };
+    bytes.extend_from_slice(&lift.to_le_bytes());
     let mut out = [0_u8; SEGMENT_BYTES];
     if bytes.len() != SEGMENT_BYTES {
         return None;
@@ -1438,6 +1449,7 @@ impl Onscreen {
             attribute(wgpu::VertexFormat::Float32, 40, 6),
             attribute(wgpu::VertexFormat::Float32x3, 44, 7),
             attribute(wgpu::VertexFormat::Float32x3, 56, 8),
+            attribute(wgpu::VertexFormat::Float32, 68, 9),
         ];
         let instance = wgpu::VertexBufferLayout {
             array_stride: SEGMENT_BYTES as u64,
@@ -3237,6 +3249,7 @@ mod tests {
             axis: false,
             hidden_opacity: None,
             edge: None,
+            lift: 0.0,
         }
     }
 

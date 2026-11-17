@@ -105,6 +105,7 @@ mod sketch_conflicts;
 mod sketch_curve_cmds;
 mod sketch_path_cmds;
 mod sketch_pattern_cmds;
+mod sketch_picture;
 mod sketch_spline_cmds;
 mod sketch_warnings;
 mod solid_texture;
@@ -181,9 +182,10 @@ pub use scene::{
     AUTOMATIC_RELATIVE_TOLERANCE, DATUM_AXIS_EXTENT, DATUM_PLANE_EXTENT, DEFAULT_SCENE_BUDGET,
     DISPLAY_MAX_ANGLE, DISPLAY_MAX_ANGLE_DEGREES, DISPLAY_MAX_TRIANGLES,
     DISPLAY_RELATIVE_TOLERANCE, DocumentStatus, FeatureState, MAX_ARC_SEGMENTS,
-    MIN_CIRCLE_SEGMENTS, PREVIEW_RELATIVE_TOLERANCE, Refined, Refinement, Scene, SceneBody,
-    SceneDatum, SceneDatumShape, SceneFeature, ScenePlacement, ScenePolyline, SceneQuality,
-    SceneSketch, SketchCurve, arc_segments, base64 as encode_base64,
+    MAX_GRID_LINE_POINTS, MAX_GRID_LINES, MIN_CIRCLE_SEGMENTS, PREVIEW_RELATIVE_TOLERANCE, Refined,
+    Refinement, SURFACE_LIFT, Scene, SceneBody, SceneDatum, SceneDatumShape, SceneFeature,
+    SceneGrid, ScenePlacement, ScenePolyline, SceneQuality, SceneSketch, SketchCurve, arc_segments,
+    base64 as encode_base64, grid_step,
 };
 pub use scrub::{ScrubPosition, ScrubRegeneration, step_caption};
 pub use section::{MAX_SECTION_EXTENT, SECTION_CAP_COLOR, SectionPlane, SectionSpec};
@@ -191,6 +193,7 @@ pub use selection::{
     MAX_SELECTION, SelectMode, SelectionItem, SelectionKind, SelectionView,
     summary as selection_summary,
 };
+pub use sketch_picture::{CONSTRUCTION_COLOR, POINT_RADIUS, SKETCH_COLOR, grids_json};
 pub use typed::TypedKind;
 pub use whats_new::{release_notes, running_version, set_release_notes, whats_new};
 pub use workspace::{Access, FileHelp, Workspace};
