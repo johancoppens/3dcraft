@@ -386,7 +386,9 @@ fn fade_fault(
             FadeFault::BackTooSmall { back, .. } => f.back == back,
             FadeFault::EndTooSmall { .. }
             | FadeFault::CurvatureJump { .. }
-            | FadeFault::NoBall { .. } => false,
+            | FadeFault::NoBall { .. }
+            | FadeFault::TurnsBack { .. }
+            | FadeFault::BackNotATip { .. } => false,
         })
         .or(match on_edge.as_slice() {
             [only] => Some(only),

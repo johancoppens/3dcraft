@@ -349,7 +349,9 @@ all the way. A box's upright edge rounded 3 mm, fading out over the top 15 mm:
   rounded is not built yet: that end is such a point, and the refusal says so.
 - **Refused** with what to change: a vertex that is not an end of an edge the fillet rounds, a fade that is
   too short, a `back` the tolerance cannot tell from the vertex, fades longer than the edge, faces that
-  leave no ball before the point (with how far short it was found), and an edge that closes on itself.
+  leave no ball before the point (with how far short it was found), a radius still too large where the edge
+  turns (the face would turn back on itself there: with the place and the radius there), and an edge that
+  closes on itself.
 - **Not yet behind it.** `feature.shell`, and `feature.plate` of the faded face, refuse a face that closes in
   a point and say so (as behind a `feature.tip`); a fade to another radius, a chamfer that fades, and a
   fillet that fades by itself where its faces come tangent are not built yet.

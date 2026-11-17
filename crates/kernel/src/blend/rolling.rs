@@ -1736,8 +1736,20 @@ fn blend_open(
                 surface_through(&[*p0, *p1], &[*c0, *c1])
             }
             None => refine(solver, &mut params, &mut sections, limit, bend, false),
-        }
-        .ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?;
+        };
+        let Some(surface) = surface else {
+            // A radius that varies and a face that cannot be made: said
+            // with the place, where it is the face turning back on itself
+            // that stands in the way (the sections refined so far show
+            // it).
+            if law.is_some()
+                && index == home
+                && let Some(fault) = turned_back(solver, data, &params, &sections, centre)
+            {
+                return Err(BlendError::Fade { edge, fault });
+            }
+            return Err(refuse(edge, None, Reason::FreeApproximation));
+        };
         parts.push(surface);
         for (s, x) in params.into_iter().zip(sections) {
             if all.last().is_none_or(|l| l.0 < s) {
@@ -1771,7 +1783,13 @@ fn blend_open(
     }
     let params: Vec<f64> = all.iter().map(|x| x.0).collect();
     let sections: Vec<Section> = all.iter().map(|x| x.1).collect();
+    // A radius that varies: the face may not turn back on itself.
     let home_solver = solvers.get(home).ok_or_else(lost)?;
+    if law.is_some()
+        && let Some(fault) = turned_back(home_solver, data, &params, &sections, centre)
+    {
+        return Err(BlendError::Fade { edge, fault });
+    }
     let outward_hint =
         outward_from(home_solver, &surface, &params, &sections, convex).ok_or_else(unsolvable)?;
     if let Some(side) = folds(&surface, &params, &sections, (0.0, 1.0)) {
@@ -1831,6 +1849,96 @@ fn blend_open(
     }
     tangent_along(body, edge, &borders, blend_face, shape, law, tolerance)?;
     Ok(blend_face)
+}
+
+/// What the measure of [`turned_back`] is at most where a law fillet's
+/// face has turned back on itself: nothing. No margin is taken: the
+/// measure falls with the rate of the radius as well as with the turn (a
+/// straight edge between faces at a right angle, the radius changing at
+/// the bound: 0.32 at a border; a radius growing at the bound into the
+/// slanted end of a cone's cut edge: 0.017 at the end section, 0.75
+/// within, and sound), so only its sign says turned. On a hull's stem
+/// every fade whose face was folded measured −0.03 to −1.0, the nearest
+/// sound one 0.07.
+const TURNED: f64 = 0.0;
+
+/// Where the face of a fillet whose radius varies turns back on itself:
+/// the place along the edge (its point there) and the ball's radius
+/// there.
+///
+/// The face is the arcs between the feet of its balls. At a point of it
+/// the face has two directions: across (the arc's tangent) and along the
+/// edge (how the point moves from section to section, [`slope`]). Their
+/// cross product is the face's normal, and it has to keep to one side of
+/// the ball's radius through the point all over the face. Where the
+/// radius changes fast and the edge turns, a section can move backwards
+/// along the edge (its points lie as far towards the centre of the edge's
+/// turn as the planes across the edge cross, or the feet run back along
+/// faces that curve): the two directions close up, pass each other, and
+/// the face lies turned round from there on. The fold check of every
+/// blend holds each section's normals against its own middle and does not
+/// see a section turned round as a whole; such a face came out facing the
+/// wrong way along its border, which the post-check of tangency refused
+/// in the wording of a bug (a hull's stem where it turns into the keel:
+/// radius 5 fading over 5, radius 3 fading over 5 within half a
+/// millimetre of the foot). Measured here on every section the face was
+/// refined through, at nine places across, from the exact derivative of
+/// the section: the part of the face's unit normal along the ball's
+/// radius (the two directions' cross product over their lengths, signed
+/// by the side it lies on in the middle of the fillet), against
+/// [`TURNED`]. It passes through nothing only where the face stops
+/// advancing along the edge: the radius's rate leans the normal from the
+/// ball's radius but never square to it.
+fn turned_back(
+    solver: &Solver<'_>,
+    data: &Edge,
+    params: &[f64],
+    sections: &[Section],
+    middle: f64,
+) -> Option<law::FadeFault> {
+    // The part of the face's unit normal along the ball's radius at a
+    // place across a section.
+    let side_at = |slope: &slope::Slope, v: f64| -> Option<f64> {
+        let (point, along, across) = slope.surface(v)?;
+        let ray = (point - slope.centre.0).normalized()?;
+        let scale = along.length() * across.length();
+        (scale > 0.0).then(|| along.cross(across).dot(ray) / scale)
+    };
+    // The side where the face is surely sound: at the section nearest
+    // the middle of the fillet.
+    let (s0, first) = params
+        .iter()
+        .zip(sections)
+        .filter(|(_, section)| section.pole.is_none())
+        .min_by(|a, b| (a.0 - middle).abs().total_cmp(&(b.0 - middle).abs()))?;
+    let sign = side_at(&solver.slope(*s0, first)?, 0.5)?.signum();
+    let (t0, t1) = data.range;
+    let mut worst: Option<(f64, f64, f64)> = None;
+    for (s, section) in params.iter().zip(sections) {
+        if section.pole.is_some() || !(0.0..=1.0).contains(s) {
+            continue;
+        }
+        let Some(slope) = solver.slope(*s, section) else {
+            continue;
+        };
+        for j in 0..=8 {
+            let Some(side) = side_at(&slope, f64::from(j) / 8.0) else {
+                continue;
+            };
+            let along_ray = side * sign;
+            if !along_ray.is_finite() {
+                continue;
+            }
+            if worst.is_none_or(|w| along_ray < w.0) {
+                worst = Some((along_ray, *s, slope.radius.0));
+            }
+        }
+    }
+    let (along_ray, s, radius) = worst?;
+    (along_ray <= TURNED).then(|| law::FadeFault::TurnsBack {
+        at: data.curve.eval(t0 + s * (t1 - t0)),
+        radius,
+    })
 }
 
 /// Where a fillet whose radius runs to nothing closes in a point: where
@@ -2032,9 +2140,9 @@ struct Steps {
     outside: f64,
     most_out: f64,
     /// Past an end each step is as long as all before it together, from
-    /// `outside`: a blend whose radius varies is followed past an end no
-    /// further than it has to be.
-    doubling: bool,
+    /// `outside`, and no longer than this: a blend whose radius varies is
+    /// followed past an end no further than it has to be.
+    doubling: Option<f64>,
 }
 
 impl Steps {
@@ -2044,7 +2152,7 @@ impl Steps {
             inside,
             outside: inside.min(0.5 * size / length),
             most_out: 8.0 * size / length,
-            doubling: false,
+            doubling: None,
         }
     }
 
@@ -2056,11 +2164,15 @@ impl Steps {
     /// face is followed no further than where a whole section has left
     /// the third face, which a first short step finds there and the
     /// doubling finds, in a few steps more, where the face is at a slant.
+    /// No step is longer than half the size there (nor than a step along
+    /// the edge): doubling on, the face of a radius that grows towards a
+    /// slanted end was followed to where its ball no longer fitted (the
+    /// cone's cut edge, 1.2 growing to 2.4 over 1.2).
     fn past(self, relative: f64, first: f64) -> Steps {
         Steps {
             outside: first,
             most_out: 8.0 * relative,
-            doubling: true,
+            doubling: Some(self.inside.min(0.5 * relative).max(first)),
             ..self
         }
     }
@@ -2192,10 +2304,9 @@ fn march_out(
     loop {
         let past = (s - end) * direction;
         let step = if past >= -1e-12 {
-            if steps.doubling {
-                steps.outside.max(past)
-            } else {
-                steps.outside
+            match steps.doubling {
+                Some(longest) => steps.outside.max(past).min(longest),
+                None => steps.outside,
             }
         } else {
             steps.inside
@@ -4020,7 +4131,7 @@ mod tests {
             inside: 0.01,
             outside: 0.01,
             most_out: f64::INFINITY,
-            doubling: false,
+            doubling: None,
         };
         let third = Side {
             surface: &away,

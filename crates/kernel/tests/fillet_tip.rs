@@ -740,13 +740,23 @@ fn a_tip_that_cannot_be_is_refused() {
         over: 15.0,
         back: 2.0,
     };
+    let error = try_fade(not_a_tip).unwrap_err();
     assert!(matches!(
-        try_fade(not_a_tip),
-        Err(KernelError::InvalidSize {
-            name: "fade.back",
+        error,
+        KernelError::FilletFade {
+            fault: craft3d_kernel::fillet::FadeFault::BackNotATip { .. },
             ..
-        })
+        }
     ));
+    assert!(
+        error
+            .to_string()
+            .contains("2 short of the end of the edge, but it runs to a radius of 1"),
+        "{error}"
+    );
+    // The smallest back there is: said as it is, not as nothing.
+    let error = try_fade(Fade::tip(15.0, 5e-324)).unwrap_err();
+    assert!(error.to_string().contains("5e-324 short"), "{error}");
     for bad in [-1.0, f64::NAN, f64::INFINITY] {
         assert!(matches!(
             try_fade(Fade::tip(15.0, bad)),
@@ -775,4 +785,160 @@ fn a_tip_that_cannot_be_is_refused() {
     assert!(try_fade(Fade::tip(15.0, 5.0 * tol.linear)).is_err());
     assert!(try_fade(Fade::tip(15.0, 0.0)).is_ok());
     assert!(try_fade(Fade::tip(15.0, 20.0 * tol.linear)).is_ok());
+}
+
+/// The nearest edge of `body` to `target`.
+fn edge_through(body: &Body, target: Vec3) -> EdgeId {
+    let mut best = (EdgeId(0), f64::INFINITY);
+    for (i, e) in body.edges.iter().enumerate() {
+        for j in 0..=256 {
+            let t = e.range.0 + (e.range.1 - e.range.0) * f64::from(j) / 256.0;
+            let d = e.curve.eval(t).distance(target);
+            if d < best.1 {
+                best = (EdgeId(i as u32), d);
+            }
+        }
+    }
+    best.0
+}
+
+/// The review's third finding: on the curved edge where a plane cuts a
+/// cone (radius 10, height 30, cut at z = 15 and by the plane y = 2.5)
+/// every tip was refused as not followed, though one radius and fades to
+/// a radius build there. The face was followed too far past the edge's
+/// other end (steps doubling without a cap); with the cap, tips at either
+/// end, at the vertex and short of it, are built.
+#[test]
+fn a_tip_on_the_cones_curved_edge_is_built() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        for (index, frame) in common::frames(k).iter().enumerate() {
+            let cone = primitives::cone(frame, 10.0 * k, 30.0 * k).unwrap();
+            let cut = primitives::block(
+                &frame.at(frame.point(-20.0 * k, 2.5 * k, 0.0)).unwrap(),
+                40.0 * k,
+                30.0 * k,
+                15.0 * k,
+            )
+            .unwrap();
+            let body = boolean(&cone, &cut, BooleanOp::Intersect, &tol)
+                .unwrap()
+                .body;
+            let x = (56.25_f64 - 6.25).sqrt();
+            let edge = edge_through(&body, frame.point(x * k, 2.5 * k, 7.5 * k));
+            for (end, over, back) in [(1, 6.0, 0.0), (1, 6.0, 3.0), (0, 6.0, 0.0), (0, 6.0, 3.0)] {
+                let what = format!("end {end}, over {over}, back {back}, scale {k}, frame {index}");
+                let mut fades = [None, None];
+                fades[end] = Some(Fade::tip(over * k, back * k));
+                let law = RadiusLaw {
+                    radius: 1.2 * k,
+                    fades,
+                };
+                let made = fillet_by_law(&body, &[FilletLawEdge { edge, law }], &tol)
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                sound(&made.body, k, &what);
+            }
+        }
+    }
+}
+
+/// A prism whose one wall is a spline that turns a corner tightly: its
+/// rim runs along x, turns, and runs down y.
+fn bent_rim(frame: &Frame, k: f64) -> (Body, EdgeId) {
+    use craft3d_kernel::extrude::extrude;
+    use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
+    let tol = tolerance(k);
+    let scaled = |p: [f64; 2]| [p[0] * k, p[1] * k];
+    let line = |id: u64, a: [f64; 2], b: [f64; 2]| SketchCurve {
+        id,
+        curve: Curve2::Line {
+            start: scaled(a),
+            end: scaled(b),
+        },
+    };
+    let control = [
+        [40.0, 10.0],
+        [28.0, 10.0],
+        [14.0, 10.0],
+        [10.0, 10.0],
+        [10.0, 6.0],
+        [10.0, -10.0],
+    ];
+    let curves = [
+        SketchCurve {
+            id: 1,
+            curve: Curve2::Spline(Spline2 {
+                degree: 3,
+                knots: vec![0.0, 0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 1.0],
+                control: control.iter().map(|p| scaled(*p)).collect(),
+            }),
+        },
+        line(2, [10.0, -10.0], [40.0, -10.0]),
+        line(3, [40.0, -10.0], [40.0, 10.0]),
+    ];
+    let profiles = detect_profiles(&curves, &tol).unwrap();
+    let body = extrude(&profiles, frame, 0.0, 8.0 * k, &tol).unwrap().body;
+    let rim = edge_through(&body, frame.point(11.5 * k, 8.5 * k, 8.0 * k));
+    (body, rim)
+}
+
+/// The review's fourth finding, on a small body: where the edge turns
+/// more tightly than the ball's radius there (the rim's least radius of
+/// curvature is 1.57), the face turns back on itself: its sections run
+/// into each other. On a hull's stem such fades came out folded and were
+/// refused by the post-check in the wording of a bug, or were built
+/// folded; here the face was "not approximated". Refused now before the
+/// face is put in, with the place and the radius there, and what the
+/// refusal says would build is built.
+#[test]
+fn a_radius_too_large_where_the_edge_turns_is_refused_with_the_place() {
+    use craft3d_kernel::KernelError;
+    use craft3d_kernel::fillet::FadeFault;
+    for k in SCALES {
+        let tol = tolerance(k);
+        for (index, frame) in common::frames(k).iter().enumerate() {
+            let what = format!("scale {k}, frame {index}");
+            let (body, rim) = bent_rim(frame, k);
+            let data = body.edge(rim).unwrap();
+            // The rim's far end is the one down y.
+            let far_is_end = frame.local(data.curve.eval(data.range.1)).1
+                < frame.local(data.curve.eval(data.range.0)).1;
+            let try_tip = |radius: f64, over: f64, back: f64| {
+                let fade = Some(Fade::tip(over * k, back * k));
+                let law = RadiusLaw {
+                    radius: radius * k,
+                    fades: if far_is_end {
+                        [None, fade]
+                    } else {
+                        [fade, None]
+                    },
+                };
+                fillet_by_law(&body, &[FilletLawEdge { edge: rim, law }], &tol)
+            };
+            // 4 all the way to the turn, to nothing over 5 just past it.
+            let corner = frame.point(10.0 * k, 10.0 * k, 8.0 * k);
+            match try_tip(4.0, 5.0, 12.0) {
+                Err(KernelError::FilletFade {
+                    edge,
+                    fault: FadeFault::TurnsBack { at, radius },
+                }) => {
+                    assert_eq!(edge, rim, "{what}");
+                    assert!(at.distance(corner) <= 3.0 * k, "{what}: at {at:?}");
+                    assert!(radius > 1.57 * k && radius <= 4.001 * k, "{what}: {radius}");
+                }
+                Err(other) => panic!("{what}: refused otherwise: {other}"),
+                Ok(_) => panic!("{what}: built"),
+            }
+            let text = try_tip(4.0, 5.0, 12.0).unwrap_err().to_string();
+            assert!(text.contains("turn back on itself at ("), "{text}");
+            // What the refusal says would build: a smaller radius (the
+            // rim's least radius of curvature is 1.57) with the same tip,
+            // and the same radius ending before the turn.
+            for (radius, back) in [(1.5, 12.0), (4.0, 28.0)] {
+                let made = try_tip(radius, 5.0, back)
+                    .unwrap_or_else(|e| panic!("{what}, {radius} back {back}: {e}"));
+                sound(&made.body, k, &what);
+            }
+        }
+    }
 }

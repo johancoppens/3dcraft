@@ -67,22 +67,32 @@
 //! ([`LEAST`] tolerances), as a radius of the closed forms has.
 //!
 //! **Where the edge's curvature jumps** (a spline's knot at which only
-//! its tangent is continuous) the planes across the edge turn with a jump.
-//! Where the radius is changing there, the path of the balls' centres
-//! turns a corner (by about the radius's rate times the jump of the
-//! curvature times the radius) and the arcs between the feet crease
-//! across that section. Where it is not changing the face is smooth, but
-//! the sections' family is not, and the fitted face that follows it has
-//! spans the tessellator cannot mesh (a spline rim with a double knot,
-//! one radius across it: built, and "patch 6 needs about 1624 segments"
-//! at a normal chord); the fillet of one radius is refused there as not
-//! approximated. So a law is refused along an edge with such a place
-//! inside what the fillet runs along, with the place, where the jump
-//! times the radius squared is more than the tolerance; a fillet that
-//! ends in a point before the place is built. One interpolating cubic has
-//! no such place; an edge drawn as a line, an arc and a line has two. A
-//! spine through the balls' centres with continuous curvature, as a
-//! chain's faces have, is what would carry a fillet across.
+//! its tangent is continuous) the planes across the edge turn with a jump,
+//! and the path of the balls' centres changes its speed there by the jump
+//! times how far the centre lies from the edge: the family of sections is
+//! no longer smooth along the edge, and the fitted face follows it only
+//! with samples bunched at the place, down to steps of about the
+//! tolerance over that change of speed. Measured on a spline rim with a
+//! double knot in its middle, its jump scaled (radius 1.5, tolerance
+//! 1e-6; the mesh at a chord of 0.05 against 1,382 triangles without a
+//! jump): jump times radius squared of 180 tolerances, 1,382 triangles;
+//! 600, 1,614; 1,800, 2,762; 6,000, 8,114; 18,300, 26,354; 63,500,
+//! 95,318; 209,000, 239,366; 715,000, 1,043,840 and no mesh at 0.01. So a
+//! law is refused, with the place, where the jump times the radius
+//! squared there is more than [`JUMP`] tolerances: the face would cost
+//! twice its mesh and more, and far past that it cannot be meshed. What a
+//! boolean fits where two faces meet has such knots all along (every
+//! interior knot doubled) with jumps of the fit's own error, 70
+//! tolerances where a plane meets an extruded cubic: far inside, and
+//! built. Where the radius is changing at such a place the arcs between
+//! the feet also crease across it (by about the radius's rate times the
+//! jump times the radius); a crease the refinement cannot hold is refused
+//! by it as not approximated, as before, without the place: owed. One
+//! interpolating cubic has no such place; an edge drawn as a line, an arc
+//! and a line has two. A spine through the balls' centres with continuous
+//! curvature, as a chain's faces have, is what would carry a fillet
+//! across a real jump. A fillet that ends in a point before the place
+//! is built.
 //!
 //! **A fade to nothing** (`to` zero: [`Fade::tip`]) ends the fillet in a
 //! point of the edge: at the end of the edge, or `back` short of it, the
@@ -199,10 +209,10 @@ impl RadiusLaw {
                 size("fade.to", fade.to)?;
             }
             size("fade.over", fade.over)?;
-            // Short of the end only a tip ends, and by a length or by
-            // nothing.
+            // Short of the end by a length or by nothing (that only a tip
+            // ends short of it is said where the edge is known).
             let back = fade.back;
-            if !(back.is_finite() && back >= 0.0 && (back == 0.0 || fade.is_tip())) {
+            if !(back.is_finite() && back >= 0.0) {
                 return Err(KernelError::InvalidSize {
                     name: "fade.back",
                     value: back,
@@ -262,6 +272,11 @@ const GAUSS: [(f64, f64); 8] = [
 /// kernel tells apart).
 pub(crate) const LEAST: f64 = 16.0;
 
+/// How large a jump of the edge's curvature a law is built across: the
+/// jump times the radius squared there, in tolerances (the module
+/// documentation has the measurements).
+pub(crate) const JUMP: f64 = 2000.0;
+
 /// What is wrong with a fade of a law, with what would be built.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FadeFault {
@@ -282,10 +297,18 @@ pub enum FadeFault {
     /// faces there come together too tightly, turn too sharply under the
     /// ball or fold (as the two halves of a hull do at its forefoot).
     NoBall { at: Vec3, before: f64 },
+    /// A fade to the radius `to` is to end `back` short of the end of the
+    /// edge: only a fade to nothing ends short of it.
+    BackNotATip { back: f64, to: f64 },
     /// The edge's curvature jumps at `at`, a place the fillet runs
-    /// through (its curve has only a continuous tangent there): not
-    /// built with a radius by a law.
+    /// through, by more than a law is built across (not by the error of
+    /// a fitted curve).
     CurvatureJump { at: Vec3 },
+    /// The fillet face would turn back on itself at `at` (the edge's
+    /// point there), where the ball has the radius `radius`: the radius is
+    /// too large, or changes too fast, for how the edge and the faces
+    /// turn there.
+    TurnsBack { at: Vec3, radius: f64 },
 }
 
 /// Pieces a span between two knots is cut into, and the range of a curve
@@ -333,6 +356,16 @@ impl<'a> Along<'a> {
                 return Err(BlendError::Fade {
                     edge,
                     fault: FadeFault::EndTooSmall { to: fade.to, least },
+                });
+            }
+            // Short of the end only a fade to nothing ends.
+            if fade.back > 0.0 && !fade.is_tip() {
+                return Err(BlendError::Fade {
+                    edge,
+                    fault: FadeFault::BackNotATip {
+                        back: fade.back,
+                        to: fade.to,
+                    },
                 });
             }
             // A tip short of the end: by more than the tolerance tells
@@ -500,8 +533,8 @@ impl<'a> Along<'a> {
 
     /// The first place along the fillet where the edge's curvature jumps
     /// (a knot of a spline at which only its tangent is continuous) by
-    /// more than the tolerance tells over the radius there: the jump
-    /// times the radius squared against the tolerance.
+    /// more than a law is built across: the jump times the radius squared
+    /// there against [`JUMP`] tolerances.
     fn jump_under_a_change(&self, tol: f64) -> Option<Vec3> {
         let Curve3::Nurbs(spline) = self.curve else {
             return None;
@@ -532,7 +565,7 @@ impl<'a> Along<'a> {
                 continue;
             };
             let jump = (after - before).length();
-            if jump * r * r > tol {
+            if jump * r * r > JUMP * tol {
                 return Some(self.curve.eval(knot));
             }
         }

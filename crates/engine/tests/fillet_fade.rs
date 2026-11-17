@@ -569,6 +569,17 @@ fn the_hulls_stem_fades_to_a_point_above_the_forefoot() {
     // a millimetre above the foot: built, valid, clear in the deep check,
     // a little less than the hull (10,781,617.55 mm³) by what the round
     // takes.
+    // The point of the proof first, 0.33 above the foot: the volume the
+    // kernel's probe gave, to the last digit it printed.
+    let made = hull_stem(&mut s, 3.0, 15.0, 0.33);
+    assert_eq!(made["status"], "ok", "{made}");
+    close(
+        &body(&mut s, "Stem fillet")["volume"],
+        10_781_506.254006842,
+        1e-3,
+        "the hull's volume, back 0.33",
+    );
+    run(&mut s, "edit.undo", json!({}));
     let made = hull_stem(&mut s, 3.0, 15.0, 0.5);
     assert_eq!(made["status"], "ok", "{made}");
     let tip = &made["fades"][0];
@@ -600,26 +611,45 @@ fn the_hulls_stem_fades_to_a_point_above_the_forefoot() {
 /// `a_short_fade_on_the_stem_is_not_called_a_bug`, on
 /// `check/review-fade-law`), at the command: fades short for their radius
 /// where the hull's stem bends towards its foot were refused by the
-/// kernel's post-check of tangency in the words of a bug. Built, or
-/// refused with the kernel's reason carried through, never in those
-/// words. The kernel's author mends it in the kernel (`check/fade-law`);
-/// until that is merged in, this fails as the review found.
+/// kernel's post-check of tangency in the words of a bug, and two others
+/// came back built with a folded face. The kernel refuses them now before
+/// building, as a face that would turn back on itself
+/// (`FadeFault::TurnsBack`); here, at the command, at the fade with the
+/// place and the ball's radius there, never in the words of a bug. The
+/// reasons are printed (`HULL …`, with `--nocapture`).
 #[test]
-#[ignore = "until the kernel's mend of the post-check (check/fade-law) is merged in"]
 fn a_short_fade_on_the_hulls_stem_is_not_called_a_bug() {
     let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fillet_fade");
     let dir = workdir("fillet-fade", "hull-short");
     std::fs::copy(fixtures.join("hull.3dcraft"), dir.join("hull.3dcraft")).unwrap();
     let mut s = session_in(&dir);
     run(&mut s, "file.open", json!({"path": "hull.3dcraft"}));
-    for (radius, over, back) in [(3.0, 5.0, 0.5), (5.0, 5.0, 1.0), (5.0, 10.0, 0.5)] {
+    for (radius, over, back) in [
+        (3.0, 5.0, 0.5),
+        (5.0, 5.0, 1.0),
+        (5.0, 10.0, 0.5),
+        (3.0, 5.0, 1.0),
+        (5.0, 10.0, 1.0),
+    ] {
         let made = hull_stem(&mut s, radius, over, back);
+        let reason = made["error"].as_str().unwrap_or("");
+        println!(
+            "HULL radius {radius} over {over} back {back}: {} {reason}",
+            made["status"]
+        );
         if made["status"] != "ok" {
-            let reason = made["error"].as_str().unwrap();
             assert!(
                 !reason.contains("internal error") && !reason.contains("a bug"),
                 "radius {radius} over {over} back {back}: {reason}"
             );
+            assert!(
+                reason.starts_with("fade.0 (at F23:corner["),
+                "radius {radius} over {over} back {back}: {reason}"
+            );
+        } else {
+            // Built: sound, then (the two that were built folded before
+            // the kernel's mend are refused now).
+            deep(&mut s);
         }
         run(&mut s, "edit.undo", json!({}));
     }
