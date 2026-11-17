@@ -16,6 +16,7 @@
 )]
 
 use craft3d_engine::{SURFACE_LIFT, Scene, SceneQuality, Session, Workspace};
+use craft3d_math::Portable;
 use craft3d_ui_egui::state::CameraState;
 use craft3d_ui_egui::viewport::{self, LineKind, Marks, Quality};
 use craft3d_ui_egui::{Shell, Tokens};
@@ -166,7 +167,7 @@ fn the_grids_lines_and_points_lie_on_the_sheet_for_both_paths() {
             .lines
             .iter()
             .filter(|l| l.kind == LineKind::Construction && l.hidden == hidden)
-            .map(|l| (l.to[0] - l.from[0]).hypot(l.to[1] - l.from[1]))
+            .map(|l| (l.to[0] - l.from[0]).phypot(l.to[1] - l.from[1]))
             .sum()
     };
     let (seen, behind) = (length(false), length(true));

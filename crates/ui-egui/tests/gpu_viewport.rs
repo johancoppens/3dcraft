@@ -972,7 +972,7 @@ fn terrain_with_grid() -> Session {
             let mut row = vec![json!(r + 1)];
             for c in 0..7 {
                 let (x, y) = (c as f64, r as f64);
-                row.push(json!(6.0 + 3.0 * (x * 0.9).sin() * (y * 0.7).cos()));
+                row.push(json!(6.0 + 3.0 * (x * 0.9).psin() * (y * 0.7).pcos()));
             }
             Value::Array(row)
         })

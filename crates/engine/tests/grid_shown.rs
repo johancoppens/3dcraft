@@ -21,7 +21,7 @@ use craft3d_engine::{
     MAX_GRID_LINE_POINTS, MAX_GRID_LINES, SURFACE_LIFT, Scene, SceneGrid, SceneQuality,
     SceneSketch, Session, Workspace, grid_step,
 };
-use craft3d_math::Vec3;
+use craft3d_math::{Portable, Vec3};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -272,7 +272,7 @@ fn a_large_grid_is_drawn_every_kth_line_within_its_caps() {
                 (0..columns)
                     .map(|c| {
                         let (x, y) = (c as f64, r as f64);
-                        json!([x, y, (x / 9.0).sin() + (y / 7.0).cos()])
+                        json!([x, y, (x / 9.0).psin() + (y / 7.0).pcos()])
                     })
                     .collect(),
             )
@@ -303,7 +303,7 @@ fn a_large_grid_is_drawn_every_kth_line_within_its_caps() {
     };
     for (r, c) in [(0, 0), (68, 196), (69, 199), (2, 4)] {
         let (x, y) = (c as f64, r as f64);
-        let given = Vec3::new(x, y, (x / 9.0).sin() + (y / 7.0).cos());
+        let given = Vec3::new(x, y, (x / 9.0).psin() + (y / 7.0).pcos());
         assert!(at(r, c).distance(given) < 1e-9, "({r}, {c})");
     }
     // ui.get and view.render say so.
