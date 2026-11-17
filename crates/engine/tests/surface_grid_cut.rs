@@ -70,10 +70,10 @@ impl Sheet {
         }
     }
 
-    /// A sheet that runs along x, turns back over itself and on again (an
-    /// overhang: a vertical line meets it three times in the middle), its
-    /// first and last columns at x = 0 and x = `width`, rising and falling
-    /// along y.
+    /// A sheet that runs along x, turns back under itself and on again,
+    /// rising all the while (an overhang: a vertical line meets it three
+    /// times in the middle, and it never meets itself), its first and last
+    /// columns at x = 0 and x = `width`, rising and falling along y.
     fn folded(columns: usize, rows: usize, width: f64) -> Sheet {
         let mut points = Vec::with_capacity(columns * rows);
         for r in 0..rows {
@@ -82,7 +82,7 @@ impl Sheet {
                 let t = r as f64 / (rows - 1) as f64;
                 let a = 2.0 * std::f64::consts::PI * s;
                 let x = width * (s + 0.25 * a.psin());
-                let z = width * (0.3 + 0.12 * (1.0 - a.pcos()) + 0.05 * (3.0 * t).psin());
+                let z = width * (0.2 + 0.4 * s + 0.05 * (3.0 * t).psin());
                 points.push(Vec3::new(x, width * t * 0.8, z));
             }
         }
@@ -282,20 +282,6 @@ fn cut_both_ways(
         "{label}: under {under} + over {over} = {}, the block {whole}",
         under + over
     );
-    let t = Instant::now();
-    built(
-        s,
-        "feature.boolean",
-        json!({"op": "union", "target": u.clone(), "tool": o.clone(), "keepTool": true, "name": w}),
-    );
-    seconds += t.elapsed().as_secs_f64();
-    let united = body(s, &w);
-    assert_eq!(united["valid"], true, "{label}: {united}");
-    let back = number(&united["volume"]);
-    assert!(
-        (back - whole).abs() <= relative * whole,
-        "{label}: the two parts united {back}, the block {whole}"
-    );
     // Rays down onto the nodes within the block meet the solid under the
     // sheet at the sheet's point (first, where the sheet does not fold
     // over the node).
@@ -339,6 +325,20 @@ fn cut_both_ways(
         json!({"path": format!("{label}.stl"), "bodies": [u, o]}),
     );
     assert_eq!(mesh["closed"], 2, "{label}: {mesh}");
+    let t = Instant::now();
+    built(
+        s,
+        "feature.boolean",
+        json!({"op": "union", "target": u.clone(), "tool": o.clone(), "keepTool": true, "name": w}),
+    );
+    seconds += t.elapsed().as_secs_f64();
+    let united = body(s, &w);
+    assert_eq!(united["valid"], true, "{label}: {united}");
+    let back = number(&united["volume"]);
+    assert!(
+        (back - whole).abs() <= relative * whole,
+        "{label}: the two parts united {back}, the block {whole}"
+    );
     Cut {
         under,
         over,

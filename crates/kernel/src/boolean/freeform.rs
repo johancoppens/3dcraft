@@ -2241,7 +2241,7 @@ fn scoped<V: Copy>(
 /// the same, bit for bit), with what each takes ([`PatchTree::bytes`]),
 /// the most recently used last; beside each key its [`key_hash`], so that
 /// [`release_unheld`] need not read the keys.
-type Shelf = Vec<(String, u64, Arc<PatchTree>)>;
+type Shelf = Vec<(Arc<str>, u64, Arc<PatchTree>)>;
 static SHELF: Mutex<Shelf> = Mutex::new(Vec::new());
 /// How many trees are kept, and how much memory all of them take at most
 /// ([`PatchTree::bytes`]). A boolean holds the trees of every freeform
@@ -2304,32 +2304,20 @@ pub fn release_unheld(held: &std::collections::BTreeSet<u64>) -> usize {
     before.saturating_sub(shelf.len())
 }
 
-/// The FNV-1a hash of a surface's key (`format!("{surface:?}")`), worked
-/// out as it is written, without the text: the same for the same key on
-/// every platform.
+/// The FNV-1a hash of a surface's key (`format!("{surface:?}")`,
+/// `Surface::key`, which a spline keeps once written out): the same for
+/// the same key on every platform.
 fn key_hash(surface: &Surface) -> u64 {
-    let mut hasher = KeyHasher(0xcbf2_9ce4_8422_2325);
-    let _ = std::fmt::Write::write_fmt(&mut hasher, format_args!("{surface:?}"));
-    hasher.0
+    surface.key().hash
 }
 
-/// [`key_hash`] of a key already written.
+/// [`key_hash`] of a key already written: FNV-1a over its bytes, written
+/// out here for the tests to hold `Surface::key`'s hash to.
+#[cfg(test)]
 fn text_hash(text: &str) -> u64 {
-    let mut hasher = KeyHasher(0xcbf2_9ce4_8422_2325);
-    let _ = std::fmt::Write::write_str(&mut hasher, text);
-    hasher.0
-}
-
-/// FNV-1a over the bytes written to it.
-struct KeyHasher(u64);
-
-impl std::fmt::Write for KeyHasher {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        for byte in s.bytes() {
-            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-        }
-        Ok(())
-    }
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, byte| {
+        (h ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 /// The [`key_hash`]es of the surfaces whose trees the shelf holds: for
@@ -2820,11 +2808,11 @@ impl PatchTree {
     /// [`Self::shared`]: from the shelf, or built and put there.
     fn shelved(surface: &Surface) -> Result<Arc<PatchTree>, Reason> {
         let clock = craft3d_math::clock::clock("tree.key format");
-        let key = format!("{surface:?}");
+        let key = surface.key();
         drop(clock);
         {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(at) = shelf.iter().position(|(k, _, _)| *k == key) {
+            if let Some(at) = shelf.iter().position(|(k, _, _)| *k == key.text) {
                 let entry = shelf.remove(at);
                 let tree = Arc::clone(&entry.2);
                 shelf.push(entry);
@@ -2841,9 +2829,8 @@ impl PatchTree {
         crate::work::patch_tree();
         if tree.bytes() <= SHELF_BYTES {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
-            if !shelf.iter().any(|(k, _, _)| *k == key) {
-                let hash = text_hash(&key);
-                shelf.push((key, hash, Arc::clone(&tree)));
+            if !shelf.iter().any(|(k, _, _)| *k == key.text) {
+                shelf.push((key.text, key.hash, Arc::clone(&tree)));
             }
             keep_within_budget(&mut shelf);
         }
@@ -2972,7 +2959,7 @@ impl PatchTree {
         }
         let found = poles(surface);
         let clock = craft3d_math::clock::clock("tree.id format");
-        let id = craft3d_geom::allowance::number_of(&format!("{surface:?}"));
+        let id = surface.key().hash;
         drop(clock);
         let mut tree = PatchTree {
             surface: surface.clone(),

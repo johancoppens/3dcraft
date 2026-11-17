@@ -390,7 +390,16 @@ fn remembered(
     tol: &Tolerance,
 ) -> Result<SurfaceMeeting, GeomError> {
     let clock = craft3d_math::clock::clock("geom.meet key");
-    let key = format!("{a:?}|{b:?}|{within:?}|{tol:?}");
+    // `format!("{a:?}|{b:?}|{within:?}|{tol:?}")`, with the surfaces'
+    // texts as they keep them.
+    let key = [
+        &*a.key().text,
+        "|",
+        &*b.key().text,
+        "|",
+        &format!("{within:?}|{tol:?}"),
+    ]
+    .concat();
     drop(clock);
     // Charged by the work the march took, once per operation under a
     // bound, whether it is marched now or found on the shelf

@@ -1066,7 +1066,15 @@ pub struct NurbsSurface {
     /// Bounds on the derivatives of each whole span, once made
     /// ([`Self::whole_span_bounds`]): not part of the value either.
     pub(crate) bounds: crate::span_bounds::BoundsCache,
+    /// The surface written out, once made ([`crate::Surface::key`]): not
+    /// part of the value either.
+    pub(crate) key: KeyCache,
 }
+
+/// Where a NURBS surface keeps its key once written out
+/// ([`crate::Surface::key`]): shared by its clones, as its spans are.
+#[derive(Clone, Default)]
+pub(crate) struct KeyCache(pub(crate) std::sync::Arc<std::sync::OnceLock<crate::SurfaceKey>>);
 
 /// Where a NURBS surface keeps its Bézier spans once made: shared by its
 /// clones (a clone has the same numbers), so that a surface handed on
@@ -1139,6 +1147,7 @@ impl NurbsSurface {
             project_grid: GridCache::default(),
             spans: SpansCache::default(),
             bounds: crate::span_bounds::BoundsCache::default(),
+            key: KeyCache::default(),
         })
     }
 
@@ -2743,6 +2752,7 @@ impl Bits for NurbsSurface {
             project_grid: _,
             spans: _,
             bounds: _,
+            key: _,
         } = self;
         degree_u.push_bits(out);
         degree_v.push_bits(out);

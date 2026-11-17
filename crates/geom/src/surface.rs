@@ -485,7 +485,35 @@ pub enum Surface {
     Nurbs(NurbsSurface),
 }
 
+/// A surface written out in full (its debug text, `format!("{surface:?}")`,
+/// so that two surfaces have one key only when every number of them is the
+/// same, bit for bit), and the FNV-1a hash of that text
+/// ([`crate::allowance::number_of`]): what the shelves of what is made from
+/// a surface alone (projectors, the marcher's pieces, intersections, the
+/// kernel's patch trees) know it by.
+#[derive(Clone, Debug)]
+pub struct SurfaceKey {
+    pub text: Arc<str>,
+    pub hash: u64,
+}
+
 impl Surface {
+    /// The surface's key ([`SurfaceKey`]). A spline keeps it once written
+    /// out, shared by its clones (2026-11-17): writing out a grid surface
+    /// of 2¹⁸ points took 0.12 s, and a boolean on it asked for its key
+    /// some fifty times.
+    pub fn key(&self) -> SurfaceKey {
+        let make = || {
+            let text: Arc<str> = Arc::from(format!("{self:?}"));
+            let hash = crate::allowance::number_of(&text);
+            SurfaceKey { text, hash }
+        };
+        match self {
+            Surface::Nurbs(n) => n.key.0.get_or_init(make).clone(),
+            _ => make(),
+        }
+    }
+
     /// A short name for messages.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -2419,6 +2447,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A surface's key is its text written out and that text's FNV-1a
+    /// hash; a spline keeps it once made, its clones share it, and it
+    /// stays its text after the spline made its spans; a surface one
+    /// last bit apart (or a zero of the other sign) has another.
+    #[test]
+    fn a_surface_s_key_is_its_text_and_a_spline_keeps_it() {
+        let spline = || Surface::Nurbs(NurbsSurface::from_bezier(&bumpy(1.0)).unwrap());
+        for surface in [Surface::Bezier(bumpy(1.0)), spline()] {
+            let key = surface.key();
+            assert_eq!(&*key.text, format!("{surface:?}"));
+            assert_eq!(
+                key.hash,
+                crate::allowance::number_of(&format!("{surface:?}"))
+            );
+        }
+        let first = spline();
+        let key = first.key();
+        let clone = first.clone();
+        if let Surface::Nurbs(n) = &clone {
+            n.bezier_spans_shared().unwrap();
+        }
+        assert!(Arc::ptr_eq(&clone.key().text, &key.text));
+        assert_eq!(&*clone.key().text, format!("{clone:?}"));
+        let moved = |dz: f64| {
+            let mut net = [[Vec3::ZERO; 4]; 4];
+            for (i, row) in net.iter_mut().enumerate() {
+                for (j, p) in row.iter_mut().enumerate() {
+                    *p = Vec3::new(i as f64, j as f64, if i + j == 0 { dz } else { 1.0 });
+                }
+            }
+            Surface::Nurbs(
+                NurbsSurface::from_bezier(&BezierPatch::new(3, 3, net.concat()).unwrap()).unwrap(),
+            )
+        };
+        assert_ne!(moved(0.0).key().text, moved(-0.0).key().text);
+        assert_ne!(moved(1.0).key().text, moved(1.0 + f64::EPSILON).key().text);
+        assert_eq!(moved(1.0).key().text, moved(1.0).key().text);
     }
 
     /// The samples a projection starts from are kept with the surface
