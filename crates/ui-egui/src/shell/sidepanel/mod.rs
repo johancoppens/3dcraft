@@ -149,8 +149,9 @@ pub(crate) struct SideMemory {
     /// What is selected, described, and for which selection.
     pub(crate) props: Option<Props>,
     pub(crate) props_for: Option<(u64, u64, u64)>,
-    /// The selection whose relation was kept as a check last.
-    pub(crate) kept: Option<(u64, u64, u64)>,
+    /// The selection whose relation was kept as a check last, by its
+    /// document and selection serial ([`SideMemory::kept_key`]).
+    pub(crate) kept: Option<(u64, u64)>,
     /// Commands waiting for the session.
     pending: Vec<SideRequest>,
     /// Errors at fields, by their key.
@@ -182,6 +183,14 @@ pub(crate) struct SideMemory {
     /// the Parameters tab's own memory (`state.parameters.open`).
     last_tab: Option<SideTab>,
     pub(crate) hits: SideHits,
+}
+
+impl SideMemory {
+    /// The document and the selection the card is of, without the
+    /// document's revision: what a relation kept as a check is kept for.
+    pub(crate) fn kept_key(&self) -> Option<(u64, u64)> {
+        self.props_for.map(|(doc, _, serial)| (doc, serial))
+    }
 }
 
 /// The tabs a document offers, in order: Parameters first for a Jig (or

@@ -1019,7 +1019,9 @@ impl Shell {
             if props.measurement.is_some() {
                 // Two things: their relation kept as a check of the
                 // document, once.
-                let kept = self.side.kept == self.side.props_for;
+                // Keyed by the document and the selection: the check
+                // added changes the document's revision, not that.
+                let kept = self.side.kept.is_some() && self.side.kept == self.side.kept_key();
                 let k = kit.button(
                     ui,
                     Button::primary(if kept {
@@ -1051,7 +1053,7 @@ impl Shell {
             && let Some(params) = m.check(&self.free_check_name(&m.check_name))
         {
             self.side_queue("assert.add", params, None);
-            self.side.kept = self.side.props_for;
+            self.side.kept = self.side.kept_key();
         }
         ui.add_space(t.nav_spacing * 2.0);
         if measure && let Some((command, params)) = props.measure.clone() {
