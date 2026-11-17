@@ -1782,6 +1782,17 @@ refused `ui.set` leaves the state as it was, every field (`a_refused_section_cha
 the_planes`: the coordinator saw the section on after a refusal in the desktop window; the state is put back
 whole here, and was on `main` too, so what he saw was not reproduced).
 
+*The arrow's shape* (2026-11-17, the developer's choice from five drawn variants, "pijl misschien iets
+eleganter?": variant B, slim like a dimension arrow; it replaces the shape of round two above, not its
+colours, sizes in length or place). A shaft 2 points of the light fill with a 1 point dark edge each side and
+round ends, into the notch of a small sharp head: a notched dart 16 points long and 11 wide, notched 3 back
+from its base (`section_head`, `section_head_width`, `section_head_notch`); at the foot a ring of radius 4.5
+with a dark dot of 1.6 to take it by (`section_grip`, `section_grip_dot`); 64 points long seen side on, as
+before. At touch sizes the whole shape is scaled as one (by the touch arrow's length over 64). It is hit as
+before, within `section_hit` (9 points, a finger's half target at touch sizes) of the line from the foot to
+the tip, whatever its drawn width: the test takes it 8.5 points off its shaft, its head and its ring. The
+head is `dart`, shared with the dimension lines of measuring by selecting, so the two read as one family.
+
 *The plane from the selection* (2026-11-17, the developer: "2 vlakken selecteren = snijden onder 45 graden?").
 The fourth button (∥) is always there and takes its plane from what is selected
 (`Shell::sync_face_choice`, once per selection and scene): one flat face, the plane along it as before; two
