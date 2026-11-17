@@ -129,8 +129,12 @@ pub(super) fn shown_wrong(
     item: &Item,
     tolerance: &Tolerance,
 ) -> Result<(), BlendError> {
-    if let Size::Radius(radius) = item.request.size {
-        return ball::shown_wrong(body, item, radius, tolerance);
+    match item.request.size {
+        Size::Radius(radius) => return ball::shown_wrong(body, item, radius, None, tolerance),
+        Size::Law(law) => {
+            return ball::shown_wrong(body, item, law.largest(), Some(law), tolerance);
+        }
+        Size::Chamfer(_) => {}
     }
     let Size::Chamfer(ChamferSize::Distances { first, second }) = item.request.size else {
         return Ok(());
@@ -161,6 +165,7 @@ pub(super) fn shown_wrong(
         scale: scale_of(data, shape.size(), tol),
         moved: None,
         settle: 0.0,
+        law: None,
     };
     // A section the construction cannot find leaves nothing to look at
     // here; it says so itself.

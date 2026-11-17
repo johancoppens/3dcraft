@@ -1,0 +1,7 @@
+[
+ ["variable.set", {"name": "over", "expr": "15 mm"}],
+ ["feature.block", {"size": [40, 30, 40], "name": "Box"}],
+ ["feature.fillet", {"edges": ["Box:edge(9)"], "radius": "3 mm", "fade": [{"at": "Box:vertex(4)", "over": "over"}], "name": "Round"}],
+ ["feature.block", {"size": [40, 30, 40], "position": [60, 0, 0], "name": "Tall"}],
+ ["feature.fillet", {"edges": ["Tall:edge(9)"], "radius": "3 mm", "fade": [{"at": "Tall:vertex(4)", "over": "10 mm", "back": "4 mm"}, {"at": "Tall:vertex(0)", "over": "over"}], "name": "Both"}]
+]

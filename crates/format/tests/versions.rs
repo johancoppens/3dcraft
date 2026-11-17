@@ -139,6 +139,10 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // agent with a reply, an agent's open question on the hole's wall, one
     // whose face was deleted (detached), one on the body, one deleted.
     (75, 3743, 0x0692_a2de_10e4_c97b),
+    // Two blocks whose upright edge is rounded with fades: one fading to
+    // a point at its top over a variable, one at both ends, a point short
+    // of its top.
+    (76, 3077, 0x375c_0fa5_7663_6f05),
 ];
 
 fn dir() -> PathBuf {

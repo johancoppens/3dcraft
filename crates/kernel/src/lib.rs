@@ -326,6 +326,14 @@ pub enum KernelError {
         why: FilletPinch,
         places: usize,
     },
+    /// A fillet of `edge` whose radius varies along it by a law one of
+    /// whose fades is not built: the radius changes too fast over it, or
+    /// runs to less than the tolerance tells from nothing. `fault` says
+    /// which, with the least length or radius that is built.
+    FilletFade {
+        edge: craft3d_topo::EdgeId,
+        fault: fillet::FadeFault,
+    },
     /// The boolean refused the tool of a filleted edge; `smaller_fails`
     /// when smaller radii were tried and fail the same way.
     FilletBoolean {
@@ -726,6 +734,12 @@ impl fmt::Display for KernelError {
                 edge.0,
                 fillet_pinched_text(*at, *why, *places, "")
             ),
+            KernelError::FilletFade { edge, fault } => write!(
+                f,
+                "fillet of edge {}: {}",
+                edge.0,
+                fillet_fade_text(*fault, "")
+            ),
             KernelError::FilletBoolean {
                 edge,
                 error,
@@ -898,7 +912,7 @@ pub fn spindle_text(radius: f64, below: f64, own: f64, unit: &str) -> String {
 /// significant digits of the largest of them (a place is known to about
 /// the tolerance, and a coordinate that is rounding noise beside the
 /// others reads 0), followed by `unit`.
-fn place_text(at: craft3d_math::Vec3, unit: &str) -> String {
+pub fn place_text(at: craft3d_math::Vec3, unit: &str) -> String {
     let largest = at.x.abs().max(at.y.abs()).max(at.z.abs());
     let magnitude = if largest.is_finite() && largest > 0.0 {
         largest.plog10().floor()
@@ -917,6 +931,76 @@ fn place_text(at: craft3d_math::Vec3, unit: &str) -> String {
         if text == "-0" { "0".to_string() } else { text }
     };
     format!("({}, {}, {}){unit}", one(at.x), one(at.y), one(at.z))
+}
+
+/// What [`KernelError::FilletFade`] says, its sizes followed by `unit`
+/// (" mm"; empty for numbers alone).
+pub fn fillet_fade_text(fault: fillet::FadeFault, unit: &str) -> String {
+    match fault {
+        fillet::FadeFault::TooShort {
+            change,
+            over,
+            least,
+        } => format!(
+            "the radius changes too fast along the edge: by {}{unit} over a length of {}{unit}. A fade has to be at least as long as the radius changes over it (and longer than the tolerance tells from nothing), so that the radius changes at most three times as fast as the length along the edge where it is steepest; faster, the fillet face's borders lie down along its sections and the face can no longer be measured or meshed: give an over of at least {}{unit}, or a smaller change of the radius",
+            short(change),
+            short(over),
+            fits_at_least(least)
+        ),
+        fillet::FadeFault::BackTooSmall { back, least } => format!(
+            "the fillet is to end in a point {}{unit} short of the end of the edge, which is not more than the tolerance tells from the end itself: give a back of more than {}{unit} (16 tolerances), or none, which ends the fillet in the edge's own vertex",
+            small(back),
+            short(least)
+        ),
+        fillet::FadeFault::BackNotATip { back, to } => format!(
+            "the fade is to end {}{unit} short of the end of the edge, but it runs to a radius of {}{unit}: only a fade to nothing (a tip) ends short of the end; give no back, or a fade to nothing",
+            small(back),
+            short(to)
+        ),
+        fillet::FadeFault::CurvatureJump { at } => format!(
+            "the edge's curvature jumps at {} (its curve has only a continuous tangent there, and turns markedly tighter on one side than on the other), a place the fillet runs through: a fillet whose radius varies is not built across such a place yet (its sections bunch up there, and where the radius is changing the face would crease across it); end the fillet in a point before that place, or draw the edge so that its curvature runs on smoothly (one curve, not pieces that are only tangent)",
+            place_text(at, unit)
+        ),
+        fillet::FadeFault::TurnsBack { at, radius } => format!(
+            "the fillet face would turn back on itself at {}, where the rolling ball has a radius of {}{unit}: the radius is too large there, or changes too fast, for how the edge and the faces turn (the sections across the edge would run into each other); give a smaller radius, a longer fade so that the radius has fallen further by there, or end the fillet further from that place",
+            place_text(at, unit),
+            short(radius)
+        ),
+        fillet::FadeFault::EndTooSmall { to, least } => format!(
+            "the radius at the end of the fade, {}{unit}, is not more than the tolerance tells from nothing: an end radius has to be more than {}{unit} (16 tolerances), as a fillet's radius has",
+            small(to),
+            short(least)
+        ),
+        fillet::FadeFault::NoBall { at, before } => format!(
+            "no ball touching both faces was found past {}, {}{unit} along the edge before the point the fillet is to end in: the faces there come together too tightly, turn too sharply under the ball, or fold (as the two halves of a hull do at its forefoot); end the fillet before that place (a back larger by {}{unit}), or fade over a longer length",
+            place_text(at, unit),
+            short(before),
+            fits_at_least(before)
+        ),
+    }
+}
+
+/// A size that may be very small, as a message gives it: as [`short`]
+/// does down to a billionth, in powers of ten below (so that 5e-324 is
+/// not read as nothing).
+fn small(value: f64) -> String {
+    if value != 0.0 && value.abs() < 1e-9 {
+        format!("{value:e}")
+    } else {
+        short(value)
+    }
+}
+
+/// A least size as a message gives it: to six significant digits, rounded
+/// up, so that the number given is itself enough.
+fn fits_at_least(value: f64) -> String {
+    if !(value.is_finite() && value > 0.0) {
+        return short(value);
+    }
+    let magnitude = value.plog10().floor();
+    let step = 10f64.ppowf(magnitude - 5.0);
+    let up = (value / step - 1e-9).ceil() * step;
+    short(up)
 }
 
 /// What [`KernelError::FilletPinched`] says, its place followed by `unit`

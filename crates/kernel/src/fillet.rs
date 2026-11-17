@@ -1,7 +1,8 @@
-//! Fillets with a constant radius: an edge of a solid replaced by the
-//! face a ball of that radius touches as it rolls along the edge in
-//! contact with both faces. The new face is tangent to both. A convex
-//! edge loses material (a round), a concave edge gains it.
+//! Fillets: an edge of a solid replaced by the face a ball of the radius
+//! touches as it rolls along the edge in contact with both faces. The new
+//! face is tangent to both. A convex edge loses material (a round), a
+//! concave edge gains it. The radius is one all along ([`fillet`]) or
+//! varies along the edge by a law ([`fillet_by_law`], [`RadiusLaw`]).
 //!
 //! Along a straight edge between two planes the face is a piece of a
 //! cylinder of the radius, whose axis runs parallel to the edge at the
@@ -19,6 +20,7 @@ use crate::blend::{self, BlendError, Blended, Face, Kind, Request, Size};
 use craft3d_math::Tolerance;
 use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
 
+pub use crate::blend::law::{Fade, FadeFault, RadiusLaw};
 pub use crate::blend::tangent_chain;
 
 /// Most edges one fillet takes.
@@ -29,6 +31,13 @@ pub const MAX_FILLET_EDGES: usize = blend::MAX_EDGES;
 pub struct FilletEdge {
     pub edge: EdgeId,
     pub radius: f64,
+}
+
+/// One edge to fillet with a radius that may vary along it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilletLawEdge {
+    pub edge: EdgeId,
+    pub law: RadiusLaw,
 }
 
 /// Where a face of a filleted body came from.
@@ -97,6 +106,7 @@ fn said(error: BlendError) -> KernelError {
             error,
             smaller_fails,
         },
+        BlendError::Fade { edge, fault } => KernelError::FilletFade { edge, fault },
         BlendError::Pinched { edge, pinch } => KernelError::FilletPinched {
             edge,
             at: pinch.at,
@@ -161,6 +171,141 @@ pub fn fillet_capped(
     )
 }
 
+/// Fillets `edges` of the solid `body`, each with its radius as a law
+/// along the edge ([`RadiusLaw`]): one radius along it, running to another
+/// at an end that has a [`Fade`], over the fade's length along the edge.
+/// A fade to nothing ([`Fade::tip`]) ends the fillet in a point: the face
+/// closes in a vertex on the edge, at the edge's end or `back` short of
+/// it, tangent to both faces all the way, and the edge beyond that vertex
+/// and whatever meets the edge's end stay as they are. Such an end asks
+/// nothing of the vertex there: the edge may run on into another edge
+/// between the same two faces, or end where four or more faces meet.
+///
+/// An edge whose law is one radius all along is filleted as [`fillet`]
+/// fillets it. An edge whose radius varies is built in place by the
+/// rolling ball whose radius is the law's in each plane across the edge:
+/// the fillet face is the arcs between the points where those balls touch
+/// the two faces, tangent to both faces along its borders. It is built
+/// along an open edge on its own whose ends are corners of exactly three
+/// faces or tips; round a closed edge, in a chain, where another requested edge
+/// ends in one of its vertices and where its border would cross a smooth
+/// edge of a face beside it, it is refused ([`KernelError::Fillet`]).
+///
+/// A fade has to be at least as long as the radius changes over it, and
+/// its end radius and its length more than 16 tolerances: a radius that
+/// changes faster gives a face that cannot be measured or meshed, and is
+/// refused with the least length that is built
+/// ([`KernelError::FilletFade`]).
+///
+/// **Errors.** Those of [`fillet`], [`KernelError::FilletFade`], and [`KernelError::InvalidSize`] for
+/// a radius or a length in a law that is not a size (finite and above
+/// zero; a fade's `to` may be zero, a tip, and only then its `back` more
+/// than zero).
+pub fn fillet_by_law(
+    body: &Body,
+    edges: &[FilletLawEdge],
+    tolerance: &Tolerance,
+) -> Result<FilletResult, KernelError> {
+    fillet_by_law_capped(body, edges, tolerance, None)
+}
+
+/// [`fillet_by_law`] held to the document's cap on an entity's own
+/// tolerance, as [`fillet_capped`] is.
+pub fn fillet_by_law_capped(
+    body: &Body,
+    edges: &[FilletLawEdge],
+    tolerance: &Tolerance,
+    loosest: Option<f64>,
+) -> Result<FilletResult, KernelError> {
+    let mut requests = Vec::with_capacity(edges.len());
+    for e in edges {
+        let law = e.law.checked()?;
+        // A fade is held to what a fade may be also where it changes
+        // nothing (its length against the edge's and the tolerance).
+        if law.fades.iter().any(Option::is_some)
+            && let Some(data) = body.edge(e.edge)
+        {
+            blend::law::Along::new(law, e.edge, &data.curve, data.range, tolerance.linear)
+                .map_err(said)?;
+        }
+        requests.push(Request {
+            edge: e.edge,
+            first: None,
+            // One radius all along is the fillet of that radius, built as
+            // every such fillet is.
+            size: if law.is_constant() {
+                Size::Radius(law.radius)
+            } else {
+                Size::Law(law)
+            },
+        });
+    }
+    crate::loose_op::run(
+        "fillet",
+        body,
+        tolerance,
+        loosest,
+        |at| fillet_requests(body, &requests, at),
+        loose_sources,
+    )
+}
+
+/// The length of the edge `edge` of `body` along its curve, as a radius
+/// law measures it ([`RadiusLaw`]: a fade's `over` and `back` are lengths
+/// along the edge, and together no longer than this), at the linear
+/// tolerance `tolerance`. `None` when the body has no such edge or its
+/// length cannot be had.
+pub fn law_length(body: &Body, edge: EdgeId, tolerance: f64) -> Option<f64> {
+    let data = body.edge(edge)?;
+    blend::law::Along::new(
+        RadiusLaw::constant(1.0),
+        edge,
+        &data.curve,
+        data.range,
+        tolerance,
+    )
+    .ok()
+    .map(|along| along.length())
+}
+
+/// Where [`fillet_by_law`] ends the fillet of `edge` of `body` in a point
+/// at the end `end` of the edge (0: its start, 1: its end) by the law
+/// `law`: the point of the edge `back` short of that end along it, when
+/// the fade there runs to nothing ([`Fade::tip`]). `None` without such a
+/// fade, and when the law is refused along the edge.
+pub fn tip_point(
+    body: &Body,
+    edge: EdgeId,
+    law: RadiusLaw,
+    end: usize,
+    tolerance: f64,
+) -> Option<craft3d_math::Vec3> {
+    let data = body.edge(edge)?;
+    let along = blend::law::Along::new(law, edge, &data.curve, data.range, tolerance).ok()?;
+    let s = along.tip(end)?;
+    let (t0, t1) = data.range;
+    let point = data.curve.eval(t0 + s * (t1 - t0));
+    point.is_finite().then_some(point)
+}
+
+/// What `loose_op` needs of a result: its body and where its entities
+/// came from.
+fn loose_sources(r: &mut FilletResult) -> (&mut Body, crate::loose_op::Sources) {
+    let sources = crate::loose_op::Sources {
+        faces: r
+            .faces
+            .iter()
+            .map(|f| match f {
+                FilletFace::Kept(kept) if kept.len() == 1 => kept.first().copied(),
+                _ => None,
+            })
+            .collect(),
+        edges: r.edges.clone(),
+        vertices: r.vertices.clone(),
+    };
+    (&mut r.body, sources)
+}
+
 /// The operation itself, at the tolerance given.
 fn fillet_at(
     body: &Body,
@@ -175,12 +320,21 @@ fn fillet_at(
             size: Size::Radius(e.radius),
         })
         .collect();
+    fillet_requests(body, &requests, tolerance)
+}
+
+/// The requests blended, in the words of a fillet.
+fn fillet_requests(
+    body: &Body,
+    requests: &[Request],
+    tolerance: &Tolerance,
+) -> Result<FilletResult, KernelError> {
     let Blended {
         body,
         faces,
         edges,
         vertices,
-    } = blend::blend(body, &requests, tolerance).map_err(said)?;
+    } = blend::blend(body, requests, tolerance).map_err(said)?;
     let faces = faces
         .into_iter()
         .map(|face| match face {

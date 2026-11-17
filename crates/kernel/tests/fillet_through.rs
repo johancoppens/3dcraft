@@ -43,7 +43,7 @@ use boolean_common::{SCALES, mass, tolerance};
 use craft3d_geom::Surface;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::extrude::extrude;
-use craft3d_kernel::fillet::{FilletEdge, fillet};
+use craft3d_kernel::fillet::{Fade, FilletEdge, FilletLawEdge, RadiusLaw, fillet, fillet_by_law};
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
 use craft3d_math::{Frame, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, check};
@@ -603,6 +603,54 @@ fn a_fillet_beside_a_hollow_is_built() {
             let (before, _) = wall.inside(y, r, sigma, t1);
             assert!(before <= NONE, "{groove} {r}: {before}");
             built(groove, false, r, wall.region(y, r, sigma, t1));
+        }
+    }
+}
+
+#[test]
+fn a_radius_that_varies_is_held_to_the_wall_by_the_radius_of_each_plane() {
+    // A radius by a law along the rim (`fillet_by_law`): 1.03 times the
+    // radius at which the ball touches the bead and the wall below it at
+    // once, the bead clear of that ball, falling at the edge's start to
+    // 0.93 of it over 12, where the bead lies deep inside the ball: the
+    // planes near that end show it, and the fillet is refused naming the
+    // wall. Falling only to 1.005 of it the bead keeps clear all along,
+    // and it is built. (Held by the law's largest radius in every plane,
+    // the second is refused too: tried.)
+    for (groove, sigma) in SIDES {
+        let wall = Wall::new(groove, true);
+        let (y, t1) = wall.ball(5.5, sigma, 0.69);
+        let (_, tb) = wall.ball(5.5, sigma, 0.26);
+        let [_, star, _, s1] = wall.twice(sigma, [y, 5.5, tb, t1]);
+        let (y, t1) = wall.ball(0.93 * star, sigma, s1);
+        let (before, _) = wall.inside(y, 0.93 * star, sigma, t1);
+        assert!(before > 0.05, "{groove}: {before}");
+        for k in SCALES {
+            let tol = tolerance(k);
+            for frame in frames(k) {
+                let body = body(&wall, &frame, k);
+                let (edge, face) = rim(&body, &frame, k);
+                let law = |to: f64| RadiusLaw {
+                    radius: 1.03 * star * k,
+                    fades: [Some(Fade::to(to * star * k, 12.0 * k)), None],
+                };
+                let try_law =
+                    |to: f64| fillet_by_law(&body, &[FilletLawEdge { edge, law: law(to) }], &tol);
+                match try_law(0.93) {
+                    Err(KernelError::Fillet {
+                        edge: Some(e),
+                        face: Some(f),
+                        reason,
+                    }) => {
+                        assert_eq!((e, f), (edge, face), "{groove} at {k}: {reason}");
+                        assert!(reason.contains("pass through"), "{groove} at {k}: {reason}");
+                    }
+                    Err(other) => panic!("{groove} at {k}: refused otherwise: {other}"),
+                    Ok(_) => panic!("{groove} at {k}: built"),
+                }
+                let made = try_law(1.005).unwrap_or_else(|e| panic!("{groove} at {k}: {e}"));
+                assert_eq!(check(&made.body, &tol), [], "{groove} at {k}");
+            }
         }
     }
 }

@@ -1659,6 +1659,7 @@ fn build_shown(
                 tip: None,
                 developed: None,
                 offset: None,
+                fades: None,
                 consumed_by: None,
                 followed: None,
                 passed: None,

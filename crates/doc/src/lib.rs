@@ -1265,6 +1265,32 @@ pub struct Fillet {
     /// of a slot from one of its edges).
     #[serde(default)]
     pub chain: bool,
+    /// Ends of edges where the fillet fades: its radius runs to nothing
+    /// and its face closes in a point on the edge. None: one radius all
+    /// along, as a fillet always was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fade: Vec<FilletFade>,
+}
+
+/// Most fades one fillet holds: one per end of an edge.
+pub const MAX_FILLET_FADES: usize = 2 * MAX_FILLET_EDGES;
+
+/// One end of a filleted edge where the fillet fades
+/// (docs/design/blends.md › *A fillet that ends in a point*): over the
+/// length `over` along the edge its radius falls smoothly to nothing, and
+/// the fillet face closes in a point of the edge, at the vertex `at` or
+/// `back` short of it, tangent to both faces all the way; the edge beyond
+/// the point stays as it was.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilletFade {
+    /// The vertex at the end of the edge, by its persistent name.
+    pub at: PersistentName,
+    /// The length along the edge over which the radius falls to nothing.
+    pub over: Expr,
+    /// How far short of `at`, along the edge, the fillet ends in its
+    /// point. `None`: at the vertex itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back: Option<Expr>,
 }
 
 impl Fillet {
@@ -2113,7 +2139,15 @@ impl FeatureKind {
             FeatureKind::DatumHelix(d) => out = d.exprs(),
             FeatureKind::Fold(f) => out = f.exprs(),
             FeatureKind::SheetMetal(m) => out = m.exprs(),
-            FeatureKind::Fillet(f) => out = vec![named("radius", &f.radius)],
+            FeatureKind::Fillet(f) => {
+                out = vec![named("radius", &f.radius)];
+                for (i, fade) in f.fade.iter().enumerate() {
+                    out.push((format!("fade.{i}.over"), &fade.over));
+                    if let Some(back) = &fade.back {
+                        out.push((format!("fade.{i}.back"), back));
+                    }
+                }
+            }
             FeatureKind::OffsetFace(o) => out = vec![named("distance", &o.distance)],
             FeatureKind::Thicken(t) => out = vec![named("thickness", &t.thickness)],
             FeatureKind::Plate(p) => {
@@ -2299,7 +2333,14 @@ impl FeatureKind {
             FeatureKind::DatumHelix(d) => d.exprs_mut(),
             FeatureKind::Fold(f) => f.exprs_mut(),
             FeatureKind::SheetMetal(m) => m.exprs_mut(),
-            FeatureKind::Fillet(f) => vec![&mut f.radius],
+            FeatureKind::Fillet(f) => {
+                let mut out = vec![&mut f.radius];
+                for fade in &mut f.fade {
+                    out.push(&mut fade.over);
+                    out.extend(fade.back.as_mut());
+                }
+                out
+            }
             FeatureKind::OffsetFace(o) => vec![&mut o.distance],
             FeatureKind::Thicken(t) => vec![&mut t.thickness],
             FeatureKind::Plate(p) => {
@@ -2826,7 +2867,18 @@ impl Document {
                             feature.name
                         )));
                     }
-                    fillet.edges.iter().flat_map(EdgeRef::names).collect()
+                    if fillet.fade.len() > MAX_FILLET_FADES {
+                        return Err(DocError::Invalid(format!(
+                            "`{}` has more than {MAX_FILLET_FADES} fades",
+                            feature.name
+                        )));
+                    }
+                    fillet
+                        .edges
+                        .iter()
+                        .flat_map(EdgeRef::names)
+                        .chain(fillet.fade.iter().map(|fade| &fade.at))
+                        .collect()
                 }
                 FeatureKind::OffsetFace(OffsetFace { faces, .. })
                 | FeatureKind::MoveFace(MoveFace { faces, .. })

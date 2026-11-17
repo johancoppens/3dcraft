@@ -146,6 +146,7 @@ fn seed(
         feet,
         params,
         centre: Some(centre),
+        pole: None,
     })
 }
 
@@ -246,6 +247,7 @@ pub(crate) fn fillet_of(
         scale: scale(surface, ball.radius, tol),
         moved: None,
         settle: 1e-2 * tol,
+        law: None,
     };
     for k in 0..=HELD_AT {
         let u = u0 + (u1 - u0) * (k as f64 / HELD_AT as f64);
@@ -482,6 +484,7 @@ pub(crate) fn rebuilt(
         scale: scale(surface, radius.max(ball.radius), tol),
         moved: None,
         settle: 1e-2 * tol,
+        law: None,
     };
     // The part to build, in the spine's `s` (0 to 1 over the old
     // surface): of the old surface, and past its ends.

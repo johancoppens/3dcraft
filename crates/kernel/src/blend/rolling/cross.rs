@@ -208,7 +208,13 @@ pub(super) struct Blend<'a> {
     pub faces: [FaceId; 2],
     pub sides: [Side<'a>; 2],
     pub shape: Shape,
-    pub ends: &'a [End; 2],
+    /// A fillet whose radius varies along the edge: the ball that rests
+    /// on a point has the radius the law gives where its centre lies
+    /// along the edge.
+    pub law: Option<&'a crate::blend::law::Along<'a>>,
+    /// The ends against a third face; none where the blend closes in a
+    /// point.
+    pub ends: &'a [Option<End>; 2],
     /// The directions into the two faces, square to the edge, at the
     /// middle of the edge.
     pub into: [Vec3; 2],
@@ -252,9 +258,10 @@ impl Blend<'_> {
         let side = self.sides.get(k)?;
         match self.shape {
             Shape::Ball { radius, convex } => {
-                let inward = if convex { -radius } else { radius };
                 let uv = side.surface.project(q).ok()?;
                 let n = side.normal(uv)?;
+                let radius = self.radius_on(q, n, radius, convex)?;
+                let inward = if convex { -radius } else { radius };
                 let centre = q + n * inward;
                 let other = self.sides.get(1 - k)?;
                 let start = other.surface.project(centre).ok()?;
@@ -269,6 +276,16 @@ impl Blend<'_> {
                 let g = q.distance(e) / d - 1.0;
                 g.is_finite().then_some(g)
             }
+        }
+    }
+
+    /// The radius of the ball that rests on `q` of a face whose normal out
+    /// of the body there is `n`: `radius`, or what the law gives where
+    /// that ball's centre lies along the edge.
+    fn radius_on(&self, q: Vec3, n: Vec3, radius: f64, convex: bool) -> Option<f64> {
+        match self.law {
+            Some(law) => law.radius_on(q, if convex { -n } else { n }),
+            None => Some(radius),
         }
     }
 
@@ -299,9 +316,11 @@ impl Blend<'_> {
         let on = match self.shape {
             Shape::Ball { radius, convex } => {
                 let side = self.sides.get(k)?;
-                let inward = if convex { -radius } else { radius };
                 let uv = side.surface.project(q).ok()?;
-                q + side.normal(uv)? * inward
+                let n = side.normal(uv)?;
+                let radius = self.radius_on(q, n, radius, convex)?;
+                let inward = if convex { -radius } else { radius };
+                q + n * inward
             }
             Shape::Cut { .. } => q,
         };
@@ -332,6 +351,7 @@ pub(super) fn find(
     for k in 0..2 {
         let face = *blend.faces.get(k).ok_or_else(lost)?;
         for (j, end) in blend.ends.iter().enumerate() {
+            let Some(end) = end else { continue };
             let first = *end.others.get(k).ok_or_else(lost)?;
             let Some((inside, smooth, path)) = branch(body, first, end.vertex, [face, end.third])
             else {
@@ -445,7 +465,7 @@ pub(super) fn find(
     for c in &found {
         if c.at.is_none() {
             let data = body.edge(c.smooth).ok_or_else(lost)?;
-            let both = blend.ends.iter().all(|end| {
+            let both = blend.ends.iter().flatten().all(|end| {
                 let first = end.others.get(c.side).copied();
                 first
                     .and_then(|f| branch(body, f, end.vertex, [c.before, end.third]))

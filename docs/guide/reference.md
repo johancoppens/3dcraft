@@ -69,7 +69,7 @@ The full description of any command, with every value it takes and what it refus
 | `feature.offsetProfile` | A sketch's profiles grown or shrunk |
 | `feature.boolean` | Union, subtract, intersect |
 | `feature.pattern`, `feature.mirror`, `feature.transform` | Copies, mirror, move and turn |
-| `feature.fillet`, `feature.chamfer` | Round and bevel edges |
+| `feature.fillet`, `feature.chamfer` | Round and bevel edges; a round that fades out to a point on its edge ([Modelling features](features.md#a-fillet-that-fades)) |
 | `feature.shell`, `feature.offsetFace`, `feature.moveFace`, `feature.draft`, `feature.deleteFace` | Operations on faces |
 | `feature.thread` | An ISO metric thread |
 | `feature.tip` | A flat end closed in one rounded point |
