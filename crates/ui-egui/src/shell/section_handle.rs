@@ -1212,7 +1212,10 @@ impl Shell {
     /// block lengthened, a face gone), it is no longer called midway or a
     /// bisector (the review of 2026-11-17).
     fn check_made(&mut self, session: &mut craft3d_engine::Session, scene: &Scene) {
-        let Some(document) = self.shown_status.as_ref().map(|s| s.id) else {
+        // The session's active document, whose section the state now
+        // holds (the shown status follows only at the end of the frame's
+        // sync: on the frame a tab is switched it is still the other).
+        let Some(document) = session.document_status().map(|s| s.id) else {
             return;
         };
         // Forget what was made in documents no longer open.
