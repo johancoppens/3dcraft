@@ -344,6 +344,9 @@ pub struct Measurement {
     /// No less than this, proven, where the relation is a least searched
     /// for (a least distance, a clearance).
     pub at_least: Option<f64>,
+    /// The search rests on samples (a freeform curve or face): not proven,
+    /// whatever the bound (the review of 2026-11-17, round three).
+    pub sampled: bool,
     /// Being measured, on a thread of its own (`Session::between_later`):
     /// the card says so and nothing is drawn or kept yet.
     pub measuring: bool,
@@ -371,6 +374,7 @@ impl Measurement {
             title: String::new(),
             check_name: String::new(),
             at_least: None,
+            sampled: false,
             measuring: true,
             unit: unit.to_string(),
             things,
@@ -384,11 +388,21 @@ impl Measurement {
                 let mut m = measurement_of(&answer, self.items.clone(), &self.unit);
                 m.title = self.title.clone();
                 m.things = self.things.clone();
+                // Each thing in at most 60 characters: a check's name is
+                // at most 256 bytes, and a thing's can be far longer (the
+                // review of 2026-11-17, round three).
+                let short = |s: &str| {
+                    if s.chars().count() > 60 {
+                        s.chars().take(59).collect::<String>() + "…"
+                    } else {
+                        s.to_string()
+                    }
+                };
                 m.check_name = format!(
                     "{} {} – {}",
                     relation_words(&m.relation),
-                    self.things[0],
-                    self.things[1]
+                    short(&self.things[0]),
+                    short(&self.things[1])
                 );
                 m
             }
@@ -412,6 +426,7 @@ impl Measurement {
         json!({
             "measuring": self.measuring,
             "atLeast": self.at_least,
+            "sampled": self.sampled,
             "proven": self.proven(),
             "relation": if self.relation.is_empty() { Value::Null } else { self.relation.clone().into() },
             "value": self.value,
@@ -429,15 +444,17 @@ impl Measurement {
 
     /// Whether the value is what it is within the tolerance: a least
     /// searched for (a least distance, a clearance) only with a proven
-    /// bound that close below it (the review of 2026-11-17: "a number
-    /// shown as a least distance is either proven or says what it is").
+    /// bound that close below it, or that prints the same, and not resting
+    /// on samples (the review of 2026-11-17: "a number shown as a least
+    /// distance is either proven or says what it is").
     pub fn proven(&self) -> bool {
-        let searched = matches!(self.relation.as_str(), "leastDistance" | "clearance");
-        !searched
-            || self
-                .value
-                .zip(self.at_least)
-                .is_some_and(|(v, least)| least >= v - self.tolerance)
+        least_proven(
+            &self.relation,
+            self.value,
+            self.at_least,
+            self.sampled,
+            self.tolerance,
+        )
     }
 
     /// The parameters of `assert.add` that keep this as a check named
@@ -485,6 +502,26 @@ impl Measurement {
             }))
         }
     }
+}
+
+/// Whether a least searched for (`relation` a least distance or a
+/// clearance) is proven to `value` within `tolerance`: by `at_least` that
+/// close below it or printing the same at the tolerance (a range narrower
+/// than its digits reads as noise: the review of 2026-11-17, round
+/// three), and not `sampled`. Any other relation is what it is.
+fn least_proven(
+    relation: &str,
+    value: Option<f64>,
+    at_least: Option<f64>,
+    sampled: bool,
+    tolerance: f64,
+) -> bool {
+    let searched = matches!(relation, "leastDistance" | "clearance");
+    !searched
+        || (!sampled
+            && value.zip(at_least).is_some_and(|(v, least)| {
+                least >= v - tolerance || number_to(least, tolerance) == number_to(v, tolerance)
+            }))
 }
 
 /// An item of the selection as `measure.between` takes it.
@@ -576,13 +613,13 @@ pub fn measurement_of(answer: &Value, items: [Value; 2], unit: &str) -> Measurem
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
     let at_least = answer.get("atLeast").and_then(Value::as_f64);
-    let searched = matches!(relation.as_str(), "leastDistance" | "clearance");
-    let unproven = searched && value.zip(at_least).is_none_or(|(v, l)| l < v - tolerance);
+    let sampled = answer.get("sampled").and_then(Value::as_bool) == Some(true);
+    let unproven = !least_proven(&relation, value, at_least, sampled, tolerance);
     let text = match value {
         Some(v) if angle => format!("{}°", number_to(v, tolerance.to_degrees())),
-        // Not proven within the tolerance: the range it is proven in, or
-        // "about" where there is no bound.
-        Some(v) if unproven => match at_least {
+        // Not proven within the tolerance: "about" where it rests on
+        // samples or has no bound, else the range it is proven in.
+        Some(v) if unproven => match at_least.filter(|_| !sampled) {
             Some(l) => length_text(v, tolerance, unit).replacen(
                 &number_to(v, tolerance),
                 &format!(
@@ -636,6 +673,7 @@ pub fn measurement_of(answer: &Value, items: [Value; 2], unit: &str) -> Measurem
         title: String::new(),
         check_name: String::new(),
         at_least,
+        sampled,
         measuring: false,
         unit: unit.to_string(),
         things: [String::new(), String::new()],
@@ -1659,9 +1697,22 @@ mod tests {
         assert_eq!(none.text, "about 0.1 mm");
         let kept = none.check("Least").unwrap();
         assert_eq!((kept.get("min"), kept["max"].as_f64()), (None, Some(0.1)));
-        let tight = measurement_of(&answer(json!(0.1 - 1e-9)), items, "mm");
+        let tight = measurement_of(&answer(json!(0.1 - 1e-9)), items.clone(), "mm");
         assert_eq!(tight.text, "0.1 mm");
         assert!(tight.proven());
         assert_eq!(tight.check("Least").unwrap()["eq"].as_f64(), Some(0.1));
+        // Round three: what rests on samples is "about", whatever its
+        // bound, and is kept as that bound and the value found, so the
+        // check can fail either way.
+        let mut on_samples = answer(json!(0.1 - 1e-9));
+        on_samples["sampled"] = json!(true);
+        let sampled = measurement_of(&on_samples, items, "mm");
+        assert_eq!(sampled.text, "about 0.1 mm");
+        assert!(!sampled.proven());
+        let kept = sampled.check("Least").unwrap();
+        assert_eq!(
+            (kept["min"].as_f64(), kept["max"].as_f64()),
+            (Some(0.1 - 1e-9), Some(0.1))
+        );
     }
 }

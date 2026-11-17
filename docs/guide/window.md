@@ -276,7 +276,9 @@ panel or on the line, to copy it with its unit. Another selection, or Escape, ta
 distance Left face – Right face*), its value now, within the document's tolerance. It shows under
 **Checks**, is measured again after every change, and is one step to undo. A least distance shown as a
 range (*0.098 – 0.1 mm*: the least found between real places, and no less than the first number, proven)
-or as *about* a number (no bound could be had) is not proven within the tolerance; it is kept as that range.
+or as *about* a number (found on samples of a freeform curve or face, or with no bound) is not proven within
+the tolerance; it is kept as what is proven, at most the number and no less than the bound, and fails when the
+things move nearer or farther than that.
 
 ![A hole selected: the foot of the side panel names its surface, its area and axis, the feature that made it and its name](images/selection.png)
 

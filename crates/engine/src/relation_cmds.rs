@@ -814,8 +814,11 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
                         // axis points (the review of 2026-11-17: at
                         // mid-depth, at the floors of holes drilled from
                         // above, inside the material for one from each
-                        // side): a level both open at, else one the first
-                        // opens at, else the second's; the upper of two.
+                        // side; round three: whichever was selected first,
+                        // a top another body covers, slanted holes): the
+                        // centres of the rims in view, a level both open
+                        // at, else either's; the upper of two (by Z, then
+                        // Y, then X: where a model is mostly seen from).
                         let level = if *ea {
                             let (from, to) = (lo_a.max(lo_bb), hi_a.min(hi_bb));
                             if from <= to {
@@ -824,13 +827,13 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
                                 ma.lerp(*mb, 0.5).dot(*da)
                             }
                         } else {
-                            let (a_lo, a_hi) = openings(ctx, a, *ma, *da, (*lo_a, *hi_a));
-                            let (b_lo, b_hi) = openings(ctx, b, *mb, *db, (*lo_b, *hi_b));
-                            let open_a: Vec<f64> = [(a_hi, *hi_a), (a_lo, *lo_a)]
+                            let ends_a = openings(ctx, a, *ma, *da, (*lo_a, *hi_a));
+                            let ends_b = openings(ctx, b, *mb, *db, (*lo_b, *hi_b));
+                            let open_a: Vec<f64> = ends_a
                                 .into_iter()
                                 .filter_map(|(open, x)| open.then_some(x))
                                 .collect();
-                            let open_b: Vec<f64> = [(b_hi, *hi_b), (b_lo, *lo_b)]
+                            let open_b: Vec<f64> = ends_b
                                 .into_iter()
                                 .filter_map(|(open, x)| open.then_some(along_a(x)))
                                 .collect();
@@ -859,9 +862,9 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
                                     by(p.z, q.z).then(by(p.y, q.y)).then(by(p.x, q.x))
                                 })
                             };
+                            let either: Vec<f64> = open_a.iter().chain(&open_b).copied().collect();
                             upper(&common)
-                                .or_else(|| upper(&open_a))
-                                .or_else(|| upper(&open_b))
+                                .or_else(|| upper(&either))
                                 .unwrap_or_else(|| hi_a.min(hi_bb))
                         };
                         let at = |m: Vec3| m + *da * (level - m.dot(*da));
@@ -941,19 +944,59 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
     }
 }
 
-/// Whether the round face `t` (a hole's or a boss's wall), its axis
+/// The ends of the round face `t` (a hole's or a boss's wall), its axis
 /// through `middle` along the unit `d`, reaching from `lo` to `hi` along
-/// it, opens at each end: just past that end (a tenth of its radius), on
-/// the axis and near the wall, lies outside the body (the hole meets the
-/// air there, at its rim on a face a person sees); a hole's floor does
-/// not, flat or a drill's cone. Neither where the body cannot tell.
-fn openings(ctx: &Ctx<'_>, t: &Thing, middle: Vec3, d: Vec3, (lo, hi): (f64, f64)) -> (bool, bool) {
+/// it: the far end first, then the near one, each with whether it opens to
+/// the air in view and the level along `d` of its rim's centre. An end
+/// opens where, just past it (a tenth of its radius), on the axis and near
+/// the wall, lies outside the face's body and every other body shown (a
+/// hole meets the air at its rim on a face a person sees; a hole's floor,
+/// flat or a drill's cone, does not, nor a top another body covers). Its
+/// rim: the face's edges wholly on that end's side of the middle (not a
+/// seam), their points' mean along `d` (a slanted hole's rim is an
+/// ellipse whose centre is on the axis, not its far tip); the end itself
+/// where there are none. Closed where the bodies cannot tell.
+fn openings(
+    ctx: &Ctx<'_>,
+    t: &Thing,
+    middle: Vec3,
+    d: Vec3,
+    (lo, hi): (f64, f64),
+) -> [(bool, f64); 2] {
     use craft3d_kernel::boolean::probe::{Place, Probe};
-    let Ok(probe) = Probe::new(&t.body, &ctx.tolerance) else {
-        return (false, false);
-    };
     let points = boundary(&t.body, &t.indices, 8);
     let at = |x: f64| middle + d * (x - middle.dot(d));
+    // The rim's centre at the end `end` (of `lo` and `hi`).
+    let half = 0.5 * (lo + hi);
+    let rim = |high: bool| -> f64 {
+        let mut sum = 0.0;
+        let mut count = 0_u32;
+        for &f in &t.indices {
+            for edge in verify::face_edges(&t.body, f) {
+                let (t0, t1) = edge.range;
+                let samples: Vec<f64> = (0..16)
+                    .map(|k| {
+                        edge.curve
+                            .eval(t0 + (t1 - t0) * (f64::from(k) + 0.5) / 16.0)
+                            .dot(d)
+                    })
+                    .collect();
+                let side = samples.iter().all(|x| x.is_finite() && (*x > half) == high);
+                if side {
+                    sum += samples.iter().sum::<f64>();
+                    count += 16;
+                }
+            }
+        }
+        let centre = sum / f64::from(count.max(1));
+        if count > 0 && centre.is_finite() {
+            centre
+        } else if high {
+            hi
+        } else {
+            lo
+        }
+    };
     // From the axis to the wall at the end `end`: by the boundary's point
     // nearest that end.
     let radial = |end: f64| {
@@ -963,7 +1006,28 @@ fn openings(ctx: &Ctx<'_>, t: &Thing, middle: Vec3, d: Vec3, (lo, hi): (f64, f64
             .min_by(|p, q| (p.dot(d) - end).abs().total_cmp(&(q.dot(d) - end).abs()))
             .map(|p| *p - at(p.dot(d)))
     };
-    let outside = |p: Vec3| p.is_finite() && matches!(probe.place(p), Ok(Place::Outside));
+    let own = Probe::new(&t.body, &ctx.tolerance).ok();
+    // The other bodies shown, each with its box; probed only where a point
+    // lies in that box.
+    let others: Vec<(craft3d_math::Bbox3, &Arc<Body>)> = ctx
+        .regen
+        .bodies()
+        .filter(|(id, _)| *id != t.feature && !ctx.doc.is_hidden(*id))
+        .filter_map(|(_, body)| Some((body.bbox().ok()?, body)))
+        .collect();
+    let margin = 10.0 * ctx.tolerance.linear;
+    let outside = |p: Vec3| {
+        let Some(own) = &own else {
+            return false;
+        };
+        p.is_finite()
+            && matches!(own.place(p), Ok(Place::Outside))
+            && others.iter().all(|(bounds, body)| {
+                !bounds.contains(p, margin)
+                    || Probe::new(body, &ctx.tolerance)
+                        .is_ok_and(|probe| matches!(probe.place(p), Ok(Place::Outside)))
+            })
+    };
     let open = |end: f64, sign: f64| {
         let Some(r) = radial(end) else {
             return false;
@@ -972,7 +1036,7 @@ fn openings(ctx: &Ctx<'_>, t: &Thing, middle: Vec3, d: Vec3, (lo, hi): (f64, f64
         let past = at(end + sign * step);
         outside(past) && outside(past + r * 0.95)
     };
-    (open(lo, -1.0), open(hi, 1.0))
+    [(open(hi, 1.0), rim(true)), (open(lo, -1.0), rim(false))]
 }
 
 /// The closest points of the line through `pa` along `da` and the one
@@ -1076,6 +1140,10 @@ const ALONG_REFINE: u32 = 60;
 const ALONG_PIECES: usize = 2048;
 const ALONG_PAIRS: u64 = 4_000_000;
 const ALONG_NARROWED: usize = 48;
+/// Most comparisons of a piece and a triangle in tightening an arc's
+/// bound, and most pieces waiting to be halved.
+const ALONG_TIGHTEN: u64 = 2_000_000;
+const ALONG_HALVES: usize = 8192;
 
 /// The least distance from an edge to another thing, as `along_edge`
 /// finds it.
@@ -1293,11 +1361,18 @@ fn along_edge(ctx: &Ctx<'_>, edge: &Thing, other: &Thing) -> Result<Option<Along
     if let Some(e) = other_edge {
         freeform |= matches!(e.curve, Curve3::Nurbs(_) | Curve3::Ellipse(_));
     }
-    for &f in &faces {
-        if let Some(face) = other.body.faces.get(f) {
-            freeform |= matches!(face.surface, Surface::Bezier(_) | Surface::Nurbs(_));
-        }
-    }
+    // The other's freeform faces: what is found near them rests on
+    // samples (those far from the least found do not matter).
+    let freeform_faces: std::collections::BTreeSet<usize> =
+        faces
+            .iter()
+            .copied()
+            .filter(|&f| {
+                other.body.faces.get(f).is_some_and(|face| {
+                    matches!(face.surface, Surface::Bezier(_) | Surface::Nurbs(_))
+                })
+            })
+            .collect();
     // The nearest point of the other to `p`, over `near` of its faces (all
     // when `None`) and its edge; a face whose nearest point cannot be had
     // is left to the proof, whose bound then says how near it may come.
@@ -1497,10 +1572,81 @@ fn along_edge(ctx: &Ctx<'_>, edge: &Thing, other: &Thing) -> Result<Option<Along
     let Some((d, p, q)) = best else {
         return Ok(None);
     };
-    // What the pieces prove: every piece's bound (none where a piece was
-    // left out, or the curve's pieces were estimated).
-    let by_pieces = (!abandoned && edge_proven)
+    // A freeform face of the other near where the least may lie.
+    freeform |= bounds
+        .iter()
+        .any(|(least, _, near, _)| *least <= d && near.iter().any(|f| freeform_faces.contains(f)));
+    // Tightening an arc's bound (the review of 2026-11-17, round three: a
+    // rim to a straight edge read 26.248806 – 26.248809, a rim to a block
+    // at 1e6 51999999.999998 – 52000000): a piece whose bound lies under
+    // the least found by more than a quarter of the tolerance, and only
+    // its sagitta holds it there, is halved and its halves bounded again
+    // (a quarter of the sagitta each), until each is within that quarter
+    // or what holds it is the other's mesh (a curved face's error, which
+    // the faces' own proof below settles), in bounded work. Exact against
+    // flat faces bounded by lines and against straight edges: a circle
+    // against a plane or a line comes within the tolerance.
+    let goal = 0.25 * ctx.tolerance.linear;
+    let mut by_pieces = (!abandoned && edge_proven)
         .then(|| bounds.iter().map(|(least, ..)| *least).fold(d, f64::min));
+    if let (Curve3::Circle(circle), Some(_)) = (&curve.curve, by_pieces) {
+        let r = circle.radius();
+        let reach = d + chord;
+        // The least, less the faces' errors, of a piece of a line to the
+        // other's triangles of `near` and to the other's pieces; no more
+        // than `reach` (triangles farther are left out).
+        let raw_of = |pa: Vec3, pb: Vec3, near: &[usize], work: &mut u64| -> f64 {
+            let piece_box = box_of(&[pa, pb]);
+            let mut least = reach;
+            if let Some(part) = &part {
+                for &f in near {
+                    let err = part.err(f);
+                    for t in part.triangles.get(&f).map(Vec::as_slice).unwrap_or(&[]) {
+                        if boxes_apart(&piece_box, &box_of(t)) > reach + err {
+                            continue;
+                        }
+                        *work = work.saturating_add(1);
+                        least = least.min(segment_to_triangle(pa, pb, t).0 - err);
+                    }
+                }
+            }
+            for (x, y) in &other_pieces {
+                let (u, v) = closest_segments(pa, pb, *x, *y);
+                least = least.min(u.distance(v) - other_err);
+            }
+            least
+        };
+        let mut kept = d;
+        let mut work = 0_u64;
+        let mut queue: Vec<(f64, f64, usize)> = Vec::new();
+        for (k, (least, i, _, _)) in bounds.iter().enumerate() {
+            match pieces.get(*i) {
+                Some((ta, tb, ..)) if *least < d - goal => queue.push((*ta, *tb, k)),
+                _ => kept = kept.min(*least),
+            }
+        }
+        while let Some((ta, tb, k)) = queue.pop() {
+            let near = bounds
+                .get(k)
+                .map_or(&[][..], |(_, _, near, _)| near.as_slice());
+            let mid = 0.5 * (ta + tb);
+            for (x, y) in [(ta, mid), (mid, tb)] {
+                let sagitta = (r * (1.0 - (0.5 * (y - x).abs()).pcos())).max(0.0);
+                let raw = raw_of(at(x), at(y), near, &mut work) - slack;
+                let bound = raw - sagitta;
+                let settled = bound >= d - goal;
+                // Held by the mesh, not the sagitta (the arc lies within
+                // its sagitta of the chord, either side); or out of work.
+                let held = raw + sagitta < d - goal || sagitta <= 0.0;
+                if settled || held || work > ALONG_TIGHTEN || queue.len() >= ALONG_HALVES {
+                    kept = kept.min(bound);
+                } else {
+                    queue.push((x, y, k));
+                }
+            }
+        }
+        by_pieces = Some(kept);
+    }
     // What the faces the edge bounds prove: the edge lies on each, so the
     // least distance from any of them to the other, proven on the exact
     // faces as `measure.distance` proves its own, is no more than the
@@ -1624,8 +1770,12 @@ pub(crate) fn take(ctx: &Ctx<'_>, p: &Map<String, Value>) -> Result<Outcome, Str
     }
     if found.sampled {
         // Searched on samples (a freeform curve or face, or no bound to be
-        // had): the answer says so.
-        out.sampled = Sampled::OpenBelow;
+        // had): the answer says so. A proven bound below still bounds it,
+        // so an assertion kept from it can fail (the review of 2026-11-17,
+        // round three); without one the side below is open.
+        if found.at_least.is_none() {
+            out.sampled = Sampled::OpenBelow;
+        }
         out.detail.insert("sampled".into(), true.into());
     }
     out.detail

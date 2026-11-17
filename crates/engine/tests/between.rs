@@ -709,43 +709,76 @@ fn a_narrow_least_beside_a_broad_one_is_found_and_proven() {
     }
 }
 
-/// The review of 2026-11-17, round two: two holes' line where they open,
-/// whichever way their axes point. Holes from the top of two depths, holes
-/// drilled downward (axes pointing down, floors at z = 12), one through
-/// hole each way: at the top (z = 20), not at a floor; one from the top and
-/// one from the bottom: at one of the rims (z = 20 or 0), both ends level,
-/// never inside the material. Either thing first.
-/// A cylinder cut as a hole: its x, the z it starts at, its height and
-/// which way along Z its axis points.
-type Cylinder = (f64, f64, f64, f64);
+/// A cylinder cut as a hole: its x, y and z where it starts, its height
+/// and its axis.
+type Cylinder = (f64, f64, f64, f64, [f64; 3]);
 
+/// The review of 2026-11-17, rounds two and three: two holes' line goes
+/// between the centres of their rims in view, whichever way their axes
+/// point and whichever was selected first: holes from the top of two
+/// depths, holes drilled downward, one through hole each way, one from
+/// the top and one from the bottom, a through hole and a blind one: at the
+/// top (z = 20), never at a floor or inside the material; through holes
+/// whose tops another body covers: at the bottom (z = 0), where they are
+/// in view; two slanted holes: at the centres of their top rims (z = 20),
+/// not 2.1 above them at the rims' far tips.
 #[test]
 fn two_holes_line_is_drawn_where_they_open() {
-    // (what, the two cylinders as (x, z start, height, axis z), the z the
-    // line is at, or `None`: at a rim)
-    let cases: [(&str, [Cylinder; 2], Option<f64>); 4] = [
+    let up = [0.0, 0.0, 1.0];
+    let down = [0.0, 0.0, -1.0];
+    let slant = [0.0, 1.0, 1.0];
+    // (what, the two cylinders, a block over the top, the z of the line)
+    let cases: [(&str, [Cylinder; 2], bool, f64); 7] = [
         (
             "from the top, depths 8 and 15",
-            [(15.0, 12.0, 10.0, 1.0), (45.0, 5.0, 17.0, 1.0)],
-            Some(20.0),
+            [(15.0, 20.0, 12.0, 10.0, up), (45.0, 20.0, 5.0, 17.0, up)],
+            false,
+            20.0,
         ),
         (
             "from the top, axes pointing down",
-            [(15.0, 25.0, 13.0, -1.0), (45.0, 25.0, 13.0, -1.0)],
-            Some(20.0),
+            [
+                (15.0, 20.0, 25.0, 13.0, down),
+                (45.0, 20.0, 25.0, 13.0, down),
+            ],
+            false,
+            20.0,
         ),
         (
             "through, one axis up and one down",
-            [(15.0, -5.0, 30.0, 1.0), (45.0, 25.0, 30.0, -1.0)],
-            Some(20.0),
+            [(15.0, 20.0, -5.0, 30.0, up), (45.0, 20.0, 25.0, 30.0, down)],
+            false,
+            20.0,
         ),
         (
             "one from the top, one from the bottom",
-            [(15.0, 12.0, 10.0, 1.0), (45.0, -2.0, 10.0, 1.0)],
-            None,
+            [(15.0, 20.0, 12.0, 10.0, up), (45.0, 20.0, -2.0, 10.0, up)],
+            false,
+            20.0,
+        ),
+        (
+            "a through hole and a blind one",
+            [(15.0, 20.0, -5.0, 30.0, up), (45.0, 20.0, 12.0, 10.0, up)],
+            false,
+            20.0,
+        ),
+        (
+            "two slanted holes",
+            [
+                (15.0, 0.0, -10.0, 60.0, slant),
+                (45.0, 0.0, -10.0, 60.0, slant),
+            ],
+            false,
+            20.0,
+        ),
+        (
+            "through holes, a body on top",
+            [(15.0, 20.0, -5.0, 30.0, up), (45.0, 20.0, -5.0, 30.0, up)],
+            true,
+            0.0,
         ),
     ];
-    for (what, holes, want) in cases {
+    for (what, holes, cover, want) in cases {
         let mut s = session();
         run(&mut s, "file.new", json!({"units": "mm"}));
         run(
@@ -754,12 +787,12 @@ fn two_holes_line_is_drawn_where_they_open() {
             json!({"size": [60, 40, 20], "name": "Block"}),
         );
         let mut target = "Block".to_string();
-        for (i, (x, z, height, axis)) in holes.iter().enumerate() {
+        for (i, (x, y, z, height, axis)) in holes.iter().enumerate() {
             let name = format!("Hole{i}");
             run(
                 &mut s,
                 "feature.cylinder",
-                json!({"radius": 3, "height": height, "position": [x, 20, z], "axis": [0, 0, axis], "name": name}),
+                json!({"radius": 3, "height": height, "position": [x, y, z], "axis": axis, "name": name}),
             );
             let made = format!("Cut{i}");
             run(
@@ -768,6 +801,13 @@ fn two_holes_line_is_drawn_where_they_open() {
                 json!({"op": "subtract", "target": target, "tool": name, "name": made}),
             );
             target = made;
+        }
+        if cover {
+            run(
+                &mut s,
+                "feature.block",
+                json!({"size": [60, 40, 10], "position": [0, 0, 20], "name": "Cover"}),
+            );
         }
         let walls = run(
             &mut s,
@@ -790,17 +830,17 @@ fn two_holes_line_is_drawn_where_they_open() {
                 got["from"][2].as_f64().unwrap(),
                 got["to"][2].as_f64().unwrap(),
             );
+            // A slanted hole's rim is an ellipse, its centre a mean of
+            // points along it: near the top, not at the far tip 2.1 above.
+            let near = if what == "two slanted holes" {
+                0.5
+            } else {
+                1e-9
+            };
             assert!(
-                close(zf, zt, 1.0),
-                "{what}: drawn at z {zf} and {zt}: {got}"
+                (zf - want).abs() <= near && (zt - want).abs() <= near,
+                "{what}, wall {a} first: drawn at z {zf} and {zt}, want {want}: {got}"
             );
-            match want {
-                Some(z) => assert!(close(zf, z, 1.0), "{what}: drawn at z {zf}: {got}"),
-                None => assert!(
-                    close(zf, 0.0, 1.0) || close(zf, 20.0, 1.0),
-                    "{what}: drawn at z {zf}: {got}"
-                ),
-            }
         }
     }
 }
@@ -924,4 +964,90 @@ fn a_face_with_a_name_over_512_characters_is_measured() {
         |it: &Value| json!({"kind": "face", "name": it["name"], "feature": it["feature"]});
     let got = between(&mut s, &as_item(longest), &as_item(other));
     assert!(got["relation"].is_string(), "{got}");
+}
+
+/// A disk of radius 50 drawn as `n` straight segments in two polylines,
+/// extruded 5 high ("Poly"): its top and bottom faces have names that
+/// grow with the segments (the review of 2026-11-17, round three: 1700
+/// gave 10112 bytes).
+fn many_sided(n: usize) -> Session {
+    let point = |i: usize| {
+        let a = std::f64::consts::TAU * (i % n) as f64 / n as f64;
+        json!([50.0 * a.pcos(), 50.0 * a.psin()])
+    };
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Many"}),
+    );
+    let half = n / 2;
+    let first: Vec<Value> = (0..=half).map(point).collect();
+    let second: Vec<Value> = (half..=n).map(point).collect();
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Many", "points": first}),
+    );
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Many", "points": second}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Many", "distance": 5, "name": "Poly"}),
+    );
+    s
+}
+
+/// The review of 2026-11-17, round three: no name a body can have is
+/// refused for its length anywhere a selection goes. A profile of 2000
+/// segments gives faces named in over 8192 bytes: selected by query and
+/// by their items, measured between them and by the Measure button's
+/// query, kept as a check that passes, and a note pinned to one.
+#[test]
+fn a_face_named_in_over_8192_bytes_goes_wherever_a_selection_goes() {
+    let mut s = many_sided(2000);
+    let top = item(
+        &mut s,
+        "face",
+        json!({"in": "Poly", "normal": {"along": "z"}}),
+    );
+    let bottom = item(
+        &mut s,
+        "face",
+        json!({"in": "Poly", "normal": {"along": "-z"}}),
+    );
+    let name = top["name"].as_str().unwrap().to_string();
+    assert!(name.len() > 8192, "the top's name: {} bytes", name.len());
+    let set = run(&mut s, "select.set", json!({"items": [top, bottom]}));
+    assert_eq!(set["count"], 2, "{set}");
+    let got = between(&mut s, &top, &bottom);
+    assert_eq!(got["relation"], "distance", "{got}");
+    assert!(close(got["value"].as_f64().unwrap(), 5.0, 1.0), "{got}");
+    let thickness = run(
+        &mut s,
+        "measure.thickness",
+        json!({"of": {"kind": "face", "where": {"in": top["feature"], "name": name}}}),
+    );
+    assert!(
+        (thickness["thickness"].as_f64().unwrap() - 5.0).abs() < 1e-6,
+        "{thickness}"
+    );
+    let kept = run(
+        &mut s,
+        "assert.add",
+        json!({"name": "Kept", "measure": "between", "from": top, "to": bottom,
+            "relation": "distance", "eq": 5, "tol": 1e-6}),
+    );
+    assert_eq!(kept["status"], "passed", "{kept}");
+    let note = run(
+        &mut s,
+        "note.add",
+        json!({"text": "here", "on": name, "feature": top["feature"]}),
+    );
+    assert!(note.get("id").is_some(), "{note}");
 }

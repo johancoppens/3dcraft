@@ -79,10 +79,22 @@ review: a thin pin 0.1 from a rim was stepped over for a wall at 0.15): the edge
 within its sagitta of the arc (a straight edge exactly; another curve by an estimate, then not proven),
 against the other's triangles, each within the mesh's error of its face, bound the least from below; every
 piece whose bound lies under the least found is narrowed on the exact geometry near its own faces, and the
-least bound is `atLeast`. The things are found by the selection's own items (`Resolver::locate`), never
-through a name pattern; a name pattern without `*` may be as long as a name can be (a gear's faces have names
-of over 512 characters). Two parallel holes are drawn where they open: just past each end of a hole, on its
-axis, the body tells inside from outside, and the line goes to a level both open at, else the first's. Two bodies: the clearance (`measure.clearance`). Anything else: the
+least bound is `atLeast`, the better of the pieces' and of what the faces the edge bounds prove (the edge lies
+on each: their least distance, proven by `measure.distance`'s own proof, is no more than the edge's). An
+arc's piece whose bound lies under the least found by more than a quarter of the tolerance, held there by
+its sagitta alone, is halved until it is not (round three: a rim to a straight edge read *26.248806 –
+26.248809*), so a circle against a plane or a line is proven within the tolerance; where a curved face's
+mesh holds the bound, the faces' proof settles it. What rests on samples (a freeform curve, a freeform face
+near the least) says `sampled: true`; an assertion keeps its proven bound below, so a check kept from it can
+fail. The things are found by the selection's own items (`Resolver::locate`), never through a name pattern;
+a name pattern without `*`, and every name a selection takes, may be as long as the longest request (1 MiB,
+the control channel's line; round three: an extruded loop of 1700 points named its top face in 10112 bytes,
+over the 8192 there were). Two parallel holes are drawn between the centres of their rims in view: just past
+each end of a hole, on its axis and near its wall, every body shown tells air from material (a top another
+body covers is not in view), each rim's centre is the mean along the axis of its edges' points (a slanted
+hole's rim is an ellipse centred on the axis), and the line goes to a level both open at, else either's, the
+upper of two (by Z, then Y, then X: where a model is mostly seen from), whichever hole was selected first.
+Two bodies: the clearance (`measure.clearance`). Anything else: the
 least distance (`measure.distance`). Each
 answer carries the two ends of a dimension line (for an angle its corner and a point toward each side) and
 the document's tolerance, linear or angular. As an assertion it is the measure `between`, or
@@ -91,8 +103,9 @@ the document's tolerance, linear or angular. As an assertion it is the measure `
 The window asks once per selection and revision, on a thread of its own (`Session::between_later`, a
 `BetweenJob` the side panel polls; the card says *Measuring…* meanwhile: on the window's thread two gear
 bodies held a frame up about 180 ms), one at a time (a newer selection waits, an older answer is dropped;
-a least not proven within the tolerance shows the range it is proven in, or *about* without a bound, and
-*Keep as a check* keeps that range), prints numbers to the document's tolerance without trailing zeros
+a least not proven within the tolerance shows the range it is proven in, one number where the two print
+the same at the tolerance, *about* where it rests on samples or has no bound, and *Keep as a check* keeps
+what is proven: the range, or at most the value with the bound below it), prints numbers to the document's tolerance without trailing zeros
 (the same text shown and copied), and shows one large number
 at the panel's foot in place of the first thing's rows, and draws the dimension line with egui over the
 picture (`shell/dimension.rs`, as the section's handle is drawn; neither renderer draws it): the accent over

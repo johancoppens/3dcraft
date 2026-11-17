@@ -15,6 +15,7 @@
 )]
 
 use craft3d_engine::{Session, Workspace};
+use craft3d_math::Portable;
 use craft3d_ui_egui::{RendererChoice, Shell};
 use egui::{Event, PointerButton, Pos2, vec2};
 use serde_json::{Value, json};
@@ -723,4 +724,72 @@ fn an_answer_for_an_older_selection_or_revision_is_never_shown() {
         !seen.is_empty() && seen.iter().all(|t| t == "20 mm"),
         "{seen:?}"
     );
+}
+
+/// The review of 2026-11-17, round three: the faces of a profile of 2000
+/// segments have names of over 8192 bytes; selected, the card measures
+/// them (it showed "—"), and Keep keeps the check, which passes.
+#[test]
+fn faces_named_in_over_8192_bytes_are_measured_and_kept() {
+    let n = 2000_usize;
+    let point = |i: usize| {
+        let a = std::f64::consts::TAU * (i % n) as f64 / n as f64;
+        json!([50.0 * a.pcos(), 50.0 * a.psin()])
+    };
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Many"}),
+    );
+    let first: Vec<Value> = (0..=n / 2).map(point).collect();
+    let second: Vec<Value> = (n / 2..=n).map(point).collect();
+    run(
+        &mut session,
+        "sketch.polyline",
+        json!({"sketch": "Many", "points": first}),
+    );
+    run(
+        &mut session,
+        "sketch.polyline",
+        json!({"sketch": "Many", "points": second}),
+    );
+    run(
+        &mut session,
+        "feature.extrude",
+        json!({"sketch": "Many", "distance": 5, "name": "Poly"}),
+    );
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    let found = run(
+        &mut session,
+        "select.query",
+        json!({"kind": "face", "where": {"in": "Poly", "any": [{"normal": {"along": "z"}}, {"normal": {"along": "-z"}}]}, "then": "replace"}),
+    );
+    assert_eq!(found["count"], 2, "{found}");
+    let longest = found["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|it| it["name"].as_str().map_or(0, str::len))
+        .max()
+        .unwrap();
+    assert!(longest > 8192, "{longest} bytes");
+    window.frames(&mut shell, &mut session, 3);
+    let m = shell.measurement().cloned().unwrap();
+    assert_eq!(
+        (m.relation.as_str(), m.text.as_str()),
+        ("distance", "5 mm"),
+        "{:?}",
+        m.refused
+    );
+    let keep = target(&shell, "keep").center();
+    window.click(&mut shell, &mut session, keep);
+    window.frames(&mut shell, &mut session, 3);
+    let listed = run(&mut session, "assert.list", json!({}));
+    let rows = listed["assertions"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{listed}");
+    assert_eq!(rows[0]["status"], "passed", "{listed}");
 }
