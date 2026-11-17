@@ -402,6 +402,75 @@ fn foot(in: VertexOut, p: vec2<f32>) -> Foot {
     return Foot(at, t, length(p - at));
 }
 
+// Places on either side of the point a lifted line is tested at, and how
+// far apart, in pixels (`viewport::LIFTED_REACH`, `LIFTED_STEP`); the
+// most its lift grows for a slanting surface (`viewport::MAX_SLANT`).
+const LIFTED_REACH: i32 = 2;
+const LIFTED_STEP: f32 = 1.0;
+const MAX_SLANT: f32 = 16.0;
+
+// How slanting the surface around pixel position `at` is seen, from the
+// cell of the four samples around it, for a point at view distance
+// `depth`: the secant of the angle between the view and the surface's
+// normal, at most MAX_SLANT, 1 where a sample shows nothing
+// (`viewport::surface_slant`).
+fn slant_at(at: vec2<f32>, depth: f32) -> f32 {
+    // How long a pixel is there (`Projector::footprint`).
+    var footprint = 2.0 / (scene.up.w * lines.size.y);
+    if scene.forward.w > 0.5 {
+        footprint = footprint * depth;
+    }
+    if !(footprint > 0.0) {
+        return 1.0;
+    }
+    let size = vec2<i32>(i32(lines.size.x), i32(lines.size.y));
+    let cell = vec2<i32>(floor(at - vec2<f32>(0.5, 0.5)));
+    let top = size - vec2<i32>(1);
+    let a = surface_at(clamp(cell, vec2<i32>(0), top));
+    let b = surface_at(clamp(cell + vec2<i32>(1, 0), vec2<i32>(0), top));
+    let c = surface_at(clamp(cell + vec2<i32>(0, 1), vec2<i32>(0), top));
+    let d = surface_at(clamp(cell + vec2<i32>(1, 1), vec2<i32>(0), top));
+    if !(a.drawn && b.drawn && c.drawn && d.drawn) {
+        return 1.0;
+    }
+    let across = 0.5 * ((b.distance - a.distance) + (d.distance - c.distance));
+    let down = 0.5 * ((c.distance - a.distance) + (d.distance - b.distance));
+    let ratio = length(vec2<f32>(across, down)) / footprint;
+    let slant = sqrt(1.0 + ratio * ratio);
+    if !(slant < MAX_SLANT) {
+        return MAX_SLANT;
+    }
+    return slant;
+}
+
+// Whether the point of the segment at the foot `f` is behind a surface:
+// tested where it is, or for a lifted segment (`Segment::lift`: a line on
+// an exact surface) `lift` times the surface's slant nearer, at
+// 2 LIFTED_REACH + 1 places along it LIFTED_STEP pixels apart and hidden
+// where most are (`viewport::lifted_hides`).
+fn hides(in: VertexOut, f: Foot) -> bool {
+    let ab = in.pb - in.pa;
+    let length_ab = length(ab);
+    if !(in.lift > 0.0) {
+        return surface_hides(f.at, depth_between(in.ends, f.t));
+    }
+    if !(length_ab > 0.0) {
+        // A dot: one test decides.
+        let depth = depth_between(in.ends, f.t);
+        return surface_hides(f.at, depth - in.lift * slant_at(f.at, depth));
+    }
+    var count = 0;
+    for (var k = -LIFTED_REACH; k <= LIFTED_REACH; k = k + 1) {
+        let t = f.t + f32(k) * LIFTED_STEP / length_ab;
+        let at = in.pa + ab * t;
+        let depth = depth_between(in.ends, t);
+        if surface_hides(at, depth - in.lift * slant_at(at, depth)) {
+            count = count + 1;
+        }
+    }
+    return count > LIFTED_REACH;
+}
+
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let p = in.clip.xy;
@@ -421,7 +490,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // The point of the segment nearest to the pixel's centre, at its
         // own depth: on the line itself, as the CPU tests its pieces, so
         // that a line on a sloping face is not tested beside itself.
-        if surface_hides(f.at, depth - in.lift) {
+        if hides(in, f) {
             if (in.flags & DIMMED) == 0u {
                 discard;
             }
