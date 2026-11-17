@@ -48,15 +48,13 @@ fn closed_form(over: f64, back: f64, both: bool) -> f64 {
 
 fn block(s: &mut Session) {
     run(s, "file.new", json!({"units": "mm"}));
-    built(
-        s,
-        "feature.block",
-        json!({"size": SIZE, "name": "Box"}),
-    );
+    built(s, "feature.block", json!({"size": SIZE, "name": "Box"}));
 }
 
 fn close(actual: &Value, expected: f64, bound: f64, what: &str) {
-    let actual = actual.as_f64().unwrap_or_else(|| panic!("{what}: {actual}"));
+    let actual = actual
+        .as_f64()
+        .unwrap_or_else(|| panic!("{what}: {actual}"));
     assert!(
         (actual - expected).abs() <= bound,
         "{what}: {actual}, expected {expected} (off by {:e})",
@@ -110,7 +108,12 @@ fn a_fillet_that_fades_meets_its_closed_form_and_says_where_it_ends() {
             .iter()
             .find(|v| v["name"] == vertex.as_str())
             .unwrap_or_else(|| panic!("no vertex {vertex} in {listing}"));
-        close(&there["point"][2], SIZE[2] - back, 1e-9, "the vertex's height");
+        close(
+            &there["point"][2],
+            SIZE[2] - back,
+            1e-9,
+            "the vertex's height",
+        );
         // document.inspect says the same.
         let inspected = common::checked::feature(&mut s, "Round");
         assert_eq!(inspected["fades"], made["fades"], "{inspected}");
@@ -128,7 +131,12 @@ fn both_ends_fade_and_two_edges_apart_fade_in_one_fillet() {
                "fade": [{"at": TOP, "over": 10, "back": 2}, {"at": BOTTOM, "over": 10, "back": 2}]}),
     );
     let found = body(&mut s, "Round");
-    close(&found["volume"], closed_form(10.0, 2.0, true), 1e-4, "both ends");
+    close(
+        &found["volume"],
+        closed_form(10.0, 2.0, true),
+        1e-4,
+        "both ends",
+    );
     deep(&mut s);
     // Two upright edges that do not meet, each fading at its top; with a
     // third edge of one radius that meets neither.
@@ -155,7 +163,11 @@ fn the_names_of_a_faded_fillet_hold_through_an_edit_a_save_and_an_undo() {
     let dir = workdir("fillet-fade", "names");
     let mut s = session_in(&dir);
     run(&mut s, "file.new", json!({"units": "mm"}));
-    run(&mut s, "variable.set", json!({"name": "h", "expr": "40 mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "h", "expr": "40 mm"}),
+    );
     built(
         &mut s,
         "feature.block",
@@ -181,7 +193,11 @@ fn the_names_of_a_faded_fillet_hold_through_an_edit_a_save_and_an_undo() {
     let edge = beyond["edges"][0]["name"].as_str().unwrap().to_string();
     // What is left of the edge is the edge, shortened: it answers to the
     // block's name of it too.
-    assert_eq!(beyond["edges"][0]["aliases"], json!(["F2:copy(0)/F1:edge(9)"]), "{beyond}");
+    assert_eq!(
+        beyond["edges"][0]["aliases"],
+        json!(["F2:copy(0)/F1:edge(9)"]),
+        "{beyond}"
+    );
     close(&beyond["edges"][0]["length"], 6.0, 1e-9, "the edge beyond");
     built(&mut s, "datum.point", json!({"vertex": tip, "name": "Tip"}));
     built(
@@ -191,10 +207,19 @@ fn the_names_of_a_faded_fillet_hold_through_an_edit_a_save_and_an_undo() {
     );
     let before = body(&mut s, "Bevel");
     // Taller: the tip moves up with the top, every name holds.
-    run(&mut s, "variable.set", json!({"name": "h", "expr": "50 mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "h", "expr": "50 mm"}),
+    );
     let point = common::checked::feature(&mut s, "Tip");
     assert_eq!(point["status"], "ok", "{point}");
-    close(&point["datum"]["at"][2], 44.0, 1e-9, "the tip after the edit");
+    close(
+        &point["datum"]["at"][2],
+        44.0,
+        1e-9,
+        "the tip after the edit",
+    );
     let after = body(&mut s, "Bevel");
     assert_eq!(after["valid"], true, "{after}");
     assert_eq!(after["faceNames"], before["faceNames"], "{after}");
@@ -212,8 +237,16 @@ fn the_names_of_a_faded_fillet_hold_through_an_edit_a_save_and_an_undo() {
     let plain = {
         let mut p = session();
         run(&mut p, "file.new", json!({"units": "mm"}));
-        built(&mut p, "feature.block", json!({"size": [40, 30, 50], "name": "Box"}));
-        built(&mut p, "feature.fillet", json!({"edges": [EDGE], "radius": 3, "name": "Round"}));
+        built(
+            &mut p,
+            "feature.block",
+            json!({"size": [40, 30, 50], "name": "Box"}),
+        );
+        built(
+            &mut p,
+            "feature.fillet",
+            json!({"edges": [EDGE], "radius": 3, "name": "Round"}),
+        );
         body(&mut p, "Round")["volume"].clone()
     };
     built(
@@ -255,20 +288,37 @@ fn refused_with(fade: Value) -> String {
 #[test]
 fn hostile_fades_are_refused_with_what_to_change() {
     // Not an end of the edge: another vertex of the body.
-    let reason = fails_with(json!([{"at": "Box:vertex(7)", "over": 15}]), json!([EDGE]), false);
+    let reason = fails_with(
+        json!([{"at": "Box:vertex(7)", "over": 15}]),
+        json!([EDGE]),
+        false,
+    );
     assert!(reason.contains("fade.0.at"), "{reason}");
-    assert!(reason.contains("is not an end of an edge this fillet rounds"), "{reason}");
-    assert!(reason.contains("F1:vertex(4)") && reason.contains("F1:vertex(0)"), "{reason}");
+    assert!(
+        reason.contains("is not an end of an edge this fillet rounds"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("F1:vertex(4)") && reason.contains("F1:vertex(0)"),
+        "{reason}"
+    );
     // A vertex of another body.
     let mut s = session();
     block(&mut s);
-    built(&mut s, "feature.block", json!({"size": [5, 5, 5], "position": [100, 0, 0], "name": "Other"}));
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [5, 5, 5], "position": [100, 0, 0], "name": "Other"}),
+    );
     let reason = failed(
         &mut s,
         "feature.fillet",
         json!({"edges": [EDGE], "radius": 3, "fade": [{"at": "Other:vertex(4)", "over": 15}]}),
     );
-    assert!(reason.contains("fade.0.at") && reason.contains("is a vertex of F2"), "{reason}");
+    assert!(
+        reason.contains("fade.0.at") && reason.contains("is a vertex of F2"),
+        "{reason}"
+    );
     // Not a vertex at all.
     let message = refused_with(json!([{"at": "Box:face(1)", "over": 15}]));
     assert!(message.contains("is not a vertex"), "{message}");
@@ -289,10 +339,21 @@ fn hostile_fades_are_refused_with_what_to_change() {
         let message = refused_with(json!([{"at": TOP, "over": over}]));
         assert!(message.contains("over"), "{over}: {message}");
     }
-    let reason = fails_with(json!([{"at": TOP, "over": 15, "back": -1}]), json!([EDGE]), false);
-    assert!(reason.contains("fade.0.back") && reason.contains("zero or more"), "{reason}");
+    let reason = fails_with(
+        json!([{"at": TOP, "over": 15, "back": -1}]),
+        json!([EDGE]),
+        false,
+    );
+    assert!(
+        reason.contains("fade.0.back") && reason.contains("zero or more"),
+        "{reason}"
+    );
     // Longer than the edge, with its length.
-    let reason = fails_with(json!([{"at": TOP, "over": 15, "back": 30}]), json!([EDGE]), false);
+    let reason = fails_with(
+        json!([{"at": TOP, "over": 15, "back": 30}]),
+        json!([EDGE]),
+        false,
+    );
     assert!(
         reason.contains("over and back take 45 mm") && reason.contains("which is 40 mm long"),
         "{reason}"
@@ -302,7 +363,10 @@ fn hostile_fades_are_refused_with_what_to_change() {
         json!([EDGE]),
         false,
     );
-    assert!(reason.contains("fade.0 and fade.1") && reason.contains("50 mm"), "{reason}");
+    assert!(
+        reason.contains("fade.0 and fade.1") && reason.contains("50 mm"),
+        "{reason}"
+    );
     // Too short for the radius: the least that builds.
     let reason = fails_with(json!([{"at": TOP, "over": 1}]), json!([EDGE]), false);
     assert!(
@@ -311,7 +375,11 @@ fn hostile_fades_are_refused_with_what_to_change() {
         "{reason}"
     );
     // A point the tolerance cannot tell from the vertex.
-    let reason = fails_with(json!([{"at": TOP, "over": 15, "back": 1e-6}]), json!([EDGE]), false);
+    let reason = fails_with(
+        json!([{"at": TOP, "over": 15, "back": 1e-6}]),
+        json!([EDGE]),
+        false,
+    );
     assert!(reason.contains("give a back of more than"), "{reason}");
     // Two fades at one end.
     let message = refused_with(json!([{"at": TOP, "over": 15}, {"at": TOP, "over": 10}]));
@@ -322,7 +390,10 @@ fn hostile_fades_are_refused_with_what_to_change() {
         (json!([TOP]), "must be an object"),
         (json!([{"over": 15}]), "needs `at`"),
         (json!([{"at": TOP}]), "needs `over`"),
-        (json!([{"at": TOP, "over": 15, "to": 1}]), "has no parameter `to`"),
+        (
+            json!([{"at": TOP, "over": 15, "to": 1}]),
+            "has no parameter `to`",
+        ),
         (json!([{"at": 7, "over": 15}]), "fade.0.at"),
     ] {
         let message = refused_with(fade.clone());
@@ -338,13 +409,19 @@ fn hostile_fades_are_refused_with_what_to_change() {
         json!([EDGE, "Box:edge(4)"]),
         false,
     );
-    assert!(reason.contains("is an end of edges.0") && reason.contains("and of edges.1"), "{reason}");
+    assert!(
+        reason.contains("is an end of edges.0") && reason.contains("and of edges.1"),
+        "{reason}"
+    );
     let reason = fails_with(
         json!([{"at": BOTTOM, "over": 15}]),
         json!([EDGE, "Box:edge(4)"]),
         false,
     );
-    assert!(reason.contains("ends in its vertex") && reason.contains("on its own"), "{reason}");
+    assert!(
+        reason.contains("ends in its vertex") && reason.contains("on its own"),
+        "{reason}"
+    );
 }
 
 #[test]
@@ -352,7 +429,11 @@ fn a_closed_edge_and_an_unproven_vertex_are_refused() {
     // A rod's rim closes on itself in its one vertex.
     let mut s = session();
     run(&mut s, "file.new", json!({"units": "mm"}));
-    built(&mut s, "feature.cylinder", json!({"radius": 10, "height": 20, "name": "Rod"}));
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 10, "height": 20, "name": "Rod"}),
+    );
     let listing = run(&mut s, "document.edges", json!({"feature": "Rod"}));
     let ring = listing["edges"]
         .as_array()
@@ -394,7 +475,10 @@ fn a_closed_edge_and_an_unproven_vertex_are_refused() {
         json!({"edges": [["F2:copy(0)/F1:face(1)", "F2:copy(0)/F1:face(3)"]], "radius": 1,
                "fade": [{"at": tip, "over": 5}]}),
     );
-    assert!(message.contains("fade.0.at") && message.contains("not proven"), "{message}");
+    assert!(
+        message.contains("fade.0.at") && message.contains("not proven"),
+        "{message}"
+    );
 }
 
 /// Documents with fillets of one radius (every edge of a block with its
@@ -482,7 +566,12 @@ fn the_hulls_stem_fades_to_a_point_above_the_forefoot() {
     close(&tip["length"], 87.18465383984673, 1e-6, "the stem's length");
     let found = body(&mut s, "Stem fillet");
     assert_eq!(found["valid"], true, "{found}");
-    close(&found["volume"], 10_781_506.716083191, 1e-3, "the hull's volume");
+    close(
+        &found["volume"],
+        10_781_506.716083191,
+        1e-3,
+        "the hull's volume",
+    );
     deep(&mut s);
     // Fades short for the radius where the stem bends at the forefoot
     // (the review of the kernel, `review_fade_hull.rs` › `a_short_fade_on_the_stem_is_not_called_a_bug`):
@@ -526,25 +615,49 @@ fn feature_edit_changes_and_clears_the_fades() {
         "feature.edit",
         json!({"feature": "Round", "fade": [{"at": TOP, "over": 15, "back": 6}]}),
     );
-    close(&body(&mut s, "Round")["volume"], closed_form(15.0, 6.0, false), 1e-4, "edited");
+    close(
+        &body(&mut s, "Round")["volume"],
+        closed_form(15.0, 6.0, false),
+        1e-4,
+        "edited",
+    );
     // The radius is edited as ever; a fade that no longer fits fails the
     // feature with the reason, and is mended by another edit.
-    run(&mut s, "feature.edit", json!({"feature": "Round", "radius": 20}));
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Round", "radius": 20}),
+    );
     let reason = failure(&mut s, "Round");
-    assert!(reason.contains("give an over of at least 20 mm"), "{reason}");
-    built(&mut s, "feature.edit", json!({"feature": "Round", "radius": 3}));
+    assert!(
+        reason.contains("give an over of at least 20 mm"),
+        "{reason}"
+    );
+    built(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Round", "radius": 3}),
+    );
     let message = error(
         &mut s,
         "feature.edit",
         json!({"feature": "Round", "fade": [{"at": TOP}]}),
     );
     assert!(message.contains("needs `over`"), "{message}");
-    built(&mut s, "feature.edit", json!({"feature": "Round", "fade": []}));
+    built(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Round", "fade": []}),
+    );
     close(
         &body(&mut s, "Round")["volume"],
         SIZE[0] * SIZE[1] * SIZE[2] - SPANDREL * R * R * SIZE[2],
         1e-9,
         "one radius again",
     );
-    assert!(common::checked::feature(&mut s, "Round").get("fades").is_none());
+    assert!(
+        common::checked::feature(&mut s, "Round")
+            .get("fades")
+            .is_none()
+    );
 }

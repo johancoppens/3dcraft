@@ -456,9 +456,7 @@ pub(crate) fn fade_value(command: &str, value: &Value) -> Result<Vec<FilletFade>
             ));
         }
         let Some(at) = map.get("at").filter(|v| !v.is_null()) else {
-            return fail(format!(
-                "{command}: `fade.{index}` needs `at`; {FADE_FORM}"
-            ));
+            return fail(format!("{command}: `fade.{index}` needs `at`; {FADE_FORM}"));
         };
         let at = name_value(command, &key("at"), at, "a vertex's name")?;
         if !at.is_vertex() {

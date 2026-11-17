@@ -39,7 +39,7 @@ const STEPS: &[Step] = &[
     v50_to_v51, v51_to_v52, v52_to_v53, v53_to_v54, v54_to_v55, v55_to_v56, v56_to_v57, v57_to_v58,
     v58_to_v59, v59_to_v60, v60_to_v61, v61_to_v62, v62_to_v63, v63_to_v64, v64_to_v65, v65_to_v66,
     v66_to_v67, v67_to_v68, v68_to_v69, v69_to_v70, v70_to_v71, v71_to_v72, v72_to_v73, v73_to_v74,
-    v74_to_v75,
+    v74_to_v75, v75_to_v76,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -1254,6 +1254,17 @@ fn v73_to_v74(manifest: Value) -> Result<Value, String> {
 /// identity step, raised so that an older build says a newer 3DCraft is
 /// needed instead of refusing the field.
 fn v74_to_v75(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 76 adds `fade` to a fillet: ends of its edges where its radius
+/// runs to nothing and its face closes in a point on the edge (each a
+/// vertex `at`, a length `over` and, when given, `back`;
+/// docs/design/blends.md › *A fillet that fades, as a command*). A file of
+/// an older version has none, so every fillet is built as it was: an
+/// identity step, raised so that an older build says a newer 3DCraft is
+/// needed instead of refusing the field.
+fn v75_to_v76(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

@@ -279,7 +279,11 @@ fn fades(
                     blend::role_of(&fillet.edges, p.reference)
                 },
                 vertex_called(shared),
-                if fillet.chain { ", or leave chain out" } else { "" }
+                if fillet.chain {
+                    ", or leave chain out"
+                } else {
+                    ""
+                }
             ));
         }
     }
@@ -340,12 +344,10 @@ fn fade_fault(
     match which.and_then(|f| fillet.fade.get(f.fade).map(|given| (f.fade, given))) {
         Some((index, given)) => format!("fade.{index} (at {}): {text}", given.at),
         None => {
-            let role = picked
-                .iter()
-                .find(|p| p.edge == edge)
-                .map_or_else(|| "edges".to_string(), |p| {
-                    blend::role_of(&fillet.edges, p.reference)
-                });
+            let role = picked.iter().find(|p| p.edge == edge).map_or_else(
+                || "edges".to_string(),
+                |p| blend::role_of(&fillet.edges, p.reference),
+            );
             format!("{role}: {text}")
         }
     }

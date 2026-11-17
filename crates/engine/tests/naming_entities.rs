@@ -1667,9 +1667,21 @@ fn a_numbered_edge_an_operand_had_answers_to_the_name_it_had_there() {
 fn a_fillet_that_fades_names_its_tip_and_the_edge_beyond_through_edits() {
     let mut s = session();
     new_document(&mut s, 1.0);
-    run(&mut s, "variable.set", json!({"name": "h", "expr": "40 mm"}));
-    run(&mut s, "variable.set", json!({"name": "back", "expr": "6 mm"}));
-    built(&mut s, "feature.block", json!({"size": [40, 30, "h"], "name": "Box"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "h", "expr": "40 mm"}),
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "back", "expr": "6 mm"}),
+    );
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [40, 30, "h"], "name": "Box"}),
+    );
     let made = built(
         &mut s,
         "feature.fillet",
@@ -1694,8 +1706,16 @@ fn a_fillet_that_fades_names_its_tip_and_the_edge_beyond_through_edits() {
             .clone()
     };
     for (h, back) in [(40.0, 6.0), (55.0, 6.0), (55.0, 2.5), (30.0, 10.0)] {
-        run(&mut s, "variable.set", json!({"name": "h", "expr": format!("{h} mm")}));
-        run(&mut s, "variable.set", json!({"name": "back", "expr": format!("{back} mm")}));
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "h", "expr": format!("{h} mm")}),
+        );
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "back", "expr": format!("{back} mm")}),
+        );
         let point = feature(&mut s, "Tip");
         assert_eq!(point["status"], "ok", "{point}");
         let at = &point["datum"]["at"];
@@ -1707,10 +1727,17 @@ fn a_fillet_that_fades_names_its_tip_and_the_edge_beyond_through_edits() {
         );
         let edge = edge_of(&mut s);
         assert_eq!(edge["aliases"], json!(["F2:copy(0)/F1:edge(9)"]), "{edge}");
-        assert!((edge["length"].as_f64().unwrap() - back).abs() < 1e-9, "{edge}");
+        assert!(
+            (edge["length"].as_f64().unwrap() - back).abs() < 1e-9,
+            "{edge}"
+        );
     }
     // No fade: no tip, and what named it fails with the name it lost.
-    built(&mut s, "feature.edit", json!({"feature": "Round", "fade": null}));
+    built(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Round", "fade": null}),
+    );
     let point = feature(&mut s, "Tip");
     assert_eq!(point["status"], "failed", "{point}");
     assert!(point["error"].as_str().unwrap().contains(&tip), "{point}");

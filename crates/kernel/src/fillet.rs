@@ -283,8 +283,7 @@ pub fn tip_point(
     tolerance: f64,
 ) -> Option<craft3d_math::Vec3> {
     let data = body.edge(edge)?;
-    let along =
-        blend::law::Along::new(law, edge, &data.curve, data.range, tolerance).ok()?;
+    let along = blend::law::Along::new(law, edge, &data.curve, data.range, tolerance).ok()?;
     let s = along.tip(end)?;
     let (t0, t1) = data.range;
     let point = data.curve.eval(t0 + s * (t1 - t0));
