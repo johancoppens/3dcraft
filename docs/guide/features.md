@@ -191,6 +191,10 @@ ends in a half ball; its start, tipped with the point given where it is to be in
   radius of the circle with its area) or more. Nearer 0 or 1, and shorter tips, are often refused,
   because their faces cannot yet be meshed or measured; below a hundredth of that radius nearly always.
   A tip is never built creased at the old edge or unmeasurable: it is refused, saying what to change.
+- **The shape it keeps.** A tip continues the faces round the end: it rounds the end off, it does not
+  narrow the outline faster than they do. To end a blade the way its sections draw it, keep the last
+  section a tip's length short of where the blade ends and tip that small end (on a small end the length
+  chosen is short, and the place chosen is on the line the sections are drawn about).
 - **Names.** The faces that stay keep their names with a prefix, `F9:copy(0)/...`; a face of the tip is
   named after the face it continues, `F9:tip(0)/F4:side(e2)`. The edges from the old corners to the
   point, and the point, are named by their faces.
