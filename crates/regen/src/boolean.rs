@@ -65,21 +65,57 @@ pub(crate) fn combine(
         Some(op) => boolean_with(target, tool, op, tolerance, &options),
         None => sew_sheets(target, tool, tolerance),
     };
+    // A face of an operand by its name, or by its number and operand.
+    let face_name = |operand: Operand, face: craft3d_topo::FaceId| {
+        let [first, second] = names;
+        let names = if number(operand) == 0 { first } else { second };
+        names
+            .and_then(|names| names.faces.get(face.0 as usize))
+            .map_or_else(
+                || {
+                    let body = if number(operand) == 0 {
+                        "target"
+                    } else {
+                        "tool"
+                    };
+                    format!("face {} of the {body}", face.0)
+                },
+                ToString::to_string,
+            )
+    };
     let result = result.map_err(|e| match e {
+        // A face of more spans than a boolean indexes: which, and how many
+        // spans it has.
+        KernelError::Unsupported {
+            operation,
+            reason,
+            faces,
+        } if reason == craft3d_kernel::boolean::TOO_MANY_SPANS => {
+            let named: Vec<String> = faces
+                .iter()
+                .map(|&(operand, face)| {
+                    let body = if number(operand) == 0 { target } else { tool };
+                    let spans = body
+                        .face(face)
+                        .and_then(|f| craft3d_kernel::boolean::span_count(&f.surface));
+                    match spans {
+                        Some(count) => format!("{} ({count} spans)", face_name(operand, face)),
+                        None => face_name(operand, face),
+                    }
+                })
+                .collect();
+            format!(
+                "{operation} does not support this: a freeform face of more Bézier spans than the {} a boolean indexes{}; build it of fewer spans (a grid of fewer points, or the face in parts)",
+                craft3d_kernel::boolean::MAX_FREEFORM_SPANS,
+                if named.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", named.join(", "))
+                }
+            )
+        }
         KernelError::ZeroThickness { at, faces, .. } => {
-            let [a, b] = faces.map(|(operand, face)| {
-                let [first, second] = names;
-                let names = if number(operand) == 0 { first } else { second };
-                names
-                    .and_then(|names| names.faces.get(face.0 as usize))
-                    .map_or_else(
-                        || {
-                            let body = if number(operand) == 0 { "target" } else { "tool" };
-                            format!("face {} of the {body}", face.0)
-                        },
-                        ToString::to_string,
-                    )
-            });
+            let [a, b] = faces.map(|(operand, face)| face_name(operand, face));
             if target.kind == craft3d_topo::BodyKind::Sheet {
                 format!(
                     "the trimmed sheet would touch itself at ({}, {}, {}): its boundary comes back to itself there in a point or along a line, at {a} and {b}, and no sheet can be pinched like that; move the solid by more than the tolerance, or further across the sheet",
@@ -104,19 +140,7 @@ pub(crate) fn combine(
         } if reason.ends_with("(at the edge of tolerance)") => {
             let named: Vec<String> = faces
                 .iter()
-                .map(|&(operand, face)| {
-                    let [first, second] = names;
-                    let names = if number(operand) == 0 { first } else { second };
-                    names
-                        .and_then(|names| names.faces.get(face.0 as usize))
-                        .map_or_else(
-                            || {
-                                let body = if number(operand) == 0 { "target" } else { "tool" };
-                                format!("face {} of the {body}", face.0)
-                            },
-                            ToString::to_string,
-                        )
-                })
+                .map(|&(operand, face)| face_name(operand, face))
                 .collect();
             let at = if named.is_empty() {
                 String::new()
@@ -245,4 +269,65 @@ pub(crate) fn not_through_itself(
         "result",
         "the boolean did not find where the operands meet there, and the result is refused rather than handed on",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use craft3d_geom::NurbsSurface;
+    use craft3d_math::{Frame, Vec3};
+
+    /// A face of more Bézier spans than a boolean indexes is refused with
+    /// its name, its count of spans and the limit, before its spans are
+    /// made: a flat sheet of 514 × 513 points of degree one, 513 × 512 =
+    /// 262 656 spans, against the 262 144 a boolean takes.
+    #[test]
+    fn a_face_of_more_spans_than_a_boolean_indexes_is_named_with_its_count() {
+        let (columns, rows) = (514_usize, 513_usize);
+        let knots = |n: usize| {
+            let mut k = vec![0.0];
+            k.extend((0..n).map(|i| i as f64));
+            k.push((n - 1) as f64);
+            k
+        };
+        let mut ctrl = Vec::with_capacity(columns * rows);
+        for c in 0..columns {
+            for r in 0..rows {
+                ctrl.push(Vec3::new(c as f64 * 0.1, r as f64 * 0.1, 1.0));
+            }
+        }
+        let surface = NurbsSurface::new(
+            1,
+            1,
+            knots(columns),
+            knots(rows),
+            columns,
+            rows,
+            ctrl,
+            vec![1.0; columns * rows],
+        )
+        .unwrap();
+        let spans =
+            craft3d_kernel::boolean::span_count(&craft3d_geom::Surface::Nurbs(surface.clone()));
+        assert_eq!(spans, Some(262_656));
+        let sheet = crate::grid::sheet(surface, rows, columns, false).unwrap();
+        let block = craft3d_kernel::primitives::block(&Frame::WORLD, 51.3, 51.2, 4.0).unwrap();
+        let tolerance = Tolerance::new(1e-3, 1e-6).unwrap();
+        let refused = combine(
+            &block,
+            &sheet,
+            BooleanOp::Intersect,
+            &tolerance,
+            1.0,
+            [None, None],
+        )
+        .err()
+        .expect("refused");
+        assert!(
+            refused.contains("face 0 of the tool (262656 spans)")
+                && refused.contains("than the 262144 a boolean indexes"),
+            "{refused}"
+        );
+    }
 }

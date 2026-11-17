@@ -466,13 +466,15 @@ fn pieces(surface: &Surface) -> Option<Vec<(Rect, RationalBezierPatch)>> {
             if s.weights().iter().any(|w| w.is_nan() || *w <= 0.0) {
                 return None;
             }
-            let spans = s.bezier_spans().ok()?;
+            // Counted before a piece is copied: a face of more has no
+            // cover anyway.
+            let spans = s.bezier_spans_shared().ok()?;
             if spans.len() > MOST_PIECES {
                 return None;
             }
             spans
-                .into_iter()
-                .map(|span| ((span.u.0, span.u.1, span.v.0, span.v.1), span.patch))
+                .iter()
+                .map(|span| ((span.u.0, span.u.1, span.v.0, span.v.1), span.patch.clone()))
                 .collect()
         }
         _ => return None,

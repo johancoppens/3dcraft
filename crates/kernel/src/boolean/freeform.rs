@@ -64,11 +64,24 @@ pub(super) const WEIGHTS: Reason = "a rational freeform face whose weights diffe
 pub(super) const IRREGULAR: Reason = "a freeform face whose parametrisation stalls or folds somewhere (a collapsed or self-overlapping patch); its chart cannot be followed";
 pub(super) const POLES_BOTH_WAYS: Reason = "a freeform face whose patch closes into a point on two adjacent sides (collapsed borders both along u and along v); its chart cannot be followed";
 pub(super) const POLE_SHAPE: Reason = "a freeform face that closes into a point too sharply or too unevenly for the directions around that point to be told apart (a cusp, or a point the surface folds back over)";
-const TOO_MANY: Reason = "a freeform face with more pieces than booleans can index";
+/// [`MAX_SPANS`]: the number written out, as the reason has no room for
+/// a number worked out (`craft3d_regen` adds the face's own).
+pub const TOO_MANY_SPANS: Reason =
+    "a freeform face of more than 262144 Bézier spans, more than a boolean indexes";
+const _: () = assert!(MAX_SPANS == 262_144);
+
+/// The most Bézier spans of a freeform face a boolean takes (a tree
+/// indexes): as many as the points of the largest grid surface
+/// (`craft3d_geom::grid::MAX_GRID_POINTS`, so more than its spans).
+/// Until 2026-11-17 it was [`MAX_LEAVES`], 32 768, a grid of 184 × 184
+/// points: what one tree took was capped by its leaves, and every search
+/// took every span's box (*Groups of spans*, [`Group`]). A tree of the
+/// most spans takes some 200 MB (a bicubic's leaf about 800 bytes).
+pub const MAX_SPANS: usize = 1 << 18;
 
 /// How many times a Bézier span is quartered at most, and how many leaves
-/// a whole surface may have (so also the most Bézier spans of a freeform
-/// face a boolean takes: a grid surface warns past it).
+/// quartering may make for a whole surface: a surface of more spans than
+/// that over four is not quartered at all (its spans are its leaves).
 const MAX_DEPTH: usize = 5;
 pub const MAX_LEAVES: usize = 1 << 15;
 /// A surface whose spans times `4^depth` (the most leaves quartering to
@@ -325,11 +338,16 @@ thread_local! {
     /// The searches of this thread end with their first steps, as they
     /// did before 2026-11-14: for a test to compare with.
     static FIRST_STEPS_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The trees this thread makes have no groups of spans, as before
+    /// 2026-11-17: for a test to compare with.
+    static UNGROUPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A Bézier piece of the surface: the part of the domain it covers, and the
 /// patch.
 type Span = ((f64, f64), (f64, f64), RationalBezierPatch);
+/// A [`Span`] whose patch is borrowed (from the spans a spline keeps).
+type SpanRef<'a> = ((f64, f64), (f64, f64), &'a RationalBezierPatch);
 
 #[derive(Debug)]
 struct Node {
@@ -567,6 +585,100 @@ pub(super) struct PatchTree {
     /// and what it asked of the ledger ([`craft3d_geom::allowance::costs_of`]).
     units: u64,
     asked: u64,
+    /// Groups of its spans ([`Group`]), the whole surface last; none for
+    /// a tree of fewer than [`GROUPED_FROM`] spans.
+    groups: Vec<Group>,
+    /// The least of the spans' bounds on the least singular value
+    /// ([`Self::least_sigma`]) and the diagonal of the box around them
+    /// ([`Self::size`]), worked out once when the tree is made.
+    least: Option<f64>,
+    diagonal: f64,
+}
+
+/// A tree of this many spans or more has its spans in groups
+/// ([`Group`]).
+const GROUPED_FROM: usize = 64;
+
+/// Spans of a [`PatchTree`] taken together, and groups of them, up to one
+/// group of the whole surface: four neighbours (two by two along u and
+/// along v where the spans are the grid of a spline surface's, four in a
+/// row otherwise), with the box around their boxes. A search starts from
+/// the whole surface and passes over every span of a group whose box is
+/// beyond what it looks for, where it took every span's box one by one
+/// before (2026-11-17): a question about a point cost as many steps as
+/// the face has spans.
+///
+/// The groups change no answer, by construction. A search that takes the
+/// nearest first (a heap: [`PatchTree::search`], [`PatchTree::bound_by`])
+/// queues a group by a distance no larger than any of its spans' (its box
+/// holds theirs; for a segment, a margin less), ahead of a span at the
+/// same distance, and opens it when it comes first: so the spans come out
+/// of the heap in the order and at the moments they came before, the
+/// nearest first and ties by number, and a search that stops at a group
+/// stops where it stopped at the span after it. A search through every
+/// span within a reach ([`PatchTree::sigma_search`]) takes the spans the
+/// groups leave within reach in the order of before; the ones they leave
+/// out it passed over unlooked-at.
+#[derive(Debug)]
+struct Group {
+    bbox: Bbox3,
+    /// Its members: places in [`PatchTree::roots`] where `spans`, else
+    /// groups (their places in [`PatchTree::groups`]); the first `count`.
+    members: [u32; 4],
+    count: u8,
+    spans: bool,
+}
+
+/// An entry of the heaps of [`PatchTree::search`] and
+/// [`PatchTree::bound_by`]: a node of the tree (`group` false) or a
+/// [`Group`], and its distance. The nearest first; at the same distance a
+/// group before a node, nodes by their numbers (as they were ordered
+/// before there were groups).
+#[derive(Clone, Copy)]
+struct Queued {
+    distance: f64,
+    group: bool,
+    index: usize,
+}
+
+impl Queued {
+    fn node(distance: f64, index: usize) -> Self {
+        Queued {
+            distance,
+            group: false,
+            index,
+        }
+    }
+
+    fn group(distance: f64, index: usize) -> Self {
+        Queued {
+            distance,
+            group: true,
+            index,
+        }
+    }
+}
+
+impl PartialEq for Queued {
+    fn eq(&self, o: &Self) -> bool {
+        self.cmp(o) == Ordering::Equal
+    }
+}
+impl Eq for Queued {}
+impl PartialOrd for Queued {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
+impl Ord for Queued {
+    fn cmp(&self, o: &Self) -> Ordering {
+        // Reversed, so that the heap pops the nearest; a group first; ties
+        // by index.
+        o.distance
+            .total_cmp(&self.distance)
+            .then(self.group.cmp(&o.group))
+            .then(o.index.cmp(&self.index))
+    }
 }
 
 /// The nearest point of the surface to a point.
@@ -624,6 +736,38 @@ impl Slope {
 
 pub(super) fn is_freeform(surface: &Surface) -> bool {
     matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_))
+}
+
+/// How many Bézier spans a freeform surface has (one for a Bézier patch,
+/// the knot spans along u times those along v for a spline, as
+/// `NurbsSurface::bezier_spans` makes them), counted from its knots;
+/// `None` for an analytic surface. What [`MAX_SPANS`] is held to.
+pub fn span_count(surface: &Surface) -> Option<usize> {
+    match surface {
+        Surface::Bezier(_) => Some(1),
+        Surface::Nurbs(s) => {
+            let (du, dv) = s.degrees();
+            let (cu, cv) = s.counts();
+            // The spans of nonzero length within the domain, from knot
+            // `degree` to knot `count` (`bezier_spans` takes those of the
+            // knots once inserted, which are these).
+            let along = |knots: &[f64], degree: usize, count: usize| {
+                let (Some(&start), Some(&end)) = (knots.get(degree), knots.get(count)) else {
+                    return 0;
+                };
+                knots
+                    .get(degree..=count)
+                    .unwrap_or(&[])
+                    .windows(2)
+                    .filter(
+                        |pair| matches!(pair, [lo, hi] if hi > lo && *lo >= start && *hi <= end),
+                    )
+                    .count()
+            };
+            Some(along(s.knots_u(), du, cu).saturating_mul(along(s.knots_v(), dv, cv)))
+        }
+        _ => None,
+    }
 }
 
 /// The distance from `p` to the box; zero inside it.
@@ -1828,7 +1972,7 @@ pub(super) const CLOSED_POLE: Reason = "a freeform face that closes on itself an
 /// comes from the differences of its net over `[0, 1]²`, and is scaled by
 /// the part of the domain the span covers. `None` when a span is rational
 /// or degenerate.
-fn second_bound(spans: &[Span]) -> Option<f64> {
+fn second_bound(spans: &[SpanRef<'_>]) -> Option<f64> {
     let mut bound = 0.0_f64;
     for (u, v, patch) in spans {
         let (m, n) = patch.degrees();
@@ -1848,6 +1992,12 @@ fn second_bound(spans: &[Span]) -> Option<f64> {
 
 /// How many times a leaf may be quartered for one query.
 const EXTRA_DEPTH: usize = 40;
+/// How far below the distance between a segment's box and a group's box
+/// a group of spans is queued, in the largest coordinate of either
+/// ([`PatchTree::segment_lower_bound`]): the distance to a span's box is
+/// computed to within some units in the last place of the coordinates,
+/// a hundred thousand times less.
+const SEGMENT_GROUP_MARGIN: f64 = 1e-10;
 /// How many pieces a query for a segment may split: a segment that runs
 /// on the surface would otherwise split every piece along it down to the
 /// resolution.
@@ -2086,27 +2236,6 @@ fn scoped<V: Copy>(
     found
 }
 
-/// A min-heap entry: a node and its box distance.
-struct Pending(f64, usize);
-
-impl PartialEq for Pending {
-    fn eq(&self, o: &Self) -> bool {
-        self.cmp(o) == Ordering::Equal
-    }
-}
-impl Eq for Pending {}
-impl PartialOrd for Pending {
-    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
-        Some(self.cmp(o))
-    }
-}
-impl Ord for Pending {
-    fn cmp(&self, o: &Self) -> Ordering {
-        // Reversed, so the heap pops the nearest; ties by index.
-        o.0.total_cmp(&self.0).then(o.1.cmp(&self.1))
-    }
-}
-
 /// Trees built lately, by the surface they index (written out in full, so
 /// that two surfaces are the same key only when every number of them is
 /// the same, bit for bit), with what each takes ([`PatchTree::bytes`]),
@@ -2241,7 +2370,8 @@ fn keep_within_budget(shelf: &mut Shelf) {
 /// ([`holding`]): their nodes and the pieces their leaves keep
 /// ([`PatchTree::base_bytes`]), each tree counted once. A boolean holds the
 /// tree of every freeform face of both operands it looks at while it
-/// works, and each tree is capped ([`MAX_LEAVES`], about 22 MB), but their
+/// works, and each tree is capped (by [`MAX_LEAVES`], about 22 MB, and
+/// [`MAX_SPANS`], some 200 MB for a bicubic surface), but their
 /// number is not: a spur gear of twenty teeth drawn from formulas, its hub
 /// covering the face the teeth end in, held 160 trees and 2.2 GB, and one
 /// of a hundred teeth took a laptop's memory (2026-10-23). The impeller of
@@ -2274,7 +2404,8 @@ pub(super) const TOO_MUCH_HELD: Reason = "the freeform faces it meets need more 
 /// hard ceiling. A tree is counted by [`PatchTree::base_bytes`] once it is
 /// built or found (a tree's size is known only when it is built), so each
 /// waiting operation holds one tree not counted yet (at most about 22 MB,
-/// [`MAX_LEAVES`]); what a tree remembers later (its memos) is not
+/// [`MAX_LEAVES`], or some 200 MB at [`MAX_SPANS`]); what a tree
+/// remembers later (its memos) is not
 /// counted; and a tree asked for outside any operation (an outline made
 /// outside a boolean) counts nowhere but on the shelf. So the trees of
 /// the process stay below about `HELD_TOGETHER + HELD_BYTES` plus the
@@ -2688,7 +2819,9 @@ impl PatchTree {
 
     /// [`Self::shared`]: from the shelf, or built and put there.
     fn shelved(surface: &Surface) -> Result<Arc<PatchTree>, Reason> {
+        let clock = craft3d_math::clock::clock("tree.key format");
         let key = format!("{surface:?}");
+        drop(clock);
         {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(at) = shelf.iter().position(|(k, _, _)| *k == key) {
@@ -2763,7 +2896,12 @@ impl PatchTree {
             .nodes
             .len()
             .saturating_mul(std::mem::size_of::<Node>())
-            .saturating_add(leaves);
+            .saturating_add(leaves)
+            .saturating_add(
+                self.groups
+                    .len()
+                    .saturating_mul(std::mem::size_of::<Group>()),
+            );
         self.fine_piece_bytes = std::mem::size_of::<FinePiece>().saturating_add(largest);
     }
 
@@ -2787,17 +2925,27 @@ impl PatchTree {
 
     /// [`Self::new`]: the building.
     fn built(surface: &Surface) -> Result<PatchTree, Reason> {
-        let spans: Vec<Span> = match surface {
-            Surface::Bezier(patch) => vec![(
-                (0.0, 1.0),
-                (0.0, 1.0),
-                RationalBezierPatch::from_bezier(patch),
-            )],
-            Surface::Nurbs(s) => NurbsSurface::bezier_spans(s)
-                .map_err(|_| IRREGULAR)?
-                .into_iter()
-                .map(|span| (span.u, span.v, span.patch))
-                .collect(),
+        // Counted from the knots before the spans are made: a surface of
+        // more is refused without the memory its spans would take.
+        if span_count(surface).is_some_and(|count| count > MAX_SPANS) {
+            return Err(TOO_MANY_SPANS);
+        }
+        // A spline's spans as it keeps them (`bezier_spans_shared`), not a
+        // copy: some 150 MB for the 259 081 spans of the largest grid.
+        let one;
+        let shared;
+        let spans: Vec<SpanRef<'_>> = match surface {
+            Surface::Bezier(patch) => {
+                one = RationalBezierPatch::from_bezier(patch);
+                vec![((0.0, 1.0), (0.0, 1.0), &one)]
+            }
+            Surface::Nurbs(s) => {
+                shared = s.bezier_spans_shared().map_err(|_| IRREGULAR)?;
+                shared
+                    .iter()
+                    .map(|span| (span.u, span.v, &span.patch))
+                    .collect()
+            }
             _ => return Err(IRREGULAR),
         };
         if spans.is_empty() {
@@ -2819,11 +2967,13 @@ impl PatchTree {
         while depth > 0 && spans.len().saturating_mul(1 << (2 * depth)) > MAX_LEAVES {
             depth -= 1;
         }
-        // MEASUREMENT ONLY (boolean-spans): the cap lifted to the grid's.
-        if spans.len() > 1 << 18 {
-            return Err(TOO_MANY);
+        if spans.len() > MAX_SPANS {
+            return Err(TOO_MANY_SPANS);
         }
         let found = poles(surface);
+        let clock = craft3d_math::clock::clock("tree.id format");
+        let id = craft3d_geom::allowance::number_of(&format!("{surface:?}"));
+        drop(clock);
         let mut tree = PatchTree {
             surface: surface.clone(),
             nodes: Vec::new(),
@@ -2846,23 +2996,206 @@ impl PatchTree {
             halves: spans.len().saturating_mul(1 << (2 * depth)) > HALVED_FROM,
             fine: Mutex::new(Fine::default()),
             evened: std::sync::OnceLock::new(),
-            id: craft3d_geom::allowance::number_of(&format!("{surface:?}")),
+            id,
             units: 0,
             asked: 0,
+            groups: Vec::new(),
+            least: None,
+            diagonal: 0.0,
         };
         let whole = spans
             .iter()
             .map(|s| s.2.control_bbox().diagonal())
             .fold(0.0, f64::max);
-        for (u, v, patch) in &spans {
-            let root = tree.subdivide(patch, *u, *v, depth, whole / 32.0);
+        for &(u, v, patch) in &spans {
+            let root = tree.subdivide(patch, u, v, depth, whole / 32.0);
             tree.roots.push(root);
         }
         if !polynomial {
             tree.second = tree.second_of_leaves();
         }
+        tree.least = tree.least_of_roots();
+        tree.diagonal = tree.size_of_roots();
+        tree.groups = tree.grouped();
         tree.measure_base();
         Ok(tree)
+    }
+
+    /// The groups of the spans ([`Group`]), level by level up to the
+    /// whole surface (last); none for fewer than [`GROUPED_FROM`] spans,
+    /// or where a span's box is not finite (a distance to it may be no
+    /// number, which no group's distance stays below).
+    fn grouped(&self) -> Vec<Group> {
+        let count = self.roots.len();
+        if count < GROUPED_FROM {
+            return Vec::new();
+        }
+        #[cfg(test)]
+        if UNGROUPED.get() {
+            return Vec::new();
+        }
+        let boxes: Option<Vec<Bbox3>> = self
+            .roots
+            .iter()
+            .map(|&root| {
+                let node = self.nodes.get(root)?;
+                let (lo, hi) = node.bbox.corners()?;
+                (lo.is_finite() && hi.is_finite()).then_some(node.bbox)
+            })
+            .collect();
+        let Some(mut level) = boxes else {
+            return Vec::new();
+        };
+        // The spans of a spline surface come along v within each span of
+        // u (`NurbsSurface::bezier_spans`): as many to a row as the first
+        // u's.
+        let first_u = self
+            .roots
+            .first()
+            .and_then(|&r| self.nodes.get(r))
+            .map(|n| n.u);
+        let row = self
+            .roots
+            .iter()
+            .take_while(|&&r| self.nodes.get(r).map(|n| n.u) == first_u)
+            .count();
+        let (mut rows, mut columns) = if row > 0 && count.is_multiple_of(row) {
+            (count / row, row)
+        } else {
+            (1, count)
+        };
+        let mut groups: Vec<Group> = Vec::new();
+        // Where the level below starts in `groups`; `None`: the spans.
+        let mut below: Option<usize> = None;
+        while rows > 1 || columns > 1 {
+            let (down, across) = match (rows > 1, columns > 1) {
+                (true, true) => (2, 2),
+                (true, false) => (4, 1),
+                _ => (1, 4),
+            };
+            let (next_rows, next_columns) = (rows.div_ceil(down), columns.div_ceil(across));
+            let start = groups.len();
+            let mut next = Vec::with_capacity(next_rows.saturating_mul(next_columns));
+            for r in 0..next_rows {
+                for c in 0..next_columns {
+                    let mut group = Group {
+                        bbox: Bbox3::EMPTY,
+                        members: [0; 4],
+                        count: 0,
+                        spans: below.is_none(),
+                    };
+                    for i in r * down..((r + 1) * down).min(rows) {
+                        for j in c * across..((c + 1) * across).min(columns) {
+                            let k = i * columns + j;
+                            let (Some(member), Some(bbox)) = (
+                                u32::try_from(below.unwrap_or(0).saturating_add(k)).ok(),
+                                level.get(k),
+                            ) else {
+                                return Vec::new();
+                            };
+                            let Some(slot) = group.members.get_mut(usize::from(group.count)) else {
+                                return Vec::new();
+                            };
+                            *slot = member;
+                            group.count += 1;
+                            if let Some((lo, hi)) = bbox.corners() {
+                                group.bbox.add(lo);
+                                group.bbox.add(hi);
+                            }
+                        }
+                    }
+                    next.push(group.bbox);
+                    groups.push(group);
+                }
+            }
+            below = Some(start);
+            level = next;
+            (rows, columns) = (next_rows, next_columns);
+        }
+        groups
+    }
+
+    /// Queues the members of group `at` on `heap`: a group by `group_key`
+    /// of its box, a span by `span_key` of its root's node (the key it was
+    /// queued by before there were groups).
+    fn open(
+        &self,
+        at: usize,
+        heap: &mut BinaryHeap<Queued>,
+        group_key: &dyn Fn(&Bbox3) -> f64,
+        span_key: &dyn Fn(&Node) -> f64,
+    ) {
+        let Some(group) = self.groups.get(at) else {
+            return;
+        };
+        for &member in group.members.iter().take(usize::from(group.count)) {
+            let member = member as usize;
+            if group.spans {
+                if let Some((&root, node)) = self
+                    .roots
+                    .get(member)
+                    .and_then(|r| Some((r, self.nodes.get(*r)?)))
+                {
+                    heap.push(Queued::node(span_key(node), root));
+                }
+            } else if let Some(inner) = self.groups.get(member) {
+                heap.push(Queued::group(group_key(&inner.bbox), member));
+            }
+        }
+    }
+
+    /// The places in [`Self::roots`] of the spans whose box is within
+    /// `reach` of `p` (`box_distance(bbox, p) <= reach`), in order, found
+    /// through the groups; `None` for a tree without groups.
+    fn spans_within(&self, p: Vec3, reach: f64) -> Option<Vec<usize>> {
+        let top = self.groups.len().checked_sub(1)?;
+        let mut found = Vec::new();
+        let mut stack = vec![top];
+        while let Some(at) = stack.pop() {
+            let group = self.groups.get(at)?;
+            // (A span outside a group's reach is outside its own: the
+            // group's box holds the span's, and the distance to a box
+            // never grows as the box does, in floating point too.)
+            if !(box_distance(&group.bbox, p) <= reach) {
+                continue;
+            }
+            for &member in group.members.iter().take(usize::from(group.count)) {
+                let member = member as usize;
+                if group.spans {
+                    let node = self.roots.get(member).and_then(|&r| self.nodes.get(r))?;
+                    if box_distance(&node.bbox, p) <= reach {
+                        found.push(member);
+                    }
+                } else {
+                    stack.push(member);
+                }
+            }
+        }
+        found.sort_unstable();
+        Some(found)
+    }
+
+    /// The least of the roots' `sigma` ([`Self::least_sigma`]).
+    fn least_of_roots(&self) -> Option<f64> {
+        let sigma = self
+            .roots
+            .iter()
+            .filter_map(|&r| self.nodes.get(r))
+            .map(|n| n.sigma)
+            .fold(f64::INFINITY, f64::min);
+        (sigma.is_finite() && sigma > 0.0).then_some(sigma)
+    }
+
+    /// The diagonal of the box around the roots' boxes ([`Self::size`]).
+    fn size_of_roots(&self) -> f64 {
+        let mut all = Bbox3::EMPTY;
+        for node in self.roots.iter().filter_map(|&r| self.nodes.get(r)) {
+            if let Some((lo, hi)) = node.bbox.corners() {
+                all.add(lo);
+                all.add(hi);
+            }
+        }
+        all.diagonal()
     }
 
     fn subdivide(
@@ -2993,14 +3326,7 @@ impl PatchTree {
     /// surface moves, at least, per unit that its chart moves; `None`
     /// when a piece has no bound.
     fn least_sigma(&self) -> Option<f64> {
-        craft3d_math::clock::count("tree.least_sigma roots", self.roots.len() as u64);
-        let sigma = self
-            .roots
-            .iter()
-            .filter_map(|&r| self.nodes.get(r))
-            .map(|n| n.sigma)
-            .fold(f64::INFINITY, f64::min);
-        (sigma.is_finite() && sigma > 0.0).then_some(sigma)
+        self.least
     }
 
     /// The tree of the same surface drawn as evenly as its weights allow
@@ -3093,9 +3419,25 @@ impl PatchTree {
     /// [`Self::sigma_near`]: the search.
     fn sigma_search(&self, p: Vec3, reach: f64) -> Option<f64> {
         let _clock = craft3d_math::clock::clock("tree.sigma_search");
-        craft3d_math::clock::count("tree.sigma_search roots", self.roots.len() as u64);
         let mut least = f64::INFINITY;
-        let mut stack: Vec<usize> = self.roots.clone();
+        // The spans within reach (all of them without groups), in the
+        // order of `roots`: a span out of reach is passed over below
+        // whatever else was found, so leaving it out changes nothing
+        // ([`Group`]). (A point or a reach that is no number: every span,
+        // as before.)
+        let within = if p.is_finite() && !reach.is_nan() {
+            self.spans_within(p, reach)
+        } else {
+            None
+        };
+        let mut stack: Vec<usize> = match within {
+            Some(places) => places
+                .into_iter()
+                .filter_map(|k| self.roots.get(k).copied())
+                .collect(),
+            None => self.roots.clone(),
+        };
+        craft3d_math::clock::count("tree.sigma_search spans", stack.len() as u64);
         let mut visited = 0_usize;
         while let Some(index) = stack.pop() {
             visited += 1;
@@ -3747,15 +4089,7 @@ impl PatchTree {
 
     /// The size of the surface: the diagonal of the box around it.
     pub fn size(&self) -> f64 {
-        craft3d_math::clock::count("tree.size roots", self.roots.len() as u64);
-        let mut all = Bbox3::EMPTY;
-        for node in self.roots.iter().filter_map(|&r| self.nodes.get(r)) {
-            if let Some((lo, hi)) = node.bbox.corners() {
-                all.add(lo);
-                all.add(hi);
-            }
-        }
-        all.diagonal()
+        self.diagonal
     }
 
     /// The unit normal `∂u × ∂v` of the surface at the nearest point
@@ -3790,8 +4124,12 @@ impl PatchTree {
             threshold.to_bits(),
         ];
         let search = || {
+            let distance = |slab: &Slab| box_distance(&slab.local, slab.to_local(p));
+            // A group's box in the world's axes, as a span's is queued.
+            let group = |bbox: &Bbox3| distance(&Slab::axis_aligned(*bbox));
             self.bound_by(
-                &|slab| box_distance(&slab.local, slab.to_local(p)),
+                &distance,
+                p.is_finite().then_some(&group as &dyn Fn(&Bbox3) -> f64),
                 resolution,
                 MAX_LEAVES,
                 threshold,
@@ -3820,8 +4158,29 @@ impl PatchTree {
     /// how far the curve can travel from it would need pieces the size
     /// of the tolerance.
     pub fn segment_lower_bound(&self, a: Vec3, b: Vec3, resolution: f64, threshold: f64) -> f64 {
+        // A group by the distance between its box and the segment's, less
+        // a margin far above what rounding takes from the distance to a
+        // span's box (a few units in the last place of the coordinates):
+        // never more than that distance as computed ([`Group`]).
+        let group = |bbox: &Bbox3| {
+            let Some((lo, hi)) = bbox.corners() else {
+                return 0.0;
+            };
+            let (low, high) = (a.min(b), a.max(b));
+            let gap = Vec3::new(
+                (lo.x - high.x).max(low.x - hi.x).max(0.0),
+                (lo.y - high.y).max(low.y - hi.y).max(0.0),
+                (lo.z - high.z).max(low.z - hi.z).max(0.0),
+            );
+            let size = [a, b, lo, hi]
+                .into_iter()
+                .map(|q| q.x.abs().max(q.y.abs()).max(q.z.abs()))
+                .fold(0.0, f64::max);
+            (gap.length() - SEGMENT_GROUP_MARGIN * size).max(0.0)
+        };
         self.bound_by(
             &|slab| segment_box_distance(&slab.local, slab.to_local(a), slab.to_local(b)),
+            (a.is_finite() && b.is_finite()).then_some(&group as &dyn Fn(&Bbox3) -> f64),
             resolution,
             SEGMENT_BUDGET,
             threshold,
@@ -3833,9 +4192,12 @@ impl PatchTree {
     /// distance exceeds the threshold (the answer is then the threshold
     /// itself) splits nothing beyond it. Pass infinity for the bound as
     /// tight as the resolution allows.
+    /// `group` is the key of a group's box ([`Group`]): no more than
+    /// `distance` of any box in it; `None` searches without the groups.
     fn bound_by(
         &self,
         distance: &dyn Fn(&Slab) -> f64,
+        group: Option<&dyn Fn(&Bbox3) -> f64>,
         resolution: f64,
         budget: usize,
         threshold: f64,
@@ -3848,17 +4210,51 @@ impl PatchTree {
         };
         let mut best = threshold;
         let _clock = craft3d_math::clock::clock("tree.bound_by");
-        craft3d_math::clock::count("tree.bound_by roots", self.roots.len() as u64);
         let mut heap = BinaryHeap::new();
-        for &root in &self.roots {
-            if let Some(node) = self.nodes.get(root) {
-                heap.push(Pending(distance(&Slab::axis_aligned(node.bbox)), root));
+        let span_key = |node: &Node| distance(&Slab::axis_aligned(node.bbox));
+        match (group, self.groups.last()) {
+            (Some(key), Some(top)) => {
+                heap.push(Queued::group(key(&top.bbox), self.groups.len() - 1));
+            }
+            _ => {
+                craft3d_math::clock::count("tree.bound_by flat roots", self.roots.len() as u64);
+                for &root in &self.roots {
+                    if let Some(node) = self.nodes.get(root) {
+                        heap.push(Queued::node(span_key(node), root));
+                    }
+                }
             }
         }
+        // The groups at the top of the heap opened, so that a node is
+        // there (or nothing): the nearest node left, as before there were
+        // groups.
+        let settle = |heap: &mut BinaryHeap<Queued>| {
+            while let Some(&Queued {
+                group: true, index, ..
+            }) = heap.peek()
+            {
+                heap.pop();
+                if let Some(key) = group {
+                    self.open(index, heap, key, &span_key);
+                }
+            }
+        };
         let mut pending: Vec<(RationalBezierPatch, Slab, usize)> = Vec::new();
-        while let Some(Pending(d, index)) = heap.pop() {
+        while let Some(Queued {
+            distance: d,
+            group: is_group,
+            index,
+        }) = heap.pop()
+        {
             if d >= best {
                 break;
+            }
+            if is_group {
+                craft3d_math::clock::count("tree.bound_by groups opened", 1);
+                if let Some(key) = group {
+                    self.open(index, &mut heap, key, &span_key);
+                }
+                continue;
             }
             let Some(node) = self.nodes.get(index) else {
                 continue;
@@ -3867,7 +4263,7 @@ impl PatchTree {
                 Some(kids) => {
                     for &k in kids.ids() {
                         if let Some(child) = self.nodes.get(k) {
-                            heap.push(Pending(distance(&Slab::axis_aligned(child.bbox)), k));
+                            heap.push(Queued::node(distance(&Slab::axis_aligned(child.bbox)), k));
                         }
                     }
                 }
@@ -3891,8 +4287,9 @@ impl PatchTree {
             if threshold.is_finite() && best < threshold {
                 // (As in `refine`: what is left is counted by the nearest
                 // box of it, so that the bound stays below the distance.)
-                if let Some(Pending(next, _)) = heap.peek() {
-                    best = best.min(*next);
+                settle(&mut heap);
+                if let Some(next) = heap.peek() {
+                    best = best.min(next.distance);
                 }
                 break;
             }
@@ -4127,11 +4524,18 @@ impl PatchTree {
             return None;
         }
         let _clock = craft3d_math::clock::clock("tree.search (nearest)");
-        craft3d_math::clock::count("tree.search roots", self.roots.len() as u64);
         let mut heap = BinaryHeap::new();
-        for &root in &self.roots {
-            if let Some(node) = self.nodes.get(root) {
-                heap.push(Pending(box_distance(&node.bbox, p), root));
+        let group_key = |bbox: &Bbox3| box_distance(bbox, p);
+        let span_key = |node: &Node| box_distance(&node.bbox, p);
+        match self.groups.last() {
+            Some(top) => heap.push(Queued::group(group_key(&top.bbox), self.groups.len() - 1)),
+            None => {
+                craft3d_math::clock::count("tree.search flat roots", self.roots.len() as u64);
+                for &root in &self.roots {
+                    if let Some(node) = self.nodes.get(root) {
+                        heap.push(Queued::node(span_key(node), root));
+                    }
+                }
             }
         }
         // (A root that is itself a leaf is queued by its world box, which
@@ -4147,9 +4551,19 @@ impl PatchTree {
             Some(slab) => box_distance(&slab.local, slab.to_local(p)),
             None => box_distance(&node.bbox, p),
         };
-        while let Some(Pending(d, index)) = heap.pop() {
+        while let Some(Queued {
+            distance: d,
+            group,
+            index,
+        }) = heap.pop()
+        {
             if best.is_some_and(|b| d >= b.distance) {
                 break;
+            }
+            if group {
+                craft3d_math::clock::count("tree.search groups opened", 1);
+                self.open(index, &mut heap, &group_key, &span_key);
+                continue;
             }
             let Some(node) = self.nodes.get(index) else {
                 continue;
@@ -4158,7 +4572,7 @@ impl PatchTree {
                 Some(kids) => {
                     for &k in kids.ids() {
                         if let Some(child) = self.nodes.get(k) {
-                            heap.push(Pending(key(child), k));
+                            heap.push(Queued::node(key(child), k));
                         }
                     }
                 }
@@ -6419,6 +6833,190 @@ mod tests {
     }
 
     /// The children of a node take no more room than four indices did.
+    /// A bicubic sheet through `n` × `n` control points over a square of
+    /// `side` at `at`, with hills, a ripple and (`fold`) a fold back over
+    /// itself along x; weights from a tenth to ten where `rational`.
+    fn hills(n: usize, side: f64, at: Vec3, fold: bool, rational: bool) -> Surface {
+        let mut state = 0x5EED_u64 + n as u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut knots = vec![0.0; 4];
+        for k in 1..n - 3 {
+            knots.push(k as f64 / (n - 3) as f64);
+        }
+        knots.extend([1.0; 4]);
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        for i in 0..n {
+            for j in 0..n {
+                let (s, t) = (i as f64 / (n - 1) as f64, j as f64 / (n - 1) as f64);
+                let h = 0.2 * (-((s - 0.3) * (s - 0.3) + (t - 0.6) * (t - 0.6)) / 0.02).pexp()
+                    + 0.05 * (17.0 * s + 5.0 * t).psin();
+                let (x, z) = if fold {
+                    // Along x out, back over itself and out again.
+                    let a = 3.0 * std::f64::consts::PI * s;
+                    (0.4 * (s + 0.25 * a.psin()), h + 0.1 * a.pcos())
+                } else {
+                    (s, h)
+                };
+                ctrl.push(at + Vec3::new(x, t, z) * side);
+                weights.push(if rational {
+                    (2.0 * (next() - 0.5) * std::f64::consts::LN_10).pexp()
+                } else {
+                    1.0
+                });
+            }
+        }
+        Surface::Nurbs(NurbsSurface::new(3, 3, knots.clone(), knots, n, n, ctrl, weights).unwrap())
+    }
+
+    /// The groups of spans (2026-11-17) change no answer of a tree and no
+    /// work it charges, bit for bit: the nearest point, the bound below
+    /// the distance from a point and from a segment (with and without a
+    /// threshold), the least singular value near a point, the size and
+    /// the least bound, on trees with groups and the same trees made
+    /// without, the same questions in the same order: sheets of 900 and
+    /// 1849 spans (polynomial, folded over themselves, rational), a strip
+    /// of 300 spans in one row, at scales 1e-3, 1 and 1e6, the points on
+    /// them, near them, far off, on their borders and past them.
+    #[test]
+    fn the_groups_of_spans_change_no_answer_and_no_work() {
+        use craft3d_geom::allowance::measured;
+        let mut state = 0xB00_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut checked = 0_usize;
+        for scale in [1e-3, 1.0, 1e6] {
+            let at = Vec3::new(0.3, -0.7, 0.2) * scale;
+            let surfaces = [
+                hills(33, scale, at, false, false),
+                hills(46, scale, at, true, false),
+                hills(33, scale, at, false, true),
+                strip(300, 10.0 * scale, scale, 0.3),
+            ];
+            for surface in &surfaces {
+                UNGROUPED.set(true);
+                let flat = PatchTree::new(surface).unwrap();
+                UNGROUPED.set(false);
+                let grouped = PatchTree::new(surface).unwrap();
+                assert!(flat.groups.is_empty());
+                assert!(!grouped.groups.is_empty());
+                assert_eq!(flat.size().to_bits(), grouped.size().to_bits());
+                assert_eq!(
+                    flat.least_sigma().map(f64::to_bits),
+                    grouped.least_sigma().map(f64::to_bits)
+                );
+                let ((u0, u1), (v0, v1)) = surface.domain();
+                let size = grouped.size();
+                for k in 0..120 {
+                    // On the surface, beside it, far off, past its border.
+                    let (s, t) = (1.4 * next() - 0.2, 1.4 * next() - 0.2);
+                    let on = surface.eval(
+                        u0 + s.clamp(0.0, 1.0) * (u1 - u0),
+                        v0 + t.clamp(0.0, 1.0) * (v1 - v0),
+                    );
+                    let off = match k % 4 {
+                        0 => 0.0,
+                        1 => 1e-4,
+                        2 => 0.05,
+                        _ => 2.0,
+                    } * size;
+                    let p = on
+                        + Vec3::new(next() - 0.5, next() - 0.5, next() - 0.5) * off
+                        + Vec3::new(s - s.clamp(0.0, 1.0), t - t.clamp(0.0, 1.0), 0.0) * size;
+                    let q = p + Vec3::new(next() - 0.5, next() - 0.5, next() - 0.5) * (0.2 * size);
+                    let resolution = [1e-6, 1e-3, 0.1][k % 3] * size;
+                    let threshold = if k % 2 == 0 {
+                        f64::INFINITY
+                    } else {
+                        0.01 * size
+                    };
+                    let reach = [1e-5, 1e-2, 0.3, 3.0][k % 4] * size;
+                    let both = |tree: &PatchTree| {
+                        let (near, w1) = measured(|| tree.search(p));
+                        let (low, w2) = measured(|| tree.lower_bound(p, resolution, threshold));
+                        let (seg, w3) =
+                            measured(|| tree.segment_lower_bound(p, q, resolution, threshold));
+                        let (sigma, w4) = measured(|| tree.sigma_search(p, reach));
+                        (
+                            near.map(|n| {
+                                [n.u, n.v, n.point.x, n.point.y, n.point.z, n.distance]
+                                    .map(f64::to_bits)
+                            }),
+                            low.to_bits(),
+                            seg.to_bits(),
+                            sigma.map(f64::to_bits),
+                            [w1, w2, w3, w4],
+                        )
+                    };
+                    assert_eq!(both(&flat), both(&grouped), "{p:?} {q:?} scale {scale}");
+                    checked += 1;
+                }
+                // Questions that are no numbers are asked without groups.
+                for p in [
+                    Vec3::new(f64::NAN, 0.0, 0.0),
+                    Vec3::new(f64::INFINITY, 1.0, 2.0),
+                ] {
+                    assert_eq!(
+                        flat.lower_bound(p, 1e-3, f64::INFINITY).to_bits(),
+                        grouped.lower_bound(p, 1e-3, f64::INFINITY).to_bits()
+                    );
+                    assert_eq!(
+                        flat.sigma_search(p, 1.0).map(f64::to_bits),
+                        grouped.sigma_search(p, 1.0).map(f64::to_bits)
+                    );
+                    assert!(grouped.search(p).is_none());
+                }
+            }
+        }
+        assert_eq!(checked, 3 * 4 * 120);
+    }
+
+    /// The spans counted from the knots ([`span_count`]) are the spans
+    /// `bezier_spans` makes: polynomial and rational, folded, a strip, a
+    /// patch, a double inner knot.
+    #[test]
+    fn the_spans_counted_from_the_knots_are_the_spans_made() {
+        let double = Surface::Nurbs(
+            NurbsSurface::new(
+                2,
+                1,
+                vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                5,
+                2,
+                (0..10)
+                    .map(|k| Vec3::new(f64::from(k / 2), f64::from(k % 2), 0.1 * f64::from(k)))
+                    .collect(),
+                vec![1.0; 10],
+            )
+            .unwrap(),
+        );
+        for surface in [
+            hills(9, 1.0, Vec3::ZERO, false, false),
+            hills(12, 3.0, Vec3::ZERO, true, true),
+            strip(7, 2.0, 1.0, 0.0),
+            weighted_plane(2),
+            rational_cylinder(),
+            dome(),
+            double,
+        ] {
+            let made = match &surface {
+                Surface::Nurbs(s) => s.bezier_spans().unwrap().len(),
+                _ => 1,
+            };
+            assert_eq!(span_count(&surface), Some(made));
+        }
+    }
+
     #[test]
     fn a_node_did_not_grow() {
         assert_eq!(

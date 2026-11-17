@@ -389,7 +389,9 @@ fn remembered(
     within: &Bbox3,
     tol: &Tolerance,
 ) -> Result<SurfaceMeeting, GeomError> {
+    let clock = craft3d_math::clock::clock("geom.meet key");
     let key = format!("{a:?}|{b:?}|{within:?}|{tol:?}");
+    drop(clock);
     // Charged by the work the march took, once per operation under a
     // bound, whether it is marched now or found on the shelf
     // (`crate::allowance::first_time`): the march is counted the first
@@ -402,6 +404,7 @@ fn remembered(
         }
         return result;
     }
+    let _clock = craft3d_math::clock::clock("geom.meet numeric");
     let (result, units) = if first {
         crate::allowance::measured(|| numeric(a, b, within, tol))
     } else {

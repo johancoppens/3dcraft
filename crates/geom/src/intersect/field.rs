@@ -84,7 +84,9 @@ impl Projector {
     /// surface alone, and the faces of one body, intersected with each of
     /// the faces of another, ask for the same few many times over.
     pub(super) fn shared(surface: &Surface) -> Result<Arc<Self>, GeomError> {
+        let clock = craft3d_math::clock::clock("geom.projector key");
         let key = format!("{surface:?}");
+        drop(clock);
         {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(at) = shelf.iter().position(|(k, _)| *k == key) {
@@ -772,7 +774,9 @@ impl Pieces {
     /// again for every face it meets (measured on the benchmark's turbofan,
     /// 1312 charts took 0.9 s of pieces made anew).
     fn shared(surface: &Surface) -> Option<Arc<Pieces>> {
+        let clock = craft3d_math::clock::clock("geom.pieces key");
         let key = format!("{surface:?}");
+        drop(clock);
         {
             let mut shelf = PIECE_SHELF.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(at) = shelf.iter().position(|(k, _)| *k == key) {
@@ -782,7 +786,9 @@ impl Pieces {
                 return pieces;
             }
         }
+        let clock = craft3d_math::clock::clock("geom.pieces new");
         let pieces = crate::allowance::uncounted(|| Pieces::new(surface)).map(Arc::new);
+        drop(clock);
         let mut shelf = PIECE_SHELF.lock().unwrap_or_else(PoisonError::into_inner);
         if !shelf.iter().any(|(k, _)| *k == key) {
             shelf.push((key, pieces.clone()));
@@ -796,13 +802,15 @@ impl Pieces {
     /// The pieces of a Bézier or NURBS surface; `None` for another kind,
     /// or where a piece has no finite bound.
     fn new(surface: &Surface) -> Option<Pieces> {
-        let spans: Vec<BezierSpan> = match surface {
-            Surface::Bezier(b) => vec![BezierSpan {
+        // A spline's spans as it keeps them, not a copy (some 150 MB for
+        // the 259 081 spans of the largest grid surface).
+        let spans: std::sync::Arc<Vec<BezierSpan>> = match surface {
+            Surface::Bezier(b) => std::sync::Arc::new(vec![BezierSpan {
                 u: (0.0, 1.0),
                 v: (0.0, 1.0),
                 patch: crate::RationalBezierPatch::from_bezier(b),
-            }],
-            Surface::Nurbs(s) => s.bezier_spans_shared().ok()?.as_ref().clone(),
+            }]),
+            Surface::Nurbs(s) => s.bezier_spans_shared().ok()?,
             _ => return None,
         };
         let (u, v) = surface.domain();
@@ -886,7 +894,7 @@ impl Pieces {
         let mut heap = std::collections::BinaryHeap::new();
         let mut pending: std::collections::BTreeMap<usize, (Vec<Part>, usize)> =
             std::collections::BTreeMap::new();
-        for span in spans {
+        for span in spans.iter() {
             let b = bound(&span.patch, span.u, span.v)?;
             let index = pieces.nodes.len();
             pieces.roots.push(index);

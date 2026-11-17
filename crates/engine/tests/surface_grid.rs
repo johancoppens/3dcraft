@@ -859,28 +859,50 @@ fn document_check_lists_a_grids_warnings_however_they_came_about() {
     assert_eq!(grid_warnings(&mut s).len(), 1);
 }
 
+/// A sheet of more Bézier spans than a boolean took until 2026-11-17
+/// (185 × 185 points: 182² = 33 124 spans, over the 32 768 of then, and
+/// warned of) is not warned of, and cuts a block of its footprint: a
+/// boolean takes as many spans as the largest grid has points. The solid
+/// under it is right where a vertical ray meets it at a node.
 #[test]
-fn a_sheet_larger_than_a_boolean_takes_is_warned_of() {
+fn a_sheet_larger_than_a_boolean_took_is_not_warned_of_and_cuts() {
     let dir = workdir("surface-grid", "large");
     let mut s = session_in(&dir);
     new_document(&mut s, 1.0);
-    // 185 × 185 points: 182² = 33 124 spans, over the 32 768 a boolean
-    // takes.
-    let points = rows(185, 185, |r, c| {
-        [
-            c as f64,
-            r as f64,
-            ((c as f64) * 0.1).psin() + ((r as f64) * 0.13).pcos(),
-        ]
-    });
+    let height = |r: usize, c: usize| ((c as f64) * 0.1).psin() + ((r as f64) * 0.13).pcos();
+    let points = rows(185, 185, |r, c| [c as f64, r as f64, height(r, c)]);
     let made = built(
         &mut s,
         "feature.surface.grid",
         json!({"points": points, "name": "Large"}),
     );
-    let warned = made["grid"]["warnings"].to_string();
     assert!(
-        warned.contains("33124 spans") && warned.contains("184 × 184"),
+        made["grid"]["warnings"]
+            .as_array()
+            .is_none_or(|w| w.is_empty()),
         "{made}"
     );
+    assert!(grid_warnings(&mut s).is_empty());
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [184, 184, 10], "position": [0, 0, -5], "name": "Blank"}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "intersect", "target": "Blank", "tool": "Large", "keepTool": true, "name": "Under"}),
+    );
+    for (r, c) in [(1, 1), (92, 40), (183, 170), (57, 123)] {
+        let hit = run(
+            &mut s,
+            "measure.ray",
+            json!({"from": [c as f64, r as f64, 20.0], "direction": "-z", "of": "Under", "limit": 1}),
+        );
+        let z = number(&hit["hits"][0]["point"][2]);
+        assert!(
+            (z - height(r, c)).abs() <= 1e-9,
+            "the top at node ({r}, {c}): {z}"
+        );
+    }
 }
