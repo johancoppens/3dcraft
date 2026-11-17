@@ -57,9 +57,7 @@ pub enum FilletFace {
 
 /// A filleted body and where each of its entities came from: `faces[i]`
 /// belongs to `FaceId(i)` of `body`, and so on. An edge or a vertex has
-/// the id it had in the body when it is one of that body; what is left of
-/// an edge beyond a fillet's tip short of its end ([`Fade::tip`]) has the
-/// id of that edge, shortened.
+/// the id it had in the body when it is one of that body.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FilletResult {
     pub body: Body,

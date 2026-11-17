@@ -3931,42 +3931,11 @@ fn blend_items(
         .map(|&i| faces.get(i).cloned().unwrap_or(Face::Kept(Vec::new())))
         .collect();
     let replaced: std::collections::BTreeSet<EdgeId> = requests.iter().map(|r| r.edge).collect();
-    // What is left of an edge beyond a tip short of its end
-    // (`keep_beyond`) is that edge, shortened: the one new edge on the
-    // edge's own curve, within its range.
-    let shortened = |made: &Edge| -> Option<EdgeId> {
-        requests
-            .iter()
-            .filter(|r| match r.size {
-                Size::Law(law) => law
-                    .fades
-                    .iter()
-                    .flatten()
-                    .any(|f| f.is_tip() && f.back > 0.0),
-                _ => false,
-            })
-            .find(|r| {
-                body.edge(r.edge).is_some_and(|was| {
-                    let (low, high) = (was.range.0.min(was.range.1), was.range.0.max(was.range.1));
-                    was.curve == made.curve
-                        && [made.range.0, made.range.1]
-                            .iter()
-                            .all(|t| *t >= low && *t <= high)
-                })
-            })
-            .map(|r| r.edge)
-    };
     let edges = edge_was
         .iter()
-        .enumerate()
-        .map(|(now, &i)| {
+        .map(|&i| {
             let id = EdgeId(u32::try_from(i).unwrap_or(u32::MAX));
-            if i >= body.edges.len() {
-                return out
-                    .edge(EdgeId(u32::try_from(now).unwrap_or(u32::MAX)))
-                    .and_then(shortened);
-            }
-            (!replaced.contains(&id) && !merged.contains(&id)).then_some(id)
+            (i < body.edges.len() && !replaced.contains(&id) && !merged.contains(&id)).then_some(id)
         })
         .collect();
     let vertices = vertex_was

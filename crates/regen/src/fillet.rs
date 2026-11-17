@@ -456,7 +456,7 @@ pub(crate) fn build(
             }
             other => explain(other, fillet, &picked, names, unit),
         })?;
-        (made, faded)
+        (shortened(made, body, &picked, &faded), faded)
     };
     let faces: Vec<blend::Made<'_>> = made
         .faces
@@ -517,6 +517,52 @@ pub(crate) fn build(
         })
         .collect();
     Ok((made.body, named, reports))
+}
+
+/// `made` with what is left of a faded edge beyond a tip short of its end
+/// said to be that edge, shortened: the kernel puts it back as a new edge
+/// on the edge's own curve, within its range (`kernel::blend::rolling`'s
+/// `keep_beyond`), and reports it as made from nothing. Named as a piece
+/// of the edge, it answers to the edge's kept names and a name of the edge
+/// is followed onto it, as a piece a boolean keeps of an edge is.
+fn shortened(
+    mut made: kernel::FilletResult,
+    body: &Body,
+    picked: &[Picked],
+    faded: &[Faded],
+) -> kernel::FilletResult {
+    for f in faded.iter().filter(|f| f.back > 0.0) {
+        let Some(pick) = picked.get(f.pick) else {
+            continue;
+        };
+        let Some(was) = body.edge(pick.edge) else {
+            continue;
+        };
+        let (low, high) = (was.range.0.min(was.range.1), was.range.0.max(was.range.1));
+        let found: Vec<usize> = made
+            .body
+            .edges
+            .iter()
+            .enumerate()
+            .filter(|(now, e)| {
+                made.edges.get(*now).is_some_and(Option::is_none)
+                    && e.curve == was.curve
+                    && [e.range.0, e.range.1]
+                        .iter()
+                        .all(|t| *t >= low && *t <= high)
+            })
+            .map(|(now, _)| now)
+            .collect();
+        // (With a tip short of both ends there are two pieces: neither
+        // then answers to the edge's names, `entity::kept_names`, and
+        // following the edge's name says it is more than one edge.)
+        for now in found {
+            if let Some(slot) = made.edges.get_mut(now) {
+                *slot = Some(pick.edge);
+            }
+        }
+    }
+    made
 }
 
 /// The radius law of the picked edge `pick`: `radius`, and a fade to

@@ -322,7 +322,7 @@ all the way. A box's upright edge rounded 3 mm, fading out over the top 15 mm:
 [
   ["feature.block", {"size": [40, 30, 40], "name": "Box"}],
   ["feature.fillet", {"edges": ["Box:edge(9)"], "radius": "3 mm", "fade": [{"at": "Box:vertex(4)", "over": "15 mm"}], "name": "Round"}],
-  ["assert.add", {"name": "fades", "measure": "volume", "of": "Round", "eq": "40 mm * 30 mm * 40 mm - (1 - pi / 4) * (3 mm)^2 * (25 mm + 9 / 14 * 15 mm)", "tol": "0.001 mm^3"}]
+  ["assert.add", {"name": "fades", "measure": "volume", "of": "Round", "eq": "40 mm * 30 mm * 40 mm - (1 - pi / 4) * (3 mm)^2 * (25 mm + 9 / 14 * 15 mm)", "tol": 0.001}]
 ]
 ```
 
