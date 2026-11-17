@@ -661,7 +661,7 @@ fn a_tip_says_where_it_stands_and_takes_a_point_in_the_model() {
         json!({"feature": "Nose", "at": ["0 mm", "0 mm", "12 mm"]}),
     );
     assert!(
-        reason.starts_with("at:") && reason.contains("behind") && reason.contains("8e0"),
+        reason.starts_with("at:") && reason.contains("lies 8 mm behind the end's plane"),
         "{reason}"
     );
     run(&mut s, "edit.undo", json!({}));
@@ -675,15 +675,17 @@ fn a_tip_says_where_it_stands_and_takes_a_point_in_the_model() {
 }
 
 /// The drone's blade (five sections drawn about its stacking line, the
-/// line through the sketches' origins, narrowed and turned along it): left
-/// to choose, its tip stands on that line, so the point lies on the
-/// propeller's radius in the hub's plane; and in a document large enough
-/// that `document.inspect` meshes at a tolerance as coarse as the blade's
-/// thickness, every body has its box, the tip at its default place and at
-/// the one chosen before 2026-11-17 alike (whose mesh at that tolerance
-/// was refused, so the blade had none).
+/// line through the sketches' origins, narrowed and turned along it). Left
+/// to choose, its tip stands over the middle of what the sides come to,
+/// 0.80 mm along the chord and 0.10 mm across off the stacking line (the
+/// reach in the hub's plane 0.04 mm short); given as the point in the
+/// model where it is to be, on the line at the propeller's radius, the
+/// reach is right. In a document large enough that `document.inspect`
+/// meshes at a tolerance as coarse as the blade's thickness, every body
+/// has its box at both places (before 2026-11-17 the blade's mesh at that
+/// tolerance was refused, so it had none).
 #[test]
-fn a_blade_s_tip_stands_on_its_stacking_line_and_every_body_has_a_box() {
+fn a_blade_s_tip_given_on_its_stacking_line_reaches_and_every_body_has_a_box() {
     let script: Value = serde_json::from_str(
         &std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/tip_blade/blade.json"),
@@ -712,52 +714,61 @@ fn a_blade_s_tip_stands_on_its_stacking_line_and_every_body_has_a_box() {
         json!({"face": "Blade loft:endCap(e9)", "length": length, "name": "Blade"}),
     );
     assert_eq!(made["status"], "ok", "{made}");
-    assert_eq!(made["tip"]["placed"], "taper", "{made}");
-    let point: Vec<f64> = made["tip"]["point"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|x| x.as_f64().unwrap())
-        .collect();
+    assert_eq!(made["tip"]["placed"], "shoulder", "{made}");
+    let point = |made: &Value| -> Vec<f64> {
+        made["tip"]["point"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_f64().unwrap())
+            .collect()
+    };
     // The radius 5.1 in / 2 from the hub's axis at (79.77, 79.77), on the
     // stacking line at the hub's mid-height.
     let on_line = [79.77 + 64.77, 79.77, 29.4];
-    for (got, want) in point.iter().zip(on_line) {
-        assert!((got - want).abs() <= 1e-9, "{point:?} against {on_line:?}");
-    }
+    let off = |p: &[f64]| -> f64 {
+        p.iter()
+            .zip(on_line)
+            .map(|(got, want)| (got - want) * (got - want))
+            .sum::<f64>()
+            .sqrt()
+    };
+    let default = point(&made);
+    assert!(off(&default) > 0.5, "{default:?}");
     run(
         &mut s,
         "assert.add",
         json!({"name": "reach", "measure": "sectionExtent", "of": "Blade", "plane": "zx",
                "offset": "motor_offset", "axis": "x", "eq": "prop_diameter / 2 - 5 mm", "tol": "0.001 mm"}),
     );
-    let listed = run(&mut s, "assert.list", json!({"wait": true}));
-    assert_eq!(listed["passed"], 1, "{listed}");
-    deep(&mut s);
-    // (At the place chosen before, the point is off the hub's plane and
-    // the reach falls 0.04 mm short: the boxes alone are asked there.)
-    for at in [None, Some(json!(["0.8009 mm", "0.1018 mm"]))] {
-        if let Some(at) = &at {
-            let edited = run(
-                &mut s,
-                "feature.edit",
-                json!({"feature": "Blade", "at": at}),
-            );
-            assert_eq!(edited["status"], "ok", "{edited}");
-        }
-        let document = run(&mut s, "document.inspect", json!({}));
+    let boxed = |s: &mut Session, what: &str| {
+        let document = run(s, "document.inspect", json!({}));
         for found in document["bodies"].as_array().unwrap() {
             assert!(
                 found.get("bbox").is_some(),
-                "{at:?}: {} has no box",
+                "{what}: {} has no box",
                 found["name"]
             );
             assert!(
                 found["bboxTolerance"].as_f64().unwrap() > 0.9,
-                "{at:?}: {found}"
+                "{what}: {found}"
             );
         }
-    }
+    };
+    boxed(&mut s, "the default place");
+    // The point given in the model, where the tip is to be.
+    let edited = run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Blade", "at": ["motor_offset + prop_diameter / 2", "motor_offset", "prop_z + prop_hub_height / 2"]}),
+    );
+    assert_eq!(edited["status"], "ok", "{edited}");
+    assert_eq!(edited["tip"]["placed"], "givenPoint", "{edited}");
+    assert!(off(&point(&edited)) <= 1e-9, "{edited}");
+    let listed = run(&mut s, "assert.list", json!({"wait": true}));
+    assert_eq!(listed["passed"], 1, "{listed}");
+    deep(&mut s);
+    boxed(&mut s, "the point given");
 }
 
 #[test]

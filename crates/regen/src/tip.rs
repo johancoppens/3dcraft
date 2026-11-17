@@ -112,21 +112,20 @@ pub(crate) fn build(
                 blame,
                 reason,
                 longest,
+                off,
             } => {
                 // The end itself is said by its name already.
                 let others: Vec<FaceId> = faces.into_iter().filter(|f| f != end).collect();
                 let at = about(source.body, source.names, &others, edge)
                     .map(|at| format!(" ({at})"))
                     .unwrap_or_default();
-                let fits = longest
-                    .map(|fits| {
-                        format!(
-                            "; the longest length that fits over this place is {} {unit}",
-                            craft3d_kernel::fits_number(fits)
-                        )
-                    })
-                    .unwrap_or_default();
-                format!("{blame}: {reason}{fits}{at}")
+                let said = craft3d_kernel::tip::said(
+                    &reason,
+                    longest,
+                    off.as_deref(),
+                    &format!(" {unit}"),
+                );
+                format!("{blame}: {said}{at}")
             }
             other => explain(other, "length", 1.0, unit, &source),
         },

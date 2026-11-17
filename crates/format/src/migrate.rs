@@ -1237,8 +1237,11 @@ fn v72_to_v73(manifest: Value) -> Result<Value, String> {
 /// model taken to the end's plane along its normal, beside the two of a
 /// place in the end face's own axes (docs/design/sweeps.md › *A tip on a
 /// body*). A file of an older version holds two or none, which mean what
-/// they meant: an identity step, raised so that an older build says a
-/// newer 3DCraft is needed instead of refusing the point.
+/// they meant (none: the place chosen as it was, every tip that was built
+/// built to the same bits; only a tip that was refused because the end's
+/// centre of area does not see the whole end is now made over the middle
+/// of the places that do): an identity step, raised so that an older
+/// build says a newer 3DCraft is needed instead of refusing the point.
 fn v73_to_v74(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }

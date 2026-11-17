@@ -166,19 +166,20 @@ ends in a half ball; its start, tipped with the point given where it is to be in
 - **`length`** is how far beyond the end the point lies, along the end's outward normal. Left out, it is
   the radius of the circle with the end's area, and never more than half the length at which the faces
   round the end, carried on, would meet. A length past where they meet is refused, and the refusal says
-  the longest length that fits over the same place.
+  the longest length that fits at the place as it is chosen.
 - **`at`** is where the point stands over the end, in either of two forms, kept as given:
   - two lengths `[x, y]` along the end face's own x and y axes from its plane's origin;
   - a point in the model `[x, y, z]`, as `datum.point` takes one. It is taken to the end's plane along the
     end's normal, so it may lie on the end, at the tip itself, or anywhere between; a point behind the end
     or beyond the tip is refused with how far it lies.
 
-  Left out, the point stands over the place the faces round the end close in on, where they narrow: the
-  axis of a cone or of a turned body, the line a loft's sections are drawn and made smaller about (a
-  blade's stacking line). Where they do not narrow (a prism) or narrow toward a place from which the end
-  is not seen whole (a body that leans more than it narrows), it stands over the middle (the centre of
-  area) of what they come to in the point's plane; on an end that is not convex (an L), whose middle can
-  lie on or beyond an edge, over the middle of the places from which the whole end is in view.
+  Left out, the point stands over the middle (the centre of area) of what the faces round the end come
+  to in the point's plane, whether they narrow, widen, lean or turn: the tip carries on the line through
+  the middles of the body's sections (a cone's axis, a leaning cone's leaning one). Sections drawn about
+  another line (a blade about its stacking line) have their middles off it, and so has the tip: give
+  `at`, for instance the point in the model where the tip is to be. On an end that is not convex (an L),
+  whose middle can lie on or beyond an edge, a tip there is refused, and the point stands over the
+  middle of the places from which the whole end is in view instead.
 - **Where it stands** is in the feature's result and in `document.inspect`, under `tip`: the point,
   the length, the foot on the end and the same as `at` in the end face's own axes, how the place was
   found (`placed`), and the end face's own axes in the model (`frame`: origin, x, y and the outward
@@ -194,7 +195,7 @@ ends in a half ball; its start, tipped with the point given where it is to be in
 - **The shape it keeps.** A tip continues the faces round the end: it rounds the end off, it does not
   narrow the outline faster than they do. To end a blade the way its sections draw it, keep the last
   section a tip's length short of where the blade ends and tip that small end (on a small end the length
-  chosen is short, and the place chosen is on the line the sections are drawn about).
+  chosen is short).
 - **Names.** The faces that stay keep their names with a prefix, `F9:copy(0)/...`; a face of the tip is
   named after the face it continues, `F9:tip(0)/F4:side(e2)`. The edges from the old corners to the
   point, and the point, are named by their faces.

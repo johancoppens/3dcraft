@@ -878,59 +878,85 @@ fn where_no_point_or_not_this_one_sees_the_end_whole_the_refusal_says_so() {
     assert!(error.to_string().contains("place given"), "{error}");
 }
 
-/// A section narrowed about a place that is not its centre of area: a
-/// triangle, and a thin section like a blade's, each scaled toward the
-/// frame's origin at the end (as a loft's sections drawn and made smaller
-/// about one line). Left to choose, the tip stands over that place, the
-/// centre of the taper, not over the centre of area of the shoulder;
-/// over a prism, whose sides do not narrow, it stands over the shoulder's
-/// as before.
+/// The centre of area of the polygon through `corners`.
+fn polygon_centre(corners: &[[f64; 2]]) -> [f64; 2] {
+    let (mut area, mut x, mut y) = (0.0, 0.0, 0.0);
+    for (a, b) in corners.iter().zip(corners.iter().cycle().skip(1)) {
+        let cross = a[0] * b[1] - a[1] * b[0];
+        area += cross;
+        x += (a[0] + b[0]) * cross;
+        y += (a[1] + b[1]) * cross;
+    }
+    [x / (3.0 * area), y / (3.0 * area)]
+}
+
+/// A section narrowed about a place that is not its centre of area (a
+/// triangle, and a thin section like a blade's, each scaled by `s` toward
+/// the frame's origin at the end, as a loft's sections drawn and made
+/// smaller about one line). Left to choose, the tip stands over the
+/// centre of area of the shoulder: the end's centre of area scaled toward
+/// the origin by the share of the way to where the sides meet that the
+/// tip's length covers, `s c (1 − ℓ / ℓ₀)` with `ℓ₀ = depth s / (1 − s)`
+/// (a closed form: the sides carry the end by that scaling), so the tip
+/// carries on the line through the sections' middles. And the place goes
+/// continuously with the narrowing: an end a millionth and a hundred
+/// thousandth smaller than its base puts it within that share of the
+/// prism's (a place that jumped at such a narrowing was tried on
+/// 2026-11-17 and withdrawn).
 #[test]
-fn by_default_the_tip_stands_over_the_place_the_sides_close_in_on() {
-    let triangle = polygon(&[[-1.0, -1.0], [3.0, -1.0], [-1.0, 2.0]]);
-    let thin = polygon(&[
-        [-3.0, -0.15],
-        [2.5, -0.1],
-        [3.0, 0.05],
-        [-1.0, 0.35],
-        [-3.0, 0.1],
-    ]);
+fn by_default_the_tip_stands_over_the_middle_of_what_the_sides_come_to() {
+    let corners = [
+        vec![[-1.0, -1.0], [3.0, -1.0], [-1.0, 2.0]],
+        vec![
+            [-3.0, -0.15],
+            [2.5, -0.1],
+            [3.0, 0.05],
+            [-1.0, 0.35],
+            [-3.0, 0.1],
+        ],
+    ];
     for k in SCALES {
         for frame in frames(k) {
-            for (name, section) in [("triangle", &triangle), ("thin", &thin)] {
-                let narrowing = spline_frustum(&frame, k, section, DEPTH, 0.7, 0.0).unwrap();
-                for length in [Some(0.4 * k), None] {
-                    let what = format!("{name}, k {k:e}, {frame:?}, {length:?}");
-                    let made = tip(
-                        &narrowing,
-                        &ask(end_of(&narrowing), length, ROUND_FULLNESS),
-                        &tolerance(k),
-                        None,
-                    )
-                    .unwrap_or_else(|e| panic!("{what}: {e}"));
-                    assert_eq!(made.placed, TipPlaced::Taper, "{what}");
-                    let off = made.foot.distance(frame.origin());
-                    assert!(
-                        off <= 1e-12 * k,
-                        "{what}: the foot is {off:e} off the origin"
-                    );
-                    assert!(
-                        made.tip.distance(frame.origin() + frame.z() * made.length) <= 1e-12 * k,
-                        "{what}"
-                    );
-                    sound(&made.body, k, 4.0, &what);
-                    tangent(&made, frame.z(), &what);
-                }
-                // Not narrowed: over the centre of area, as before.
-                let prism = spline_prism(&frame, k, section, DEPTH).unwrap();
-                let made = tip(
+            for corners in &corners {
+                let section = polygon(corners);
+                let c = polygon_centre(corners);
+                let prism = spline_prism(&frame, k, &section, DEPTH).unwrap();
+                let length = 0.4 * k;
+                let over_prism = tip(
                     &prism,
-                    &ask(end_of(&prism), Some(0.4 * k), ROUND_FULLNESS),
+                    &ask(end_of(&prism), Some(length), ROUND_FULLNESS),
                     &tolerance(k),
                     None,
                 )
                 .unwrap();
-                assert_eq!(made.placed, TipPlaced::Shoulder, "{name}, k {k:e}");
+                assert_eq!(over_prism.placed, TipPlaced::Shoulder);
+                for s in [0.7, 1.0 - 1e-5, 1.0 - 1e-6] {
+                    let what = format!("{corners:?}, s {s}, k {k:e}, {frame:?}");
+                    let narrowing = spline_frustum(&frame, k, &section, DEPTH, s, 0.0).unwrap();
+                    let made = tip(
+                        &narrowing,
+                        &ask(end_of(&narrowing), Some(length), ROUND_FULLNESS),
+                        &tolerance(k),
+                        None,
+                    )
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                    assert_eq!(made.placed, TipPlaced::Shoulder, "{what}");
+                    let meet = DEPTH * s / (1.0 - s);
+                    let share = s * (1.0 - 0.4 / meet);
+                    let want = frame.point(c[0] * share * k, c[1] * share * k, 0.0);
+                    let off = made.foot.distance(want);
+                    assert!(off <= 1e-12 * k, "{what}: the foot is {off:e} off");
+                    let moved = made.foot.distance(over_prism.foot);
+                    let size = (c[0] * c[0] + c[1] * c[1]).sqrt() * k;
+                    assert!(
+                        moved <= 2.0 * (1.0 - share) * size + 1e-12 * k,
+                        "{what}: moved {moved:e} from the prism's"
+                    );
+                    if s == 0.7 {
+                        sound(&made.body, k, 4.0, &what);
+                        tangent(&made, frame.z(), &what);
+                    }
+                }
             }
         }
     }
@@ -1105,6 +1131,54 @@ fn a_length_too_long_is_refused_with_the_longest_that_fits() {
         None,
     )
     .unwrap();
+}
+
+/// A leaning cone (a circle of radius 3 about (2, 0) narrowed toward the
+/// origin, so its sides meet 2 beyond the end over the origin), a length
+/// past the apex, the place left to choose: the longest length named is
+/// the longest that fits at the default place as it goes with the length
+/// (over the shoulder's centre of area, on the cone's own axis: just
+/// short of the apex), not the longest over where the default stood at
+/// the length given (beyond the apex the shoulder's centre lies at
+/// (−0.5, 0), over which half of it fits: what was said before).
+#[test]
+fn the_longest_length_named_is_that_of_the_default_place() {
+    let frame = frames(1.0)[1];
+    let circle: Vec<Piece> = ellipse(3.0, 3.0)
+        .into_iter()
+        .map(|(degree, points, weights)| {
+            let moved = points.iter().map(|[x, y]| [x + 2.0, *y]).collect();
+            (degree, moved, weights)
+        })
+        .collect();
+    let leaning = spline_frustum(&frame, 1.0, &circle, DEPTH, 0.5, 0.0).unwrap();
+    let end = end_of(&leaning);
+    let error = tip(
+        &leaning,
+        &ask(end, Some(3.0), ROUND_FULLNESS),
+        &tolerance(1.0),
+        None,
+    )
+    .unwrap_err();
+    let KernelError::Tip { blame, longest, .. } = &error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(*blame, "length");
+    let fits = longest.unwrap_or_else(|| panic!("no longest in {error}"));
+    assert!(fits > 1.9 && fits <= 2.0, "{fits}: {error}");
+    for length in [craft3d_kernel::fits_shown(fits), 1.5, 1.0] {
+        let made = tip(
+            &leaning,
+            &ask(end, Some(length), ROUND_FULLNESS),
+            &tolerance(1.0),
+            None,
+        )
+        .unwrap_or_else(|e| panic!("{length}: {e}"));
+        assert_eq!(made.placed, TipPlaced::Shoulder);
+        // On the cone's axis, from the end's centre (1, 0) to the apex.
+        let want = frame.point(1.0 - length / 2.0, 0.0, length);
+        assert!(made.tip.distance(want) <= 1e-9, "{length}: {:?}", made.tip);
+    }
 }
 
 /// A thin end (an ellipse ten times as long as it is thick, narrowing),

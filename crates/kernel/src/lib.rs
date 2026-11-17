@@ -380,13 +380,17 @@ pub enum KernelError {
     /// and, where it is about one, the side behind an edge of its loop;
     /// `edge` that edge, when there is one; `blame` the input to change
     /// (`face`, `length` or `at`); `longest` the longest length found to
-    /// fit over the same place, where a length given is too long.
+    /// fit over the place as it is chosen, where a length given is too
+    /// long; `off` where a point given lies behind the end or beyond the
+    /// tip. The lengths are model units, said by [`tip::said`] with the
+    /// unit a caller gives.
     Tip {
         faces: Vec<craft3d_topo::FaceId>,
         edge: Option<craft3d_topo::EdgeId>,
         blame: &'static str,
         reason: String,
         longest: Option<f64>,
+        off: Option<Box<tip::TipOff>>,
     },
     /// A plate cannot be made of these faces with these joints
     /// ([`plate`]): `edge` is the edge of the faces it is about, when
@@ -767,19 +771,12 @@ impl fmt::Display for KernelError {
                 edge,
                 reason,
                 longest,
+                off,
                 ..
             } => {
                 write!(f, "tip")?;
                 face_op_entities(f, faces, *edge)?;
-                write!(f, ": {reason}")?;
-                match longest {
-                    Some(fits) => write!(
-                        f,
-                        "; the longest length that fits over this place is {}",
-                        fits_number(*fits)
-                    ),
-                    None => Ok(()),
-                }
+                write!(f, ": {}", tip::said(reason, *longest, off.as_deref(), ""))
             }
             KernelError::Loft { reason, .. }
             | KernelError::Sweep { reason, .. }
