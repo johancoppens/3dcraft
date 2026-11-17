@@ -1287,6 +1287,12 @@ fn a_steep_law_is_refused_or_measured_and_searched() {
 
 /// The prism with a spline wall of the rim's test, and its rim.
 fn rim_prism(frame: &Frame, k: f64) -> (Body, EdgeId) {
+    let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 1.0];
+    rim_prism_with(frame, k, knots)
+}
+
+/// That prism with its spline on the knots given.
+fn rim_prism_with(frame: &Frame, k: f64, knots: Vec<f64>) -> (Body, EdgeId) {
     let tol = tolerance(k);
     let scaled = |p: [f64; 2]| [p[0] * k, p[1] * k];
     let line = |id: u64, a: [f64; 2], b: [f64; 2]| SketchCurve {
@@ -1311,7 +1317,7 @@ fn rim_prism(frame: &Frame, k: f64) -> (Body, EdgeId) {
             id: 3,
             curve: Curve2::Spline(Spline2 {
                 degree: 3,
-                knots: vec![0.0, 0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 1.0],
+                knots,
                 control: control.iter().map(|p| scaled(*p)).collect(),
             }),
         },
@@ -1542,5 +1548,64 @@ fn what_is_wrong_with_a_fade_is_said_with_what_would_be_built() {
             assert!(reason.contains("longer than the edge"), "{reason}");
         }
         other => panic!("{other:?}"),
+    }
+}
+
+/// Where the edge's curvature jumps (a spline with a double knot in its
+/// middle: only its tangent is continuous there) a fillet whose radius
+/// varies is refused with the place: where the radius is changing the
+/// face would crease, and where it is the same the fitted face came out
+/// with spans the tessellator cannot mesh ("patch 6 needs about 1624
+/// segments per side" at a chord of 0.05).
+#[test]
+fn a_law_along_an_edge_whose_curvature_jumps_is_refused_with_the_place() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        for (index, frame) in common::frames(k).iter().enumerate() {
+            let what = format!("scale {k}, frame {index}");
+            let knots = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0];
+            let (body, rim) = rim_prism_with(frame, k, knots);
+            let data = body.edge(rim).unwrap();
+            let middle = data.curve.eval(0.5 * (data.range.0 + data.range.1));
+            let try_law = |low: Option<(f64, f64)>, high: Option<(f64, f64)>| {
+                let law = Law {
+                    radius: 1.5,
+                    low,
+                    high,
+                };
+                fillet_by_law(
+                    &body,
+                    &[FilletLawEdge {
+                        edge: rim,
+                        law: law.on(&body, rim, -frame.x(), k),
+                    }],
+                    &tol,
+                )
+            };
+            // Changing across the middle, either way, and the same across
+            // it.
+            for (low, high) in [
+                (Some((0.6, 25.0)), None),
+                (None, Some((2.2, 20.0))),
+                (Some((0.6, 9.0)), None),
+                (Some((0.6, 9.0)), Some((2.2, 7.0))),
+            ] {
+                match try_law(low, high) {
+                    Err(KernelError::FilletFade {
+                        edge,
+                        fault: FadeFault::CurvatureJump { at },
+                    }) => {
+                        assert_eq!(edge, rim, "{what}");
+                        assert!(at.distance(middle) <= 1e-9 * k, "{what}: at {at:?}");
+                    }
+                    other => panic!(
+                        "{what}: {low:?} {high:?}: {:?}",
+                        other.map(|m| m.body.faces.len())
+                    ),
+                }
+            }
+            let text = try_law(Some((0.6, 25.0)), None).unwrap_err().to_string();
+            assert!(text.contains("curvature jumps at ("), "{text}");
+        }
     }
 }

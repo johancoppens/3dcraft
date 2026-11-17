@@ -66,6 +66,24 @@
 //! length, has to be more than what the tolerance tells apart
 //! ([`LEAST`] tolerances), as a radius of the closed forms has.
 //!
+//! **Where the edge's curvature jumps** (a spline's knot at which only
+//! its tangent is continuous) the planes across the edge turn with a jump.
+//! Where the radius is changing there, the path of the balls' centres
+//! turns a corner (by about the radius's rate times the jump of the
+//! curvature times the radius) and the arcs between the feet crease
+//! across that section. Where it is not changing the face is smooth, but
+//! the sections' family is not, and the fitted face that follows it has
+//! spans the tessellator cannot mesh (a spline rim with a double knot,
+//! one radius across it: built, and "patch 6 needs about 1624 segments"
+//! at a normal chord); the fillet of one radius is refused there as not
+//! approximated. So a law is refused along an edge with such a place
+//! inside what the fillet runs along, with the place, where the jump
+//! times the radius squared is more than the tolerance. One interpolating
+//! cubic has no such place; an edge drawn as a line, an arc and a line
+//! has two. A spine through the balls' centres with continuous
+//! curvature, as a chain's faces have, is what would carry a fillet
+//! across.
+//!
 //! **Along the edge** is by arc length: the law is a statement about the
 //! edge, not about how its curve happens to be parametrised. The length of
 //! the edge's curve from its start to the parameter `s` (0 at the start,
@@ -87,6 +105,7 @@
 use super::{BlendError, Reason, refused};
 use crate::KernelError;
 use craft3d_geom::Curve3;
+use craft3d_geom::curvature::curve_curvature;
 use craft3d_math::{Portable, Vec3};
 use craft3d_topo::EdgeId;
 
@@ -196,6 +215,10 @@ pub enum FadeFault {
     /// The radius at the end, `to`, is not more than the tolerance tells
     /// from nothing: `least` is the least that is built.
     EndTooSmall { to: f64, least: f64 },
+    /// The edge's curvature jumps at `at`, a place the fillet runs
+    /// through (its curve has only a continuous tangent there): not
+    /// built with a radius by a law.
+    CurvatureJump { at: Vec3 },
 }
 
 /// Pieces a span between two knots is cut into, and the range of a curve
@@ -314,6 +337,14 @@ impl<'a> Along<'a> {
         if faded > total * (1.0 + 1e-12) {
             return Err(refused(edge, Reason::LawTooLong));
         }
+        // Not along an edge whose curvature jumps (the module
+        // documentation).
+        if let Some(at) = along.jump_under_a_change(tol) {
+            return Err(BlendError::Fade {
+                edge,
+                fault: FadeFault::CurvatureJump { at },
+            });
+        }
         Ok(along)
     }
 
@@ -328,6 +359,47 @@ impl<'a> Along<'a> {
             Some(Some(fade)) => fade.to,
             _ => self.law.radius,
         }
+    }
+
+    /// The first place along the fillet where the edge's curvature jumps
+    /// (a knot of a spline at which only its tangent is continuous) by
+    /// more than the tolerance tells over the radius there: the jump
+    /// times the radius squared against the tolerance.
+    fn jump_under_a_change(&self, tol: f64) -> Option<Vec3> {
+        let Curve3::Nurbs(spline) = self.curve else {
+            return None;
+        };
+        let (t0, t1) = self.range;
+        let (low, high) = (t0.min(t1), t0.max(t1));
+        let degree = spline.degree();
+        let knots = spline.knots();
+        let mut index = 0;
+        while let Some(&knot) = knots.get(index) {
+            let repeats = knots.iter().skip(index).take_while(|k| **k == knot).count();
+            index += repeats.max(1);
+            // Continuous to the second derivative: no jump.
+            if !(knot > low && knot < high) || degree.saturating_sub(repeats) >= 2 {
+                continue;
+            }
+            let s = (knot - t0) / (t1 - t0);
+            // (Where there is no fillet, past a tip, a jump is nothing to
+            // it.)
+            let Some(r) = self.radius(s) else {
+                continue;
+            };
+            let step = 1e-9 * (high - low);
+            let (Some((before, _)), Some((after, _))) = (
+                curve_curvature(self.curve, knot - step),
+                curve_curvature(self.curve, knot + step),
+            ) else {
+                continue;
+            };
+            let jump = (after - before).length();
+            if jump * r * r > tol {
+                return Some(self.curve.eval(knot));
+            }
+        }
+        None
     }
 
     /// How fast the curve's point moves per unit of `s`.
