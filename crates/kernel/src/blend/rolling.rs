@@ -1715,8 +1715,20 @@ fn blend_open(
                 surface_through(&[*p0, *p1], &[*c0, *c1])
             }
             None => refine(solver, &mut params, &mut sections, limit, bend, false),
-        }
-        .ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?;
+        };
+        let Some(surface) = surface else {
+            // A radius that varies and a face that cannot be made: said
+            // with the place, where it is the face turning back on itself
+            // that stands in the way (the sections refined so far show
+            // it).
+            if law.is_some()
+                && index == home
+                && let Some(fault) = turned_back(solver, data, &params, &sections, centre)
+            {
+                return Err(BlendError::Fade { edge, fault });
+            }
+            return Err(refuse(edge, None, Reason::FreeApproximation));
+        };
         parts.push(surface);
         for (s, x) in params.into_iter().zip(sections) {
             if all.last().is_none_or(|l| l.0 < s) {
@@ -1750,7 +1762,13 @@ fn blend_open(
     }
     let params: Vec<f64> = all.iter().map(|x| x.0).collect();
     let sections: Vec<Section> = all.iter().map(|x| x.1).collect();
+    // A radius that varies: the face may not turn back on itself.
     let home_solver = solvers.get(home).ok_or_else(lost)?;
+    if law.is_some()
+        && let Some(fault) = turned_back(home_solver, data, &params, &sections, centre)
+    {
+        return Err(BlendError::Fade { edge, fault });
+    }
     let outward_hint =
         outward_from(home_solver, &surface, &params, &sections, convex).ok_or_else(unsolvable)?;
     if let Some(side) = folds(&surface, &params, &sections, (0.0, 1.0)) {
@@ -1810,6 +1828,92 @@ fn blend_open(
     }
     tangent_along(body, edge, &borders, blend_face, shape, law, tolerance)?;
     Ok(blend_face)
+}
+
+/// The least sine of the angle between the two parameter directions of
+/// a law fillet's face, along the edge and across it, anywhere on it: see
+/// [`turned_back`]. A face that has turned back measures below nothing;
+/// a degree above it, for what lies between the sections and the places
+/// across them that are measured. On a hull's stem every fade whose face
+/// was folded measured −0.03 to −1.0 and the nearest sound one 0.07 (the
+/// built face's own two directions: 0.067, no fold). The bound on a
+/// radius's rate alone leaves 0.32 along a straight edge between faces
+/// at a right angle, 0.09 at 30° and this much only at 7°.
+const TURNED: f64 = 0.02;
+
+/// Where the face of a fillet whose radius varies turns back on itself:
+/// the place along the edge (its point there) and the ball's radius
+/// there.
+///
+/// The face is the arcs between the feet of its balls. At a point of it
+/// the face has two directions: across (the arc's tangent) and along the
+/// edge (how the point moves from section to section, [`slope`]). Their
+/// cross product is the face's normal, and it has to keep to one side of
+/// the ball's radius through the point all over the face. Where the
+/// radius changes fast and the edge turns, a section can move backwards
+/// along the edge (its points lie as far towards the centre of the edge's
+/// turn as the planes across the edge cross, or the feet run back along
+/// faces that curve): the two directions close up, pass each other, and
+/// the face lies turned round from there on. The fold check of every
+/// blend holds each section's normals against its own middle and does not
+/// see a section turned round as a whole; such a face came out facing the
+/// wrong way along its border, which the post-check of tangency refused
+/// in the wording of a bug (a hull's stem where it turns into the keel:
+/// radius 5 fading over 5, radius 3 fading over 5 within half a
+/// millimetre of the foot). Measured here on every section the face was
+/// refined through, at five places across, from the exact derivative of
+/// the section: the sine of the angle between the two directions, signed
+/// by the side the normal lies on, against [`TURNED`].
+fn turned_back(
+    solver: &Solver<'_>,
+    data: &Edge,
+    params: &[f64],
+    sections: &[Section],
+    middle: f64,
+) -> Option<law::FadeFault> {
+    // The sine at a place across a section, signed by the side of the
+    // ball's radius the normal lies on.
+    let side_at = |slope: &slope::Slope, v: f64| -> Option<f64> {
+        let (point, along, across) = slope.surface(v)?;
+        let ray = (point - slope.centre.0).normalized()?;
+        let scale = along.length() * across.length();
+        (scale > 0.0).then(|| along.cross(across).dot(ray) / scale)
+    };
+    // The side where the face is surely sound: at the section nearest
+    // the middle of the fillet.
+    let (s0, first) = params
+        .iter()
+        .zip(sections)
+        .filter(|(_, section)| section.pole.is_none())
+        .min_by(|a, b| (a.0 - middle).abs().total_cmp(&(b.0 - middle).abs()))?;
+    let sign = side_at(&solver.slope(*s0, first)?, 0.5)?.signum();
+    let (t0, t1) = data.range;
+    let mut worst: Option<(f64, f64, f64)> = None;
+    for (s, section) in params.iter().zip(sections) {
+        if section.pole.is_some() || !(0.0..=1.0).contains(s) {
+            continue;
+        }
+        let Some(slope) = solver.slope(*s, section) else {
+            continue;
+        };
+        for j in 0..=4 {
+            let Some(side) = side_at(&slope, f64::from(j) / 4.0) else {
+                continue;
+            };
+            let sine = side * sign;
+            if !sine.is_finite() {
+                continue;
+            }
+            if worst.is_none_or(|w| sine < w.0) {
+                worst = Some((sine, *s, slope.radius.0));
+            }
+        }
+    }
+    let (sine, s, radius) = worst?;
+    (sine <= TURNED).then(|| law::FadeFault::TurnsBack {
+        at: data.curve.eval(t0 + s * (t1 - t0)),
+        radius,
+    })
 }
 
 /// Where a fillet whose radius runs to nothing closes in a point: where

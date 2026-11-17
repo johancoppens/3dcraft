@@ -209,10 +209,10 @@ impl RadiusLaw {
                 size("fade.to", fade.to)?;
             }
             size("fade.over", fade.over)?;
-            // Short of the end only a tip ends, and by a length or by
-            // nothing.
+            // Short of the end by a length or by nothing (that only a tip
+            // ends short of it is said where the edge is known).
             let back = fade.back;
-            if !(back.is_finite() && back >= 0.0 && (back == 0.0 || fade.is_tip())) {
+            if !(back.is_finite() && back >= 0.0) {
                 return Err(KernelError::InvalidSize {
                     name: "fade.back",
                     value: back,
@@ -292,10 +292,18 @@ pub enum FadeFault {
     /// is the least that is built (or nothing: the tip in the edge's own
     /// vertex).
     BackTooSmall { back: f64, least: f64 },
+    /// A fade to the radius `to` is to end `back` short of the end of the
+    /// edge: only a fade to nothing ends short of it.
+    BackNotATip { back: f64, to: f64 },
     /// The edge's curvature jumps at `at`, a place the fillet runs
     /// through, by more than a law is built across (not by the error of
     /// a fitted curve).
     CurvatureJump { at: Vec3 },
+    /// The fillet face would turn back on itself at `at` (the edge's
+    /// point there), where the ball has the radius `radius`: the radius is
+    /// too large, or changes too fast, for how the edge and the faces
+    /// turn there.
+    TurnsBack { at: Vec3, radius: f64 },
 }
 
 /// Pieces a span between two knots is cut into, and the range of a curve
@@ -343,6 +351,16 @@ impl<'a> Along<'a> {
                 return Err(BlendError::Fade {
                     edge,
                     fault: FadeFault::EndTooSmall { to: fade.to, least },
+                });
+            }
+            // Short of the end only a fade to nothing ends.
+            if fade.back > 0.0 && !fade.is_tip() {
+                return Err(BlendError::Fade {
+                    edge,
+                    fault: FadeFault::BackNotATip {
+                        back: fade.back,
+                        to: fade.to,
+                    },
                 });
             }
             // A tip short of the end: by more than the tolerance tells

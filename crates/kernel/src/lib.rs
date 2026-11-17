@@ -949,18 +949,39 @@ pub fn fillet_fade_text(fault: fillet::FadeFault, unit: &str) -> String {
         ),
         fillet::FadeFault::BackTooSmall { back, least } => format!(
             "the fillet is to end in a point {}{unit} short of the end of the edge, which is not more than the tolerance tells from the end itself: give a back of more than {}{unit} (16 tolerances), or none, which ends the fillet in the edge's own vertex",
-            short(back),
+            small(back),
             short(least)
+        ),
+        fillet::FadeFault::BackNotATip { back, to } => format!(
+            "the fade is to end {}{unit} short of the end of the edge, but it runs to a radius of {}{unit}: only a fade to nothing (a tip) ends short of the end; give no back, or a fade to nothing",
+            small(back),
+            short(to)
         ),
         fillet::FadeFault::CurvatureJump { at } => format!(
             "the edge's curvature jumps at {} (its curve has only a continuous tangent there, and turns markedly tighter on one side than on the other), a place the fillet runs through: a fillet whose radius varies is not built across such a place yet (its sections bunch up there, and where the radius is changing the face would crease across it); end the fillet in a point before that place, or draw the edge so that its curvature runs on smoothly (one curve, not pieces that are only tangent)",
             place_text(at, unit)
         ),
+        fillet::FadeFault::TurnsBack { at, radius } => format!(
+            "the fillet face would turn back on itself at {}, where the rolling ball has a radius of {}{unit}: the radius is too large there, or changes too fast, for how the edge and the faces turn (the sections across the edge would run into each other); give a smaller radius, a longer fade so that the radius has fallen further by there, or end the fillet further from that place",
+            place_text(at, unit),
+            short(radius)
+        ),
         fillet::FadeFault::EndTooSmall { to, least } => format!(
             "the radius at the end of the fade, {}{unit}, is not more than the tolerance tells from nothing: an end radius has to be more than {}{unit} (16 tolerances), as a fillet's radius has",
-            short(to),
+            small(to),
             short(least)
         ),
+    }
+}
+
+/// A size that may be very small, as a message gives it: as [`short`]
+/// does down to a billionth, in powers of ten below (so that 5e-324 is
+/// not read as nothing).
+fn small(value: f64) -> String {
+    if value != 0.0 && value.abs() < 1e-9 {
+        format!("{value:e}")
+    } else {
+        short(value)
     }
 }
 
