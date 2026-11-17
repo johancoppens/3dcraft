@@ -943,6 +943,125 @@ fn located(session: &mut Session, filter: impl Fn(&Note) -> bool) -> Result<Loca
     Ok((doc, found))
 }
 
+/// What a note's marker shows: open, done, or detached (at its stored
+/// point).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MarkerState {
+    Open,
+    Done,
+    Detached,
+}
+
+/// Every note's marker, as the window and `view.render {notes: true}`
+/// draw it: where (`at`, or the stored point of a detached note) and in
+/// which state; none for a hidden note.
+pub(crate) fn markers(session: &mut Session) -> Result<Vec<([f64; 3], MarkerState)>, CommandError> {
+    let (_, found) = located(session, |_| true)?;
+    Ok(found
+        .iter()
+        .filter_map(|(note, now)| {
+            let state = if note.done.is_some() {
+                MarkerState::Done
+            } else {
+                MarkerState::Open
+            };
+            match (&now.status, now.at) {
+                (Status::Attached { .. } | Status::ByPlace(_), Some((at, _))) => Some((at, state)),
+                (Status::Detached(_), _) => Some((note.point, MarkerState::Detached)),
+                _ => None,
+            }
+        })
+        .collect())
+}
+
+/// The colours of the markers `view.render {notes: true}` draws: open in
+/// the accent, done green, detached grey (the window's theme has its
+/// own, `Tokens::note_*`).
+pub const NOTE_OPEN_COLOR: [u8; 3] = [75, 85, 196];
+pub const NOTE_DONE_COLOR: [u8; 3] = [47, 138, 87];
+pub const NOTE_DETACHED_COLOR: [u8; 3] = [120, 122, 130];
+
+/// Draws `markers` into `frame` as seen by `camera`: a ring of a hundredth
+/// of the model's size about each, square to the view, with a short stalk
+/// up the picture (a done note's ring is smaller), tested against the
+/// bodies' depth as curvature combs are.
+pub(crate) fn draw_markers(
+    frame: &mut craft3d_render::Frame,
+    camera: &craft3d_render::Camera,
+    markers: &[([f64; 3], MarkerState)],
+    size: f64,
+) -> Result<(), craft3d_render::RenderError> {
+    let toward = (camera.eye - camera.target).normalized();
+    let up = camera.up.normalized();
+    let (Some(toward), Some(up)) = (toward, up) else {
+        return Ok(());
+    };
+    let Some(right) = up.cross(toward).normalized() else {
+        return Ok(());
+    };
+    let up = toward.cross(right);
+    let radius = if size.is_finite() && size > 0.0 {
+        size * 0.01
+    } else {
+        1.0
+    };
+    for state in [MarkerState::Detached, MarkerState::Done, MarkerState::Open] {
+        let r = if state == MarkerState::Done {
+            radius * 0.6
+        } else {
+            radius
+        };
+        let mut lines = Vec::new();
+        for (at, _) in markers.iter().filter(|(_, s)| *s == state) {
+            let centre = vec3(*at) + up * (2.5 * r) + toward * r;
+            let ring: Vec<Vec3> = (0..=24)
+                .map(|k| {
+                    let a = std::f64::consts::TAU * f64::from(k) / 24.0;
+                    centre
+                        + right * (r * craft3d_math::Portable::pcos(a))
+                        + up * (r * craft3d_math::Portable::psin(a))
+                })
+                .collect();
+            lines.push(ring);
+            lines.push(vec![vec3(*at), centre - up * r]);
+        }
+        let color = match state {
+            MarkerState::Open => NOTE_OPEN_COLOR,
+            MarkerState::Done => NOTE_DONE_COLOR,
+            MarkerState::Detached => NOTE_DETACHED_COLOR,
+        };
+        if !lines.is_empty() {
+            craft3d_render::analysis::draw_lines(frame, camera, &lines, color, radius * 0.5)?;
+        }
+    }
+    Ok(())
+}
+
+impl Session {
+    /// The notes of the active document as `note.list` lists them, but
+    /// without looking at the bodies (no `attachment`, `now` or `at`):
+    /// what a host whose bodies are built elsewhere (the web page) shows
+    /// without building them here. Empty without a document.
+    pub fn notes_json(&self) -> Value {
+        let Ok(open) = self.document() else {
+            return json!({"notes": []});
+        };
+        let doc = open.history.current();
+        let notes: Vec<Value> = doc
+            .notes
+            .items
+            .iter()
+            .map(|n| note_json(doc, n, None))
+            .collect();
+        json!({
+            "notes": notes,
+            "count": doc.notes.items.len(),
+            "open": doc.notes.open(),
+            "fromAgents": doc.notes.open_from_agents(),
+        })
+    }
+}
+
 /// Every note as note.list gives them.
 fn listed(
     session: &mut Session,

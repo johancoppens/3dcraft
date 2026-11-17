@@ -37,6 +37,7 @@ mod layout;
 pub mod look_panel;
 mod mate_view;
 mod menus;
+pub mod notes;
 pub mod number_field;
 mod params;
 mod player;
@@ -1078,6 +1079,9 @@ pub struct Shell {
     section_lost: Option<String>,
     /// The section's handle in the view (`section_handle.rs`).
     section_handle: section_handle::HandleView,
+    /// The notes pinned to the model: their markers, the field a note is
+    /// written in, what `note.list` said (`notes.rs`).
+    pub(crate) notes: notes::NoteMemory,
     /// The box the camera was last fitted to automatically.
     framed: Bbox3,
     /// What the camera follows while it fits by itself: the opening
@@ -1643,6 +1647,7 @@ impl Shell {
             section_cache: None,
             section_lost: None,
             section_handle: section_handle::HandleView::default(),
+            notes: notes::NoteMemory::default(),
             framed: Bbox3::EMPTY,
             following: views::Following::Opening,
             themed: false,
@@ -5200,13 +5205,16 @@ impl Shell {
                 self.fit_key(scene, ui.input(|i| i.time));
             // A picture that cannot be made has nothing to point at; the
             // viewport says why already.
+            } else if self.click_note_marker(at) {
+                // A note's marker chose its note.
             } else if let Ok(found) = self.pick(scene, x, y, None, None, true) {
                 self.click_select(scene, x, y, &found, (keys.0, keys.1, double));
             }
             ui.ctx().request_repaint();
         }
-        // A right click lists every face under it.
-        if response.secondary_clicked()
+        // A right click lists every face under it; so does a press and
+        // hold of a finger (with *Note here…*, `notes.rs`).
+        if (response.secondary_clicked() || response.long_touched())
             && let Some(at) = response.interact_pointer_pos()
         {
             let (x, y) = pixel(at);
@@ -5348,6 +5356,11 @@ impl Shell {
         // The section's handle, over the picture and under the controls.
         if !self.welcome() {
             self.paint_section_handle(ui, rect);
+        }
+        // The notes' markers, the chosen one's text, the field a note is
+        // written in (`notes.rs`).
+        if !self.welcome() {
+            self.paint_notes(ui, rect, scene);
         }
 
         let inset = tokens.inset;

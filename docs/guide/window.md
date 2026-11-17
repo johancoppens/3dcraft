@@ -294,6 +294,31 @@ meant to do.
 A feature an agent made, or last changed, carries a small indigo ✦ after its name in the Features tab.
 The desktop app only: in the browser, agents cannot connect.
 
+### Notes
+
+A note is one sentence pinned to a place of the model, for whoever works on it next
+([Working with an AI agent](agent.md#notes-on-the-model)). Select one face, edge, vertex or body and press
+**N**, or choose **Note here…** at the top of the list under the right mouse button: a field opens at the
+place you clicked. Type, then Enter; Escape leaves it. The note sits where you clicked on that face (the
+face's middle when you chose it in a list).
+
+Once a document has notes, the side panel has a **Notes** tab, its open notes counted on the tab. It lists
+them with their number, their text, where each is (*face of Rib*; *by place* for a face whose name may
+move to another, held near the feature that made it; *detached* for one whose face is gone), who wrote it
+and when. An agent's questions come first, marked with **?**; the done notes fold away under the open ones,
+each with its reply. A click on a row flies to the note and selects what it is on; the chosen row offers
+**Edit**, **Done** (or **Open again**) and **Delete**, each one step that **Ctrl+Z** takes back. **Hide in
+view** at the top hides the markers.
+
+In the view each note is a small numbered pin in the accent colour; an agent's question is a ring with
+**?**, a done note a small green tick, a detached one a grey ring at the place it was put. A pin behind the
+model is drawn faint and cannot be clicked. A click on a pin chooses its note and shows its text beside it.
+Many notes close together on screen share one pin, which says how many more it stands for.
+
+When an agent has left open questions, the agent pill in the status bar says how many; a click on it opens
+the Notes tab. A document without notes shows nothing of them. On a phone the tab is in the drawer, and
+**Note here…** is in the list a press and hold opens; there is no **N** without a keyboard.
+
 ## The history player
 
 At the foot of the side panel is the **timeline**: drag it to see the design as it was after any step of
@@ -453,6 +478,7 @@ The browser on a phone or a tablet, and any window narrower than about 800 point
 | Pinch | Zoom about the middle of your fingers |
 | Tap | Select, as a click does |
 | Double-tap | What **F** does: fly to what you tapped, or frame the whole model |
+| Press and hold | The list the right mouse button opens: the faces under your finger, and **Note here…** |
 | Press and hold | The list of everything under your finger (as a right click) |
 | **☰** at the left of the menu bar | Open or close the feature list, Parameters and the player as a drawer (a tap beside it, or Escape, closes it too) |
 

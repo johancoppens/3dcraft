@@ -138,6 +138,7 @@ except in Ctrl+Tab and Ctrl+Shift+Tab, which stay as they are.
 | Ctrl+Z | Undo the last change to the document (not while typing in a field) |
 | Ctrl+Shift+Z, Ctrl+Y | Redo the change last undone |
 | F | Fly to the selection, or frame everything |
+| N | Write a note on what is selected |
 | Escape | Fold the Studio or Analysis options, else let go of a joint held by hand, else clear the selection |
 | F1 | Show the shortcuts |
 | Ctrl+B | Show or put away the side panel |

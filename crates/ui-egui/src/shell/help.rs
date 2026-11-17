@@ -212,6 +212,11 @@ pub fn shortcuts() -> Vec<Shortcut> {
         ),
         keys(
             View,
+            bare(super::notes::NOTE_KEY),
+            "Write a note on what is selected",
+        ),
+        keys(
+            View,
             bare(CLEAR_KEY),
             "Fold the Studio or Analysis options, else let go of a joint held by hand, else clear the selection",
         ),

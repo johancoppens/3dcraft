@@ -680,6 +680,10 @@ impl Shell {
         let mut hovered = None;
         let mut chosen = None;
         let mut mate = None;
+        // A note on the one thing selected (`notes.rs`), at the front face
+        // under the click when it is on that thing.
+        let note_here = self.note_here_offered();
+        let mut write_note = false;
         let shift = menu.shift;
         // Two faces of two instances of an assembly selected: the mates
         // that join them come first (`mate.add`).
@@ -710,6 +714,13 @@ impl Shell {
                         }
                         plate.menu_separator(ui);
                     }
+                    if note_here {
+                        let entry = plate.menu_item(ui, crate::kit::MenuItem::new("Note here…"));
+                        if entry.clicked() {
+                            write_note = true;
+                        }
+                        plate.menu_separator(ui);
+                    }
                     plate.menu_caption(ui, "Select other");
                     for (k, hit) in menu.hits.iter().enumerate() {
                         let face = hit.face.as_deref().unwrap_or("face");
@@ -726,6 +737,20 @@ impl Shell {
             })
             .response;
         self.joints.mate_hits = mate_hits;
+        if write_note {
+            let front = self
+                .select
+                .menu
+                .as_ref()
+                .and_then(|menu| menu.hits.first())
+                .map(|hit| (hit.feature.clone(), hit.face.clone(), hit.point));
+            self.select.menu = None;
+            self.select.hover = None;
+            self.select.drawn = self.select.drawn.wrapping_add(1);
+            self.start_note(front);
+            ui.ctx().request_repaint();
+            return;
+        }
         if let (Some(kind), Some((a, b))) = (mate, pair) {
             self.timeline
                 .queue("mate.add", json!({"kind": kind, "a": a, "b": b}));

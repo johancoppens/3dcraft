@@ -117,6 +117,13 @@ pub struct Tokens {
     /// How near the pointer must be to a marker's line to point at it,
     /// in points.
     pub mate_hit: f32,
+    /// A note's marker in the view (`shell/notes.rs`): its radius, in
+    /// points; the side of the cells markers are thinned to (one per
+    /// cell, with how many it stands for); the width of the text beside
+    /// the chosen one and of the field a note is written in.
+    pub note_radius: f32,
+    pub note_cell: f32,
+    pub note_text_width: f32,
     /// A point's path over the motion (`view.trace`): a deep violet,
     /// apart from the sketches' blue, the datums' petrol and the
     /// selection's copper, that stands out on the plain look's light
@@ -905,6 +912,9 @@ impl Tokens {
             mate_hot_width: 2.0,
             mate_size: 40.0,
             mate_hit: 6.0,
+            note_radius: 7.0,
+            note_cell: 22.0,
+            note_text_width: 220.0,
             trace: [80, 0, 140],
             trace_width: 3.0,
             comb: [204, 51, 153],

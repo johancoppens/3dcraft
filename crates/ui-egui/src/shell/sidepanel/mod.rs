@@ -28,6 +28,7 @@ pub mod agent;
 pub mod bodies;
 pub mod checks;
 pub mod features;
+pub mod notes;
 pub mod props;
 pub mod variables;
 
@@ -275,7 +276,14 @@ impl Shell {
     pub(crate) fn apply_side_requests(&mut self, session: &mut Session) -> bool {
         let pending = std::mem::take(&mut self.side.pending);
         for request in &pending {
-            match session.execute(request.command, &request.params) {
+            // The notes the window writes are the person's: typed here.
+            let run = |session: &mut Session| session.execute(request.command, &request.params);
+            let done = if request.command.starts_with("note.") {
+                session.by_person(run)
+            } else {
+                run(session)
+            };
+            match done {
                 Ok(result) => {
                     self.side.problem = None;
                     if request.command.starts_with("measure.") {
@@ -414,6 +422,7 @@ impl Shell {
                 .map(Arc::new);
             self.side.checks_for = Some(key);
         }
+        self.sync_notes(session, key, bodies_here);
         let serial = session.selection_serial();
         let props_key = (doc, revision, serial);
         if self.side.props_for != Some(props_key) {
@@ -450,7 +459,8 @@ impl Shell {
             return;
         }
         let assembly = self.is_assembly_shown();
-        let offered = tabs_for(assembly, jig || joints, self.agent_tab_offered());
+        let mut offered = tabs_for(assembly, jig || joints, self.agent_tab_offered());
+        notes::offer(&mut offered, !assembly && self.notes_tab_offered());
         let tab = self.reconcile_tab(&offered, jig || joints);
         let chosen = self.tab_bar(ui, &offered, tab);
         if chosen != tab {
@@ -475,6 +485,7 @@ impl Shell {
             SideTab::Variables => self.variables_tab(ui),
             SideTab::Bodies => self.bodies_tab(ui),
             SideTab::Agent => self.agent_tab(ui),
+            SideTab::Notes => self.notes_tab(ui),
         }
     }
 
@@ -524,7 +535,7 @@ impl Shell {
             .map(|tab| {
                 let w = ui
                     .painter()
-                    .layout_no_wrap(tab.label().to_string(), font.clone(), egui::Color32::BLACK)
+                    .layout_no_wrap(self.tab_words(*tab), font.clone(), egui::Color32::BLACK)
                     .size()
                     .x;
                 (w + 2.0 * t.field_inset).max(t.hit_min)
@@ -555,7 +566,9 @@ impl Shell {
             }
         }
         let mut active = shown.iter().position(|s| *s == tab).unwrap_or(0);
-        let labels: Vec<Tab<'_>> = shown.iter().map(|tab| Tab::new(tab.label())).collect();
+        // The Notes tab says how many are open.
+        let words: Vec<String> = shown.iter().map(|tab| self.tab_words(*tab)).collect();
+        let labels: Vec<Tab<'_>> = words.iter().map(|words| Tab::new(words)).collect();
         let mut chosen = tab;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;

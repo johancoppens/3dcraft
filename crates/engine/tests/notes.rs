@@ -844,3 +844,38 @@ fn every_face_of_the_ship_propeller_takes_a_note() {
     }
     assert!(placed >= 48, "{placed} faces");
 }
+
+/// `view.render {notes: true}` draws the notes' markers, so an agent can
+/// look at them without a window: the picture with them differs from the
+/// one without, and a document without notes draws the same either way.
+#[test]
+fn view_render_draws_the_notes_markers() {
+    let dir = workdir("notes", "render");
+    let mut s = session_in(&dir);
+    plate(&mut s);
+    let picture = |s: &mut Session, notes: bool, name: &str| {
+        run(
+            s,
+            "view.render",
+            json!({"path": name, "width": 320, "height": 240, "notes": notes, "renderer": "cpu"}),
+        );
+        std::fs::read(dir.join(name)).unwrap()
+    };
+    let plain = picture(&mut s, false, "plain.png");
+    assert_eq!(
+        picture(&mut s, true, "plain-notes.png"),
+        plain,
+        "no notes, nothing drawn"
+    );
+    run(
+        &mut s,
+        "note.add",
+        json!({"text": "here", "on": "F1:face(1)"}),
+    );
+    assert_eq!(
+        picture(&mut s, false, "noted.png"),
+        plain,
+        "not asked for, not drawn"
+    );
+    assert_ne!(picture(&mut s, true, "noted-notes.png"), plain);
+}

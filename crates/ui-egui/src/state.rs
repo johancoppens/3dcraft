@@ -206,6 +206,9 @@ pub enum SideTab {
     Assembly,
     /// What agents did to the document, newest first (the desktop app).
     Agent,
+    /// The notes pinned to the model (`shell/sidepanel/notes.rs`): offered
+    /// for a part with notes, or while one is being written.
+    Notes,
 }
 
 impl SideTab {
@@ -218,6 +221,7 @@ impl SideTab {
             SideTab::Parameters => "Parameters",
             SideTab::Assembly => "Assembly",
             SideTab::Agent => "Agent",
+            SideTab::Notes => "Notes",
         }
     }
 }
@@ -1032,6 +1036,32 @@ pub struct UiState {
     /// did before it existed.
     #[serde(skip_serializing_if = "WhatsNewView::is_closed")]
     pub whats_new: WhatsNewView,
+    /// The notes pinned to the model (`shell/notes.rs`): the note chosen,
+    /// whether their markers show, whether the done ones are unfolded.
+    /// Not written while it is as it starts, so a window without notes
+    /// reads as it did before them.
+    #[serde(skip_serializing_if = "NotesView::is_default")]
+    pub notes: NotesView,
+}
+
+/// The notes in the window ([`UiState::notes`]): view state only; what a
+/// note says and where it is are the document's (`note.list`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct NotesView {
+    /// The note chosen, by its id: its row marked in the Notes tab and its
+    /// text shown beside its marker in the view.
+    pub selected: Option<u64>,
+    /// The markers are not drawn (the eye of the Notes tab).
+    pub hide_markers: bool,
+    /// The done notes unfolded under the open ones.
+    pub done_open: bool,
+}
+
+impl NotesView {
+    pub fn is_default(&self) -> bool {
+        *self == NotesView::default()
+    }
 }
 
 /// The release notes in the window ([`UiState::whats_new`]): where they
