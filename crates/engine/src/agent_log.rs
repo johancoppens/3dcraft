@@ -15,6 +15,10 @@ use crate::{CommandError, CommandSpec, Session};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 
+/// What a window calls a connection that gave no name: its commands are
+/// logged under it, but the notes they write are `unknown`.
+pub const UNNAMED_AGENT: &str = "An agent";
+
 /// Most entries kept per document; the oldest go first.
 pub const MAX_ENTRIES: usize = 500;
 /// Most characters of an intent; a longer one is cut with `…`.
@@ -264,6 +268,9 @@ impl Session {
             return given.clone();
         }
         if let Some(actor) = &self.actor {
+            if actor.client == UNNAMED_AGENT {
+                return NoteAuthor::Unknown;
+            }
             return NoteAuthor::agent_named(&actor.client);
         }
         if self.person {

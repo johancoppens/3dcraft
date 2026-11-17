@@ -249,7 +249,7 @@ pub fn clean_note_text(text: &str) -> Result<String, String> {
 pub fn clean_note_author(name: &str) -> Option<String> {
     let flat: String = name
         .chars()
-        .filter(|c| !deceives(*c))
+        .filter(|c| !deceives(*c) && !unseen(*c))
         .map(|c| {
             if c.is_control() || c == '\u{2028}' || c == '\u{2029}' {
                 ' '
@@ -262,6 +262,28 @@ pub fn clean_note_author(name: &str) -> Option<String> {
     let flat: String = flat.trim().chars().take(MAX_NOTE_AUTHOR_CHARS).collect();
     let flat = flat.trim_end().to_string();
     (!flat.is_empty()).then_some(flat)
+}
+
+/// A character a name shows nothing of: the soft hyphen (U+00AD), the
+/// Mongolian vowel separator (U+180E), the zero-width space, non-joiner
+/// and joiner (U+200B to U+200D), the word joiner and invisible
+/// operators (U+2060 to U+2064), the byte-order mark (U+FEFF), the
+/// interlinear annotation marks (U+FFF9 to U+FFFB) and the tag characters
+/// (U+E0001, U+E0020 to U+E007F). An author's name leaves them out, so
+/// `Claude\u{200B} Code` cannot pass for `Claude Code` (a note's text
+/// keeps joiners: they spell words and emoji).
+pub fn unseen(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200D}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
 }
 
 /// A bidirectional formatting character: the marks (U+061C, U+200E,
@@ -598,6 +620,13 @@ mod tests {
             MAX_NOTE_AUTHOR_CHARS
         );
         assert_eq!(NoteAuthor::agent_named("\u{202E}"), NoteAuthor::Unknown);
+        // A name of nothing to see is no name; one with a hidden space
+        // reads as what it shows.
+        assert_eq!(NoteAuthor::agent_named("\u{200B}"), NoteAuthor::Unknown);
+        assert_eq!(
+            clean_note_author("Claude\u{200B} Code").as_deref(),
+            Some("Claude Code")
+        );
     }
 
     #[test]
