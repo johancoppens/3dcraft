@@ -62,6 +62,210 @@ pub struct Props {
     /// `circle`, …); `None` when it was not measured (the bodies are
     /// built elsewhere).
     pub shape: Option<String>,
+    /// With two things selected, their relation (`measure.between`),
+    /// shown in place of the first one's properties.
+    pub measurement: Option<Measurement>,
+}
+
+/// The relation of the two things selected, as `measure.between` gives
+/// it and as the window shows it: one number, what it is in a few words,
+/// its parts along the axes, and the dimension line's ends in space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Measurement {
+    /// `distance`, `angle`, `centerDistance`, `leastDistance`,
+    /// `clearance`; empty when the engine refused (then `refused` says
+    /// why).
+    pub relation: String,
+    /// In the document's length unit, an angle in degrees.
+    pub value: Option<f64>,
+    /// The number as shown and copied: `48.00 mm`, `135.00°`.
+    pub text: String,
+    /// What it is: `Centre distance · axes parallel`.
+    pub words: String,
+    /// Its parts along X, Y and Z: `X 48.00 · Y 0.00 · Z 0.00 mm`.
+    pub parts: Option<String>,
+    /// The dimension line's ends; for an angle its corner too.
+    pub from: [f64; 3],
+    pub to: [f64; 3],
+    pub at: Option<[f64; 3]>,
+    pub refused: Option<String>,
+    /// The two things, as the engine took them, and the document's
+    /// tolerance in the value's unit (radians for an angle): what "Keep
+    /// as a check" writes.
+    pub items: [Value; 2],
+    pub tolerance: f64,
+    /// The engine's answer as it came: what `ui.get` shows.
+    pub answer: Value,
+}
+
+impl Measurement {
+    /// What `ui.get` says under `measurement`.
+    pub fn json(&self) -> Value {
+        json!({
+            "relation": if self.relation.is_empty() { Value::Null } else { self.relation.clone().into() },
+            "value": self.value,
+            "text": self.text,
+            "words": self.words,
+            "parts": self.parts,
+            "from": self.from,
+            "to": self.to,
+            "at": self.at,
+            "refused": self.refused,
+            "answer": self.answer,
+        })
+    }
+
+    /// The parameters of `assert.add` that keep this as a check named
+    /// `name`: the relation of the two things, the value now, the
+    /// document's tolerance. `None` for what has no value (two bodies
+    /// that overlap, a refusal).
+    pub fn check(&self, name: &str) -> Option<Value> {
+        let value = self.value.filter(|v| v.is_finite())?;
+        if self.relation == "angle" {
+            Some(json!({
+                "name": name,
+                "measure": "angleBetween",
+                "from": self.items[0],
+                "to": self.items[1],
+                "eq": format!("{value} deg"),
+                "tol": format!("{} rad", self.tolerance),
+            }))
+        } else if self.relation.is_empty() {
+            None
+        } else {
+            Some(json!({
+                "name": name,
+                "measure": "between",
+                "from": self.items[0],
+                "to": self.items[1],
+                "relation": self.relation,
+                "eq": value,
+                "tol": self.tolerance,
+            }))
+        }
+    }
+}
+
+/// An item of the selection as `measure.between` takes it.
+fn item_json(item: &craft3d_engine::SelectionItem) -> Value {
+    json!({"kind": item.kind.name(), "name": item.name, "feature": item.feature})
+}
+
+/// The relation of `a` and `b` (`measure.between`), in the document's
+/// `unit`; `None` for kinds it does not take (a feature, a sketch, a
+/// datum).
+pub(crate) fn relation(
+    session: &mut Session,
+    a: &craft3d_engine::SelectionItem,
+    b: &craft3d_engine::SelectionItem,
+    unit: &str,
+) -> Option<Measurement> {
+    let measured = |kind: SelectionKind| {
+        matches!(
+            kind,
+            SelectionKind::Face | SelectionKind::Edge | SelectionKind::Vertex | SelectionKind::Body
+        )
+    };
+    if !(measured(a.kind) && measured(b.kind)) {
+        return None;
+    }
+    let items = [item_json(a), item_json(b)];
+    let answer = session.execute(
+        "measure.between",
+        &json!({"from": items[0], "to": items[1]}),
+    );
+    Some(match answer {
+        Ok(answer) => measurement_of(&answer, items, unit),
+        Err(e) => Measurement {
+            relation: String::new(),
+            value: None,
+            text: "—".to_string(),
+            words: "Not measured".to_string(),
+            parts: None,
+            from: [0.0; 3],
+            to: [0.0; 3],
+            at: None,
+            refused: Some(
+                e.message()
+                    .strip_prefix("measure.between: ")
+                    .unwrap_or(e.message())
+                    .to_string(),
+            ),
+            items,
+            tolerance: 0.0,
+            answer: Value::Null,
+        },
+    })
+}
+
+/// The engine's answer as the window shows it.
+pub fn measurement_of(answer: &Value, items: [Value; 2], unit: &str) -> Measurement {
+    let point = |key: &str| -> Option<[f64; 3]> {
+        let v = answer.get(key)?.as_array()?;
+        Some([
+            v.first()?.as_f64()?,
+            v.get(1)?.as_f64()?,
+            v.get(2)?.as_f64()?,
+        ])
+    };
+    let relation = answer
+        .get("relation")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let angle = relation == "angle";
+    let value = if angle {
+        answer.get("degrees").and_then(Value::as_f64)
+    } else {
+        answer.get("value").and_then(Value::as_f64)
+    };
+    let text = match value {
+        Some(v) if angle => format!("{}°", decimals(v, 2)),
+        Some(v) if unit.is_empty() => decimals(v, 2),
+        Some(v) => format!("{} {unit}", decimals(v, 2)),
+        None if answer.get("overlap").and_then(Value::as_bool) == Some(true) => {
+            "Overlap".to_string()
+        }
+        None => "—".to_string(),
+    };
+    let mut words = answer
+        .get("words")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if relation == "centerDistance" && answer.get("parallel").and_then(Value::as_bool) == Some(true)
+    {
+        words.push_str(" · axes parallel");
+    }
+    let parts = matches!(
+        relation.as_str(),
+        "centerDistance" | "distance" | "leastDistance"
+    )
+    .then(|| point("parts"))
+    .flatten()
+    .map(|[x, y, z]| {
+        let [x, y, z] = [x, y, z].map(|c| decimals(if c.abs() < 5e-13 { 0.0 } else { c }, 2));
+        format!("X {x} · Y {y} · Z {z} {unit}")
+            .trim_end()
+            .to_string()
+    });
+    Measurement {
+        relation,
+        value,
+        text,
+        words,
+        parts,
+        from: point("from").unwrap_or([0.0; 3]),
+        to: point("to").unwrap_or([0.0; 3]),
+        at: point("at"),
+        refused: None,
+        items,
+        tolerance: answer
+            .get("tolerance")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+        answer: answer.clone(),
+    }
 }
 
 /// The icon of what is selected: a face by its surface, an edge a line
@@ -112,12 +316,12 @@ pub(crate) fn read(
     let mut rows = Vec::new();
     let mut made_by = None;
     let mut subtitle = String::new();
-    let measure_two = second.as_ref().map(|other| {
-        (
-            "measure.distance",
-            json!({"from": first.name, "to": other.name}),
-        )
-    });
+    // Two things: their relation, by itself (the Measure button stays
+    // for one face's wall thickness).
+    let measurement = match (&second, view.items.len()) {
+        (Some(other), 2) if bodies_here => relation(session, &first, other, &unit),
+        _ => None,
+    };
     if first.kind == SelectionKind::Body {
         let id = first.feature.clone();
         subtitle = name_of(&id);
@@ -152,9 +356,9 @@ pub(crate) fn read(
             name: first.name.clone(),
             made_by,
             more,
-            // Measured where the bodies are, or not at all.
-            measure: measure_two.filter(|_| bodies_here),
+            measure: None,
             shape: None,
+            measurement,
         });
     }
     let described = if bodies_here {
@@ -232,11 +436,8 @@ pub(crate) fn read(
     });
     // Measure runs here: not while the bodies are built elsewhere (a
     // command there would answer later, deferred).
-    let measure = measure_two
-        .or_else(|| {
-            (first.kind == SelectionKind::Face)
-                .then(|| ("measure.thickness", json!({"of": first.name})))
-        })
+    let measure = (first.kind == SelectionKind::Face && second.is_none())
+        .then(|| ("measure.thickness", json!({"of": first.name})))
         .filter(|_| bodies_here);
     let shape = described.as_ref().and_then(|item| {
         item.get("surface")
@@ -254,6 +455,7 @@ pub(crate) fn read(
         more,
         measure,
         shape,
+        measurement,
     })
 }
 

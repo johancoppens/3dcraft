@@ -471,7 +471,7 @@ pub(crate) fn edge_points(edge: &Edge, n: u32) -> impl Iterator<Item = Vec3> + '
 /// The point of an edge nearest to `p`, from the curve's own projection
 /// (closed form for lines and circles), kept within the edge; and its
 /// parameter on the curve.
-fn nearest_on_edge(edge: &Edge, p: Vec3) -> Option<(Vec3, f64)> {
+pub(crate) fn nearest_on_edge(edge: &Edge, p: Vec3) -> Option<(Vec3, f64)> {
     let (t0, t1) = edge.range;
     let mut best: Option<(f64, Vec3, f64)> = None;
     let mut consider = |t: f64| {
