@@ -375,6 +375,14 @@ fn face_plane(scene: &Scene, ids: &[u32], name: &str) -> Result<(Vec3, Vec3), St
 }
 
 impl Session {
+    /// The active document's angular tolerance, in radians: within it two
+    /// directions are one (the window's plane midway between two faces).
+    /// `None` without a document.
+    pub fn angular_tolerance(&self) -> Option<f64> {
+        let doc = self.document().ok()?.history.current();
+        Some(doc.tolerance.angular).filter(|a| a.is_finite() && *a >= 0.0)
+    }
+
     /// Where the section `spec` lies, for a picture of `scene` (the scene
     /// of the active document). The error is a sentence for whoever asked:
     /// a name that means no plane, a face that is not flat, a normal

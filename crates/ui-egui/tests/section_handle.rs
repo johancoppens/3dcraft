@@ -1005,7 +1005,9 @@ fn two_faces_give_the_plane_midway_or_their_bisector_and_the_plate_says_which() 
     assert!((span - 60.0).abs() < 1e-6, "{range:?}");
 
     // The top (z = 20) and the chamfer's slant: their bisector through
-    // the material, then the other one, square to it.
+    // the material; the other, square to it, only touches the block along
+    // the edge, so it is not offered (the review of 2026-11-17, round
+    // three) and a second click keeps the plane.
     select_faces(
         &mut session,
         &[
@@ -1016,6 +1018,7 @@ fn two_faces_give_the_plane_midway_or_their_bisector_and_the_plate_says_which() 
     window.frames(&mut shell, &mut session, 3);
     let choice = shell.section_face_choice().cloned().unwrap();
     assert_eq!(choice.made, Some(SectionMade::Bisector), "{choice:?}");
+    assert_eq!(choice.planes.len(), 1, "{choice:?}");
     // The plane stayed midway while the selection changed.
     assert_eq!(plane_of(&mut shell, &mut session).2, "mid");
     let dot = shell.section_handle().unwrap().dots[3];
@@ -1043,12 +1046,10 @@ fn two_faces_give_the_plane_midway_or_their_bisector_and_the_plate_says_which() 
     window.frames(&mut shell, &mut session, 3);
     let (_, second, made) = plane_of(&mut shell, &mut session);
     assert_eq!(made, "bisector");
-    let m = craft3d_math::Vec3::new(second[0], second[1], second[2]);
-    assert!(n.dot(m).abs() < 1e-9, "square: {first:?} {second:?}");
-    let dot = shell.section_handle().unwrap().dots[3];
-    window.click(&mut shell, &mut session, dot);
-    window.frames(&mut shell, &mut session, 3);
-    assert_eq!(plane_of(&mut shell, &mut session).1, first);
+    assert_eq!(second, first);
+    // Through the material: the steep one, 67.5 degrees from each face
+    // (the outer one would lie 22.5 from them).
+    assert!(n.x.abs() > n.z.abs(), "steep, into the block: {first:?}");
 
     // Anything else: greyed, saying it takes one or two flat faces, and
     // a click changes nothing: three faces, an edge, a face and an edge.
@@ -1439,8 +1440,9 @@ fn two_bodies(turn: &str) -> Session {
 
 /// The review of 2026-11-17: faces all but parallel (two blocks' +x ends,
 /// one turned by a ten-millionth of a degree) gave a "bisector" 3.4e10
-/// away that cut everything or nothing. Their planes meet far outside the
-/// model's box: the plane is the one midway, and it cuts the model.
+/// away that cut everything or nothing. The first plane is now the better
+/// conditioned bisector, the plane between the faces, and it cuts the
+/// model.
 #[test]
 fn faces_all_but_parallel_give_the_plane_midway_that_cuts_the_model() {
     for turn in [
@@ -1471,17 +1473,24 @@ fn faces_all_but_parallel_give_the_plane_midway_that_cuts_the_model() {
         ] {
             select_faces(&mut session, &faces);
             window.frames(&mut shell, &mut session, 3);
+            // Called midway only within the document's angular tolerance
+            // (1e-9 rad: 5e-8 degrees is, 1e-7 is not); the plane between
+            // the faces either way, the other bisector far out and left
+            // out.
+            let parallel = turn == "0.00000005 deg";
+            let (made, word) = if parallel {
+                (SectionMade::Mid, "mid")
+            } else {
+                (SectionMade::Bisector, "bisector")
+            };
             let choice = shell.section_face_choice().cloned().unwrap();
-            assert_eq!(
-                choice.made,
-                Some(SectionMade::Mid),
-                "{turn} {what}: {choice:?}"
-            );
+            assert_eq!(choice.made, Some(made), "{turn} {what}: {choice:?}");
+            assert_eq!(choice.planes.len(), 1, "{turn} {what}: {choice:?}");
             let dot = shell.section_handle().unwrap().dots[3];
             window.click(&mut shell, &mut session, dot);
             window.frames(&mut shell, &mut session, 3);
             let got = call(&mut shell, &mut session, "ui.get", json!({}));
-            assert_eq!(got["section"]["made"], "mid", "{turn} {what}");
+            assert_eq!(got["section"]["made"], word, "{turn} {what}");
             let point = got["section"]["point"][0].as_f64().unwrap();
             assert!(
                 (point - middle).abs() < 0.5,
@@ -1530,6 +1539,13 @@ fn after_an_edit_the_plane_stays_and_its_name_goes_once_it_no_longer_holds() {
     );
     window.frames(&mut shell, &mut session, 4);
     assert_eq!(shell.state.section, made);
+    // Another tab shown and this one again (the review, round three: the
+    // record was the window's, and the other tab's section forgot it).
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    window.frames(&mut shell, &mut session, 3);
+    run(&mut session, "file.activate", json!({"document": 0}));
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(shell.state.section, made);
     // The block made longer: its +x end moves to 80; the plane stays at
     // 30, and is no longer called midway.
     run(
@@ -1558,7 +1574,7 @@ fn after_an_edit_the_plane_stays_and_its_name_goes_once_it_no_longer_holds() {
         && let Some(why) = choice.refused
     {
         assert!(
-            !why.contains("mesh") && !why.contains("no body has"),
+            why == TAKES_FACES || why.contains("not in the view"),
             "in the window's words: {why}"
         );
     }
@@ -1621,4 +1637,72 @@ fn while_the_view_turns_the_group_keeps_its_side_and_clear_of_the_controls() {
     assert!(frames > 600, "{frames}");
     // Round one: 283 hops in 4356 frames (6.5 %). Now one in forty at most.
     assert!(hops * 40 <= frames, "{hops} hops in {frames} frames");
+}
+
+/// The review of 2026-11-17, round three: two ruled lofts, a flat tray
+/// (100 to 90 over 20: opposite sides 28 degrees apart, meeting far above
+/// it) and a steeper hopper (40 to 20 over 30). Their opposite sides
+/// selected, the fourth button gives the plane halving them, x = 0,
+/// through the model (a rule by where the planes meet gave the tray a
+/// plane tilted 14 degrees along one side).
+#[test]
+fn the_opposite_sides_of_a_tray_and_a_hopper_are_halved_by_x_0() {
+    for (name, base, top, height) in [
+        ("tray", 100.0_f64, 90.0_f64, 20.0_f64),
+        ("hopper", 40.0, 20.0, 30.0),
+    ] {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"name": "Bottom", "plane": "xy"}),
+        );
+        run(
+            &mut s,
+            "sketch.rect",
+            json!({"sketch": "Bottom", "from": [-base / 2.0, -base / 2.0], "to": [base / 2.0, base / 2.0]}),
+        );
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"name": "Top", "plane": "xy", "offset": format!("{height} mm")}),
+        );
+        run(
+            &mut s,
+            "sketch.rect",
+            json!({"sketch": "Top", "from": [-top / 2.0, -top / 2.0], "to": [top / 2.0, top / 2.0]}),
+        );
+        run(
+            &mut s,
+            "feature.loft",
+            json!({"sections": ["Bottom", "Top"], "ruled": true, "name": "Tray"}),
+        );
+        let (mut shell, mut window) = window_on(&mut s, [1200.0, 800.0], "xy", 4.0, "iso");
+        let t = (base - top) / 2.0 / height;
+        select_faces(
+            &mut s,
+            &[
+                json!({"normal": {"along": [1.0, 0.0, t]}}),
+                json!({"normal": {"along": [-1.0, 0.0, t]}}),
+            ],
+        );
+        window.frames(&mut shell, &mut s, 3);
+        let dot = shell.section_handle().unwrap().dots[3];
+        window.click(&mut shell, &mut s, dot);
+        window.frames(&mut shell, &mut s, 3);
+        let got = call(&mut shell, &mut s, "ui.get", json!({}));
+        let section = &got["section"];
+        assert_eq!(section["made"], "bisector", "{name}: {section}");
+        let normal = section["normal"][0].as_f64().unwrap();
+        let x = section["point"][0].as_f64().unwrap();
+        assert!(normal.abs() > 1.0 - 1e-9, "{name}: {section}");
+        assert!(x.abs() < 1e-6, "{name}: {section}");
+        let scene = shell.sync(&mut s).unwrap();
+        let outline = shell
+            .marks(Some(&scene))
+            .cut
+            .map_or(0, |cut| cut.outline.len());
+        assert!(outline > 0, "{name}: the plane cuts the model");
+    }
 }
