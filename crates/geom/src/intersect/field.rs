@@ -84,9 +84,7 @@ impl Projector {
     /// surface alone, and the faces of one body, intersected with each of
     /// the faces of another, ask for the same few many times over.
     pub(super) fn shared(surface: &Surface) -> Result<Arc<Self>, GeomError> {
-        let clock = craft3d_math::clock::clock("geom.projector key");
         let key = surface.key().text;
-        drop(clock);
         {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(at) = shelf.iter().position(|(k, _)| *k == key) {
@@ -781,9 +779,7 @@ impl Pieces {
     /// again for every face it meets (measured on the benchmark's turbofan,
     /// 1312 charts took 0.9 s of pieces made anew).
     fn shared(surface: &Surface) -> Option<Arc<Pieces>> {
-        let clock = craft3d_math::clock::clock("geom.pieces key");
         let key = surface.key().text;
-        drop(clock);
         {
             let mut shelf = PIECE_SHELF.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(at) = shelf.iter().position(|(k, _)| *k == key) {
@@ -793,9 +789,7 @@ impl Pieces {
                 return pieces;
             }
         }
-        let clock = craft3d_math::clock::clock("geom.pieces new");
         let pieces = crate::allowance::uncounted(|| Pieces::new(surface)).map(Arc::new);
-        drop(clock);
         let mut shelf = PIECE_SHELF.lock().unwrap_or_else(PoisonError::into_inner);
         if !shelf.iter().any(|(k, _)| *k == key) {
             shelf.push((key, pieces.clone()));
@@ -904,7 +898,8 @@ impl Pieces {
         // With as many spans as the budget (and two), no piece is ever
         // halved (the first split would take the budget over): the splits
         // are not worked out at all, where they took ten nets' bounds a
-        // span (2.4 s for the 259 081 spans of the largest grid surface).
+        // span (for the 259 081 spans of the largest grid surface, 1.9 s
+        // of the 2.1 s its pieces took, in release).
         let splits = spans.len().saturating_add(2) <= PIECE_BUDGET;
         #[cfg(test)]
         let splits = splits || SPLITS_ALWAYS.get();

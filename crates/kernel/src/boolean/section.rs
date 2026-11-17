@@ -1554,7 +1554,6 @@ fn section_with(
             }
             at = at.saturating_add(1);
             let covers = (a.covers.as_slice(), b.covers.as_slice());
-            let clock = craft3d_math::clock::clock("section.a to_meet");
             let Some(Pair {
                 box_b,
                 within,
@@ -1565,19 +1564,14 @@ fn section_with(
             else {
                 continue;
             };
-            drop(clock);
             let named = [a.name(fa), b.name(fb)];
             crate::work::face_pairs(1);
             #[cfg(test)]
             tests::PAIRS_MET.with(|n| n.set(n.get() + 1));
             let near = (a.near.get(fa), b.near.get(fb));
-            let clock = craft3d_math::clock::clock("section.b meet surfaces");
-            let met = meet_in((box_a, box_b), near, (&within, room), tol, |room| {
+            let met = match meet_in((box_a, box_b), near, (&within, room), tol, |room| {
                 meet_surfaces(&oa.surface, &ob.surface, room, tolerance)
-            });
-            drop(clock);
-            let clock = craft3d_math::clock::clock("section.c gap and touches");
-            let met = match met {
+            }) {
                 Ok(met) => met,
                 // Surfaces that cannot be traced may be faces that lie on
                 // one another where one is over the other, though the
@@ -1662,8 +1656,6 @@ fn section_with(
                         touching.push((fa, fb));
                         continue;
                     }
-                    drop(clock);
-                    let clock = craft3d_math::clock::clock("section.d covers and edge cuts");
                     let mut found = Vec::new();
                     // (Some: the boxes meet within twice the tolerance.)
                     let near = overlap(box_a, box_b, 2.0 * tol).unwrap_or(within);
@@ -1673,8 +1665,6 @@ fn section_with(
                     sections
                         .edge_meets
                         .extend(found.iter().map(|cut| cut.point));
-                    drop(clock);
-                    let _clock = craft3d_math::clock::clock("section.e clip");
                     for curve in &meeting.curves {
                         clip(
                             curve,
@@ -1692,7 +1682,6 @@ fn section_with(
             }
         }
     }
-    let _clock = craft3d_math::clock::clock("section.f lying edges");
     for (fa, fb) in touching {
         lying_edges(
             a,

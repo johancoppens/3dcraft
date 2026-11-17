@@ -224,12 +224,30 @@ struct Cut {
     seconds: f64,
 }
 
+/// How far a cut's volume may be from the quadrature's: a billionth of the
+/// block (the measure's own error is a millionth of that), and where the
+/// block's sides cross the sheet (`crossed`, not along its border) what
+/// the meeting curves may take: each is within the tolerance `tol` of
+/// where the plane meets the sheet, so the piece of the sheet kept is that
+/// piece within a band `tol` wide round the block's sides, under which
+/// the volume is at most the band's area times the block's height (twice
+/// that, for the slope of the sheet across the band).
+fn allowance(size: [f64; 3], tol: f64, crossed: bool) -> f64 {
+    let whole = size[0] * size[1] * size[2];
+    let band = if crossed {
+        2.0 * tol * 2.0 * (size[0] + size[1]) * size[2]
+    } else {
+        0.0
+    };
+    1e-9 * whole + band
+}
+
 /// Cuts a block of `size` at `position` by the sheet `sheet` (a feature of
 /// that name) both ways and unites the two parts again, holding each to
 /// the oracles: the volume under the sheet (`expected`, when given) to
-/// `relative`, the two parts to the block, their union to the block, rays
-/// at every `ray_step`-th node within the block on the sheet's point, the
-/// deep check and closed meshes.
+/// within `allowance`, the two parts to the block, their union to the
+/// block, rays at every `ray_step`-th node within the block on the sheet's
+/// point, the deep check and closed meshes. Prints what each took.
 #[allow(clippy::too_many_arguments)]
 fn cut_both_ways(
     s: &mut Session,
@@ -238,7 +256,7 @@ fn cut_both_ways(
     size: [f64; 3],
     position: [f64; 3],
     expected: Option<f64>,
-    relative: f64,
+    allowance: f64,
     ray_step: usize,
     label: &str,
 ) -> Cut {
@@ -271,20 +289,22 @@ fn cut_both_ways(
     let (under, over) = (number(&under_body["volume"]), number(&over_body["volume"]));
     if let Some(expected) = expected {
         assert!(
-            (under - expected).abs() <= relative * whole,
-            "{label}: the volume under the sheet {under}, by quadrature {expected} (off by {:e} of the block)",
-            (under - expected) / whole
+            (under - expected).abs() <= allowance,
+            "{label}: the volume under the sheet {under}, by quadrature {expected} (off by {:e} of the block, {:e} of what is allowed)",
+            (under - expected) / whole,
+            (under - expected) / allowance
         );
     }
     // A = (A ∩ S) ∪ (A − S), in volume, and as a body.
     assert!(
-        (under + over - whole).abs() <= relative * whole,
+        (under + over - whole).abs() <= allowance,
         "{label}: under {under} + over {over} = {}, the block {whole}",
         under + over
     );
     // Rays down onto the nodes within the block meet the solid under the
     // sheet at the sheet's point (first, where the sheet does not fold
     // over the node).
+    let t = Instant::now();
     let top = position[2] + size[2] + 1.0;
     let mut rays = 0;
     for r in (0..sheet.rows).step_by(ray_step) {
@@ -317,14 +337,19 @@ fn cut_both_ways(
         }
     }
     assert!(rays > 0, "{label}: no node within the block");
+    let rays_took = t.elapsed().as_secs_f64();
+    let t = Instant::now();
     let check = run(s, "document.check", json!({"deep": true}));
     assert_eq!(check["ok"], true, "{label}: {check}");
+    let check_took = t.elapsed().as_secs_f64();
+    let t = Instant::now();
     let mesh = run(
         s,
         "file.export",
         json!({"path": format!("{label}.stl"), "bodies": [u, o]}),
     );
     assert_eq!(mesh["closed"], 2, "{label}: {mesh}");
+    let mesh_took = t.elapsed().as_secs_f64();
     let t = Instant::now();
     built(
         s,
@@ -336,8 +361,12 @@ fn cut_both_ways(
     assert_eq!(united["valid"], true, "{label}: {united}");
     let back = number(&united["volume"]);
     assert!(
-        (back - whole).abs() <= relative * whole,
+        (back - whole).abs() <= allowance,
         "{label}: the two parts united {back}, the block {whole}"
+    );
+    println!(
+        "{label}: {rays} rays {rays_took:.3} s, the deep check {check_took:.3} s, the meshes ({} triangles) {mesh_took:.3} s",
+        mesh["triangles"]
     );
     Cut {
         under,
@@ -388,7 +417,7 @@ fn a_terrain_cut_by_a_block_holds_to_the_volume_under_it_at_three_scales() {
                 size,
                 position,
                 Some(expected),
-                1e-9,
+                allowance(size, 1e-6 * k, label == "middle"),
                 4,
                 &format!("{label} {k}"),
             );
@@ -425,7 +454,7 @@ fn a_sheet_folded_over_itself_cuts_a_block_of_its_footprint() {
         [width, last.y, 0.8 * width],
         [0.0, 0.0, floor],
         Some(expected),
-        1e-9,
+        allowance([width, last.y, 0.8 * width], 1e-6, false),
         5,
         "folded",
     );
@@ -495,7 +524,7 @@ fn large(columns: usize, rows: usize) {
             size,
             position,
             Some(expected),
-            1e-9,
+            allowance(size, 1e-3, label == "middle"),
             32,
             &format!("{columns}x{rows} {label}"),
         );

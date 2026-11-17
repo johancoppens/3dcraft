@@ -2807,9 +2807,7 @@ impl PatchTree {
 
     /// [`Self::shared`]: from the shelf, or built and put there.
     fn shelved(surface: &Surface) -> Result<Arc<PatchTree>, Reason> {
-        let clock = craft3d_math::clock::clock("tree.key format");
         let key = surface.key();
-        drop(clock);
         {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(at) = shelf.iter().position(|(k, _, _)| *k == key.text) {
@@ -2895,14 +2893,7 @@ impl PatchTree {
     pub fn new(surface: &Surface) -> Result<PatchTree, Reason> {
         // What building it took, kept with it, charged once per operation
         // that asks for it, built then or found on the shelf.
-        let clock = craft3d_math::clock::clock("tree.build");
         let (made, units, asked) = craft3d_geom::allowance::costs_of(|| PatchTree::built(surface));
-        drop(clock);
-        if let Ok(tree) = &made {
-            craft3d_math::clock::count("tree.build spans", tree.roots.len() as u64);
-            craft3d_math::clock::count("tree.build nodes", tree.nodes.len() as u64);
-            craft3d_math::clock::count("tree.build MB", (tree.base_bytes >> 20) as u64);
-        }
         made.map(|mut tree| {
             tree.units = units;
             tree.asked = asked;
@@ -2958,9 +2949,7 @@ impl PatchTree {
             return Err(TOO_MANY_SPANS);
         }
         let found = poles(surface);
-        let clock = craft3d_math::clock::clock("tree.id format");
         let id = surface.key().hash;
-        drop(clock);
         let mut tree = PatchTree {
             surface: surface.clone(),
             nodes: Vec::new(),
@@ -3405,7 +3394,6 @@ impl PatchTree {
 
     /// [`Self::sigma_near`]: the search.
     fn sigma_search(&self, p: Vec3, reach: f64) -> Option<f64> {
-        let _clock = craft3d_math::clock::clock("tree.sigma_search");
         let mut least = f64::INFINITY;
         // The spans within reach (all of them without groups), in the
         // order of `roots`: a span out of reach is passed over below
@@ -3424,7 +3412,6 @@ impl PatchTree {
                 .collect(),
             None => self.roots.clone(),
         };
-        craft3d_math::clock::count("tree.sigma_search spans", stack.len() as u64);
         let mut visited = 0_usize;
         while let Some(index) = stack.pop() {
             visited += 1;
@@ -4196,7 +4183,6 @@ impl PatchTree {
             threshold
         };
         let mut best = threshold;
-        let _clock = craft3d_math::clock::clock("tree.bound_by");
         let mut heap = BinaryHeap::new();
         let span_key = |node: &Node| distance(&Slab::axis_aligned(node.bbox));
         match (group, self.groups.last()) {
@@ -4204,7 +4190,6 @@ impl PatchTree {
                 heap.push(Queued::group(key(&top.bbox), self.groups.len() - 1));
             }
             _ => {
-                craft3d_math::clock::count("tree.bound_by flat roots", self.roots.len() as u64);
                 for &root in &self.roots {
                     if let Some(node) = self.nodes.get(root) {
                         heap.push(Queued::node(span_key(node), root));
@@ -4237,7 +4222,6 @@ impl PatchTree {
                 break;
             }
             if is_group {
-                craft3d_math::clock::count("tree.bound_by groups opened", 1);
                 if let Some(key) = group {
                     self.open(index, &mut heap, key, &span_key);
                 }
@@ -4510,14 +4494,12 @@ impl PatchTree {
         if !p.is_finite() {
             return None;
         }
-        let _clock = craft3d_math::clock::clock("tree.search (nearest)");
         let mut heap = BinaryHeap::new();
         let group_key = |bbox: &Bbox3| box_distance(bbox, p);
         let span_key = |node: &Node| box_distance(&node.bbox, p);
         match self.groups.last() {
             Some(top) => heap.push(Queued::group(group_key(&top.bbox), self.groups.len() - 1)),
             None => {
-                craft3d_math::clock::count("tree.search flat roots", self.roots.len() as u64);
                 for &root in &self.roots {
                     if let Some(node) = self.nodes.get(root) {
                         heap.push(Queued::node(span_key(node), root));
@@ -4548,7 +4530,6 @@ impl PatchTree {
                 break;
             }
             if group {
-                craft3d_math::clock::count("tree.search groups opened", 1);
                 self.open(index, &mut heap, &group_key, &span_key);
                 continue;
             }
