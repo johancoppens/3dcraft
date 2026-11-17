@@ -1487,6 +1487,7 @@ impl Shell {
                 Some(super::section_handle::FACE_DOT) => {
                     if let Some(face) = &face {
                         super::section_handle::choose_plane(&mut section, face);
+                        self.remember_made(&section, face);
                     }
                 }
                 Some(axis) => choose_axis(&mut section, axis, scene),

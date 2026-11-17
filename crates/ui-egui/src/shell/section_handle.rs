@@ -217,15 +217,24 @@ pub fn choose_plane(section: &mut SectionState, choice: &PlaneChoice) {
 }
 
 /// The planes two flat faces give, each face by a point of its plane and
-/// its unit outward normal. Parallel (their normals the same or opposite,
-/// within [`PARALLEL`]): the plane midway between them, along the first's
-/// normal. Else the two bisectors of the angle of their planes, through
-/// the line where these meet: first the one through the material (where
-/// both faces' bodies are, behind both faces: normal `n - m`), then the
-/// other (normal `n + m`). Each by its point nearest the middle of the
-/// two points given, so near the faces, and its unit normal; `None` when
-/// a number is not one.
-pub fn planes_of(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> Option<(SectionMade, Vec<(Vec3, Vec3)>)> {
+/// its unit outward normal, for a model whose box runs from `lo` to `hi`
+/// (`bounds`). Parallel: their normals the same or opposite within
+/// [`PARALLEL`], or the line where their planes meet passing farther from
+/// the middle of the box than its whole diagonal (the review of
+/// 2026-11-17: faces a ten-millionth of a degree off parallel met
+/// 3.4e10 away, and a "bisector" through there cut everything or
+/// nothing): the plane midway between them, along the first's normal.
+/// Else the two bisectors of the angle of their planes, through the line
+/// where these meet: first the one through the material (where both
+/// faces' bodies are, behind both faces: normal `n - m`), then the other
+/// (normal `n + m`). Each by its point nearest the middle of the two
+/// points given, so near the faces, and its unit normal; `None` when a
+/// number is not one.
+pub fn planes_of(
+    a: (Vec3, Vec3),
+    b: (Vec3, Vec3),
+    bounds: Option<(Vec3, Vec3)>,
+) -> Option<(SectionMade, Vec<(Vec3, Vec3)>)> {
     let ((p, n), (q, m)) = (a, b);
     let middle = p.lerp(q, 0.5);
     // The point of the plane `x . w = c` nearest the middle.
@@ -239,13 +248,36 @@ pub fn planes_of(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> Option<(SectionMade, Vec<(
     if !(middle.is_finite() && unit(n) && unit(m)) {
         return None;
     }
-    if n.cross(m).length() <= PARALLEL {
+    let d = n.cross(m);
+    // How far from the box's middle the line where the planes meet
+    // passes: the point of it nearest there, from that middle, is
+    // (c1 m × d + c2 d × n) / |d|² for the planes n · x = c1, m · x = c2
+    // taken from the middle.
+    let far = bounds.is_some_and(|(lo, hi)| {
+        let o = lo.lerp(hi, 0.5);
+        let diagonal = lo.distance(hi);
+        let (c1, c2) = ((p - o).dot(n), (q - o).dot(m));
+        let off = (m.cross(d) * c1 + d.cross(n) * c2) * (1.0 / d.length_squared());
+        let off = off.length();
+        diagonal.is_finite() && (off.is_nan() || off > diagonal)
+    });
+    if d.length() <= PARALLEL || far {
         let mid = nearest(n, (p.dot(n) + q.dot(n)) * 0.5)?;
         return Some((SectionMade::Mid, vec![mid]));
     }
     let through = nearest(n - m, p.dot(n) - q.dot(m))?;
     let other = nearest(n + m, p.dot(n) + q.dot(m))?;
     Some((SectionMade::Bisector, vec![through, other]))
+}
+
+/// The two faces the plane midway or the bisector was made from, and the
+/// plane, as the fourth button set it.
+#[derive(Clone, Debug, PartialEq)]
+struct MadeFrom {
+    faces: Vec<(String, String)>,
+    made: SectionMade,
+    point: [f64; 3],
+    normal: [f64; 3],
 }
 
 /// What a drag snapped to.
@@ -637,12 +669,23 @@ pub fn plane_frame(
 }
 
 /// Where the group (`size`: the number and the buttons on one plate)
-/// goes beside the arrow's foot in the `viewport`: away from the cut's
-/// middle, so it never covers it, on the first side that keeps clear of
-/// the arrow (outward from the middle, then square to the arrow, then
-/// back along it) and of `keep_out` (the controls over the view); within
-/// the viewport.
-pub fn group_place(frame: &PlaneFrame, viewport: Rect, keep_out: &[Rect], size: Vec2) -> Rect {
+/// goes beside the arrow's foot in the `viewport`, and the way it went
+/// from the foot on the screen. It keeps the way it went last (`kept`)
+/// while that place stays clear and in view (the review of 2026-11-17: it
+/// hopped sides hundreds of times while the view turned), so it follows
+/// the foot smoothly (pushed along the viewport's edge where it reaches
+/// it). Else, the first clear place of: away from the cut's
+/// middle (so it never covers it), square to the arrow, back along it,
+/// then round the compass. Clear: off the arrow and its foot, [`GAP`]
+/// clear of `keep_out` (the controls over the view), within the viewport;
+/// where no place is, the one that covers the controls least.
+pub fn group_place(
+    frame: &PlaneFrame,
+    viewport: Rect,
+    keep_out: &[Rect],
+    size: Vec2,
+    kept: Option<Vec2>,
+) -> (Rect, Vec2) {
     let room = viewport.shrink(EDGE);
     let at = frame.at;
     let out = (at - frame.centre).normalized();
@@ -653,7 +696,7 @@ pub fn group_place(frame: &PlaneFrame, viewport: Rect, keep_out: &[Rect], size: 
     };
     let arrow = frame.arrow.map(|[a, b]| (b - a).normalized());
     let mut ways = vec![out];
-    if let Some(way) = arrow {
+    if let Some(way) = arrow.filter(|w| w.x.is_finite() && w.y.is_finite()) {
         let across = vec2(-way.y, way.x);
         let across = if across.dot(out) >= 0.0 {
             across
@@ -662,30 +705,72 @@ pub fn group_place(frame: &PlaneFrame, viewport: Rect, keep_out: &[Rect], size: 
         };
         ways.extend([across, -across, -way]);
     }
+    ways.extend((0..8).map(|k| {
+        let t = k as f32 * std::f32::consts::FRAC_PI_4;
+        vec2(t.pcos(), t.psin())
+    }));
+    // The place a way gives, and whether it had to be pushed into view.
     let placed = |way: Vec2| {
         let reach = way.x.abs() * size.x * 0.5 + way.y.abs() * size.y * 0.5;
-        let mut place = Rect::from_center_size(at + way * (GAP + reach), size);
+        let place = Rect::from_center_size(at + way * (GAP + reach), size);
         let shift = vec2(
             (room.left() - place.left()).max(0.0) - (place.right() - room.right()).max(0.0),
             (room.top() - place.top()).max(0.0) - (place.bottom() - room.bottom()).max(0.0),
         );
         if shift.x.is_finite() && shift.y.is_finite() {
-            place = place.translate(shift);
+            (place.translate(shift), shift.length() > 0.5)
+        } else {
+            (place, false)
         }
-        place
     };
-    let clear = |place: &Rect| {
-        frame.arrow.is_none_or(|[a, b]| {
-            let grown = place.expand(GAP * 0.5);
-            // Clear of the arrow: none of points along it inside.
-            (0..=8).all(|k| !grown.contains(a.lerp(b, k as f32 / 8.0)))
-        }) && !place.expand(GAP * 0.5).contains(at)
-            && keep_out.iter().all(|r| !r.intersects(*place))
+    let on_arrow = |place: &Rect| {
+        let grown = place.expand(GAP * 0.5);
+        frame
+            .arrow
+            .is_some_and(|[a, b]| (0..=8).any(|k| grown.contains(a.lerp(b, k as f32 / 8.0))))
+            || grown.contains(at)
     };
-    ways.iter()
-        .map(|&way| placed(way))
-        .find(clear)
-        .unwrap_or_else(|| placed(out))
+    // How much of the controls (with air round them) a place covers.
+    let covered = |place: &Rect| -> f32 {
+        keep_out
+            .iter()
+            .map(|r| {
+                let both = r.expand(GAP).intersect(*place);
+                if both.is_positive() { both.area() } else { 0.0 }
+            })
+            .sum()
+    };
+    let clear = |place: &Rect| !on_arrow(place) && covered(place) <= 0.0;
+    // Kept while clear: pushed along the viewport's edge, it slides
+    // with the foot rather than hop.
+    if let Some(way) = kept.filter(|w| w.x.is_finite() && w.y.is_finite()) {
+        let (place, _) = placed(way);
+        if clear(&place) {
+            return (place, way);
+        }
+    }
+    let candidates: Vec<(Rect, bool, Vec2)> = ways
+        .iter()
+        .map(|&way| {
+            let (place, pushed) = placed(way);
+            (place, pushed, way)
+        })
+        .collect();
+    candidates
+        .iter()
+        .find(|(place, pushed, _)| !pushed && clear(place))
+        .or_else(|| candidates.iter().find(|(place, _, _)| clear(place)))
+        .or_else(|| {
+            candidates
+                .iter()
+                .filter(|(place, _, _)| !on_arrow(place))
+                .min_by(|a, b| covered(&a.0).total_cmp(&covered(&b.0)))
+        })
+        .map(|&(place, _, way)| (place, way))
+        .unwrap_or_else(|| {
+            let (place, _) = placed(out);
+            (place, out)
+        })
 }
 
 /// The head of the slim arrow (the developer's choice of 2026-11-17,
@@ -922,6 +1007,12 @@ pub(crate) struct HandleView {
     /// selection and scene it was found for (`Shell::sync_face_choice`).
     pub(crate) face: Option<PlaneChoice>,
     face_for: Option<(u64, u64, (u64, Option<u64>))>,
+    /// The way the group went from the arrow's foot last frame, kept
+    /// while its place stays clear ([`group_place`]).
+    group_way: Option<Vec2>,
+    /// The faces a plane midway or a bisector was made from
+    /// ([`Shell::remember_made`]).
+    made_from: Option<MadeFrom>,
 }
 
 impl Shell {
@@ -974,6 +1065,7 @@ impl Shell {
             return;
         }
         self.section_handle.face_for = Some(key);
+        self.check_made(session, scene);
         let items = &self.selection().items;
         let faces: Vec<(String, String)> = items
             .iter()
@@ -994,8 +1086,12 @@ impl Shell {
             match session.section_plane(scene, &spec) {
                 Ok(plane) => planes.push((plane.base, plane.along)),
                 Err(why) => {
+                    // In the window's words: the engine's speak of meshes
+                    // and names.
                     let why = if why.contains("not flat") {
                         "Not a flat face: the plane takes one or two flat faces".to_string()
+                    } else if why.contains("no area") || why.contains("no body has") {
+                        "Its body is not in the view (hidden, or rolled back): show it to lay the plane on its face".to_string()
                     } else {
                         why
                     };
@@ -1011,7 +1107,7 @@ impl Shell {
                 planes: Vec::new(),
                 refused: None,
             },
-            [a, b] => match planes_of(*a, *b) {
+            [a, b] => match planes_of(*a, *b, scene.bodies_box.corners()) {
                 Some((made, two)) => PlaneChoice {
                     made: Some(made),
                     faces,
@@ -1026,6 +1122,77 @@ impl Shell {
             _ => PlaneChoice::refused(faces, TAKES_FACES),
         };
         self.section_handle.face = Some(choice);
+    }
+
+    /// Remembers which faces made `section`'s plane, when the fourth
+    /// button made it midway or a bisector of `choice`'s two faces.
+    pub(super) fn remember_made(&mut self, section: &SectionState, choice: &PlaneChoice) {
+        self.section_handle.made_from = match (section.made, section.point, section.normal) {
+            (
+                Some(made @ (SectionMade::Mid | SectionMade::Bisector)),
+                Some(point),
+                Some(normal),
+            ) => Some(MadeFrom {
+                faces: choice.faces.clone(),
+                made,
+                point,
+                normal,
+            }),
+            _ => None,
+        };
+    }
+
+    /// Whether the plane midway or the bisector the fourth button made
+    /// still is that of its two faces, after an edit: the plane stays
+    /// where it was (a section is a view, like the camera, and does not
+    /// move under the person), and once its faces no longer make it (the
+    /// block lengthened, a face gone), it is no longer called midway or a
+    /// bisector (the review of 2026-11-17).
+    fn check_made(&mut self, session: &mut craft3d_engine::Session, scene: &Scene) {
+        let Some(from) = self.section_handle.made_from.clone() else {
+            return;
+        };
+        let section = &self.state.section;
+        // Set otherwise since (another plane, an agent): not ours to say.
+        if section.made != Some(from.made)
+            || section.point != Some(from.point)
+            || section.normal != Some(from.normal)
+        {
+            self.section_handle.made_from = None;
+            return;
+        }
+        let mut planes = Vec::new();
+        for (feature, face) in &from.faces {
+            let spec = craft3d_engine::SectionSpec {
+                plane: Some(face.clone()),
+                feature: Some(feature.clone()),
+                ..craft3d_engine::SectionSpec::default()
+            };
+            match session.section_plane(scene, &spec) {
+                Ok(plane) => planes.push((plane.base, plane.along)),
+                Err(_) => break,
+            }
+        }
+        let [px, py, pz] = from.point;
+        let [nx, ny, nz] = from.normal;
+        let (point, normal) = (Vec3::new(px, py, pz), Vec3::new(nx, ny, nz));
+        let reach = scene
+            .bodies_box
+            .corners()
+            .map_or(1.0, |(lo, hi)| lo.distance(hi).max(1e-9));
+        let holds = match planes.as_slice() {
+            [a, b] => planes_of(*a, *b, scene.bodies_box.corners()).is_some_and(|(made, two)| {
+                made == from.made
+                    && two.iter().any(|(p, n)| {
+                        (*n - normal).length() <= 1e-9 && (*p - point).dot(*n).abs() <= 1e-9 * reach
+                    })
+            }),
+            _ => false,
+        };
+        if !holds {
+            self.state.section.made = None;
+            self.section_handle.made_from = None;
+        }
     }
 
     /// What the drag of the section's arrow under way snapped to last.
@@ -1196,6 +1363,7 @@ impl Shell {
             HandlePart::Dot(FACE_DOT) => {
                 if let Some(choice) = self.section_handle.face.clone() {
                     choose_plane(&mut section, &choice);
+                    self.remember_made(&section, &choice);
                 }
             }
             HandlePart::Dot(axis) => choose_axis(&mut section, axis, scene),
@@ -1233,6 +1401,7 @@ impl Shell {
         let Some(frame) = frame else {
             self.section_handle.place = None;
             self.section_handle.drag = None;
+            self.section_handle.group_way = None;
             if self
                 .typing
                 .as_ref()
@@ -1289,7 +1458,9 @@ impl Shell {
             number_width + buttons as f32 * (side + inset) + inset,
             height,
         );
-        let group = group_place(&frame, rect, &keep_out, size);
+        let (group, way) =
+            group_place(&frame, rect, &keep_out, size, self.section_handle.group_way);
+        self.section_handle.group_way = Some(way);
         let number_rect = Rect::from_min_size(group.min, vec2(number_width, height));
         let centre_of = |k: usize| {
             pos2(
@@ -1391,10 +1562,15 @@ impl Shell {
             radius,
             color_alpha(tokens.plate_fill, tokens.plate_opacity),
         );
+        // A hairline of the handle's light colour round it, so its edge
+        // shows on a dark body too.
         painter.rect_stroke(
             place.group,
             radius,
-            egui::Stroke::new(1.0, color_alpha(tokens.plate_rim, tokens.plate_rim_opacity)),
+            egui::Stroke::new(
+                1.0,
+                color_alpha(tokens.section_handle_fill, tokens.section_rest_opacity),
+            ),
             egui::StrokeKind::Inside,
         );
         if typing {
@@ -1723,7 +1899,7 @@ mod tests {
         }
         // The group: in view, clear of the arrow and of the cut's middle.
         let size = vec2(200.0, 28.0);
-        let group = group_place(&frame, viewport, &[], size);
+        let (group, _) = group_place(&frame, viewport, &[], size, None);
         assert!(viewport.contains_rect(group), "{group:?}");
         // A control over where the arrow would stand: the arrow moves
         // toward the cut's middle, clear of it, and so does the group.
@@ -1733,8 +1909,18 @@ mod tests {
         assert!(!control.expand(INSIDE - 1.0).contains(ma), "{ma:?}");
         assert!((moved.middle.x - 30.0).abs() < 1e-9, "on the plane");
         assert!(!control.contains(mb));
-        let clear = group_place(&moved, viewport, &[control], size);
-        assert!(!clear.intersects(control), "{clear:?}");
+        let (clear, way) = group_place(&moved, viewport, &[control], size, None);
+        assert!(!clear.intersects(control.expand(GAP - 0.5)), "{clear:?}");
+        // Kept on its side while that stays clear; another control over
+        // it, and it goes elsewhere, clear of both.
+        assert_eq!(
+            group_place(&moved, viewport, &[control], size, Some(way)),
+            (clear, way)
+        );
+        let over = clear.expand(2.0);
+        let (elsewhere, other) = group_place(&moved, viewport, &[control, over], size, Some(way));
+        assert_ne!(other, way);
+        assert!(!elsewhere.intersects(over) && !elsewhere.intersects(control));
         assert!((0..=8).all(|k| !group.contains(a.lerp(b, k as f32 / 8.0))));
         assert!(
             !group.contains(frame.centre),
@@ -1868,7 +2054,7 @@ mod tests {
         // its top (z = 20), each by a point of it and its outward normal.
         let right = (Vec3::new(60.0, 0.0, 0.0), Vec3::X);
         let top = (Vec3::new(0.0, 40.0, 20.0), Vec3::Z);
-        let (made, planes) = planes_of(right, top).unwrap();
+        let (made, planes) = planes_of(right, top, None).unwrap();
         assert_eq!(made, SectionMade::Bisector);
         let h = std::f64::consts::FRAC_1_SQRT_2;
         let [(p, n), (q, m)] = planes.as_slice() else {
@@ -1893,14 +2079,14 @@ mod tests {
         assert!((Vec3::new(55.0, 3.0, 15.0) - *p).dot(*n).abs() < 1e-9);
         assert!((Vec3::new(65.0, 3.0, 15.0) - *q).dot(*m).abs() < 1e-9);
         // In the other order the first is still through the material.
-        let (_, swapped) = planes_of(top, right).unwrap();
+        let (_, swapped) = planes_of(top, right, None).unwrap();
         let first = swapped.first().unwrap();
         assert!((Vec3::new(55.0, 3.0, 15.0) - first.0).dot(first.1).abs() < 1e-9);
 
         // Two parallel faces, facing apart (the block's left and right)
         // or the same way: the plane midway, along the first's normal.
         let left = (Vec3::new(0.0, 5.0, 5.0), Vec3::ZERO - Vec3::X);
-        let (made, planes) = planes_of(right, left).unwrap();
+        let (made, planes) = planes_of(right, left, None).unwrap();
         assert_eq!(made, SectionMade::Mid);
         let [(p, n)] = planes.as_slice() else {
             panic!("one plane: {planes:?}");
@@ -1910,7 +2096,7 @@ mod tests {
             "{p:?} {n:?}"
         );
         let ledge = (Vec3::new(20.0, 0.0, 0.0), Vec3::X);
-        let (made, planes) = planes_of(ledge, right).unwrap();
+        let (made, planes) = planes_of(ledge, right, None).unwrap();
         assert_eq!(made, SectionMade::Mid);
         assert!((planes[0].0.x - 40.0).abs() < 1e-9);
         // At every scale, and a slant a billionth off parallel is not.
@@ -1918,6 +2104,7 @@ mod tests {
             let (made, planes) = planes_of(
                 (Vec3::new(60.0 * k, 0.0, 0.0), Vec3::X),
                 (Vec3::new(0.0, 0.0, 20.0 * k), Vec3::Z),
+                Some((Vec3::ZERO, Vec3::new(60.0 * k, 40.0 * k, 20.0 * k))),
             )
             .unwrap();
             assert_eq!(made, SectionMade::Bisector);
@@ -1928,15 +2115,59 @@ mod tests {
         }
         let tilted = Vec3::new(1.0, 0.0, 1e-6).normalized().unwrap();
         assert_eq!(
-            planes_of(right, (Vec3::ZERO, tilted)).unwrap().0,
+            planes_of(right, (Vec3::ZERO, tilted), None).unwrap().0,
             SectionMade::Bisector
         );
+        // Faces all but parallel (the review's, 2026-11-17): the +x ends
+        // of two blocks, at x = 60 and x = 120, the second turned about z
+        // by a ten-millionth of a degree and by a thousandth, the same way
+        // and apart. Their planes meet far outside the model's box: the
+        // plane midway, by x = 60 or 90, not a bisector out there.
+        let model = Some((Vec3::ZERO, Vec3::new(120.0, 40.0, 20.0)));
+        for degrees in [5e-8, 1e-7, 3e-7, 1e-3, 0.1] {
+            let t = degrees.to_radians();
+            let turned = Vec3::new(t.pcos(), t.psin(), 0.0);
+            for (first, middle) in [
+                ((Vec3::new(60.0, 0.0, 0.0), Vec3::X), 90.0),
+                ((Vec3::new(0.0, 0.0, 0.0), Vec3::ZERO - Vec3::X), 60.0),
+            ] {
+                let (made, planes) =
+                    planes_of(first, (Vec3::new(120.0, 10.0, 10.0), turned), model).unwrap();
+                assert_eq!(made, SectionMade::Mid, "{degrees} {first:?}");
+                let (point, normal) = planes[0];
+                assert!(
+                    point.distance(Vec3::new(middle, point.y, point.z)) < 0.2,
+                    "{point:?}"
+                );
+                assert!(normal.x.abs() > 0.99, "{normal:?}");
+                assert!(point.y.abs() < 100.0 && point.z.abs() < 100.0, "{point:?}");
+            }
+        }
+        // Without the model's box, a sine past PARALLEL is an angle.
+        let turned = Vec3::new(1.0, 1e-8, 0.0).normalized().unwrap();
+        assert_eq!(
+            planes_of(right, (Vec3::new(120.0, 0.0, 0.0), turned), None)
+                .unwrap()
+                .0,
+            SectionMade::Bisector
+        );
+        // A real angle whose planes meet just outside the box (a frustum's
+        // two sides, meeting 15 above its top) keeps its bisector.
+        let side = Vec3::new(1.0, 0.0, 1.0).normalized().unwrap();
+        let other = Vec3::new(-1.0, 0.0, 1.0).normalized().unwrap();
+        let (made, _) = planes_of(
+            (Vec3::new(55.0, 0.0, 10.0), side),
+            (Vec3::new(5.0, 0.0, 10.0), other),
+            Some((Vec3::ZERO, Vec3::new(60.0, 40.0, 20.0))),
+        )
+        .unwrap();
+        assert_eq!(made, SectionMade::Bisector);
         // Numbers that are not numbers: none.
         assert_eq!(
-            planes_of((Vec3::new(f64::NAN, 0.0, 0.0), Vec3::X), top),
+            planes_of((Vec3::new(f64::NAN, 0.0, 0.0), Vec3::X), top, None),
             None
         );
-        assert_eq!(planes_of(right, (Vec3::ZERO, Vec3::ZERO)), None);
+        assert_eq!(planes_of(right, (Vec3::ZERO, Vec3::ZERO), None), None);
     }
 
     #[test]

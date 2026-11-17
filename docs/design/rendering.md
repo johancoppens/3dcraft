@@ -1809,6 +1809,21 @@ when the selection changes. Anything else greys the button with why on hover. In
 four cells (X, Y, Z, ∥) share the room three had, as they did while a face was selected (open: whether a
 phone wants them a finger's width each, which makes the bar wider).
 
+*The review of the plane and the group* (2026-11-17, `review-view-section`). (1) Faces a hair off parallel
+(1.5e-9 to 1.7e-5 rad, the same way) gave a "bisector" through a line 3.4e6 to 6.9e10 away, which cut
+everything or nothing: `planes_of` now takes the model's box and counts two faces parallel also when the
+line their planes meet in passes farther from the box's middle than its whole diagonal (a frustum's sides,
+meeting a little above it, keep their bisector); the review's two blocks, one turned by 5e-8 to 1e-3
+degrees, give the plane midway, which cuts the model. (2) A `made` that does not fit its plane is refused by
+`ui.set`, not dropped. (3) After an edit the plane stays where it was, a view like the camera; the shell
+remembers the two faces it was made from and, once they no longer make it (`check_made`, when the scene
+changes), takes `made` away, so the number no longer says "mid". (4) A hidden body's face is refused in the
+window's words. (5) The group hopped sides 283 times in 4356 frames of a turning view, up to 237 points,
+twice under the bar and the triad: `group_place` now keeps the way it went last frame while that place stays
+clear (sliding along the viewport's edge rather than hopping), tries round the compass after its four ways,
+keeps `GAP` of air from the controls, and where no place is clear takes the one that covers them least; its
+plate has a hairline of the handle's light colour, so its edge shows on a dark body.
+
 ### Per-sample stages on Vulkan (2026-11-16)
 
 *Found.* The window of 0.1.1 and 0.1.2 died within seconds of its start on a Windows 11 laptop with a Core

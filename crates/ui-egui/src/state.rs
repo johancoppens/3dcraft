@@ -900,8 +900,12 @@ impl SectionState {
             self.point = None;
         }
         let (named, given) = (self.plane.is_some(), self.normal.is_some());
+        let base = self
+            .plane
+            .as_deref()
+            .is_some_and(|p| ["xy", "yz", "zx"].contains(&p.trim()));
         self.made = self.made.filter(|made| match made {
-            SectionMade::Face => named,
+            SectionMade::Face => named && !base,
             SectionMade::Mid | SectionMade::Bisector => !named && given,
         });
         Ok(self)
@@ -1739,7 +1743,20 @@ impl UiState {
             next.camera.auto_fit = false;
         }
         next.side_panel.bounded();
-        *self = next.validated()?;
+        let next = next.validated()?;
+        // How the plane was made, given with a plane it does not fit: said,
+        // not dropped behind the caller's back.
+        let made_given = patch
+            .get("section")
+            .and_then(|s| s.get("made"))
+            .is_some_and(|m| !m.is_null());
+        if made_given && next.section.made.is_none() {
+            return Err(
+                "`section.made` does not fit the plane: `face` goes with a face's `plane`, `mid` and `bisector` with `point` and `normal`"
+                    .to_string(),
+            );
+        }
+        *self = next;
         Ok(())
     }
 }
