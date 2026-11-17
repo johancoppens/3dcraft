@@ -188,6 +188,7 @@ pub(crate) fn build(
     };
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
+    let clock = craft3d_math::clock::clock("regen.1 combine");
     let made = combine(
         a,
         b,
@@ -196,6 +197,8 @@ pub(crate) fn build(
         doc.tolerance.loosest_linear(),
         [target.names.as_deref(), tool.names.as_deref()],
     )?;
+    drop(clock);
+    let clock = craft3d_math::clock::clock("regen.2 names");
     let operand = |operand: u64| {
         let names = if operand == 0 {
             &target.names
@@ -215,6 +218,8 @@ pub(crate) fn build(
             operand,
         )?;
     }
+    drop(clock);
+    let _clock = craft3d_math::clock::clock("regen.3 not through itself");
     not_through_itself(&made, names.as_ref(), tolerance.linear, &[])?;
     Ok((made.body, names))
 }

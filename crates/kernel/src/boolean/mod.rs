@@ -614,6 +614,7 @@ fn run(
         (BodyKind::Solid, BodyKind::Sheet) => Mode::Cut,
     };
     let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
+    let clock = craft3d_math::clock::clock("boolean.1 prepare");
     let a = section::prepare(
         a,
         Operand::A,
@@ -628,7 +629,11 @@ fn run(
         tolerance,
         options.trust_operands,
     )?;
+    drop(clock);
+    let clock = craft3d_math::clock::clock("boolean.2 section");
     let sections = section::section(&a, &b, &mut vertices, tolerance)?;
+    drop(clock);
+    let clock = craft3d_math::clock::clock("boolean.3 split and arcs");
 
     let mut arcs = Arcs::default();
     let pieces_a = split_edges(&a, &sections.splits_a, &vertices, &mut arcs, tol)?;
@@ -695,6 +700,8 @@ fn run(
         }
     }
 
+    drop(clock);
+    let clock = craft3d_math::clock::clock("boolean.4 classify and select");
     let mut kept = Vec::new();
     let table = match mode {
         Mode::Solids => classify::solids,
@@ -789,6 +796,8 @@ fn run(
             operation: OPERATION,
         }));
     }
+    drop(clock);
+    let clock = craft3d_math::clock::clock("boolean.5 sew merge finish");
     let mut work = sew::sew(kept, &arcs, &vertices)?;
     if options.merge {
         merge::merge(&mut work, &sections.coincident_a, a.body, b.body, tol)?;
@@ -802,7 +811,11 @@ fn run(
     if mode == Mode::Sheets && op == BooleanOp::Union {
         two_sheets::closed_union(&mut result.body)?;
     }
+    drop(clock);
+    let clock = craft3d_math::clock::clock("boolean.6 pieces of splines");
     pieces_of_splines(&mut result.body);
+    drop(clock);
+    let clock = craft3d_math::clock::clock("boolean.7 topo check");
     let mut defects = checked(&result.body, tolerance);
     if !defects.is_empty() {
         defects.truncate(MAX_REPORTED);
@@ -815,6 +828,8 @@ fn run(
     // (verify.rs; the volumes and the classified points are left to the
     // tests and to `document.check`, or asked for with
     // CRAFT3D_BOOLEAN_CHECK=full): a result that breaks it is refused.
+    drop(clock);
+    let clock = craft3d_math::clock::clock("boolean.8 verify");
     let verified = verify::verify(
         a.body,
         b.body,
@@ -831,6 +846,8 @@ fn run(
             count: verified.violations.len(),
         }));
     }
+    drop(clock);
+    let _clock = craft3d_math::clock::clock("boolean.9 zero thickness");
     if options.refuse_zero_thickness {
         // Where the operands meet: the vertices both are at, those the
         // section made, the points where faces only touch, and a point

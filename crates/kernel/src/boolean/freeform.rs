@@ -2770,7 +2770,14 @@ impl PatchTree {
     pub fn new(surface: &Surface) -> Result<PatchTree, Reason> {
         // What building it took, kept with it, charged once per operation
         // that asks for it, built then or found on the shelf.
+        let clock = craft3d_math::clock::clock("tree.build");
         let (made, units, asked) = craft3d_geom::allowance::costs_of(|| PatchTree::built(surface));
+        drop(clock);
+        if let Ok(tree) = &made {
+            craft3d_math::clock::count("tree.build spans", tree.roots.len() as u64);
+            craft3d_math::clock::count("tree.build nodes", tree.nodes.len() as u64);
+            craft3d_math::clock::count("tree.build MB", (tree.base_bytes >> 20) as u64);
+        }
         made.map(|mut tree| {
             tree.units = units;
             tree.asked = asked;
@@ -2812,7 +2819,8 @@ impl PatchTree {
         while depth > 0 && spans.len().saturating_mul(1 << (2 * depth)) > MAX_LEAVES {
             depth -= 1;
         }
-        if spans.len() > MAX_LEAVES {
+        // MEASUREMENT ONLY (boolean-spans): the cap lifted to the grid's.
+        if spans.len() > 1 << 18 {
             return Err(TOO_MANY);
         }
         let found = poles(surface);
@@ -2985,6 +2993,7 @@ impl PatchTree {
     /// surface moves, at least, per unit that its chart moves; `None`
     /// when a piece has no bound.
     fn least_sigma(&self) -> Option<f64> {
+        craft3d_math::clock::count("tree.least_sigma roots", self.roots.len() as u64);
         let sigma = self
             .roots
             .iter()
@@ -3083,6 +3092,8 @@ impl PatchTree {
 
     /// [`Self::sigma_near`]: the search.
     fn sigma_search(&self, p: Vec3, reach: f64) -> Option<f64> {
+        let _clock = craft3d_math::clock::clock("tree.sigma_search");
+        craft3d_math::clock::count("tree.sigma_search roots", self.roots.len() as u64);
         let mut least = f64::INFINITY;
         let mut stack: Vec<usize> = self.roots.clone();
         let mut visited = 0_usize;
@@ -3736,6 +3747,7 @@ impl PatchTree {
 
     /// The size of the surface: the diagonal of the box around it.
     pub fn size(&self) -> f64 {
+        craft3d_math::clock::count("tree.size roots", self.roots.len() as u64);
         let mut all = Bbox3::EMPTY;
         for node in self.roots.iter().filter_map(|&r| self.nodes.get(r)) {
             if let Some((lo, hi)) = node.bbox.corners() {
@@ -3835,6 +3847,8 @@ impl PatchTree {
             threshold
         };
         let mut best = threshold;
+        let _clock = craft3d_math::clock::clock("tree.bound_by");
+        craft3d_math::clock::count("tree.bound_by roots", self.roots.len() as u64);
         let mut heap = BinaryHeap::new();
         for &root in &self.roots {
             if let Some(node) = self.nodes.get(root) {
@@ -4112,6 +4126,8 @@ impl PatchTree {
         if !p.is_finite() {
             return None;
         }
+        let _clock = craft3d_math::clock::clock("tree.search (nearest)");
+        craft3d_math::clock::count("tree.search roots", self.roots.len() as u64);
         let mut heap = BinaryHeap::new();
         for &root in &self.roots {
             if let Some(node) = self.nodes.get(root) {
