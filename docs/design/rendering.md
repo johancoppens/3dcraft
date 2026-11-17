@@ -1669,7 +1669,6 @@ or hidden differently by the two (the tile is inside the viewport, not at its bo
 view's edge is unlikely), an edge of the bodies at a grazing angle there, or a real difference in how the direct
 path inks the edges; it was not looked into.
 
-
 ### Per-sample stages on Vulkan (2026-11-16)
 
 *Found.* The window of 0.1.1 and 0.1.2 died within seconds of its start on a Windows 11 laptop with a Core
@@ -1964,3 +1963,22 @@ after the look was switched on, right after the last pipeline, with no resize by
 - The window test is skipped where there is no compositor (the build server), and its injected fault is a buffer
   validation error raised inside the resize, not a configure that failed: the path from the error to the look and
   the surface is the same, the error is not.
+
+### Lines on an exact surface: the lift (2026-11-17)
+
+The grid of a grid surface is the first overlay whose lines lie on a curved face without being edges of its
+mesh: the sheet's iso-curves through its points ([`surfacing.md`](surfacing.md) › *Seeing the grid*). A body's
+edge is a border of the mesh, and a sketch lies on its plane, which a face on that plane is meshed on exactly;
+both are tested against the depth buffer with a slack of `1e-6` of the camera's distance (`DEPTH_SLACK`). A line
+on the exact surface is up to the chordal tolerance `t` behind the mesh where the surface is hollow toward the
+eye, so with that slack a grid was dimmed in patches over every valley. Its lines and points are therefore
+tested `4 t` nearer than they are (`craft3d_engine::SURFACE_LIFT`, `SceneSketch::lift`): by the CPU overlay
+(`viewport::stretches`, the points' test) and by the GPU, whose segments carry it (`craft3d_gpu::Segment::lift`,
+a tenth vertex attribute, 72 bytes a segment, `lines.wgsl` testing `depth − lift` in `fs_main` and `fs_ink`).
+Every other line has lift 0 and is drawn as before, bit for bit. Pinned by `crates/gpu/tests/onscreen.rs`
+(a line half a unit inside a face dimmed, lifted by a unit whole, on every adapter), `crates/ui-egui/tests/
+grid_shown.rs` (a hollow sheet's grid: points dimmed without the lift, none with it) and `gpu_viewport.rs` ›
+`the_direct_path_draws_a_grid_on_its_sheet_and_matches_the_oracle` (a terrain's grid and a sketch line through
+it, opaque and see-through: 1341 line samples, all agreeing, on the laptop's Intel MTL with 4 samples). Not
+covered: a body meshed coarser than the scene's tolerance (`Scene::coarsened`), and a view more than 60° from the
+surface's normal, where a grid may still be dimmed in places.

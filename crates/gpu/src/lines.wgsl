@@ -90,6 +90,8 @@ struct VertexIn {
     @location(6) outline_width: f32,
     @location(7) low: vec3<f32>,
     @location(8) high: vec3<f32>,
+    // How much nearer than it is the segment is tested (`Segment::lift`).
+    @location(9) lift: f32,
 }
 
 struct VertexOut {
@@ -106,6 +108,7 @@ struct VertexOut {
     @location(8) @interpolate(flat) outline_half: f32,
     // What the edge keeps of its ink for being short on screen.
     @location(9) @interpolate(flat) long: f32,
+    @location(10) @interpolate(flat) lift: f32,
 }
 
 // Camera coordinates: right, up, and the distance along the view.
@@ -239,6 +242,7 @@ fn quad(in: VertexIn, ink: bool) -> VertexOut {
     out.outline_color = unpack(in.outline_color);
     out.outline_half = outline_half;
     out.long = 1.0;
+    out.lift = in.lift;
     if (in.flags & EXTENT) != 0u {
         out.long = smooth_step(lines.fade.x, lines.fade.y, extent(in.low, in.high));
     }
@@ -417,7 +421,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // The point of the segment nearest to the pixel's centre, at its
         // own depth: on the line itself, as the CPU tests its pieces, so
         // that a line on a sloping face is not tested beside itself.
-        if surface_hides(f.at, depth) {
+        if surface_hides(f.at, depth - in.lift) {
             if (in.flags & DIMMED) == 0u {
                 discard;
             }
@@ -456,7 +460,7 @@ fn fs_ink(in: VertexOut) -> @location(0) vec4<f32> {
     if alpha <= 0.0 {
         discard;
     }
-    if (in.flags & TESTED) != 0u && surface_hides(f.at, depth_between(in.ends, f.t)) {
+    if (in.flags & TESTED) != 0u && surface_hides(f.at, depth_between(in.ends, f.t) - in.lift) {
         discard;
     }
     return vec4<f32>(alpha, 0.0, 0.0, 0.0);

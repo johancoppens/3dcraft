@@ -250,6 +250,17 @@ block cut by it keeps the part below: a solid of 12 450 mm³.
 - **What it reports**: under `grid`, the rows and columns, how far the sheet passes from its points
   (`deviation`, rounding), and `warnings`: a table whose heights rise more than a thousand times the step
   (a `factor` left out), a sheet larger than a boolean takes.
+- **Seeing the grid**: the grid a sheet was made through is drawn with the sketches: its rows and its
+  columns as thin lines in the light tint of construction lines, and its points as a sketch's points
+  (in the selected colour while the feature is selected). The lines are the sheet's own curves through the points, so
+  they lie on the sheet and on a block cut by it, and the grid stays drawn after a later feature took the
+  sheet. The Sketches toggle over the view shows and hides it with the sketches (`ui.set {"show":
+  {"sketches": false}}`); the eye on the feature's row (`feature.visible`) hides one grid, with its
+  sheet when that is still a body of its own. A side of more than 65 points is drawn every k-th line, the
+  first and the last always, the smallest k that keeps 65 lines (a 400 × 300 grid every 7th column and
+  every 5th row), and dots only where drawn lines cross; `ui.get` says so under `scene.grids` (`every`,
+  `thinned`). A picture without a window shows it with `view.render {"sketches": true}`, which says the
+  same under `grids`.
 - **Names**: the face is `F1:face(0)`, its edges `edge(0)` to `edge(3)` along the first row, the last row, the
   first column and the last column, its corners `vertex(0)` to `vertex(3)` at the first row's first and last
   point and the last row's. Moving the points renames nothing.
@@ -258,8 +269,9 @@ block cut by it keeps the part below: a solid of 12 450 mm³.
   refusal says whether a row runs back there or the proof could not decide), and a grid so far from the origin
   that no model there holds the tolerance (from 1.126e9 mm at the default tolerance of 1e-6 mm; from about
   6.5e7 mm on it is built and warned of: work nearer the origin, or in metres).
-- **How large**: a table holds at most 63 heights a row (64 columns with its key) and 10 000 rows; give a
-  wider grid's points outright (at most 262 144 points, 1 024 a side). A solid under the sheet is made by a
+- **How large**: a table holds 1 024 heights a row (1 025 columns with its key) and 10 000 rows, and all
+  the tables of a document a million cells; a grid has at most 262 144 points, 1 024 a side, as a table or
+  given outright. The relief of Mont Ventoux every 87.5 m, 145 heights a row and 113 rows, is one table. A solid under the sheet is made by a
   boolean, which takes a sheet of at most 32 768 spans: a grid of 184 × 184 points (the result warns past
   it). `feature.plate` gives a small sheet a thickness; on a large one (150 × 120 points) plate, thicken and
   shell are refused. `feature.extrude` with `upTo` does not take a sheet's face.

@@ -895,6 +895,9 @@ fn coincident_chords(body: &Body, points: &[Vec<Vec3>]) -> Vec<Chord> {
 /// How often faces are done again to part them where they share a rung.
 const RUNG_ROUNDS: usize = 3;
 
+/// A rung: the two points of a face's boundary a side of its mesh joins.
+type Rung = (Vec3, Vec3);
+
 /// The rungs two faces share: per pair, the segment and the two faces,
 /// the lower first; in the order of the segments' keys.
 fn shared_rungs(results: &[Option<FaceResult>]) -> Vec<((Vec3, Vec3), usize, usize)> {
@@ -929,10 +932,11 @@ fn shared_rungs(results: &[Option<FaceResult>]) -> Vec<((Vec3, Vec3), usize, usi
 /// One of the two faces gets a point of its own surface in the middle of
 /// the rung (the curved one; of two curved ones the lower in face order),
 /// which takes its mesh off the chord by less than the tolerance, and is
-/// done again. A few rounds, each a function of the body, the parameters
-/// and the round before; a rung still shared after them is an error at
-/// the face. (A triangle budget is not looked at again here: the points
-/// added are a handful.)
+/// done again; where it cannot be meshed so, the other one gets the point
+/// instead (when curved) and the first keeps its mesh. A few rounds, each
+/// a function of the body, the parameters and the round before; a rung
+/// still shared after them is an error at the face. (A triangle budget is
+/// not looked at again here: the points added are a handful.)
 fn part_shared_rungs(
     body: &Body,
     params: &TessParams,
@@ -970,23 +974,28 @@ fn part_shared_rungs(
             });
         }
         let mut again: Vec<usize> = Vec::new();
+        // Per rung: the face that takes it, and the other one.
+        let mut taken: Vec<((Vec3, Vec3), usize, usize)> = Vec::new();
         for (rung, first, second) in shared {
-            let face = if curved(first) || !curved(second) {
-                first
+            let (face, other) = if curved(first) || !curved(second) {
+                (first, second)
             } else {
-                second
+                (second, first)
             };
             if let Some(list) = splits.get_mut(face) {
                 list.push(rung);
                 again.push(face);
+                taken.push((rung, face, other));
             }
         }
         again.sort_unstable();
         again.dedup();
-        for index in again {
-            let (Some(face), Some(list)) = (body.faces.get(index), splits.get(index)) else {
-                continue;
-            };
+        let before: Vec<(usize, Option<FaceResult>)> = again
+            .iter()
+            .map(|&index| (index, results.get(index).cloned().flatten()))
+            .collect();
+        let remesh = |index: usize, list: &[(Vec3, Vec3)]| -> Option<FaceResult> {
+            let face = body.faces.get(index)?;
             let mut starved = false;
             let placed = borders.get(index).copied().unwrap_or(false);
             let made = face_boundary(body, points, face, index, params, &mut starved, placed)
@@ -1003,11 +1012,73 @@ fn part_shared_rungs(
                     closes_along_edges(body, points, face, index, &made.border)?;
                     Ok(made)
                 });
+            Some(made.map(|mut made| {
+                made.border = Vec::new();
+                made
+            }))
+        };
+        for &index in &again {
+            let Some(list) = splits.get(index) else {
+                continue;
+            };
+            let made = remesh(index, list);
+            if let (Some(slot), Some(made)) = (results.get_mut(index), made) {
+                *slot = Some(made);
+            }
+        }
+        // A face that cannot be meshed with its rungs parted (next to a
+        // pole of a thin tip, the point in the middle of the rung stands
+        // where triangles cannot follow the chords of the edges round it
+        // at a coarse tolerance): its rungs are parted in the other face
+        // of each instead, where that one is curved, and it keeps the mesh
+        // it had. Only where the first way fails, so a body that was meshed
+        // is as it was, bit for bit.
+        for (index, kept) in before {
+            if !matches!(results.get(index), Some(Some(Err(_)))) {
+                continue;
+            }
+            let moved: Vec<((Vec3, Vec3), usize)> = taken
+                .iter()
+                .filter(|(_, face, other)| *face == index && curved(*other))
+                .map(|(rung, _, other)| (*rung, *other))
+                .collect();
+            if moved.is_empty() {
+                continue;
+            }
+            // Per other face: its rungs to part, and its mesh with them.
+            let mut tried: Vec<(usize, Vec<Rung>, Option<FaceResult>)> = Vec::new();
+            let mut others: Vec<usize> = moved.iter().map(|(_, other)| *other).collect();
+            others.sort_unstable();
+            others.dedup();
+            let mut all_made = true;
+            for other in others {
+                let mut list = splits.get(other).cloned().unwrap_or_default();
+                list.extend(
+                    moved
+                        .iter()
+                        .filter(|(_, o)| *o == other)
+                        .map(|(rung, _)| *rung),
+                );
+                let made = remesh(other, &list);
+                all_made &= matches!(made, Some(Ok(_)));
+                tried.push((other, list, made));
+            }
+            if !all_made {
+                continue;
+            }
+            for (other, list, made) in tried {
+                if let Some(slot) = splits.get_mut(other) {
+                    *slot = list;
+                }
+                if let Some(slot) = results.get_mut(other) {
+                    *slot = made;
+                }
+            }
+            if let Some(list) = splits.get_mut(index) {
+                list.retain(|rung| !moved.iter().any(|(m, _)| m == rung));
+            }
             if let Some(slot) = results.get_mut(index) {
-                *slot = Some(made.map(|mut made| {
-                    made.border = Vec::new();
-                    made
-                }));
+                *slot = kept;
             }
         }
     }

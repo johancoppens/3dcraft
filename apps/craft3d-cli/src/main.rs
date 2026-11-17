@@ -145,7 +145,7 @@ Usage: craft3d-cli render FILE --out PNG [--size WxH] [--view V] [--mode M]
                           [--bloom B] [--fstop N] [--focus D|X,Y,Z|centre]
                           [--accumulate N]
                           [--backdrop environment|plain]
-                          [--renderer auto|cpu|gpu]
+                          [--renderer auto|cpu|gpu] [--sketches on|off]
 
 Renders the bodies of a .3dcraft file to a PNG without a window and prints
 what it drew as one line of JSON (its renderer says which drew it). The
@@ -192,7 +192,10 @@ Options:
                   behind the model, which the environment still lights
   --renderer R    auto (the default): the GPU when this machine has an
                   adapter, else the CPU; gpu: the GPU or an error; cpu: the
-                  CPU renderer, the reference the GPU is checked against";
+                  CPU renderer, the reference the GPU is checked against
+  --sketches on|off  Draw the sketches' lines and points over the picture,
+                  as the window's Sketches toggle shows them, the grid a
+                  grid surface was made through among them. Default off";
 
 const HELP_CONVERT: &str = "\
 Usage: craft3d-cli convert IN OUT [--quality Q] [--tolerance T] [--angle A]

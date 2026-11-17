@@ -27,8 +27,8 @@
 
 use crate::meshes::{BodyFacts, EdgePolylines};
 use crate::scene::{
-    FeatureState, Scene, SceneBody, SceneDatum, SceneDatumShape, SceneFeature, ScenePolyline,
-    SceneSketch, SketchCurve,
+    FeatureState, Scene, SceneBody, SceneDatum, SceneDatumShape, SceneFeature, SceneGrid,
+    ScenePolyline, SceneSketch, SketchCurve,
 };
 use craft3d_doc::Document;
 use craft3d_math::{Bbox3, Vec3};
@@ -40,7 +40,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// What the bytes of a scene start with, with the form's version.
-const MAGIC: &[u8; 8] = b"C3DSCN\x00\x05";
+const MAGIC: &[u8; 8] = b"C3DSCN\x00\x06";
 
 /// The scene's bytes. The revision is the page's own and is left out.
 pub(crate) fn encode(scene: &Scene) -> Vec<u8> {
@@ -105,6 +105,15 @@ pub(crate) fn encode(scene: &Scene) -> Vec<u8> {
             w.points(&line.points);
         }
         w.points(&sketch.points);
+        match sketch.grid {
+            None => w.bool(false),
+            Some(grid) => {
+                w.bool(true);
+                for n in [grid.rows, grid.columns, grid.row_step, grid.column_step] {
+                    w.len(n);
+                }
+            }
+        }
     }
     w.len(scene.datums.len());
     for datum in &scene.datums {
@@ -256,6 +265,30 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
                 points: r.points()?,
             });
         }
+        let points = r.points()?;
+        let grid = if r.bool()? {
+            let mut n = [0_usize; 4];
+            for k in &mut n {
+                *k = usize::try_from(r.u32()?).map_err(|_| SHORT)?;
+            }
+            let [rows, columns, row_step, column_step] = n;
+            let side = 2..=craft3d_doc::MAX_GRID_SIDE;
+            if !(side.contains(&rows)
+                && side.contains(&columns)
+                && (1..rows).contains(&row_step)
+                && (1..columns).contains(&column_step))
+            {
+                return Err("a grid of the scene is of no size a grid has".into());
+            }
+            Some(SceneGrid {
+                rows,
+                columns,
+                row_step,
+                column_step,
+            })
+        } else {
+            None
+        };
         sketches.push(SceneSketch {
             feature,
             name,
@@ -264,7 +297,8 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
             y_axis,
             normal,
             polylines,
-            points: r.points()?,
+            points,
+            grid,
         });
     }
     let count = r.count(DATUM)?;
@@ -377,8 +411,9 @@ const FACE_COLOR: usize = 4 + 3 + 1 + 1;
 /// A face's layers: the face, nine `f32`, the tangent field's kind and
 /// axis, two flags, the scattering colour's flag and the solid texture's.
 const OPTICS: usize = 4 + 9 * 4 + 1 + 12 + 1 + 1 + 1;
-/// A sketch: two texts, four vectors and two counts.
-const SKETCH: usize = 4 + 4 + 4 * 24 + 4 + 4;
+/// A sketch: two texts, four vectors, two counts and whether it is a
+/// grid.
+const SKETCH: usize = 4 + 4 + 4 * 24 + 4 + 4 + 1;
 /// A sketch's polyline: a text, its kind, construction and its points.
 const POLYLINE: usize = 4 + 1 + 1 + 4;
 /// A datum: two texts, its shape and at least one vector.
@@ -965,6 +1000,44 @@ mod tests {
         // The layers cross too: the glass sphere's and the brushed block's.
         assert!(back.face_colors.has_transmission());
         assert!(back.face_colors.optics_table().len() >= 2);
+    }
+
+    /// The grid of a grid surface crosses with its size and its steps; a
+    /// grid of no size a grid has does not read.
+    #[test]
+    fn a_grid_reads_back_and_a_grid_of_no_size_is_refused() {
+        let mut s = Session::new(Workspace::none());
+        s.execute("file.new", &json!({"units": "mm"})).unwrap();
+        let points = json!([
+            [[0, 0, 0], [5, 0, 1], [10, 0, 0]],
+            [[0, 5, 1], [5, 5, 2], [10, 5, 1]],
+            [[0, 10, 0], [5, 10, 1], [10, 10, 0]]
+        ]);
+        s.execute(
+            "feature.surface.grid",
+            &json!({"points": points, "name": "G"}),
+        )
+        .unwrap();
+        let scene = s.scene_with(SceneQuality::display()).unwrap().unwrap();
+        let grid = scene.sketches.iter().find_map(|k| k.grid).unwrap();
+        assert_eq!((grid.rows, grid.columns), (3, 3));
+        let bytes = encode(&scene);
+        let doc = Arc::clone(s.document_mut().unwrap().history.current());
+        let back = decode(&bytes, &doc, scene.revision).unwrap();
+        assert_eq!(back, *scene);
+        assert_eq!(encode(&back), bytes);
+        // Its steps (the last four counts of the sketch, before the
+        // datums' count) made 0: no grid has that.
+        let at = bytes.len()
+            - bytes
+                .windows(16)
+                .rev()
+                .position(|w| w == [3, 0, 0, 0, 3, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0])
+                .unwrap()
+            - 16;
+        let mut broken = bytes.clone();
+        broken[at + 8] = 0;
+        assert!(decode(&broken, &doc, scene.revision).is_err());
     }
 
     #[test]
