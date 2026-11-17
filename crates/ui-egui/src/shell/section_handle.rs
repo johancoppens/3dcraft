@@ -43,8 +43,22 @@ use egui::{Pos2, Rect, Vec2, pos2, vec2};
 
 /// The name of the handle's number in [`Shell::typing`].
 pub const NUMBER_FIELD: &str = "section-number";
-/// Most places `ui.get` lists under `section.snaps`.
+/// Most places `ui.get` lists under `section.snaps`: those nearest the
+/// plane where it is ([`nearest_snaps`]).
 pub const REPORTED_SNAPS: usize = 64;
+
+/// The [`REPORTED_SNAPS`] places of `snaps` (sorted by offset) nearest
+/// `offset`, in their order.
+pub fn nearest_snaps(snaps: &[SectionSnap], offset: f64) -> &[SectionSnap] {
+    if snaps.len() <= REPORTED_SNAPS {
+        return snaps;
+    }
+    let at = snaps.partition_point(|snap| snap.offset < offset);
+    let first = at
+        .saturating_sub(REPORTED_SNAPS / 2)
+        .min(snaps.len() - REPORTED_SNAPS);
+    snaps.get(first..first + REPORTED_SNAPS).unwrap_or(snaps)
+}
 /// How far the outline reaches past the model's box, as a share of the
 /// box's larger side in the plane.
 const OUTLINE_MARGIN: f64 = 0.04;
@@ -58,6 +72,10 @@ const DOT_GAP: f32 = 4.0;
 const EDGE: f32 = 6.0;
 /// How the number is padded on its plate, in points.
 const PAD: Vec2 = vec2(7.0, 3.0);
+/// How much wider than the accent's strokes the dark hairline under the
+/// arrow and the ring is, in points: so the accent reads on the cap's
+/// orange and on a body.
+const HALO: f32 = 2.5;
 
 /// A part of the handle a pointer can be on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -392,9 +410,12 @@ pub fn plane_frame(
 }
 
 /// Where the number (`size`, its plate) and the dots go beside `frame`
-/// in the `viewport`: past the arrow's tip, on the side it points to
-/// (beside the ring seen end on), the dots in a row right of the number;
-/// within the viewport.
+/// in the `viewport`: at the edge of the plane's outline, on the side
+/// with room, at the height of the arrow's foot (or above or below it,
+/// over the foot), so that it never sits over the cut; where the outline
+/// leaves no room in the viewport, past
+/// the arrow's tip (beside the ring seen end on), clear of its head. The
+/// dots in a row right of the number; within the viewport.
 pub fn label_place(
     frame: &PlaneFrame,
     viewport: Rect,
@@ -405,31 +426,48 @@ pub fn label_place(
     let n = count as f32;
     let dots_width = 2.0 * n * dot_radius + (n - 1.0).max(0.0) * DOT_GAP;
     let group = vec2(size.x + GAP + dots_width, size.y.max(2.0 * dot_radius));
-    let (anchor, align) = match frame.arrow {
+    let room = viewport.shrink(EDGE);
+    // The outline on the screen, as far as it is in the viewport.
+    let outline = frame
+        .outline
+        .iter()
+        .flatten()
+        .fold(Rect::NOTHING, |r, p| r.union(Rect::from_min_max(*p, *p)))
+        .intersect(room);
+    let y = frame
+        .at
+        .y
+        .clamp(outline.top(), outline.bottom().max(outline.top()));
+    let right = Rect::from_min_size(pos2(outline.right() + GAP, y - group.y * 0.5), group);
+    let left = Rect::from_min_size(
+        pos2(outline.left() - GAP - group.x, y - group.y * 0.5),
+        group,
+    );
+    // Above or below it where neither side has room (a wide outline).
+    let x = frame.at.x - group.x * 0.5;
+    let above = Rect::from_min_size(pos2(x, outline.top() - GAP - group.y), group);
+    let below = Rect::from_min_size(pos2(x, outline.bottom() + GAP), group);
+    let beside = [right, left, above, below].into_iter().find(|r| {
+        outline.width() >= 0.0
+            && outline.height() >= 0.0
+            && room.contains_rect(*r)
+            && frame
+                .arrow
+                .is_none_or(|[a, b]| distance_to_segment(r.center(), a, b) > r.width() * 0.5)
+    });
+    let mut place = beside.unwrap_or_else(|| match frame.arrow {
+        // Past the tip, as far again as the group reaches along the
+        // arrow, so the head never touches it.
         Some([a, b]) => {
             let way = (b - a).normalized();
-            let anchor = b + way * GAP;
-            let align = if way.x.abs() >= way.y.abs() {
-                if way.x >= 0.0 {
-                    egui::Align2::LEFT_CENTER
-                } else {
-                    egui::Align2::RIGHT_CENTER
-                }
-            } else if way.y >= 0.0 {
-                egui::Align2::CENTER_TOP
-            } else {
-                egui::Align2::CENTER_BOTTOM
-            };
-            (anchor, align)
+            let reach = way.x.abs() * group.x * 0.5 + way.y.abs() * group.y * 0.5;
+            Rect::from_center_size(b + way * (GAP + reach), group)
         }
-        None => (
-            frame.at + vec2(dot_radius + GAP, 0.0),
-            egui::Align2::LEFT_CENTER,
-        ),
-    };
-    let mut place = align.anchor_size(anchor, group);
+        None => {
+            egui::Align2::LEFT_CENTER.anchor_size(frame.at + vec2(dot_radius + GAP, 0.0), group)
+        }
+    });
     // Within the viewport, where it fits.
-    let room = viewport.shrink(EDGE);
     let shift = vec2(
         (room.left() - place.left()).max(0.0) - (place.right() - room.right()).max(0.0),
         (room.top() - place.top()).max(0.0) - (place.bottom() - room.bottom()).max(0.0),
@@ -450,10 +488,57 @@ pub fn label_place(
     (number, dots)
 }
 
+/// How the outline is drawn: as one closed path when its sides join,
+/// as one segment between its farthest points when it is seen edge on
+/// (its sides lie over each other), else side by side.
+pub fn outline_paths(outline: &[[Pos2; 2]]) -> Vec<Vec<Pos2>> {
+    let joined = !outline.is_empty()
+        && outline.iter().enumerate().all(|(k, [_, end])| {
+            outline
+                .get((k + 1) % outline.len())
+                .is_some_and(|[next, _]| next.distance(*end) < 0.01)
+        });
+    if !joined {
+        return outline.iter().map(|side| side.to_vec()).collect();
+    }
+    let points: Vec<Pos2> = outline.iter().map(|[a, _]| *a).collect();
+    let n = points.len();
+    let (mut area, mut perimeter) = (0.0_f32, 0.0_f32);
+    for k in 0..n {
+        let (Some(a), Some(b)) = (points.get(k), points.get((k + 1) % n)) else {
+            continue;
+        };
+        area += a.x * b.y - b.x * a.y;
+        perimeter += a.distance(*b);
+    }
+    // Thinner than a point and a half: edge on.
+    if perimeter > 0.0 && area.abs() / perimeter < 1.5 {
+        let mut far = (0.0_f32, None);
+        for a in &points {
+            for b in &points {
+                let d = a.distance(*b);
+                if d > far.0 {
+                    far = (d, Some([*a, *b]));
+                }
+            }
+        }
+        return far.1.map(|[a, b]| vec![vec![a, b]]).unwrap_or_default();
+    }
+    let mut closed = points;
+    if let Some(&first) = closed.first() {
+        closed.push(first);
+    }
+    vec![closed]
+}
+
 /// The parameter `t` of the point of the line `origin + direction · t`
-/// nearest to the ray `start + way · s`: where a pointer's ray meets the
-/// line of the arrow. `None` where the ray runs (nearly) along the line,
-/// and for numbers that are not.
+/// nearest to the ray `start + way · s` (`s` positive: in front of where
+/// the ray starts, the eye or the eye plane): where a pointer's ray meets
+/// the line of the arrow. `None` where the ray runs (nearly) along the
+/// line, where the nearest place on the ray is behind its start (in a
+/// perspective view, a pointer past the point the line runs to on the
+/// screen: the line's nearest point is then behind the eye, and the
+/// plane would jump to the other end), and for numbers that are not.
 pub fn nearest_on_line(origin: Vec3, direction: Vec3, start: Vec3, way: Vec3) -> Option<f64> {
     let w = origin - start;
     let (a, b, c) = (direction.dot(direction), direction.dot(way), way.dot(way));
@@ -461,6 +546,10 @@ pub fn nearest_on_line(origin: Vec3, direction: Vec3, start: Vec3, way: Vec3) ->
     let denominator = a * c - b * b;
     // Less than about a tenth of a degree apart: no answer to trust.
     if !(denominator > 1e-6 * a * c && denominator.is_finite()) {
+        return None;
+    }
+    let s = (a * e - b * d) / denominator;
+    if !(s > 0.0) {
         return None;
     }
     let t = (b * e - c * d) / denominator;
@@ -529,7 +618,7 @@ pub fn snap_offset(
 }
 
 /// A drag of the arrow under way.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Drag {
     /// The line of the arrow when the drag began: its middle and the unit
     /// normal.
@@ -540,6 +629,15 @@ struct Drag {
     offset: f64,
     /// +1 when the normal is the plane's own (`along`), −1 flipped.
     sign: f64,
+    /// The section as the drag left it last (as it was when it began,
+    /// until it moves it), and the document it began in: a section that
+    /// is no longer that (an agent's `ui.set`, another tab shown) ends
+    /// the drag.
+    expected: crate::state::SectionState,
+    document: Option<u64>,
+    /// Ended so: the pointer's drag is held until it lets go, and moves
+    /// nothing (neither the plane nor the view).
+    spent: bool,
 }
 
 /// What the shell keeps of the handle between frames.
@@ -631,7 +729,11 @@ impl Shell {
 
     /// What the drag of the section's arrow under way snapped to last.
     pub fn section_snapped(&self) -> Option<Snapped> {
-        self.section_handle.drag.and(self.section_handle.snapped)
+        self.section_handle
+            .drag
+            .as_ref()
+            .filter(|drag| !drag.spent)
+            .and(self.section_handle.snapped)
     }
 
     /// Whether the handle is shown: the section on and resolved, the
@@ -677,17 +779,34 @@ impl Shell {
                     } else {
                         1.0
                     },
+                    expected: self.state.section.clone(),
+                    document: self.shown_status.as_ref().map(|s| s.id),
+                    spent: false,
                 });
                 self.section_handle.snapped = None;
             }
         }
-        let Some(drag) = self.section_handle.drag else {
+        let Some(mut drag) = self.section_handle.drag.clone() else {
             return false;
         };
-        if !response.dragged() || !self.handle_shown() {
+        if !response.dragged() {
             self.section_handle.drag = None;
             self.section_handle.snapped = None;
             return false;
+        }
+        // Another writer changed the section (an agent, another tab shown,
+        // the plane lost): the drag is over; held until let go, moving
+        // nothing.
+        let document = self.shown_status.as_ref().map(|s| s.id);
+        if drag.spent
+            || !self.handle_shown()
+            || self.state.section != drag.expected
+            || document != drag.document
+        {
+            drag.spent = true;
+            self.section_handle.drag = Some(drag);
+            self.section_handle.snapped = None;
+            return true;
         }
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         let Some(at) = response.interact_pointer_pos() else {
@@ -716,6 +835,8 @@ impl Shell {
         let mut section = self.state.section.clone();
         section.offset = offset;
         self.commit_section(ui, section);
+        drag.expected = self.state.section.clone();
+        self.section_handle.drag = Some(drag);
         true
     }
 
@@ -852,7 +973,7 @@ impl Shell {
             dot_radius,
             hit: tokens.section_hit,
         };
-        let dragging = self.section_handle.drag.is_some();
+        let dragging = self.section_handle.drag.as_ref().is_some_and(|d| !d.spent);
         let near = dragging
             || typing
             || pointer.is_some_and(|p| rect.contains(p) && place.near(p, tokens.section_near));
@@ -868,18 +989,17 @@ impl Shell {
             (f32::from(tokens.section_halo_opacity) * fade).round() as u8,
         );
         let painter = ui.painter_at(rect);
-        // The outline, dashed, over its hairline.
+        // The outline, dashed, in the accent alone: one path, one dash
+        // pattern, one line where it is seen edge on.
         let [dash, gap] = tokens.section_dash;
         let width = tokens.section_outline_width;
-        for (ink, w) in [(halo, width + 1.5), (accent, width)] {
-            for side in &place.frame.outline {
-                painter.extend(egui::Shape::dashed_line(
-                    side,
-                    egui::Stroke::new(w, ink),
-                    dash,
-                    gap,
-                ));
-            }
+        for path in outline_paths(&place.frame.outline) {
+            painter.extend(egui::Shape::dashed_line(
+                &path,
+                egui::Stroke::new(width, accent),
+                dash,
+                gap,
+            ));
         }
         // The arrow, or the ring seen end on.
         let w = tokens.section_arrow_width;
@@ -895,7 +1015,7 @@ impl Shell {
                     neck + across * (head * 0.5),
                     neck - across * (head * 0.5),
                 ];
-                for (ink, extra) in [(halo, 1.5), (accent, 0.0)] {
+                for (ink, extra) in [(halo, HALO), (accent, 0.0)] {
                     painter.line_segment([a, neck], egui::Stroke::new(w + extra, ink));
                     painter.circle_filled(a, w * 1.6 + extra * 0.5, ink);
                     painter.add(egui::Shape::convex_polygon(
@@ -914,7 +1034,7 @@ impl Shell {
             }
             None => {
                 let r = dot_radius * 0.8;
-                for (ink, extra) in [(halo, 1.5), (accent, 0.0)] {
+                for (ink, extra) in [(halo, HALO), (accent, 0.0)] {
                     painter.circle_stroke(at, r, egui::Stroke::new(w * 0.75 + extra, ink));
                 }
                 if place.frame.toward {
@@ -1117,6 +1237,17 @@ mod tests {
 
     #[test]
     fn the_nearest_point_of_the_arrows_line_to_a_ray() {
+        // Where the ray's nearest place to the line is behind its start
+        // (the eye): no answer, so a drag holds (review of 2026-11-17).
+        assert_eq!(
+            nearest_on_line(
+                Vec3::ZERO,
+                Vec3::X,
+                Vec3::new(3.0, 0.0, 10.0),
+                Vec3::new(0.0, 0.0, 1.0)
+            ),
+            None
+        );
         // A ray down the z axis through (3, 0, ·) meets the x axis at 3.
         let t = nearest_on_line(
             Vec3::ZERO,
@@ -1244,8 +1375,14 @@ mod tests {
             dot_radius: tokens.section_dot_radius,
             hit: tokens.section_hit,
         };
-        // The number past the tip, the dots right of it, all in view.
-        assert!(number.left() > b.x && viewport.contains_rect(number));
+        // The number at the outline's edge (here, seen edge on, a line
+        // through the arrow's foot), on the side the arrow leaves free:
+        // clear of the arrow, the dots right of it, all in view.
+        assert!(
+            number.right() < a.x && viewport.contains_rect(number),
+            "{number:?} {a:?}"
+        );
+        assert!(distance_to_segment(number.center(), a, b) > number.width() * 0.5);
         assert!(
             dots.iter()
                 .all(|d| d.x > number.right() && viewport.contains(*d))

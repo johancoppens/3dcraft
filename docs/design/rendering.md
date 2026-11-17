@@ -1729,7 +1729,34 @@ normal out of the body), the engine resolves it (`Session::section_plane`), both
 (`gpu_viewport`'s and `section.rs`'s oblique planes against the oracle), and the handle, the slabs and the
 places work for any normal (the places at a slant are tested). What "click a flat face while the section is on"
 needs is a gesture: a click on a face selects it, so the plane cannot take that click without a mode; a fourth
-dot ("∥ face", the plane through the selected flat face) would do it with what exists.
+dot ("∥ face", the plane through the selected flat face) would do it with what exists. Built so the same day: a
+fourth dot **∥** and a fourth cell after X | Y | Z, while one face is selected or the plane is a face's, lay the
+plane on the selected flat face (`plane` its name, offset 0, the arrow out of the body); the engine's own test of
+flatness refuses a face that is not (a hole's wall, whose normals cancel, now says "not flat" rather than "no
+area"), and the dot and the cell grey and say why on hover. `ui.get` › `section.direction` says `face`.
+
+*Review of 2026-11-17 and what changed* (`review-view-section`; its reproducers are in `section_handle.rs`).
+(1) In perspective the drag took the point of the arrow's line nearest to the pointer's ray also where that is
+behind the eye: past the point the line runs to on the screen the plane jumped from the far end to the near one
+(18.5 to 25 degrees between the normal and the line of sight). `nearest_on_line` now answers only where the
+ray's own parameter is positive, so the plane goes to the far end and holds there. (2) A `ui.set` of the
+section, or another tab shown, during a drag got the drag's value written over it; the drag now keeps the
+section it last wrote and the document it began in, and is over (the rest of the pointer's drag moves
+nothing, neither the plane nor the view) when either is not what it left. (3) The places were cut to the 1024
+lowest offsets (600 plates snapped up to 511 of 599): all are kept now up to 65536 (those nearest the plane past
+that), looked into by halving, and `ui.get` lists the 64 nearest the plane with `snapsTotal`. (4) Looks: across
+Z from the iso view (what the Section chip gives first) the arrow lay on the cap, accent on orange, and the plate
+over the cut's middle; the arrow and the ring now have a darker, wider hairline (`section_halo_opacity` 170,
+2.5 points wider) and rest a little less faint (`section_rest_opacity` 140), and the number and the dots stand at
+the edge of the plane's outline, at the height of the arrow's foot, on the side with room (past the arrow's tip,
+clear of its head, only where the outline leaves none in the viewport). The outline is where the plane passes
+through the model's box (a polygon of three to six corners; the box's cross-section across X, Y or Z, as before),
+so at a slant it rings the face it lies on rather than the box laid flat on it; it is drawn as one path in the
+accent alone, without the hairline, and seen edge on as one dashed line (its four sides overlapping in
+orthographic views showed grey on three sides). (5) `Slabs` answer only for a cut along their direction exactly
+(either way round); a direction a millionth of a radian off missed the outline for a cut whose point lay far
+beside the model, and now gets the outline of the whole mesh (`the_slabs_find_the_whole_outline_among_a_few_
+triangles`; the shell's planes, a face's included, give the same direction to both, bit for bit).
 
 ### Per-sample stages on Vulkan (2026-11-16)
 
