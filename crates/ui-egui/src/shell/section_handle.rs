@@ -549,7 +549,7 @@ pub fn nearest_on_line(origin: Vec3, direction: Vec3, start: Vec3, way: Vec3) ->
         return None;
     }
     let s = (a * e - b * d) / denominator;
-    if !(s > 0.0) {
+    if s.is_nan() || s <= 0.0 {
         return None;
     }
     let t = (b * e - c * d) / denominator;
