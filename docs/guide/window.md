@@ -410,6 +410,23 @@ The **display bar** at the bottom of the view:
 - **Section** cuts the view open with a plane across X, Y or Z, through the middle of the model at first.
   **Offset** moves it and **Flip side** keeps the other half.
 
+The section's plane also has a handle in the view: its dashed outline, an arrow pointing into the half that
+is cut away, the distance beside it and the dots **X**, **Y** and **Z**. It stays faint until the pointer
+comes near.
+
+![The flange cut open across X through two bolt holes: the plane's dashed outline, the arrow, X 30.00 mm and the dots X, Y, Z; the Offset slider on the bar says the same](images/section.png)
+
+| Do | To |
+|---|---|
+| Drag the arrow | Move the plane. It snaps lightly to flat faces, to the middle of holes and to round distances (a small tick says so); hold **Alt** to move it freely |
+| Double-click the arrow | Keep the other half |
+| Click the number | Type a distance, such as `12.5` or `width / 2`; Enter sets it, Escape leaves it |
+| Click **X**, **Y** or **Z** | Turn the plane across that axis, through the middle of the model |
+
+The handle and the bar move the same plane, so the slider follows the arrow and the other way round. Seen
+straight along the arrow (a section across Z from the top), it shows as a ring: use the slider or type the
+number.
+
 The pictures in this guide show a window 1400 points wide (the start screen's 960 high). In a smaller
 one, such as the 1280 × 800 that 3DCraft first opens with, Sketches, Datums and Edges show their icons
 without words, and the start screen scrolls to show its last panels. Narrower still, Fit, Iso, Studio,
@@ -442,6 +459,9 @@ The browser on a phone or a tablet, and any window narrower than about 800 point
 - The buttons get finger-sized as soon as you touch the screen, at any width. The drawer is for narrow
   windows only, so a tablet held upright at 820 points keeps the feature list beside the view.
 - Where the display bar has no room for the section's options, they get a row of their own just above it.
+  On a phone the section's handle is left out of the view, where a finger's drag turns the model; the
+  slider on that row moves the plane. Once you have touched the screen, the handle's arrow and dots are
+  finger-sized.
 - A model with a history or a motion gets a small player above the bar (play or pause, the steps or the
   slider, and where it is) while the drawer is shut; the drawer holds the whole player. On a phone or a
   tablet only the three buttons and where you are stay; the timeline's ends take you to the first step

@@ -188,7 +188,10 @@ pub use scene::{
     base64 as encode_base64, grid_step,
 };
 pub use scrub::{ScrubPosition, ScrubRegeneration, step_caption};
-pub use section::{MAX_SECTION_EXTENT, SECTION_CAP_COLOR, SectionPlane, SectionSpec};
+pub use section::{
+    MAX_SECTION_EXTENT, MAX_SECTION_SNAPS, SECTION_CAP_COLOR, SectionPlane, SectionSnap,
+    SectionSpec, SnapKind,
+};
 pub use selection::{
     MAX_SELECTION, SelectMode, SelectionItem, SelectionKind, SelectionView,
     summary as selection_summary,

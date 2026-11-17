@@ -12,7 +12,9 @@ pub use clip::{depth_bounds, depth_range};
 mod section;
 pub mod studio;
 
-pub use section::{Cut, SECTION_FACE, SECTION_MARGIN, SECTION_SNAP, Section, section_bounds};
+pub use section::{
+    Cut, SECTION_FACE, SECTION_MARGIN, SECTION_SNAP, Section, Slabs, section_bounds,
+};
 
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_tess::Mesh;

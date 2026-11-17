@@ -1669,6 +1669,68 @@ or hidden differently by the two (the tile is inside the viewport, not at its bo
 view's edge is unlikely), an edge of the bodies at a grazing angle there, or a real difference in how the direct
 path inks the edges; it was not looked into.
 
+### The section's handle in the view (2026-11-17)
+
+The developer's design of the morning (step A): the section plane is taken in the view itself, beside the
+display bar's Section, X | Y | Z, Offset and Flip side, which stay; both drive `state.section` and nothing
+else (`shell/section_handle.rs`). While the section is on the view shows the plane's outline (the model's box
+projected onto the plane, 4 % larger, thin and dashed), one arrow at its middle along the normal into the half
+that is cut away (`section_arrow_length`, 54 points, seen side on), the offset as a number with the axis's
+letter and the document's unit on a small plate past the arrow's tip, and three dots X, Y, Z beside it; all in
+the accent over a hairline of the plates' black, so they read on the light background, on a body and on the
+orange cap; faint (`section_rest_opacity`) until the pointer is within `section_near` of them. It is egui's
+painting over the picture, as the view cube is: neither renderer draws it, `ui.screenshot` (the oracle) does
+not show it, and a window without a section draws as before: fifteen whole-window pictures of five documents
+(iso, top, and the section switched on and off again; the CPU viewport, the window painted by egui's wgpu
+renderer) equal `main`'s byte for byte but for the status bar's milliseconds of the last picture, which differ
+from run to run.
+
+*Method.* The pointer is tested against the handle as the last frame drew it, before anything a press in the
+viewport does (orbit, a box, a part dragged, a selection): the number, then the nearest dot, then the arrow
+within `section_hit`; the plates over the viewport take it before the handle. A drag on the arrow keeps the
+line it lay on when the press came (its middle and the normal); every frame the pointer's ray is taken to the
+point of that line nearest to it (`nearest_on_line`, the closest points of two lines; no answer within a
+tenth of a degree of parallel), and the offset moves by as much, signed by `flip`, held to the range in which
+the plane passes through the model. So the arrow's foot stays under the pointer in either projection. Then it
+snaps lightly (`snap_offset`), within `section_snap_reach` (7 points) worth of model units along the arrow:
+first to the places the model gives (`craft3d_engine::SectionPlane::snaps`: the flat faces parallel to the
+plane, read off the scene's mesh in one pass as faces whose corners lie at one offset within 10⁻⁷ of the
+model's size, and the axes of circular edges lying parallel to it, a circle through three points of an edge's
+line that every point of it lies on; sorted, one per offset, at most 1024; `ui.get` › `section.snaps` lists the
+first 64), then to a round value of the range's size (`nice_step`, a twentieth of it, 1, 2 or 5 times a power
+of ten), else to a grid of about a point's worth, so the number stays clean; Alt: none of it. A short tick
+across the arrow's foot says it snapped. A double click on the arrow toggles `flip`; a click on the number types
+into it (the kit's typed field, `Kit::typed_field`, now shared with the slider's value; evaluated with the
+document's variables as the slider's is); a dot is the display bar's axis choice. Seen end on (the arrow shorter
+than 0.3 of its length) it is a ring with a dot (toward the viewer) or a cross, and does not drag: there the
+slider and the number move the plane. The narrow layout (a phone) leaves the handle out and keeps the slider,
+since a finger's drag in the middle of the model is the view's turn there; once a finger has touched the
+screen, `Tokens::touch` makes the arrow longer (72 points) and its reach and the dots' a finger's.
+
+*Cost of a drag.* The plane the handle moves is the same plane at another offset: the shell no longer resolves
+it again each time (`SectionPlane::at`), and keeps the mesh's box, the places and the slabs of the plane
+(`craft3d_render::Slabs`: the triangles sorted into slabs along the normal about as thick as nine in ten of them
+are long, the longer ones on a list of their own) while only the offset or the side changes. The outline of the
+cut, which was found over every triangle at each change of the offset, is found among the triangles of one or
+two slabs (`Cut::outline_in`: the same segments in the same order as `Cut::outline`, pinned by
+`crates/render/tests/section.rs` › `the_slabs_find_the_whole_outline_among_a_few_triangles`). The shell's work
+for a frame of a drag (`Shell::sync` after the offset moved; `crates/ui-egui/tests/section_handle.rs`, test
+profile, the laptop): the turbofan of the benchmark at the display quality, 130 820 triangles, 6.0 ms before,
+0.15 ms after; the wall of 400 drilled cubes, 54 400 triangles, 3.6 ms before, 0.06 ms after. Another plane
+(an axis chosen) costs once 18.7 ms on the turbofan (its places 7.5 ms, its slabs 8.2 ms, the box 2.0 ms). What
+a frame of a drag costs besides, as for the slider before: the direct path's lines are made again for the moved
+cut (1.2 ms on the turbofan: every edge clipped, `direct::segments_marked`) and uploaded, and the GPU draws the
+frame in full (16 to 18 ms for 665 104 triangles, *The viewport*); on the CPU renderer the quick picture while
+the plane moves (22 ms for the wall in the test profile).
+
+*A plane in any direction* (step E of the design, found out, not built): the state already takes one
+(`section.point` and `section.normal`, or `section.plane` naming a flat face, whose plane it then is with its
+normal out of the body), the engine resolves it (`Session::section_plane`), both renderers cut and cap it
+(`gpu_viewport`'s and `section.rs`'s oblique planes against the oracle), and the handle, the slabs and the
+places work for any normal (the places at a slant are tested). What "click a flat face while the section is on"
+needs is a gesture: a click on a face selects it, so the plane cannot take that click without a mode; a fourth
+dot ("∥ face", the plane through the selected flat face) would do it with what exists.
+
 ### Per-sample stages on Vulkan (2026-11-16)
 
 *Found.* The window of 0.1.1 and 0.1.2 died within seconds of its start on a Windows 11 laptop with a Core

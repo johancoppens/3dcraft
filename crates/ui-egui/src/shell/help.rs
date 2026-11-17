@@ -249,6 +249,11 @@ pub fn shortcuts() -> Vec<Shortcut> {
             "Select the feature and fly to what it made",
         ),
         mouse("Click the view cube", "Turn to that view"),
+        mouse(
+            "Drag the section's arrow",
+            "Move the section plane (Alt: without snapping)",
+        ),
+        mouse("Double-click the section's arrow", "Keep the other half"),
     ]);
     rows
 }

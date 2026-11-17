@@ -170,8 +170,26 @@ impl Cut {
     /// lies in the plane with the rest of its triangle kept. For a closed
     /// body these are the outline of the cap.
     pub fn outline(&self, mesh: &Mesh) -> Vec<[Vec3; 2]> {
+        self.outline_among(mesh, 0..mesh.triangles.len())
+    }
+
+    /// [`Cut::outline`], the same segments in the same order, looked for
+    /// only among the triangles `slabs` says the plane can cross, when the
+    /// slabs were made for `mesh` along this plane's normal (either way);
+    /// among all of them otherwise. A plane dragged along its normal finds
+    /// its outline among a few triangles, not the whole mesh.
+    pub fn outline_in(&self, mesh: &Mesh, slabs: &Slabs) -> Vec<[Vec3; 2]> {
+        match slabs.crossing(self, mesh) {
+            Some(triangles) => self.outline_among(mesh, triangles.into_iter().map(|t| t as usize)),
+            None => self.outline(mesh),
+        }
+    }
+
+    /// The segments of [`Cut::outline`] of the triangles `triangles`, in
+    /// their order.
+    fn outline_among(&self, mesh: &Mesh, triangles: impl Iterator<Item = usize>) -> Vec<[Vec3; 2]> {
         let mut out = Vec::new();
-        for t in 0..mesh.triangles.len() {
+        for t in triangles {
             let Some(corners) = mesh.corners(t) else {
                 continue;
             };
@@ -216,6 +234,204 @@ impl Cut {
             }
         }
         out
+    }
+}
+
+/// Most slabs a mesh is sorted into, and how many triangles a slab holds
+/// on average at least ([`Slabs::new`]).
+const MAX_SLABS: usize = 1 << 16;
+const PER_SLAB: usize = 32;
+/// A triangle that reaches across more slabs than this is kept on a list
+/// of its own, looked at for every plane: one long side of a cylinder's
+/// wall would otherwise be in every slab.
+const MAX_SPAN: usize = 4;
+
+/// The triangles of a mesh sorted by where they lie along a direction:
+/// which of them a plane square to it can cross at a given place. Made
+/// once per mesh and direction (a pass over the triangles), it lets a
+/// plane moved along its normal find its outline ([`Cut::outline_in`])
+/// among the triangles near it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Slabs {
+    base: Vec3,
+    along: Vec3,
+    /// How many triangles the mesh had.
+    triangles: usize,
+    /// Where the first slab starts along `along` from `base`, and how
+    /// thick each is.
+    start: f64,
+    thickness: f64,
+    /// The triangles of slab `k` are `items[starts[k]..starts[k + 1]]`,
+    /// ascending.
+    starts: Vec<u32>,
+    items: Vec<u32>,
+    /// The triangles that reach across more than [`MAX_SPAN`] slabs,
+    /// ascending.
+    wide: Vec<u32>,
+    /// The least and greatest place of a corner of any triangle.
+    reach: [f64; 2],
+}
+
+impl Slabs {
+    /// The triangles of `mesh` sorted along the unit direction `along`,
+    /// places measured from `base`. `None` for a direction or a point that
+    /// is not one, or a mesh of more triangles than an index can name.
+    pub fn new(mesh: &Mesh, base: Vec3, along: Vec3) -> Option<Slabs> {
+        let along = along.normalized().filter(|a| a.is_finite())?;
+        if !base.is_finite() || u32::try_from(mesh.triangles.len()).is_err() {
+            return None;
+        }
+        // Where each triangle lies along `along`: NaN for one that has no
+        // place (a corner that is missing or not finite), which no plane
+        // crosses (`Cut::outline` leaves it out).
+        let spans: Vec<[f64; 2]> = (0..mesh.triangles.len())
+            .map(|t| match mesh.corners(t) {
+                Some(corners) if corners.iter().all(|p| p.is_finite()) => {
+                    let [a, b, c] = corners.map(|p| (p - base).dot(along));
+                    [a.min(b).min(c), a.max(b).max(c)]
+                }
+                _ => [f64::NAN; 2],
+            })
+            .collect();
+        let (lo, hi) = spans
+            .iter()
+            .filter(|[a, _]| a.is_finite())
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), [a, b]| {
+                (lo.min(*a), hi.max(*b))
+            });
+        // Slabs about as thick as the triangles are long along `along`
+        // (nine in ten no longer), so that most lie in one or two; never
+        // more slabs than the triangles fill.
+        let mut lengths: Vec<f64> = spans
+            .iter()
+            .filter(|[a, _]| a.is_finite())
+            .map(|[a, b]| b - a)
+            .collect();
+        let long = if lengths.is_empty() {
+            0.0
+        } else {
+            let k = (lengths.len() * 9 / 10).min(lengths.len() - 1);
+            *lengths.select_nth_unstable_by(k, f64::total_cmp).1
+        };
+        let range = hi - lo;
+        let most = (mesh.triangles.len() / PER_SLAB).clamp(1, MAX_SLABS);
+        let wanted = if long > 0.0 {
+            range / long
+        } else {
+            most as f64
+        };
+        let count = if wanted.is_finite() {
+            (wanted.ceil().max(1.0) as usize).min(most)
+        } else {
+            1
+        };
+        let thickness = range / count as f64;
+        let usable = lo.is_finite() && hi.is_finite() && thickness > 0.0 && thickness.is_finite();
+        let count = if usable { count } else { 1 };
+        let slab = |s: f64| -> usize {
+            if usable {
+                (((s - lo) / thickness).floor().max(0.0) as usize).min(count - 1)
+            } else {
+                0
+            }
+        };
+        let mut sizes = vec![0_u32; count + 1];
+        let mut wide = Vec::new();
+        for (t, &[a, b]) in spans.iter().enumerate() {
+            if !a.is_finite() {
+                continue;
+            }
+            let (first, last) = (slab(a), slab(b));
+            if last - first > MAX_SPAN {
+                wide.push(t as u32);
+                continue;
+            }
+            for k in first..=last {
+                if let Some(size) = sizes.get_mut(k + 1) {
+                    *size += 1;
+                }
+            }
+        }
+        // Running totals: where each slab's triangles start.
+        for k in 1..sizes.len() {
+            let before = sizes.get(k - 1).copied().unwrap_or(0);
+            if let Some(size) = sizes.get_mut(k) {
+                *size = size.saturating_add(before);
+            }
+        }
+        let starts = sizes;
+        let mut items = vec![0_u32; starts.last().copied().unwrap_or(0) as usize];
+        let mut filled = starts.clone();
+        for (t, &[a, b]) in spans.iter().enumerate() {
+            if !a.is_finite() {
+                continue;
+            }
+            let (first, last) = (slab(a), slab(b));
+            if last - first > MAX_SPAN {
+                continue;
+            }
+            for k in first..=last {
+                if let Some(at) = filled.get_mut(k)
+                    && let Some(item) = items.get_mut(*at as usize)
+                {
+                    *item = t as u32;
+                    *at += 1;
+                }
+            }
+        }
+        Some(Slabs {
+            base,
+            along,
+            triangles: mesh.triangles.len(),
+            start: lo,
+            thickness: if usable { thickness } else { 0.0 },
+            starts,
+            items,
+            wide,
+            reach: [lo, hi],
+        })
+    }
+
+    /// The triangles of `mesh` that `cut` can cross, ascending, each
+    /// once: those that reach within its tolerance of it, and a few more.
+    /// `None` when these slabs were not made for `mesh` or not along the
+    /// cut's normal.
+    fn crossing(&self, cut: &Cut, mesh: &Mesh) -> Option<Vec<u32>> {
+        if mesh.triangles.len() != self.triangles || cut.normal.dot(self.along).abs() < 1.0 - 1e-12
+        {
+            return None;
+        }
+        let at = (cut.origin - self.base).dot(self.along);
+        let [lo, hi] = self.reach;
+        // The tolerance of the cut, and rounding at the mesh's size: a
+        // superset of the triangles that give a segment is enough.
+        let slack = cut.snap + 1e-9 * (at.abs() + (hi - lo).abs() + 1.0);
+        if !(at.is_finite() && slack.is_finite()) {
+            return None;
+        }
+        if at + slack < lo || at - slack > hi {
+            return Some(Vec::new());
+        }
+        let last = self.starts.len().saturating_sub(2);
+        let slab = |s: f64| -> usize {
+            if self.thickness > 0.0 {
+                (((s - self.start) / self.thickness).floor().max(0.0) as usize).min(last)
+            } else {
+                0
+            }
+        };
+        let mut out: Vec<u32> = self.wide.clone();
+        for k in slab(at - slack)..=slab(at + slack) {
+            let (Some(&from), Some(&to)) = (self.starts.get(k), self.starts.get(k + 1)) else {
+                continue;
+            };
+            if let Some(items) = self.items.get(from as usize..to as usize) {
+                out.extend_from_slice(items);
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        Some(out)
     }
 }
 

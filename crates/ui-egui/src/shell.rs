@@ -43,6 +43,7 @@ mod player;
 mod popover;
 pub mod recent;
 mod report;
+pub mod section_handle;
 mod selection;
 pub mod sidepanel;
 pub mod start;
@@ -632,6 +633,24 @@ struct SectionCache {
     /// The offsets between which the plane passes through the bodies.
     range: Option<[f64; 2]>,
     cut: Option<viewport::SectionCut>,
+    /// The box of the scene's mesh (`craft3d_render::section_bounds`),
+    /// the places the plane snaps to in it ([`SectionPlane::snaps`]) and
+    /// its triangles in slabs along the plane's normal
+    /// (`craft3d_render::Slabs`): found once per scene and plane, kept
+    /// while only the offset or the side changes (a drag of the handle).
+    bounds: Bbox3,
+    snaps: Arc<Vec<craft3d_engine::SectionSnap>>,
+    slabs: Option<Arc<craft3d_render::Slabs>>,
+}
+
+/// Whether two section states are the same plane, at any offset and on
+/// either side: what a drag of the handle or Flip side changes.
+fn same_plane(a: &SectionState, b: &SectionState) -> bool {
+    a.on == b.on
+        && a.plane == b.plane
+        && a.feature == b.feature
+        && a.point == b.point
+        && a.normal == b.normal
 }
 
 /// What a surface analysis was made from: the scene's revision and
@@ -1057,6 +1076,8 @@ pub struct Shell {
     section_cache: Option<SectionCache>,
     /// Why the section was switched off: its plane was lost.
     section_lost: Option<String>,
+    /// The section's handle in the view (`section_handle.rs`).
+    section_handle: section_handle::HandleView,
     /// The box the camera was last fitted to automatically.
     framed: Bbox3,
     /// What the camera follows while it fits by itself: the opening
@@ -1621,6 +1642,7 @@ impl Shell {
             cause_hits: Vec::new(),
             section_cache: None,
             section_lost: None,
+            section_handle: section_handle::HandleView::default(),
             framed: Bbox3::EMPTY,
             following: views::Following::Opening,
             themed: false,
@@ -2338,6 +2360,17 @@ impl Shell {
                 "normal": vec3(cache.plane.normal),
                 "range": cache.range,
                 "lost": null,
+                "snaps": cache
+                    .snaps
+                    .iter()
+                    .take(section_handle::REPORTED_SNAPS)
+                    .map(|snap| serde_json::json!({
+                        "offset": snap.offset,
+                        "kind": snap.kind.name(),
+                        "feature": snap.feature,
+                        "name": snap.name,
+                    }))
+                    .collect::<Vec<_>>(),
             })),
             (None, Some(why)) => Some(serde_json::json!({ "lost": why })),
             (None, None) => None,
@@ -2405,16 +2438,58 @@ impl Shell {
         if current {
             return;
         }
-        match session.section_plane(scene, &self.state.section.spec()) {
+        // The same plane in the same scene at another offset or on the
+        // other side (a drag of the handle, Flip side): moved, its name
+        // not resolved again and its box and places not found again.
+        let kept = self
+            .section_cache
+            .as_ref()
+            .filter(|cache| {
+                cache.revision == scene.revision
+                    && cache.tolerance == scene.sampling()
+                    && same_plane(&cache.state, &self.state.section)
+            })
+            .map(|cache| {
+                (
+                    cache.plane,
+                    cache.bounds,
+                    Arc::clone(&cache.snaps),
+                    cache.slabs.clone(),
+                )
+            });
+        let resolved = match &kept {
+            Some((plane, ..)) => plane.at(self.state.section.offset, self.state.section.flip),
+            None => session.section_plane(scene, &self.state.section.spec()),
+        };
+        match resolved {
             Ok(plane) => {
+                let (bounds, snaps, slabs) = kept.map_or_else(
+                    || {
+                        (
+                            craft3d_render::section_bounds(&scene.mesh),
+                            Arc::new(plane.snaps(scene)),
+                            craft3d_render::Slabs::new(&scene.mesh, plane.base, plane.along)
+                                .map(Arc::new),
+                        )
+                    },
+                    |(_, bounds, snaps, slabs)| (bounds, snaps, slabs),
+                );
                 self.section_cache = Some(SectionCache {
                     revision: scene.revision,
                     tolerance: scene.sampling(),
                     state: self.state.section.clone(),
                     cap,
                     plane,
-                    range: plane.range(&craft3d_render::section_bounds(&scene.mesh)),
-                    cut: viewport::SectionCut::new(scene, plane.section(cap)),
+                    range: plane.range(&bounds),
+                    cut: viewport::SectionCut::within(
+                        scene,
+                        plane.section(cap),
+                        &bounds,
+                        slabs.as_deref(),
+                    ),
+                    bounds,
+                    snaps,
+                    slabs,
                 });
                 self.section_lost = None;
             }
@@ -5094,7 +5169,9 @@ impl Shell {
         // selects nothing.
         // A release that ends a pinch or a two-finger pan is no tap.
         let on_marker = self.mate_pointer(ui, &response, rect, scene);
-        let tapped = response.clicked() && !self.touch_gesture && !on_marker;
+        // A click on the section's handle is the handle's.
+        let on_handle = self.handle_click(ui, &response, scene);
+        let tapped = response.clicked() && !self.touch_gesture && !on_marker && !on_handle;
         let closes_drawer = self.narrow && self.state.panels.drawer && tapped;
         if closes_drawer {
             self.state.panels.drawer = false;
@@ -5267,6 +5344,10 @@ impl Shell {
                     );
                 }
             }
+        }
+        // The section's handle, over the picture and under the controls.
+        if !self.welcome() {
+            self.paint_section_handle(ui, rect);
         }
 
         let inset = tokens.inset;
@@ -5489,6 +5570,11 @@ impl Shell {
                 self.drag_from = None;
                 return false;
             }
+        }
+        // A drag on the section's arrow moves the plane, not the camera.
+        if self.handle_drag(ui, response, rect) {
+            self.drag_from = None;
+            return true;
         }
         // Alt and a drag on a part of an assembly move it along its free
         // motion, not the camera.
