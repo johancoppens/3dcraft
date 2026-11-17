@@ -469,7 +469,15 @@ fn thing(ctx: &Ctx<'_>, value: &Value, key: &str) -> Result<Thing, String> {
                     let shown: String = name.chars().take(120).collect();
                     let (id, found, index) = crate::selection::Resolver::new(ctx.doc, ctx.regen)
                         .locate(name, Some(feature.as_str()))
-                        .map_err(|e| format!("`{key}`: {e}"))?;
+                        .map_err(|e| {
+                            if e.starts_with("no body has a") {
+                                format!(
+                                    "`{key}`: there is no {kind} `{shown}` in `{feature}` (see document.inspect)"
+                                )
+                            } else {
+                                format!("`{key}`: {e}")
+                            }
+                        })?;
                     if found.name() != kind {
                         return Err(format!(
                             "`{key}`: `{shown}` is a {}, not a {kind}",
