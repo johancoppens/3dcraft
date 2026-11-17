@@ -365,6 +365,17 @@ fn the_screenshot_shows_the_pins() {
     let mut shell = open(&mut w, &mut session);
     let shown = screenshot(&mut shell, &mut session);
     assert!(shown["pins"].as_u64().unwrap() >= 3, "{}", shown["pins"]);
+    // At the view's own size, the same pins as the window draws.
+    let own = shell
+        .handle_method(&mut session, "ui.screenshot", Some(&json!({})))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        own["pins"].as_u64(),
+        u64::try_from(shell.note_pins_drawn()).ok(),
+        "{}",
+        own["pins"]
+    );
     set(
         &mut shell,
         &mut session,

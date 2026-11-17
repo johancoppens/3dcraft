@@ -581,6 +581,11 @@ impl Shell {
         (&self.notes.markers, self.notes.drawn.1)
     }
 
+    /// How many pins the last frame drew (those behind a face too).
+    pub fn note_pins_drawn(&self) -> usize {
+        self.notes.drawn.0
+    }
+
     /// Where the last frame drew *Note here…* in the list under the right
     /// mouse button, when it was offered.
     pub fn note_here_entry(&self) -> Option<egui::Rect> {

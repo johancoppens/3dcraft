@@ -6728,3 +6728,57 @@ fn a_reply_after_the_closing_and_an_unnamed_agent_round_trip() {
     );
     assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
 }
+
+/// Within format 75 the replies after the closing came later (the
+/// developer's preview build of b39e4345 writes 75 without them): the
+/// frozen 75 file, written before them, reads here; a note without such
+/// replies is written as before, so the preview build reads it; only a
+/// note with them needs this build (the preview build's closing refuses a
+/// field it does not know, as every manifest struct does).
+#[test]
+fn replies_after_the_closing_keep_format_75_readable_both_ways() {
+    use craft3d_doc::NoteAuthor;
+    /// A closing as the preview build reads it.
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct ClosingBefore {
+        by: serde_json::Value,
+        #[serde(default)]
+        time_ms: u64,
+        #[serde(default)]
+        reply: Option<String>,
+    }
+    let before = std::fs::read(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/versions/v75.3dcraft"),
+    )
+    .unwrap();
+    let read = from_bytes(&before).unwrap();
+    assert!(!read.notes.items.is_empty());
+    assert!(
+        read.notes
+            .items
+            .iter()
+            .filter_map(|n| n.done.as_ref())
+            .all(|d| d.later.is_empty())
+    );
+    let mut doc = small();
+    let id = doc
+        .add_note("x", None, [0.0; 3], NoteAuthor::Person, 1)
+        .unwrap();
+    doc.resolve_note(id, true, NoteAuthor::Person, Some("ok"), 2)
+        .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    assert!(!json.contains("later"), "{json}");
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let done = value["document"]["notes"]["items"][0]["done"].clone();
+    assert!(serde_json::from_value::<ClosingBefore>(done).is_ok());
+    doc.reply_to_note(id, NoteAuthor::Agent("Claude Code".into()), "and more", 3)
+        .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let done = value["document"]["notes"]["items"][0]["done"].clone();
+    assert!(serde_json::from_value::<ClosingBefore>(done).is_err());
+}
