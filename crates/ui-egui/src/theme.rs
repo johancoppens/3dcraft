@@ -218,21 +218,29 @@ pub struct Tokens {
     /// plane's outline in the accent, `section_outline_width` wide in
     /// dashes of `section_dash` (on, off), faint (`section_rest_opacity`,
     /// 0 to 255) until the pointer is within `section_near` of the handle;
-    /// the arrow, `section_arrow_length` long seen side on, its shaft
-    /// `section_arrow_width` wide and its head `section_head` long,
+    /// the arrow, slim like a dimension arrow (the developer's choice of
+    /// 2026-11-17, variant B): `section_arrow_length` long seen side on,
+    /// its shaft `section_arrow_width` wide with round ends, its head a
+    /// notched dart `section_head` long and `section_head_width` wide
+    /// (notched by `section_head_notch`), its grip at the foot a ring of
+    /// radius `section_grip` with a dot of radius `section_grip_dot`; all
     /// filled with `section_handle_fill` (near white) inside an edge of
     /// `section_handle_edge`, `section_handle_edge_width` wide, so it reads
     /// on the cap, a dark body and the background (the accent under the
     /// pointer and while dragged); its group (the number, X, Y, Z, Flip
     /// side) on a plate as high as the bar's controls. The arrow is hit
-    /// within `section_hit` of it, and a drag snaps within
-    /// `section_snap_reach`. A dimension line's hairline is `plate_fill`
-    /// at `section_halo_opacity` (0 to 255). In points.
+    /// within `section_hit` of it whatever its drawn width, and a drag
+    /// snaps within `section_snap_reach`. A dimension line's hairline is
+    /// `plate_fill` at `section_halo_opacity` (0 to 255). In points.
     pub section_outline_width: f32,
     pub section_dash: [f32; 2],
     pub section_arrow_length: f32,
     pub section_arrow_width: f32,
     pub section_head: f32,
+    pub section_head_width: f32,
+    pub section_head_notch: f32,
+    pub section_grip: f32,
+    pub section_grip_dot: f32,
     pub section_handle_fill: Rgb,
     pub section_handle_edge: Rgb,
     pub section_handle_edge_width: f32,
@@ -966,11 +974,15 @@ impl Tokens {
             section_outline_width: 1.2,
             section_dash: [5.0, 4.0],
             section_arrow_length: 64.0,
-            section_arrow_width: 5.0,
+            section_arrow_width: 2.0,
             section_head: 16.0,
+            section_head_width: 11.0,
+            section_head_notch: 3.0,
+            section_grip: 4.5,
+            section_grip_dot: 1.6,
             section_handle_fill: [250, 248, 244],
             section_handle_edge: [22, 21, 20],
-            section_handle_edge_width: 1.25,
+            section_handle_edge_width: 1.0,
             section_halo_opacity: 170,
             section_rest_opacity: 140,
             section_near: 56.0,
@@ -1241,9 +1253,22 @@ impl Tokens {
         t.hit_min = t.hit_min.max(t.touch_target);
         // The section's handle: a finger takes the arrow and the dots.
         t.section_hit = t.section_hit.max(t.touch_target * 0.5);
-        t.section_arrow_length = t.section_arrow_length.max(t.touch_target * 1.8);
-        t.section_arrow_width = t.section_arrow_width.max(t.touch_target * 0.18);
-        t.section_head = t.section_head.max(t.touch_target * 0.5);
+        // The arrow's whole shape scaled as one, so a finger sees it;
+        // the grab area above is a finger's whatever it draws.
+        let grown = (t.touch_target * 1.8 / t.section_arrow_length.max(1.0)).max(1.0);
+        if grown.is_finite() {
+            for size in [
+                &mut t.section_arrow_length,
+                &mut t.section_arrow_width,
+                &mut t.section_head,
+                &mut t.section_head_width,
+                &mut t.section_head_notch,
+                &mut t.section_grip,
+                &mut t.section_grip_dot,
+            ] {
+                *size *= grown;
+            }
+        }
         t
     }
 

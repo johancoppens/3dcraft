@@ -688,6 +688,74 @@ pub fn group_place(frame: &PlaneFrame, viewport: Rect, keep_out: &[Rect], size: 
         .unwrap_or_else(|| placed(out))
 }
 
+/// The head of the slim arrow (the developer's choice of 2026-11-17,
+/// variant B), its tip at `tip`, pointing along `way` (a unit vector): a
+/// notched dart [`Tokens::section_head`] long and
+/// [`Tokens::section_head_width`] wide, its corners in order round it
+/// (a side, the tip, the other side, the notch). The dimension lines
+/// (`dimension.rs`) have the same, so the section's arrow and a dimension
+/// read as one family.
+pub fn dart(tip: Pos2, way: Vec2, tokens: &Tokens) -> [Pos2; 4] {
+    let across = vec2(-way.y, way.x);
+    let back = tip - way * tokens.section_head;
+    let half = tokens.section_head_width * 0.5;
+    [
+        back + across * half,
+        tip,
+        back - across * half,
+        back + way * tokens.section_head_notch,
+    ]
+}
+
+/// Paints the [`dart`] at `tip` along `way`: `fill` inside `edge`.
+pub(super) fn paint_dart(
+    painter: &egui::Painter,
+    tip: Pos2,
+    way: Vec2,
+    tokens: &Tokens,
+    fill: egui::Color32,
+    edge: egui::Stroke,
+) {
+    if !(way.x.is_finite() && way.y.is_finite()) {
+        return;
+    }
+    let [side, point, other, notch] = dart(tip, way, tokens);
+    // Two convex halves, either side of the line from the notch to the
+    // tip, then the edge all round.
+    painter.add(egui::Shape::convex_polygon(
+        vec![side, point, notch],
+        fill,
+        egui::Stroke::NONE,
+    ));
+    painter.add(egui::Shape::convex_polygon(
+        vec![notch, point, other],
+        fill,
+        egui::Stroke::NONE,
+    ));
+    painter.add(egui::Shape::closed_line(
+        vec![side, point, other, notch],
+        edge,
+    ));
+}
+
+/// Paints a slim line from `a` to `b` with round ends: a core `width`
+/// wide of `fill` with `edge` along each side.
+pub(super) fn paint_slim_line(
+    painter: &egui::Painter,
+    a: Pos2,
+    b: Pos2,
+    width: f32,
+    fill: egui::Color32,
+    edge: egui::Stroke,
+) {
+    let outer = width + 2.0 * edge.width;
+    for (w, ink) in [(outer, edge.color), (width, fill)] {
+        painter.line_segment([a, b], egui::Stroke::new(w, ink));
+        painter.circle_filled(a, w * 0.5, ink);
+        painter.circle_filled(b, w * 0.5, ink);
+    }
+}
+
 /// How the outline is drawn: as one closed path when its sides join,
 /// as one segment between its farthest points when it is seen edge on
 /// (its sides lie over each other), else side by side.
@@ -1282,42 +1350,16 @@ impl Shell {
         let at = place.frame.at;
         match place.frame.arrow {
             Some([a, b]) => {
+                // Slim, like a dimension arrow (the developer's choice of
+                // 2026-11-17): the shaft into the head's notch, the dart,
+                // the ring at the foot to take it by.
                 let way = (b - a).normalized();
                 let across = vec2(-way.y, way.x);
-                let head = tokens.section_head;
-                let neck = b - way * head;
-                let half = w * 0.5;
-                let shaft = vec![
-                    a + across * half,
-                    neck + across * half,
-                    neck - across * half,
-                    a - across * half,
-                ];
-                let tip = vec![
-                    b,
-                    neck + across * (head * 0.5),
-                    neck - across * (head * 0.5),
-                ];
-                // The edge first, all round, then the fill over it.
-                let mut round = vec![
-                    a + across * half,
-                    neck + across * half,
-                    neck + across * (head * 0.5),
-                    b,
-                    neck - across * (head * 0.5),
-                    neck - across * half,
-                    a - across * half,
-                ];
-                if let Some(&first) = round.first() {
-                    round.push(first);
-                }
-                painter.add(egui::Shape::line(
-                    round,
-                    egui::Stroke::new(edge.width * 2.0, edge.color),
-                ));
-                painter.circle(a, w * 0.9, fill, edge);
-                painter.add(egui::Shape::convex_polygon(shaft, fill, egui::Stroke::NONE));
-                painter.add(egui::Shape::convex_polygon(tip, fill, egui::Stroke::NONE));
+                let shaft_end = b - way * (tokens.section_head - tokens.section_head_notch);
+                paint_slim_line(&painter, a, shaft_end, w, fill, edge);
+                paint_dart(&painter, b, way, &tokens, fill, edge);
+                painter.circle(a, tokens.section_grip, fill, edge);
+                painter.circle_filled(a, tokens.section_grip_dot, edge.color);
                 // A snap: a short tick across the arrow's foot.
                 if dragging && self.section_handle.snapped.is_some() {
                     let reach = across * (w + 5.0);
@@ -1713,6 +1755,46 @@ mod tests {
             hit: tokens.section_hit,
         };
         assert_eq!(place.part_at(a.lerp(b, 0.5)), Some(HandlePart::Arrow));
+        // The arrow is drawn slim (the developer's choice of 2026-11-17);
+        // it is taken as far off as before, well past what is drawn: by
+        // its shaft, its head and its ring at the foot.
+        // On the side away from the group, which a press takes first.
+        let away = if place.group.center().y > a.y {
+            -1.0
+        } else {
+            1.0
+        };
+        let off = vec2(0.0, away * (tokens.section_hit - 0.5));
+        let drawn = tokens.section_arrow_width * 0.5 + tokens.section_handle_edge_width;
+        assert!(tokens.section_hit - 0.5 > 3.0 * drawn, "{drawn}");
+        assert!(tokens.section_hit >= 9.0);
+        for along in [0.0, 0.5, 1.0] {
+            assert_eq!(
+                place.part_at(a.lerp(b, along) + off),
+                Some(HandlePart::Arrow),
+                "{along}"
+            );
+        }
+        let [side, point, other, notch] = dart(b, (b - a).normalized(), &tokens);
+        assert!((point - b).length() < 1e-4);
+        assert!((side.distance(other) - tokens.section_head_width).abs() < 1e-3);
+        assert!(
+            (notch.distance(b) - (tokens.section_head - tokens.section_head_notch)).abs() < 1e-3
+        );
+        // A finger's: the whole shape larger, the grab area a finger's.
+        let touch = tokens.touch();
+        assert!(touch.section_hit >= touch.touch_target * 0.5);
+        let k = touch.section_arrow_length / tokens.section_arrow_length;
+        assert!(k >= 1.0);
+        for (big, small) in [
+            (touch.section_arrow_width, tokens.section_arrow_width),
+            (touch.section_head, tokens.section_head),
+            (touch.section_head_width, tokens.section_head_width),
+            (touch.section_grip, tokens.section_grip),
+        ] {
+            assert!((big - small * k).abs() < 1e-3, "{big} {small} {k}");
+        }
+        assert!(touch.section_hit > touch.section_head_width * 0.5);
         assert_eq!(
             place.part_at(a.lerp(b, 0.5) - vec2(0.0, tokens.section_hit + 1.0)),
             None
