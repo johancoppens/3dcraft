@@ -1426,7 +1426,297 @@ fn insert_knot(knots: &mut Vec<f64>, degree: usize, rows: &mut [Vec<H>], u: f64)
 /// Inserts every knot of the domain's interior, and both ends of the
 /// domain, until each has the multiplicity `degree`: after that every
 /// span between two different knots is one Bézier piece.
+///
+/// The knots and points are, bit for bit, those of inserting the knots one
+/// at a time over whole rows ([`make_bezier_one_at_a_time`], Boehm's
+/// algorithm per knot), which costs every row's length per insertion: the
+/// square of a direction's knots. Here an insertion costs its degree
+/// ([`all_inserted`]); rows of another length than the knots say, a
+/// number that is not finite or knots out of order take the old way.
 fn make_bezier(knots: &mut Vec<f64>, degree: usize, rows: &mut [Vec<H>]) {
+    let count = knots.len().saturating_sub(degree + 1);
+    let fits = count > 0
+        && rows.iter().all(|row| {
+            row.len() == count && row.iter().all(|h| h.p.is_finite() && h.w.is_finite())
+        });
+    let Some((plan, inserted)) = fits.then(|| insertions(knots, degree)).flatten() else {
+        make_bezier_one_at_a_time(knots, degree, rows);
+        return;
+    };
+    let mut made = Vec::with_capacity(rows.len());
+    for row in rows.iter() {
+        match all_inserted(row, &plan, degree) {
+            Some(new) => made.push(new),
+            None => {
+                make_bezier_one_at_a_time(knots, degree, rows);
+                return;
+            }
+        }
+    }
+    for (row, new) in rows.iter_mut().zip(made) {
+        *row = new;
+    }
+    *knots = inserted;
+}
+
+/// One insertion of [`make_bezier_one_at_a_time`]: the knot span `k` it
+/// is inserted in (the index of the last knot not above it) and Boehm's
+/// factors `α_i` of the points `i` it computes, `k + 1 − p ..= k` (from
+/// 0): every other point is copied ([`all_inserted`]).
+struct Insertion {
+    k: usize,
+    alpha: Vec<f64>,
+}
+
+/// The insertions [`make_bezier_one_at_a_time`] makes in `knots`, each
+/// with the knots as they are when it is made, and the knots after the
+/// last; `None` for knots out of order or not numbers, which go the old
+/// way. Linear in the knots: the knots not above the one inserted are
+/// `done` (the inserted copies among them), the rest still `ahead`.
+fn insertions(knots: &[f64], degree: usize) -> Option<(Vec<Insertion>, Vec<f64>)> {
+    if knots.iter().any(|k| k.is_nan()) || knots.windows(2).any(|w| matches!(w, [a, b] if a > b)) {
+        return None;
+    }
+    let (start, end) = domain_of(knots, degree);
+    let mut distinct: Vec<f64> = knots
+        .iter()
+        .copied()
+        .filter(|&x| x >= start && x <= end)
+        .collect();
+    distinct.dedup();
+    let mut done: Vec<f64> = Vec::with_capacity(knots.len() + distinct.len() * degree);
+    let mut ahead = knots;
+    let mut plan = Vec::new();
+    for value in distinct {
+        let take = ahead.partition_point(|&x| x <= value);
+        let (now, rest) = ahead.split_at(take);
+        done.extend_from_slice(now);
+        ahead = rest;
+        let multiplicity = done.iter().rev().take_while(|&&x| x == value).count();
+        for _ in multiplicity..degree {
+            // As `insert_knot`: the last knot not above `value`, and the
+            // factors from the knots as they are now (`done` then
+            // `ahead`).
+            let k = done.len().checked_sub(1)?;
+            let knot = |i: usize| {
+                done.get(i)
+                    .or_else(|| ahead.get(i.checked_sub(done.len())?))
+                    .copied()
+            };
+            let first = (k + 1).saturating_sub(degree);
+            let alpha = (first..=k)
+                .map(|i| {
+                    let (Some(lo), Some(hi)) = (knot(i), knot(i + degree)) else {
+                        return 0.0;
+                    };
+                    if hi > lo {
+                        (value - lo) / (hi - lo)
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            plan.push(Insertion { k, alpha });
+            done.push(value);
+        }
+    }
+    done.extend_from_slice(ahead);
+    Some((plan, done))
+}
+
+/// The bits of a homogeneous point that can be a zero of either sign.
+fn coordinate(h: &H, c: usize) -> f64 {
+    match c {
+        0 => h.p.x,
+        1 => h.p.y,
+        2 => h.p.z,
+        _ => h.w,
+    }
+}
+
+/// `h` with its coordinate `c` made `+0`.
+fn cleared(mut h: H, c: usize) -> H {
+    match c {
+        0 => h.p.x = 0.0,
+        1 => h.p.y = 0.0,
+        2 => h.p.z = 0.0,
+        _ => h.w = 0.0,
+    }
+    h
+}
+
+/// A coordinate that is `−0`.
+fn negative_zero(x: f64) -> bool {
+    x == 0.0 && x.is_sign_negative()
+}
+
+/// Never, as a step (`usize::MAX`).
+const NEVER: usize = usize::MAX;
+
+/// The row `init` after every insertion of `plan` (degree `p`), bit for
+/// bit as [`insert_knot`] leaves it one insertion at a time, in time
+/// linear in the row and the insertions.
+///
+/// One insertion at span `k` of a row `P` of `n` points makes `Q` of
+/// `n + 1`: `Q₀ = P₀`, `Qₙ = Pₙ₋₁`, `Qᵢ = lerp(Pᵢ₋₁, Pᵢ, αᵢ)` between,
+/// where `αᵢ = 1` for `i ≤ k − p` (the points left of the insertion,
+/// copied: `Pᵢ₋₁·0 + Pᵢ·1`), `0` for `i > k` (the points right of it,
+/// moved one on: `Pᵢ₋₁·1 + Pᵢ·0`) and Boehm's factor between. Only
+/// those `p` points between are computed here. A copy is exact but for
+/// one thing, the sign of a zero: `Pᵢ₋₁·0 + (−0)` is `+0` when `Pᵢ₋₁`'s
+/// sign is clear, as `(−0)·1 + Pᵢ·0` is when `Pᵢ`'s is; a zero never
+/// turns `−0` by a copy. So the copies are followed for the zeros alone:
+///
+/// - Insertions run left to right (`k` grows by one or more each time),
+///   so the points right of one are always points of `init`, the same
+///   ones in the same order, moved on: point `m` is moved on by the
+///   insertions `t` with `k_t − t ≤ m` (and `m < n − 1`, the last point
+///   being taken outright), a first run of them. A `−0` there turns `+0`
+///   at the first such step its right neighbour's sign is clear: from
+///   the right of a run of `−0`s, one a step.
+/// - A point left of an insertion stays where it is and is copied by
+///   every later one, from the first `t` with `x ≤ k_t − p`; it is read
+///   by no later insertion (they read `k_t − p ..= k_t`). A `−0` there
+///   turns `+0` at the first such step its left neighbour's sign is
+///   clear: from the left of a run, one a step; so this is done at the
+///   end.
+///
+/// `None` where the row does not go as above (a bug), for the old way.
+fn all_inserted(init: &[H], plan: &[Insertion], p: usize) -> Option<Vec<H>> {
+    let n0 = init.len();
+    let steps = plan.len();
+    // Moved on: how many insertions move point m on, from the first.
+    let mut moved = vec![0_usize; n0];
+    let mut t = 0;
+    for (m, slot) in moved.iter_mut().enumerate() {
+        while plan
+            .get(t)
+            .is_some_and(|s| s.k.checked_sub(t).is_some_and(|d| d <= m))
+        {
+            t += 1;
+        }
+        if m + 2 <= n0 {
+            *slot = t;
+        }
+    }
+    // The step from whose start each coordinate of point m has its sign
+    // clear (0: from the start; NEVER: not while it matters).
+    let mut clear = vec![[0_usize; 4]; n0];
+    for m in (0..n0).rev() {
+        for c in 0..4 {
+            let x = coordinate(init.get(m)?, c);
+            let at = if negative_zero(x) {
+                match (clear.get(m + 1), moved.get(m)) {
+                    (Some(next), Some(&until)) if next[c] < until => next[c] + 1,
+                    _ => NEVER,
+                }
+            } else if x.is_sign_negative() {
+                NEVER
+            } else {
+                0
+            };
+            *clear.get_mut(m)?.get_mut(c)? = at;
+        }
+    }
+    // Point m of init at the start of step t.
+    let read = |m: usize, t: usize| -> Option<H> {
+        let mut h = *init.get(m)?;
+        for c in 0..4 {
+            if negative_zero(coordinate(&h, c)) && clear.get(m)?[c] <= t {
+                h = cleared(h, c);
+            }
+        }
+        Some(h)
+    };
+    // The row is `cur` and then the points of init from `j` on.
+    let mut cur: Vec<H> = Vec::with_capacity(n0 + steps);
+    let mut j = 0_usize;
+    let mut fresh: Vec<H> = Vec::new();
+    for (t, step) in plan.iter().enumerate() {
+        let here = cur.len();
+        let n = here + n0.checked_sub(j)?;
+        let k = step.k;
+        if k < here {
+            return None;
+        }
+        let old = |x: usize| -> Option<H> {
+            if x < here {
+                cur.get(x).copied()
+            } else {
+                read(j + (x - here), t)
+            }
+        };
+        let first = (k + 1).saturating_sub(p);
+        let keep = if here == 0 { 0 } else { here.min(first.max(1)) };
+        let top = k.min(n);
+        fresh.clear();
+        for x in keep..=top {
+            let q = if x == 0 {
+                old(0)?
+            } else if x == n {
+                old(n - 1)?
+            } else if x + p <= k {
+                old(x)?
+            } else {
+                let a = *step.alpha.get(x - first)?;
+                old(x - 1)?.lerp(old(x)?, a)
+            };
+            fresh.push(q);
+        }
+        cur.truncate(keep);
+        cur.extend_from_slice(&fresh);
+        j = if k < n { j + (k - here) } else { n0 };
+    }
+    let mut row = cur;
+    for m in j..n0 {
+        row.push(read(m, steps)?);
+    }
+    if row.len() != n0 + steps {
+        return None;
+    }
+    // Copied from the left: the step each point is first left of an
+    // insertion, then the turns of its `−0`s.
+    let mut before = [NEVER; 4];
+    if let Some(h) = row.first() {
+        for (c, slot) in before.iter_mut().enumerate() {
+            *slot = if coordinate(h, c).is_sign_negative() {
+                NEVER
+            } else {
+                0
+            };
+        }
+    }
+    let mut t = 0;
+    for x in 1..row.len() {
+        while plan.get(t).is_some_and(|s| !(x + p <= s.k && x < n0 + t)) {
+            t += 1;
+        }
+        if t >= steps {
+            break;
+        }
+        let h = row.get_mut(x)?;
+        for (c, slot) in before.iter_mut().enumerate() {
+            let value = coordinate(h, c);
+            *slot = if negative_zero(value) {
+                let turn = t.max(*slot);
+                if turn < steps {
+                    *h = cleared(*h, c);
+                    turn + 1
+                } else {
+                    NEVER
+                }
+            } else if value.is_sign_negative() {
+                NEVER
+            } else {
+                0
+            };
+        }
+    }
+    Some(row)
+}
+
+/// [`make_bezier`] one knot at a time, each over whole rows.
+fn make_bezier_one_at_a_time(knots: &mut Vec<f64>, degree: usize, rows: &mut [Vec<H>]) {
     let (start, end) = domain_of(knots, degree);
     let mut distinct: Vec<f64> = knots
         .iter()
@@ -2490,6 +2780,138 @@ mod tests {
                 ]
             })
             .collect()
+    }
+
+    /// [`make_bezier`], each insertion costing its degree, against
+    /// inserting the knots one at a time over whole rows: the same knots
+    /// and points bit for bit, for random knot vectors (clamped or not,
+    /// knots of any multiplicity, zeros of both signs among them), degrees
+    /// 1 to 6, and rows whose coordinates are often zeros of either sign
+    /// or numbers so small that a product underflows to a zero: the sign
+    /// a zero ends with depends on which copies the one-at-a-time way made
+    /// of it, and the fast way follows that.
+    #[test]
+    fn all_knots_at_once_are_the_knots_one_at_a_time_bit_for_bit() {
+        let mut seed = 0x5eed_u64;
+        let mut next = move |n: usize| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 33) as usize) % n.max(1)
+        };
+        let values = [
+            0.0, -0.0, 1.0, -1.0, 0.5, -0.25, 3.0, -7.5, 5e-324, -5e-324, -1e-310, 1e-310, 0.1,
+            -0.3,
+        ];
+        let weights = [1.0, 0.5, 2.0, 0.75, 1.0 / 3.0];
+        let knot_values = [
+            -0.0,
+            0.0,
+            0.1,
+            0.25,
+            1.0 / 3.0,
+            0.5,
+            2.0 / 3.0,
+            0.7,
+            1.0,
+            1.5,
+            2.0,
+            3.0,
+        ];
+        let mut flipped = 0;
+        for case in 0..30_000 {
+            let degree = 1 + next(6);
+            let count = degree + 1 + if case % 100 == 0 { next(200) } else { next(14) };
+            let mut knots: Vec<f64> = (0..count + degree + 1)
+                .map(|_| knot_values[next(knot_values.len())] * (1 + next(4)) as f64)
+                .collect();
+            knots.sort_by(f64::total_cmp);
+            if next(2) == 0 {
+                let (first, last) = (knots[0], knots[knots.len() - 1]);
+                for k in knots.iter_mut().take(degree + 1) {
+                    *k = first;
+                }
+                for k in knots.iter_mut().rev().take(degree + 1) {
+                    *k = last;
+                }
+            }
+            let zeros = next(3);
+            let mut rows: Vec<Vec<H>> = Vec::new();
+            for _ in 0..1 + next(3) {
+                let mut row = Vec::new();
+                for _ in 0..count {
+                    let mut xyz = [0.0; 3];
+                    for x in &mut xyz {
+                        *x = if next(4) < zeros {
+                            [0.0, -0.0][next(2)]
+                        } else {
+                            values[next(values.len())]
+                        };
+                    }
+                    row.push(H {
+                        p: Vec3::new(xyz[0], xyz[1], xyz[2]),
+                        w: weights[next(weights.len())],
+                    });
+                }
+                rows.push(row);
+            }
+            // The fast way is the one taken for such input.
+            let (plan, _) = insertions(&knots, degree).expect("knots in order");
+            for row in &rows {
+                assert!(all_inserted(row, &plan, degree).is_some(), "case {case}");
+            }
+            let (mut k1, mut r1) = (knots.clone(), rows.clone());
+            make_bezier(&mut k1, degree, &mut r1);
+            let (mut k2, mut r2) = (knots.clone(), rows.clone());
+            make_bezier_one_at_a_time(&mut k2, degree, &mut r2);
+            let knot_bits = |k: &[f64]| k.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(knot_bits(&k1), knot_bits(&k2), "case {case}: {knots:?}");
+            for (a, b) in r1.iter().zip(&r2) {
+                assert_eq!(bits(a), bits(b), "case {case}: degree {degree}, {knots:?}");
+            }
+            if copies_turned(&knots, degree, &rows) > 0 {
+                flipped += 1;
+            }
+        }
+        // Enough cases where a copy turned a zero's sign (where copying
+        // exactly would differ) for the test to say something.
+        assert!(flipped > 10_000, "{flipped} cases turned a zero's sign");
+    }
+
+    /// How many of the copies the one-at-a-time way makes (the points left
+    /// and right of each insertion) are not their point bit for bit.
+    fn copies_turned(knots: &[f64], degree: usize, rows: &[Vec<H>]) -> usize {
+        let (mut knots, mut rows) = (knots.to_vec(), rows.to_vec());
+        let (start, end) = domain_of(&knots, degree);
+        let mut distinct: Vec<f64> = knots
+            .iter()
+            .copied()
+            .filter(|&x| x >= start && x <= end)
+            .collect();
+        distinct.dedup();
+        let mut turned = 0;
+        for value in distinct {
+            while knots.iter().filter(|&&x| x == value).count() < degree {
+                let k = knots.partition_point(|&x| x <= value).saturating_sub(1);
+                let before = rows.clone();
+                insert_knot(&mut knots, degree, &mut rows, value);
+                for (old, new) in before.iter().zip(&rows) {
+                    for i in 1..old.len() {
+                        let was = if i + degree <= k {
+                            old[i]
+                        } else if i > k {
+                            old[i - 1]
+                        } else {
+                            continue;
+                        };
+                        if bits(&[was]) != bits(&[new[i]]) {
+                            turned += 1;
+                        }
+                    }
+                }
+            }
+        }
+        turned
     }
 
     #[test]
