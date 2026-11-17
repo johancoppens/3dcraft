@@ -370,6 +370,114 @@ pub struct SceneSketch {
     pub polylines: Vec<ScenePolyline>,
     /// Every point entity, in space.
     pub points: Vec<Vec3>,
+    /// For the grid of a grid surface (drawn like a sketch: its rows and
+    /// columns as lines, its points as points): how large it is and how
+    /// it is thinned. `None` for a sketch and a helix.
+    pub grid: Option<SceneGrid>,
+}
+
+impl SceneSketch {
+    /// How much nearer the eye than they are a viewer tests this sketch's
+    /// lines and points against the depth of the bodies, in model units,
+    /// for a scene meshed at `tolerance`: nothing for a sketch (its lines
+    /// lie on their plane, and a face on that plane is meshed on it
+    /// exactly) and a helix; [`SURFACE_LIFT`] times the tolerance for a
+    /// grid, whose lines and points lie on the sheet's exact surface while
+    /// the mesh drawn for it (or for a body cut by it) follows that surface
+    /// only within the tolerance, and the lines' own chords theirs within
+    /// it too.
+    pub fn lift(&self, tolerance: f64) -> f64 {
+        match self.grid {
+            Some(_) if tolerance.is_finite() && tolerance > 0.0 => SURFACE_LIFT * tolerance,
+            _ => 0.0,
+        }
+    }
+}
+
+/// How far in front of the surface under them the lines and points of a
+/// grid are tested, in multiples of the scene's tolerance
+/// ([`SceneSketch::lift`]): the mesh lies within the tolerance of the
+/// exact surface and each chord of a line within it of the line, so the
+/// two differ by at most twice the tolerance across the surface, and by
+/// twice that along a view at 60° to the surface's normal.
+pub const SURFACE_LIFT: f64 = 4.0;
+
+/// The grid a grid surface was made through, as the scene draws it
+/// ([`SceneSketch::grid`]): its rows and columns are the sheet's
+/// iso-curves at the parameters of the points (which pass through the
+/// points exactly, where straight chords between them would leave the
+/// sheet), drawn as construction geometry (a guide, not a profile: the
+/// lighter, thinner line, so the sheet's shading reads through), its
+/// points the sheet's points at those parameters (within the feature's
+/// `deviation` of the points given), drawn as a sketch's points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SceneGrid {
+    /// Rows of the grid, and points in each row (its columns).
+    pub rows: usize,
+    pub columns: usize,
+    /// A line is drawn for every `row_step`-th row (the first, and every
+    /// `row_step`-th after it) and for the last row; 1 when every row is
+    /// drawn, more when the grid has more than [`MAX_GRID_LINES`] rows.
+    /// Its points are drawn where drawn rows and columns cross.
+    pub row_step: usize,
+    pub column_step: usize,
+}
+
+impl SceneGrid {
+    /// True when not every row and column is drawn.
+    pub fn thinned(&self) -> bool {
+        self.row_step > 1 || self.column_step > 1
+    }
+
+    /// The rows drawn (from 0), in order.
+    pub fn drawn_rows(&self) -> Vec<usize> {
+        drawn_lines(self.rows, self.row_step)
+    }
+
+    /// The columns drawn (from 0), in order.
+    pub fn drawn_columns(&self) -> Vec<usize> {
+        drawn_lines(self.columns, self.column_step)
+    }
+}
+
+/// Most rows, and most columns, of a grid that are drawn as lines: a side
+/// with more points is drawn every `k`-th line, `k` the least that keeps
+/// within this (the last line drawn either way), so a grid of 512 × 512
+/// points is drawn with 65 × 65 lines and 4 225 points.
+pub const MAX_GRID_LINES: usize = 65;
+
+/// Most points the lines of one grid are drawn with, all together: the
+/// chords of a line are halved until they are within the scene's
+/// tolerance only while the grid has points left (every span of the sheet
+/// gets its chord first: at most 130 lines of 1 023 spans).
+pub const MAX_GRID_LINE_POINTS: usize = 1 << 18;
+
+/// How many times a chord of a grid's line over one span of the sheet is
+/// halved at most: 64 chords a span.
+const GRID_LINE_DEPTH: u32 = 6;
+
+/// Every how many lines a side of `count` points is drawn
+/// ([`SceneGrid::row_step`]).
+pub fn grid_step(count: usize) -> usize {
+    if count <= MAX_GRID_LINES {
+        1
+    } else {
+        (count - 1).div_ceil(MAX_GRID_LINES - 1)
+    }
+}
+
+/// The lines of a side of `count` points drawn at `step`: the first,
+/// every `step`-th after it and the last. A side is at most
+/// `MAX_GRID_SIDE` points (a count beyond is taken as that).
+fn drawn_lines(count: usize, step: usize) -> Vec<usize> {
+    let count = count.min(craft3d_doc::MAX_GRID_SIDE);
+    let mut drawn: Vec<usize> = (0..count).step_by(step.max(1)).collect();
+    if let Some(last) = count.checked_sub(1)
+        && drawn.last() != Some(&last)
+    {
+        drawn.push(last);
+    }
+    drawn
 }
 
 /// Where a datum is drawn: a plane as a square, an axis as a segment, both
@@ -1014,7 +1122,7 @@ fn frame_of(doc: &Document, regen: &Regen, scene: &Scene) -> Bbox3 {
                     (Some(craft3d_regen::Datum::Helix(helix)), Status::Ok) => {
                         scene_helix(feature, &helix, sampling)
                     }
-                    _ => None,
+                    _ => built_grid(feature, outcome, sampling),
                 },
             };
             if let Some(drawn) = drawn {
@@ -1435,6 +1543,7 @@ fn scene_sketch(
         normal: solved.normal,
         polylines,
         points,
+        grid: None,
     }
 }
 
@@ -1479,7 +1588,162 @@ fn scene_helix(
             points,
         }],
         points: Vec::new(),
+        grid: None,
     })
+}
+
+/// The breaks of a line of a grid over `range`: its ends and the knots of
+/// the sheet that way strictly between them, in order, each once.
+fn knot_breaks(knots: &[f64], (low, high): (f64, f64)) -> Vec<f64> {
+    let mut out = vec![low];
+    for &k in knots {
+        if out.last().is_some_and(|&last| k > last) && k < high {
+            out.push(k);
+        }
+    }
+    out.push(high);
+    out
+}
+
+/// The points of a line `at` of a grid over the knot spans `breaks`: each
+/// span's chord, halved (at most [`GRID_LINE_DEPTH`] times) while a point
+/// of the line a quarter, half or three quarters along it lies further
+/// than `tolerance` from the chord's point there and `budget` has points
+/// left. `None` when a point is not finite.
+fn grid_line(
+    at: &dyn Fn(f64) -> Vec3,
+    breaks: &[f64],
+    tolerance: f64,
+    budget: &mut usize,
+) -> Option<Vec<Vec3>> {
+    let refine = tolerance.is_finite() && tolerance > 0.0;
+    let first = *breaks.first()?;
+    let mut points = vec![at(first)];
+    let mut start = (first, *points.first()?);
+    for &end in breaks.get(1..)? {
+        let mut stack = vec![(start.0, start.1, end, at(end), 0_u32)];
+        while let Some((ta, pa, tb, pb, depth)) = stack.pop() {
+            let fits = !refine
+                || depth >= GRID_LINE_DEPTH
+                || *budget == 0
+                || [0.25, 0.5, 0.75]
+                    .iter()
+                    .all(|&s| at(ta + (tb - ta) * s).distance(pa.lerp(pb, s)) <= tolerance);
+            if fits {
+                points.push(pb);
+                continue;
+            }
+            *budget = budget.saturating_sub(1);
+            let tm = 0.5 * (ta + tb);
+            let pm = at(tm);
+            stack.push((tm, pm, tb, pb, depth + 1));
+            stack.push((ta, pa, tm, pm, depth + 1));
+        }
+        start = (end, *points.last()?);
+    }
+    points.iter().all(|p| p.is_finite()).then_some(points)
+}
+
+/// The grid of a grid surface whose sheet is `body` (of `feature`, built),
+/// as the scene draws it: the sheet's iso-curves at the parameters of the
+/// rows and columns drawn ([`SceneGrid`]), sampled within `tolerance` (at
+/// most [`MAX_GRID_LINE_POINTS`] points), and its points where they
+/// cross. `None` when the body is not one face on a spline surface or the
+/// parameters are not one per row and column.
+fn scene_grid(
+    feature: &craft3d_doc::Feature,
+    body: &craft3d_topo::Body,
+    made: &craft3d_regen::Gridded,
+    tolerance: f64,
+) -> Option<SceneSketch> {
+    let craft3d_geom::Surface::Nurbs(surface) = &body.faces.first()?.surface else {
+        return None;
+    };
+    let (rows, columns) = (made.rows, made.columns);
+    if made.u.len() != columns || made.v.len() != rows || rows < 2 || columns < 2 {
+        return None;
+    }
+    let grid = SceneGrid {
+        rows,
+        columns,
+        row_step: grid_step(rows),
+        column_step: grid_step(columns),
+    };
+    let (drawn_rows, drawn_columns) = (grid.drawn_rows(), grid.drawn_columns());
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let along_rows = knot_breaks(surface.knots_u(), (u0, u1));
+    let along_columns = knot_breaks(surface.knots_v(), (v0, v1));
+    // Every span its chord first; what is left refines.
+    let least = drawn_rows
+        .len()
+        .saturating_mul(along_rows.len())
+        .saturating_add(drawn_columns.len().saturating_mul(along_columns.len()));
+    let mut budget = MAX_GRID_LINE_POINTS.saturating_sub(least);
+    let mut polylines = Vec::with_capacity(drawn_rows.len() + drawn_columns.len());
+    let mut points = Vec::with_capacity(drawn_rows.len().saturating_mul(drawn_columns.len()));
+    for &r in &drawn_rows {
+        let v = *made.v.get(r)?;
+        let line = surface.at_v(v);
+        let at = |u: f64| line.derivatives(u).0;
+        for &c in &drawn_columns {
+            points.push(at(*made.u.get(c)?));
+        }
+        polylines.push(ScenePolyline {
+            entity: format!("row {}", r + 1),
+            curve: SketchCurve::Spline,
+            construction: true,
+            points: grid_line(&at, &along_rows, tolerance, &mut budget)?,
+        });
+    }
+    for &c in &drawn_columns {
+        let u = *made.u.get(c)?;
+        let line = surface.at_u(u);
+        let at = |v: f64| line.derivatives(v).0;
+        polylines.push(ScenePolyline {
+            entity: format!("column {}", c + 1),
+            curve: SketchCurve::Spline,
+            construction: true,
+            points: grid_line(&at, &along_columns, tolerance, &mut budget)?,
+        });
+    }
+    if !points.iter().all(|p| p.is_finite()) {
+        return None;
+    }
+    // The frame: at the first point, along the first row, square to the
+    // sheet at its middle.
+    let origin = *points.first()?;
+    let (_, du, dv) = surface.derivatives(0.5 * (u0 + u1), 0.5 * (v0 + v1));
+    let normal = du.cross(dv).normalized().unwrap_or(Vec3::Z);
+    let x_axis = du.normalized().unwrap_or(Vec3::X);
+    let y_axis = normal.cross(x_axis).normalized().unwrap_or(Vec3::Y);
+    Some(SceneSketch {
+        feature: feature.id.to_string(),
+        name: feature.name.clone(),
+        origin,
+        x_axis,
+        y_axis,
+        normal,
+        polylines,
+        points,
+        grid: Some(grid),
+    })
+}
+
+/// The grid of feature `feature` when it is a grid surface that was built
+/// ([`scene_grid`]); its sheet may have gone into a later feature.
+fn built_grid(
+    feature: &craft3d_doc::Feature,
+    outcome: &craft3d_regen::FeatureResult,
+    tolerance: f64,
+) -> Option<SceneSketch> {
+    if !matches!(feature.kind, FeatureKind::SurfaceGrid(_)) || !matches!(outcome.status, Status::Ok)
+    {
+        return None;
+    }
+    let Some(craft3d_regen::Developed::Grid(made)) = &outcome.developed else {
+        return None;
+    };
+    scene_grid(feature, outcome.body.as_deref()?, made, tolerance)
 }
 
 /// Why a build with a triangle budget stopped before its last body.
@@ -1637,11 +1901,14 @@ fn build(
             passes: outcome.and_then(|outcome| {
                 crate::commands::passes_text(doc, &regen.features, feature, outcome)
             }),
-            // A feature switched off that passes a body on draws it.
+            // A feature switched off that passes a body on draws it; a
+            // grid surface draws its grid, also once its sheet is taken.
             draws: outcome.is_some_and(craft3d_regen::FeatureResult::is_built)
                 && (outcome.and_then(|o| o.own_body()).is_some()
                     || solved.is_some()
-                    || outcome.and_then(|o| o.datum).is_some()),
+                    || outcome.and_then(|o| o.datum).is_some()
+                    || (matches!(feature.kind, FeatureKind::SurfaceGrid(_))
+                        && outcome.is_some_and(|o| o.body.is_some()))),
         });
         // Hidden in the view: a row of the tree, and nothing drawn.
         if doc.is_hidden(feature.id) {
@@ -1661,6 +1928,14 @@ fn build(
             (outcome.and_then(|o| o.datum), state)
             && let Some(drawn) = scene_helix(feature, &helix, tolerance)
         {
+            scene.sketches.push(drawn);
+        }
+        // A grid surface's grid is drawn as lines and points, like a
+        // sketch, whether its sheet is drawn or went into a later feature.
+        if let (FeatureState::Ok, Some(drawn)) = (
+            state,
+            outcome.and_then(|o| built_grid(feature, o, tolerance)),
+        ) {
             scene.sketches.push(drawn);
         }
         let Some(body) = outcome.and_then(|o| o.own_body()) else {

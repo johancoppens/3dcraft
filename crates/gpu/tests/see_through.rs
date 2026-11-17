@@ -525,6 +525,7 @@ fn lines_over_a_see_through_picture_are_tested_against_the_front() {
         axis: false,
         hidden_opacity: None,
         edge: None,
+        lift: 0.0,
     };
     let segments = [
         // Between the two sheets: hidden by the front one.

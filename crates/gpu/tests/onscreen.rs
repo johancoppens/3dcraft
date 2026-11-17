@@ -304,6 +304,7 @@ fn lines_are_hidden_behind_a_body_and_dimmed_or_left_out_as_asked() {
         axis: false,
         hidden_opacity: None,
         edge: None,
+        lift: 0.0,
     };
     let segments = [
         // A sketch line behind the block: dimmed where the block is.
@@ -316,6 +317,14 @@ fn lines_are_hidden_behind_a_body_and_dimmed_or_left_out_as_asked() {
         line(-10.0, 4.0, white, true, false),
         // Not tested: whole wherever it is.
         line(30.0, -4.0, white, false, false),
+        // Half a unit inside the front face: dimmed as it is, whole when
+        // tested a unit nearer (`Segment::lift`: a line on an exact
+        // surface the mesh follows within its tolerance).
+        line(-9.5, 10.0, yellow, true, true),
+        Segment {
+            lift: 1.0,
+            ..line(-9.5, -12.0, yellow, true, true)
+        },
         // A dot behind the block, and one beside it.
         Segment {
             from: Vec3::new(0.0, 30.0, 12.0),
@@ -327,6 +336,7 @@ fn lines_are_hidden_behind_a_body_and_dimmed_or_left_out_as_asked() {
             axis: false,
             hidden_opacity: None,
             edge: None,
+            lift: 0.0,
         },
         Segment {
             from: Vec3::new(30.0, 30.0, 12.0),
@@ -338,6 +348,7 @@ fn lines_are_hidden_behind_a_body_and_dimmed_or_left_out_as_asked() {
             axis: false,
             hidden_opacity: None,
             edge: None,
+            lift: 0.0,
         },
     ];
     // Model x and z to pixels: 60 model units over 300 pixels.
@@ -402,6 +413,8 @@ fn lines_are_hidden_behind_a_body_and_dimmed_or_left_out_as_asked() {
                 assert_eq!(classify(x, -8.0), "full", "{label}: in front at x {x}");
                 assert_eq!(classify(x, 4.0), "full", "{label}: on the face at x {x}");
                 assert_eq!(classify(x, -4.0), "full", "{label}: untested at x {x}");
+                assert_eq!(classify(x, 10.0), "dimmed", "{label}: inside at x {x}");
+                assert_eq!(classify(x, -12.0), "full", "{label}: lifted at x {x}");
             }
             for x in [-33.0, -25.0, 25.0, 33.0] {
                 assert_eq!(classify(x, 0.0), "full", "{label}: sketch beside at x {x}");
@@ -528,6 +541,7 @@ fn what_the_renderer_refuses_and_what_it_takes_in_its_stride() {
                 axis: false,
                 hidden_opacity: None,
                 edge: None,
+                lift: 0.0,
             },
             Segment {
                 from: Vec3::new(1e300, 0.0, 0.0),
@@ -539,6 +553,7 @@ fn what_the_renderer_refuses_and_what_it_takes_in_its_stride() {
                 axis: true,
                 hidden_opacity: None,
                 edge: None,
+                lift: 0.0,
             },
             Segment {
                 from: Vec3::ZERO,
@@ -550,6 +565,7 @@ fn what_the_renderer_refuses_and_what_it_takes_in_its_stride() {
                 axis: true,
                 hidden_opacity: None,
                 edge: None,
+                lift: 0.0,
             },
         ];
         let lines = onscreen.upload_lines(&hostile).unwrap();

@@ -234,26 +234,31 @@ pub fn segments_marked(
                             outline_width: tokens.edge_silhouette_width * scale,
                             extent,
                         }),
+                        lift: 0.0,
                     });
                 }
             }
         }
     }
-    let mut line = |a: Vec3, b: Vec3, kind: LineKind, tested: bool, dimmed: bool, axis: bool| {
-        out.push(Segment {
-            hidden_opacity: kind.hidden_opacity(tokens),
-            from: a,
-            to: b,
-            color: kind.color(tokens),
-            width: kind.width(tokens) * scale,
-            tested,
-            dimmed,
-            axis,
-            edge: None,
-        });
-    };
+    // `lift`: how much nearer than it is the line is tested (a grid's
+    // line on its sheet, `SceneSketch::lift`).
+    let mut line =
+        |a: Vec3, b: Vec3, kind: LineKind, tested: bool, dimmed: bool, axis: bool, lift: f32| {
+            out.push(Segment {
+                hidden_opacity: kind.hidden_opacity(tokens),
+                from: a,
+                to: b,
+                color: kind.color(tokens),
+                width: kind.width(tokens) * scale,
+                tested,
+                dimmed,
+                axis,
+                edge: None,
+                lift,
+            });
+        };
     for &[a, b] in marks.outline() {
-        line(a, b, LineKind::Edge, true, see_through, false);
+        line(a, b, LineKind::Edge, true, see_through, false, 0.0);
     }
     for (axis, direction) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
         line(
@@ -263,45 +268,52 @@ pub fn segments_marked(
             false,
             false,
             true,
+            0.0,
         );
     }
     for [a, b] in marks.datum_lines() {
-        line(a, b, LineKind::Datum, true, true, false);
+        line(a, b, LineKind::Datum, true, true, false, 0.0);
     }
     if tokens.mate_rest_halo_width > 0.0 {
         for &[a, b] in &marks.mates {
-            line(a, b, LineKind::MateRestHalo, true, true, false);
+            line(a, b, LineKind::MateRestHalo, true, true, false, 0.0);
         }
     }
     for &[a, b] in &marks.mates {
-        line(a, b, LineKind::Mate, true, true, false);
+        line(a, b, LineKind::Mate, true, true, false, 0.0);
     }
     for &[a, b] in &marks.mates_hot {
-        line(a, b, LineKind::MateHalo, true, true, false);
+        line(a, b, LineKind::MateHalo, true, true, false, 0.0);
     }
     for &[a, b] in &marks.mates_hot {
-        line(a, b, LineKind::MateHot, true, true, false);
+        line(a, b, LineKind::MateHot, true, true, false, 0.0);
     }
     for trace in &marks.traces {
         for pair in trace.windows(2) {
             if let [a, b] = *pair {
-                line(a, b, LineKind::Trace, true, true, false);
+                line(a, b, LineKind::Trace, true, true, false, 0.0);
             }
         }
     }
     for comb in &marks.combs {
         for pair in comb.windows(2) {
             if let [a, b] = *pair {
-                line(a, b, LineKind::Comb, true, true, false);
+                line(a, b, LineKind::Comb, true, true, false, 0.0);
             }
         }
     }
+    // A grid's lines and points lie on its sheet's exact surface: tested
+    // that much nearer (`SceneSketch::lift`), as the CPU overlay tests
+    // them.
+    let tolerance = scene.map_or(0.0, |scene| scene.tolerance);
     for sketch in scene
         .into_iter()
         .flat_map(|scene| &scene.sketches)
         .filter(|_| !marks.hide_sketches)
     {
         let chosen = selected == Some(sketch.feature.as_str());
+        // Narrowed at the GPU boundary.
+        let lift = sketch.lift(tolerance) as f32;
         for polyline in &sketch.polylines {
             let kind = match (polyline.construction, chosen) {
                 (true, _) => LineKind::Construction,
@@ -310,14 +322,14 @@ pub fn segments_marked(
             };
             for pair in polyline.points.windows(2) {
                 if let [a, b] = *pair {
-                    line(a, b, kind, true, true, false);
+                    line(a, b, kind, true, true, false, lift);
                 }
             }
         }
     }
     for &[a, b] in &marks.lines {
         if let Some([a, b]) = marks.kept(a, b) {
-            line(a, b, LineKind::Highlight, true, true, false);
+            line(a, b, LineKind::Highlight, true, true, false, 0.0);
         }
     }
     for sketch in scene
@@ -330,6 +342,7 @@ pub fn segments_marked(
         } else {
             LineKind::Sketch
         };
+        let lift = sketch.lift(tolerance) as f32;
         for point in &sketch.points {
             out.push(Segment {
                 from: *point,
@@ -341,6 +354,7 @@ pub fn segments_marked(
                 axis: false,
                 hidden_opacity: None,
                 edge: None,
+                lift,
             });
         }
     }
@@ -355,6 +369,7 @@ pub fn segments_marked(
             axis: false,
             hidden_opacity: None,
             edge: None,
+            lift: 0.0,
         });
     }
     for point in marks
@@ -372,6 +387,7 @@ pub fn segments_marked(
             axis: false,
             hidden_opacity: None,
             edge: None,
+            lift: 0.0,
         });
     }
     out
