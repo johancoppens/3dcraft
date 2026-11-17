@@ -375,16 +375,17 @@ fn between_planes(corner: f64, concave: bool, law: Law) {
                     * k
                     * k;
             // The fitted face is within a quarter of the tolerance of the
-            // arcs all over it.
+            // arcs all over it: the volume is held to a tenth of what that
+            // allows (the face's area times the tolerance).
             let slack = fillet_area * k * k * tol.linear;
             assert!(
-                (after.volume - volume).abs() <= slack,
+                (after.volume - volume).abs() <= 0.1 * slack,
                 "{what}: volume {} against {volume}, off by {:e} of {slack:e}",
                 after.volume,
                 after.volume - volume
             );
             assert!(
-                (after.area - area).abs() <= 1e-7 * area,
+                (after.area - area).abs() <= 1e-8 * area,
                 "{what}: area {} against {area}",
                 after.area
             );
@@ -407,7 +408,7 @@ fn between_planes(corner: f64, concave: bool, law: Law) {
                 let off = (x - centre[0]).phypot(y - centre[1]) - r;
                 furthest = furthest.max(off.abs() * k / tol.linear);
                 assert!(
-                    off.abs() * k <= 0.5 * tol.linear,
+                    off.abs() * k <= 0.25 * tol.linear,
                     "{what}: a point at height {z} is {off:e} off its arc"
                 );
                 // Between the feet: no further from the edge than they.
@@ -421,7 +422,7 @@ fn between_planes(corner: f64, concave: bool, law: Law) {
             // Tangent to both faces along its borders.
             let worst = crease(&made);
             assert!(
-                worst <= 10.0 * tol.linear / (law.radius * k),
+                worst <= tol.linear / (law.radius * k),
                 "{what}: a crease of {worst:e}"
             );
             println!(
@@ -499,6 +500,22 @@ fn a_law_that_nearly_runs_to_nothing_is_still_the_arc_of_each_height() {
             radius: 3.0,
             low: None,
             high: Some((0.03, 15.0)),
+        },
+    );
+}
+
+#[test]
+fn a_law_that_changes_fast_is_still_the_arc_of_each_height() {
+    // From 1 up to 3 within 3 of the bottom (the radius changes twice as
+    // fast as the length there), and on to 4 within 1 of the top (three
+    // times as fast).
+    between_planes(
+        90.0,
+        false,
+        Law {
+            radius: 3.0,
+            low: Some((1.0, 3.0)),
+            high: Some((4.0, 1.0)),
         },
     );
 }
@@ -697,7 +714,7 @@ fn a_law_between_two_spline_walls_is_the_fillet_of_the_curves_at_each_height() {
                 (took - expected).abs() / slack
             );
             assert!(
-                (took - expected).abs() <= slack,
+                (took - expected).abs() <= 0.1 * slack,
                 "{what}: took {took} instead of {expected}"
             );
             let worst = crease(&made);
@@ -904,7 +921,7 @@ fn a_law_along_a_spline_rim_is_a_quarter_circle_across_it() {
                 let off = Vec3::new(q.x, q.y, z / k).distance(centre) - r;
                 furthest = furthest.max(off.abs() * k / tol.linear);
                 assert!(
-                    off.abs() * k <= 0.5 * tol.linear,
+                    off.abs() * k <= 0.25 * tol.linear,
                     "{what}: a point at length {a} is {off:e} off its arc"
                 );
                 held += 1;
@@ -917,12 +934,12 @@ fn a_law_along_a_spline_rim_is_a_quarter_circle_across_it() {
                 (after.area - area).abs() / area,
             );
             assert!(
-                (after.volume - volume).abs() <= slack,
+                (after.volume - volume).abs() <= 0.1 * slack,
                 "{what}: volume {} against {volume}",
                 after.volume
             );
             assert!(
-                (after.area - area).abs() <= 1e-7 * area,
+                (after.area - area).abs() <= 1e-8 * area,
                 "{what}: area {} against {area}",
                 after.area
             );
@@ -1042,7 +1059,7 @@ fn a_law_between_a_plane_and_a_cone_is_the_arc_between_the_feet_of_each_ball() {
             let off = q.distance(c) - r;
             furthest = furthest.max(off.abs() * k / tol.linear);
             assert!(
-                off.abs() * k <= 0.5 * tol.linear,
+                off.abs() * k <= 0.25 * tol.linear,
                 "{what}: a point at length {a} is {off:e} off its ball"
             );
             held += 1;

@@ -49,6 +49,13 @@
 //! cubic through them, and the blend face is the ring between its two
 //! borders.
 //!
+//! **A radius that varies along the edge** ([`super::law`]): the ball in
+//! the plane at a point of the edge has the radius the law gives there,
+//! by the edge's length. The face is the arcs between the feet of those
+//! balls, which is not their envelope, so its normal across a section is
+//! had from the derivative of the section along the edge ([`slope`]). Built
+//! along an open edge on its own.
+//!
 //! **Chains and meets.** Edges that go on smoothly into each other are
 //! blended as one chain, and two fillets that end in one vertex at an
 //! angle meet there: see [`chain`].
@@ -99,6 +106,13 @@ const MAX_SAMPLES: usize = 4096;
 /// Passes of the refinement: each halves the steps where the surface
 /// does not hold.
 const PASSES: usize = 16;
+/// Passes of the refinement of a fillet whose radius varies along its
+/// edge. Where its law joins its continuation past an end of the edge the
+/// third derivative of the radius jumps, and the steps there are halved
+/// many times over, each pass leaving the next step over its bound by a
+/// little (a fade from 3 to 1 over 3 was still 1.04 times over after 16
+/// passes, with 192 samples).
+const LAW_PASSES: usize = 48;
 /// Steps of the search for one ball, and of the search for a nearest point.
 const BALL_STEPS: usize = 100;
 const FOOT_STEPS: usize = 60;
@@ -358,13 +372,13 @@ impl Solver<'_> {
         crate::work::blend_section();
         let across = self.spine.at(s)?;
         match self.shape {
-            Shape::Ball { radius, convex } => {
-                let radius = match self.law {
-                    Some(law) => law.radius(s)?,
-                    None => radius,
-                };
-                self.ball(across, near, radius, convex)
-            }
+            Shape::Ball { radius, convex } => match self.law {
+                Some(law) => {
+                    let radius = law.radius(s)?;
+                    self.ball(across, &resized(near, across, radius)?, radius, convex)
+                }
+                None => self.ball(across, near, radius, convex),
+            },
             Shape::Cut { distances } => self.cut(across, near, distances),
         }
     }
@@ -516,6 +530,28 @@ impl Solver<'_> {
             centre: None,
         })
     }
+}
+
+/// `near`, a ball of another radius in a plane nearby, as the start of
+/// the search for the ball of `radius` in the plane `across`: its centre
+/// moved into that plane and then towards or away from the plane's point
+/// on the edge in the ratio of the radii. The ball between two faces
+/// grows from the edge in proportion to its radius (exactly so between
+/// planes), so a start a whole radius off, which the search would have to
+/// make up in steps of half a radius, becomes one a small part of the
+/// radius off, however fast the radius changes along the edge.
+fn resized(near: &Section, across: Across, radius: f64) -> Option<Section> {
+    let centre = near.centre?;
+    let was = centre.distance(*near.feet.first()?);
+    let ratio = radius / was;
+    if !(ratio.is_finite() && ratio > 0.0) {
+        return None;
+    }
+    let in_plane = centre - across.normal * (centre - across.point).dot(across.normal);
+    Some(Section {
+        centre: Some(across.point + (in_plane - across.point) * ratio),
+        ..*near
+    })
 }
 
 /// The solution of the three linear equations `rows[i] · x = rhs[i]`.
@@ -814,7 +850,11 @@ fn refine(
         SurfaceBound::new(solver.sides[0].surface)?,
         SurfaceBound::new(solver.sides[1].surface)?,
     ];
-    for _ in 0..PASSES {
+    let passes = match solver.law {
+        Some(_) => LAW_PASSES,
+        None => PASSES,
+    };
+    for _ in 0..passes {
         let surface = if closed {
             ring_surface(params, sections)?
         } else {
