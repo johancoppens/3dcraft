@@ -703,9 +703,9 @@ fn sync_cost(shell: &mut Shell, session: &mut Session, what: &str) {
     );
 }
 
-/// The turbofan of the benchmark (665 thousand triangles at the display
-/// quality): what the shell's work for a frame of a drag costs on a heavy
-/// model. On demand: `-- --ignored`.
+/// The turbofan of the benchmark (130 thousand triangles at the display
+/// quality in this window): what the shell's work for a frame of a drag
+/// costs on a heavy model. On demand: `-- --ignored`.
 #[test]
 #[ignore = "regenerates the turbofan; run with --ignored for the numbers"]
 fn a_drag_on_the_turbofan_costs_this_much() {
@@ -720,4 +720,168 @@ fn a_drag_on_the_turbofan_costs_this_much() {
     }
     let (mut shell, _window) = window_on(&mut s, [1400.0, 900.0], "zx", 0.0, "iso");
     sync_cost(&mut shell, &mut s, "the turbofan");
+}
+
+/// The drilled block with its top's edge along y at x = 60 chamfered by
+/// 8: a flat face at a slant, its outward normal (1, 0, 1) / √2.
+fn chamfered() -> Session {
+    let mut s = drilled();
+    run(
+        &mut s,
+        "feature.chamfer",
+        json!({"edges": [["F1:face(1)", "F1:face(5)"]], "distance": 8, "name": "Bevel"}),
+    );
+    s
+}
+
+/// Selects the one face `filter` finds, as a click would.
+fn select_face(session: &mut Session, filter: Value) -> Value {
+    let found = run(
+        session,
+        "select.query",
+        json!({"kind": "face", "where": filter, "then": "replace"}),
+    );
+    assert_eq!(found["count"], 1, "{found}");
+    found["items"][0].clone()
+}
+
+#[test]
+fn the_plane_goes_parallel_to_a_selected_flat_face_and_stays_when_the_selection_changes() {
+    let mut session = chamfered();
+    let slant = select_face(&mut session, json!({"normal": {"along": [1, 0, 1]}}));
+    let (mut shell, mut window) = window_on(&mut session, [1200.0, 800.0], "xy", 4.0, "iso");
+    window.frames(&mut shell, &mut session, 2);
+    // One flat face selected: the bar has a fourth cell, the handle a
+    // fourth dot.
+    let choice = shell.section_face_choice().cloned().expect("the face");
+    assert_eq!(choice.face, slant["name"].as_str().unwrap());
+    assert_eq!(choice.refused, None);
+    assert_eq!(shell.section_handle().unwrap().dots.len(), 4);
+    let names: Vec<&str> = shell.section_hits().iter().map(|(n, _)| *n).collect();
+    assert_eq!(names, ["toggle", "x", "y", "z", "face", "offset", "flip"]);
+    // The bar's cell: the plane through the face, along its outward
+    // normal, nothing cut yet.
+    let cell = shell
+        .section_hits()
+        .iter()
+        .find(|(n, _)| *n == "face")
+        .unwrap()
+        .1;
+    window.click(&mut shell, &mut session, cell.center());
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(shell.state.section.plane, Some(choice.face.clone()));
+    assert_eq!(shell.state.section.feature, Some(choice.feature.clone()));
+    assert_eq!(
+        (shell.state.section.offset, shell.state.section.flip),
+        (0.0, false)
+    );
+    assert!(shell.section_on_face());
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["section"]["direction"], "face");
+    let n: Vec<f64> = got["section"]["normal"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    let h = std::f64::consts::FRAC_1_SQRT_2;
+    assert!(
+        (n[0] - h).abs() < 1e-9 && n[1].abs() < 1e-9 && (n[2] - h).abs() < 1e-9,
+        "{n:?}"
+    );
+    // The face itself is a place the plane snaps to, at 0.
+    assert!(
+        got["section"]["snaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["offset"].as_f64().unwrap().abs() < 1e-9 && s["kind"] == "face"),
+        "{}",
+        got["section"]["snaps"]
+    );
+    // The arrow points out of the face; dragged back into the body (Alt:
+    // as it is), the plane goes in by as much.
+    let place = shell.section_handle().unwrap().clone();
+    let [a, b] = place.frame.arrow.expect("seen side on");
+    let way = (b - a).normalized();
+    let grip = a.lerp(b, 0.5);
+    window.modifiers = Modifiers::ALT;
+    window.drag(&mut shell, &mut session, grip, grip - way * 30.0, 6, |_| {});
+    window.modifiers = Modifiers::NONE;
+    window.frames(&mut shell, &mut session, 2);
+    let offset = shell.state.section.offset;
+    let expected = -30.0 * place.frame.per_point;
+    assert!(
+        (offset - expected).abs() < 0.05 * expected.abs(),
+        "{offset} against {expected}"
+    );
+    // The selection goes: the plane stays on the face, and so do its
+    // fourth dot and cell, chosen.
+    run(&mut session, "select.set", json!({"mode": "clear"}));
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(shell.section_face_choice(), None);
+    assert_eq!(shell.state.section.plane, Some(choice.face.clone()));
+    assert_eq!(shell.state.section.offset, offset);
+    assert_eq!(shell.section_handle().unwrap().dots.len(), 4);
+    assert!(shell.section_hits().iter().any(|(n, _)| *n == "face"));
+    // X takes it back across x.
+    let x = shell.section_handle().unwrap().dots[0];
+    window.click(&mut shell, &mut session, x);
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(shell.state.section.plane.as_deref(), Some("yz"));
+    assert!(!shell.section_on_face());
+    assert_eq!(shell.section_handle().unwrap().dots.len(), 3);
+
+    // A hole's wall is not flat: the dot and the cell say so and do
+    // nothing, and ui.set refuses it in words.
+    let wall = select_face(&mut session, json!({"hole": true, "radius": 3}));
+    window.frames(&mut shell, &mut session, 3);
+    let refused = shell.section_face_choice().cloned().unwrap();
+    assert!(
+        refused
+            .refused
+            .as_deref()
+            .is_some_and(|why| why.contains("Not a flat face")),
+        "{refused:?}"
+    );
+    let before = shell.state.section.clone();
+    let dot = shell.section_handle().unwrap().dots[3];
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 2);
+    assert_eq!(shell.state.section, before);
+    let error = shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&json!({"section": {"plane": wall["name"], "feature": wall["feature"]}})),
+        )
+        .unwrap()
+        .unwrap_err();
+    assert!(error.contains("not flat"), "{error}");
+    assert_eq!(shell.state.section, before);
+    // The fourth dot over the handle: the slanted face again.
+    select_face(&mut session, json!({"normal": {"along": [1, 0, 1]}}));
+    window.frames(&mut shell, &mut session, 3);
+    let dot = shell.section_handle().unwrap().dots[3];
+    assert_eq!(
+        shell.section_handle().unwrap().part_at(dot),
+        Some(HandlePart::Dot(3))
+    );
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 3);
+    assert!(shell.section_on_face());
+    assert_eq!(shell.state.section.offset, 0.0);
+    // An agent lays a plane in any direction the same way.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"section": {"point": [52, 20, 20], "normal": [1, 0, 1], "offset": -2}}),
+    );
+    window.frames(&mut shell, &mut session, 2);
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["section"]["direction"], "free");
+    assert!(!shell.section_on_face());
+    // The face still selected: the fourth dot stays, not chosen.
+    assert_eq!(shell.section_handle().unwrap().dots.len(), 4);
 }

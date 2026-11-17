@@ -338,10 +338,19 @@ fn face_plane(scene: &Scene, ids: &[u32], name: &str) -> Result<(Vec3, Vec3), St
         normal += (b - a).cross(c - a);
         corners_of_face.extend([a, b, c]);
     }
-    let (Some(&origin), Some(normal)) = (corners_of_face.first(), normal.normalized()) else {
+    let not_flat = || {
+        format!(
+            "face {name} is not flat; a section lies on a base plane (xy, yz, zx), a datum plane or a flat face"
+        )
+    };
+    let Some(&origin) = corners_of_face.first() else {
         return Err(format!(
             "face {name} has no area in the picture's mesh, so it gives no plane"
         ));
+    };
+    // Normals that cancel (the whole wall of a hole) are no plane's.
+    let Some(normal) = normal.normalized() else {
+        return Err(not_flat());
     };
     // Flat: every corner in the plane, within rounding of the face's size.
     let extent = Bbox3::from_points(corners_of_face.iter().copied()).diagonal();
@@ -350,9 +359,7 @@ fn face_plane(scene: &Scene, ids: &[u32], name: &str) -> Result<(Vec3, Vec3), St
         .map(|&p| (p - origin).dot(normal).abs())
         .fold(0.0, f64::max);
     if off.is_nan() || off > extent * 1e-6 {
-        return Err(format!(
-            "face {name} is not flat; a section lies on a base plane (xy, yz, zx), a datum plane or a flat face"
-        ));
+        return Err(not_flat());
     }
     Ok((origin, normal))
 }

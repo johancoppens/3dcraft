@@ -1442,21 +1442,47 @@ impl Shell {
         if let (true, Some(axes), Some(offset), Some(side)) =
             (on, layout.axes, layout.offset, layout.side)
         {
-            let items = [(None, "X"), (None, "Y"), (None, "Z")];
-            let (cells, clicked) = choice(
-                ui,
-                axes,
-                "axes",
-                &items,
-                chosen_axis(&section),
-                true,
-                &tokens,
-            );
+            // X, Y, Z, and while a face is selected (or the plane is a
+            // face's) a fourth: parallel to that face.
+            let face = self.section_face_choice().cloned();
+            let on_face = self.section_on_face();
+            let face_words = face
+                .as_ref()
+                .and_then(|f| f.refused.clone())
+                .unwrap_or_else(|| "Parallel to the selected face".to_string());
+            let mut items = vec![(None, "X"), (None, "Y"), (None, "Z")];
+            if face.is_some() || on_face {
+                items.push((Some(Icon::Parallel), face_words.as_str()));
+            }
+            let chosen = if on_face {
+                Some(super::section_handle::FACE_DOT)
+            } else {
+                chosen_axis(&section)
+            };
+            let (cells, clicked) = choice(ui, axes, "axes", &items, chosen, false, &tokens);
             for ((name, _), cell) in SECTION_PLANES.iter().zip(&cells) {
                 hits.push((name, *cell));
             }
-            if let Some(axis) = clicked {
-                choose_axis(&mut section, axis, scene);
+            if let Some(cell) = cells.get(super::section_handle::FACE_DOT) {
+                hits.push(("face", *cell));
+                // A face that is not flat: the cell greyed, its words on
+                // hover say why.
+                if !on_face && face.as_ref().is_some_and(|f| f.refused.is_some()) {
+                    ui.painter().rect_filled(
+                        cell.shrink(tokens.nav_segment_inset),
+                        egui::CornerRadius::same(tokens.nav_segment_radius),
+                        color_alpha(tokens.plate_fill, 150),
+                    );
+                }
+            }
+            match clicked {
+                Some(super::section_handle::FACE_DOT) => {
+                    if let Some(face) = &face {
+                        super::section_handle::choose_face(&mut section, face);
+                    }
+                }
+                Some(axis) => choose_axis(&mut section, axis, scene),
+                None => {}
             }
             let rail = self.offset_field(ui, offset, &mut section, on);
             hits.push(("offset", rail));
