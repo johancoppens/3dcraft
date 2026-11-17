@@ -78,7 +78,7 @@ use super::{DEPTH, FOLLOW, Held, PIECES, SAMPLES, SECTIONS, Trace, trace_of};
 use crate::blend::law::{Along, RadiusLaw};
 use crate::blend::rolling::{
     Across, Item, Section, Shape, Side, Solver, Spine, Steps, edge_length, exact, flat_seed,
-    refuse, scale_of,
+    refuse, resized, scale_of,
 };
 use crate::blend::{BlendError, Reason};
 use crate::boolean::probe::{OnFace, Probe};
@@ -207,7 +207,16 @@ fn afresh(solver: &Solver<'_>, s: f64, item: &Item) -> Option<Section> {
 /// The ball in the plane `across` (the one at `s`), started from `near`.
 fn ball_at(solver: &Solver<'_>, s: f64, across: Across, near: &Section) -> Option<Section> {
     match solver.shape {
-        Shape::Ball { convex, .. } => solver.ball(across, near, solver.size_at(s)?, convex),
+        Shape::Ball { convex, .. } => {
+            let radius = solver.size_at(s)?;
+            // As the construction starts a ball of a law: from its
+            // neighbour resized.
+            let near = match solver.law {
+                Some(_) => resized(near, across, radius)?,
+                None => *near,
+            };
+            solver.ball(across, &near, radius, convex)
+        }
         Shape::Cut { .. } => None,
     }
 }
