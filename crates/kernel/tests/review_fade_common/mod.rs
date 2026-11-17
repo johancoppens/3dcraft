@@ -16,7 +16,10 @@
     clippy::panic,
     clippy::indexing_slicing,
     clippy::cast_possible_truncation,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    clippy::disallowed_methods,
+    clippy::neg_cmp_op_on_partial_ord,
+    clippy::too_many_arguments
 )]
 
 use super::boolean_common::tolerance;
