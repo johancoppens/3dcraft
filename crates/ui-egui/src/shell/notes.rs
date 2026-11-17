@@ -1170,7 +1170,7 @@ mod tests {
         let lay_out = |yaw: f64| {
             let camera = crate::state::CameraState {
                 target: [30.0, 18.0, 0.0],
-                distance: 120.0,
+                distance: 200.0,
                 yaw,
                 pitch: -60.0,
                 ..crate::state::CameraState::default()
