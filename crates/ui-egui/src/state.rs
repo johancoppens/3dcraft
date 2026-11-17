@@ -2021,6 +2021,9 @@ mod tests {
             // Added with What's new (2026-11-14): closed is not written
             // either (`the_release_notes_are_written_only_while_open`).
             whats_new: WhatsNewView::default(),
+            // Added with the notes (2026-11-17): as it starts it is not
+            // written either.
+            notes: NotesView::default(),
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(

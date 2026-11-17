@@ -197,6 +197,8 @@ pub struct NoteMemory {
     /// A note's text being changed in the tab: its id and the text.
     pub(crate) editing: Option<(u64, String)>,
     pub(crate) edit_focus: bool,
+    /// Where the last frame drew *Note here…* in the "select other" list.
+    pub(crate) here_hit: Option<egui::Rect>,
 }
 
 impl Shell {
@@ -209,6 +211,12 @@ impl Shell {
     /// and how many notes they stood for.
     pub fn note_markers(&self) -> (&[(u64, egui::Pos2)], usize) {
         (&self.notes.markers, self.notes.drawn.1)
+    }
+
+    /// Where the last frame drew *Note here…* in the list under the right
+    /// mouse button, when it was offered.
+    pub fn note_here_entry(&self) -> Option<egui::Rect> {
+        self.notes.here_hit
     }
 
     /// The field a note is being written in, when one is open.

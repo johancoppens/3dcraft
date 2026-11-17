@@ -258,12 +258,27 @@ fn n_on_a_selected_face_writes_a_note_as_the_person() {
     let mut session = plate();
     let mut w = Window::new(1280.0, 800.0);
     let mut shell = open(&mut w, &mut session);
-    run(&mut session, "select.set", json!({"names": ["F1:face(1)"]}));
+    // The plate's top as the rounded body names it.
+    run(
+        &mut session,
+        "select.set",
+        json!({"names": ["F2:copy(0)/F1:face(1)"]}),
+    );
     w.frames(&mut shell, &mut session, 2);
     w.key(&mut shell, &mut session, Key::N);
     assert!(shell.note_writing().is_some(), "N opened the field");
-    assert!(
-        tabs(&shell).contains(&SideTab::Notes),
+    // The Notes tab is offered while a note is written (it may sit under
+    // the tab bar's ⋯ here): choosing it holds.
+    set(
+        &mut shell,
+        &mut session,
+        json!({"panels": {"sideTab": "notes"}}),
+    );
+    w.frames(&mut shell, &mut session, 2);
+    assert!(shell.note_writing().is_some(), "still writing");
+    assert_eq!(
+        shell.state.panels.side_tab,
+        SideTab::Notes,
         "the tab while writing"
     );
     shell.type_note("2 mm thicker here", true);
@@ -275,6 +290,53 @@ fn n_on_a_selected_face_writes_a_note_as_the_person() {
     // One undo step takes it back.
     run(&mut session, "edit.undo", json!({}));
     assert_eq!(run(&mut session, "note.list", json!({}))["count"], 0);
+}
+
+/// *Note here…* in the list under the right mouse button writes a note on
+/// the face selected, at the point the right click was on it.
+#[test]
+fn note_here_writes_a_note_where_the_right_click_was() {
+    let mut session = plate();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    run(
+        &mut session,
+        "select.set",
+        json!({"names": ["F2:copy(0)/F1:face(1)"]}),
+    );
+    w.frames(&mut shell, &mut session, 2);
+    // The middle of the view, on the plate's top.
+    let panel = shell.side_hits().panel.unwrap();
+    let at = Pos2::new((panel.right() + 1280.0) / 2.0, 400.0);
+    w.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
+    for pressed in [true, false] {
+        w.frame(
+            &mut shell,
+            &mut session,
+            vec![Event::PointerButton {
+                pos: at,
+                button: PointerButton::Secondary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+    }
+    w.frames(&mut shell, &mut session, 2);
+    let entry = shell.note_here_entry().expect("Note here… offered");
+    w.click(&mut shell, &mut session, entry.center());
+    let writing = shell.note_writing().expect("the field opened");
+    let point = writing.point.expect("the right click's point");
+    assert!((point[2] - 10.0).abs() < 1e-6, "on the top: {point:?}");
+    shell.type_note("a boss here", true);
+    w.frames(&mut shell, &mut session, 3);
+    let listed = run(&mut session, "note.list", json!({}));
+    let note = &listed["notes"][0];
+    assert_eq!(note["author"], "person", "{listed}");
+    assert_eq!(note["on"]["kind"], "face", "{listed}");
+    for k in 0..3 {
+        let got = note["point"][k].as_f64().unwrap();
+        assert!((got - point[k]).abs() < 1e-9, "{listed}");
+    }
 }
 
 #[test]
@@ -524,10 +586,14 @@ impl Shot<'_> {
             .tessellate(output.shapes, output.pixels_per_point);
     }
 
-    fn png(&self) -> Vec<u8> {
+    /// The picture as PNG, and its rows of RGB pixels.
+    fn png(&self) -> (Vec<u8>, Vec<u8>) {
         let size = [self.window.size.x as u32, self.window.size.y as u32];
         let rgb = picture(self.state, &self.jobs, size);
-        craft3d_render::encode_png(size[0], size[1], &rgb).unwrap()
+        (
+            craft3d_render::encode_png(size[0], size[1], &rgb).unwrap(),
+            rgb,
+        )
     }
 }
 
@@ -567,9 +633,9 @@ fn pictures_of_the_notes() {
             for _ in 0..3 {
                 shot.frame(&mut shell, session, Vec::new());
             }
-            let png = shot.png();
+            let (png, rgb) = shot.png();
             std::fs::write(dir.join(format!("{name}.png")), &png).unwrap();
-            png
+            rgb
         };
     let nothing = |_: &mut Shell, _: &mut Session, _: &mut Shot<'_>| {};
     for theme in ["light", "dark"] {
@@ -591,7 +657,11 @@ fn pictures_of_the_notes() {
         &nothing,
     );
     let mut session = plate();
-    run(&mut session, "select.set", json!({"names": ["F1:face(1)"]}));
+    run(
+        &mut session,
+        "select.set",
+        json!({"names": ["F2:copy(0)/F1:face(1)"]}),
+    );
     shoot(
         "notes-writing",
         &mut session,
@@ -662,5 +732,11 @@ fn pictures_of_the_notes() {
         json!({}),
         &nothing,
     );
-    assert!(before == after, "a document without notes draws as before");
+    // Pixel for pixel, but for the status bar's bottom 32 rows, where the
+    // milliseconds the last frame's mesh took differ from run to run.
+    let above = (900 - 32) * 1400 * 3;
+    assert!(
+        before.get(..above) == after.get(..above),
+        "a document without notes draws as before"
+    );
 }

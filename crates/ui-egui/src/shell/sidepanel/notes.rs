@@ -176,22 +176,30 @@ fn note_row(
     let s = kit.skin;
     let chosen = selected == Some(row.id);
     let gutter = t.nav_icon_size + t.nav_icon_gap;
-    let shown = ui.horizontal_top(|ui| {
+    // The row senses a click before its buttons are laid out (on its rect
+    // of the frame before), so Edit, Done and Delete stay on top of it.
+    let row_ui = egui::UiBuilder::new()
+        .id_salt(("note", row.id))
+        .layout(egui::Layout::left_to_right(egui::Align::Min))
+        .sense(egui::Sense::click());
+    let shown = ui.scope_builder(row_ui, |ui| {
+        // Across the panel, so the whole width chooses and is marked.
+        ui.set_min_width(ui.available_width());
         let (rail, _) =
             ui.allocate_exact_size(egui::vec2(gutter, t.row_height), egui::Sense::hover());
         let centre = egui::pos2(rail.left() + t.nav_icon_size * 0.5, rail.center().y);
         let r = t.nav_icon_size * 0.42;
         let ink = if row.done { s.ok } else { t.accent };
         if row.done {
+            // A ring with a tick drawn in two strokes (the panel's font has
+            // no ✓).
+            let stroke = egui::Stroke::new(1.2, color(ink));
+            ui.painter().circle_stroke(centre, r, stroke);
+            let knee = centre + egui::vec2(-0.1 * r, 0.35 * r);
             ui.painter()
-                .circle_stroke(centre, r, egui::Stroke::new(1.2, color(ink)));
-            ui.painter().text(
-                centre,
-                egui::Align2::CENTER_CENTER,
-                "✓",
-                egui::FontId::proportional(r * 1.5),
-                color(ink),
-            );
+                .line_segment([centre + egui::vec2(-0.45 * r, 0.0), knee], stroke);
+            ui.painter()
+                .line_segment([knee, centre + egui::vec2(0.45 * r, -0.35 * r)], stroke);
         } else if row.question() {
             ui.painter()
                 .circle_stroke(centre, r, egui::Stroke::new(1.5, color(ink)));
@@ -246,7 +254,8 @@ fn note_row(
                                 .font(kit.font())
                                 .color(color(ink)),
                         )
-                        .wrap(),
+                        .wrap()
+                        .selectable(false),
                     );
                 }
             }
@@ -257,10 +266,13 @@ fn note_row(
             if let Some(by) = &row.closed_by {
                 small.push_str(&format!(" · done by {by}"));
             }
-            ui.label(
-                egui::RichText::new(small)
-                    .font(kit.small_font())
-                    .color(color(s.text_dim)),
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(small)
+                        .font(kit.small_font())
+                        .color(color(s.text_dim)),
+                )
+                .selectable(false),
             );
             if let Some(reply) = &row.reply {
                 ui.add(
@@ -270,7 +282,8 @@ fn note_row(
                             .italics()
                             .color(color(s.text_dim)),
                     )
-                    .wrap(),
+                    .wrap()
+                    .selectable(false),
                 );
             }
             if chosen && editing.is_none() {
@@ -303,9 +316,8 @@ fn note_row(
             crate::theme::color_alpha(s.selection, 40),
         );
     }
-    let click = ui.interact(rect, ui.id().with(("note", row.id)), egui::Sense::click());
     hits.push((format!("note:{}", row.id), rect));
-    if click.clicked() && editing.is_none() && asked.is_none() {
+    if shown.response.clicked() && editing.is_none() && asked.is_none() {
         *asked = Some(Asked::Choose(row.id));
     }
 }

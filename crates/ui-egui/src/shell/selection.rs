@@ -674,6 +674,7 @@ impl Shell {
                 egui::StrokeKind::Inside,
             );
         }
+        self.notes.here_hit = None;
         let Some(menu) = &self.select.menu else {
             return;
         };
@@ -684,6 +685,7 @@ impl Shell {
         // under the click when it is on that thing.
         let note_here = self.note_here_offered();
         let mut write_note = false;
+        let mut note_hit = None;
         let shift = menu.shift;
         // Two faces of two instances of an assembly selected: the mates
         // that join them come first (`mate.add`).
@@ -716,6 +718,7 @@ impl Shell {
                     }
                     if note_here {
                         let entry = plate.menu_item(ui, crate::kit::MenuItem::new("Note here…"));
+                        note_hit = Some(entry.rect);
                         if entry.clicked() {
                             write_note = true;
                         }
@@ -737,6 +740,7 @@ impl Shell {
             })
             .response;
         self.joints.mate_hits = mate_hits;
+        self.notes.here_hit = note_hit;
         if write_note {
             let front = self
                 .select
