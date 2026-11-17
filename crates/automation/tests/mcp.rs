@@ -88,6 +88,59 @@ fn tool_json(session: &mut Session, name: &str, arguments: Value) -> Value {
     serde_json::from_str(content[0]["text"].as_str().unwrap()).expect("the text is JSON")
 }
 
+/// A note written over MCP is the client's, under the name it gave in
+/// `initialize`; one written before any client named itself is unknown,
+/// never the person's (who types in the window only); no parameter sets
+/// it. Its text changed and its closing are stamped the same way.
+#[test]
+fn a_note_over_mcp_is_the_clients_by_the_name_it_gave() {
+    let mut s = session();
+    tool_json(&mut s, "command_run", json!({"id": "file.new"}));
+    tool_json(
+        &mut s,
+        "command_run",
+        json!({"id": "feature.block", "params": {"name": "Plate", "size": [40, 20, 5]}}),
+    );
+    let before = tool_json(
+        &mut s,
+        "command_run",
+        json!({"id": "note.add", "params": {"text": "before", "on": "Plate:face(1)"}}),
+    );
+    assert_eq!(before["author"], "unknown", "{before}");
+    result(
+        &mut s,
+        "initialize",
+        json!({"protocolVersion": "2025-06-18", "capabilities": {},
+               "clientInfo": {"name": "Test Agent", "version": "1"}}),
+    );
+    let note = tool_json(
+        &mut s,
+        "command_run",
+        json!({"id": "note.add", "params": {"text": "a question", "on": "Plate:face(1)"}}),
+    );
+    assert_eq!(note["author"], "agent", "{note}");
+    assert_eq!(note["agent"], "Test Agent", "{note}");
+    let edited = tool_json(
+        &mut s,
+        "command_run",
+        json!({"id": "note.edit", "params": {"id": 1, "text": "rewritten"}}),
+    );
+    assert_eq!(edited["author"], "unknown", "{edited}");
+    assert_eq!(edited["edited"]["agent"], "Test Agent", "{edited}");
+    let done = tool_json(
+        &mut s,
+        "command_run",
+        json!({"id": "note.resolve", "params": {"id": 2, "reply": "answered"}}),
+    );
+    assert_eq!(done["done"]["agent"], "Test Agent", "{done}");
+    let refused = tool_error(
+        &mut s,
+        "command_run",
+        json!({"id": "note.add", "params": {"text": "x", "on": "Plate:face(1)", "author": "person"}}),
+    );
+    assert!(refused.contains("unknown parameter `author`"), "{refused}");
+}
+
 /// Calls a tool that must fail in execution; returns the error text.
 fn tool_error(session: &mut Session, name: &str, arguments: Value) -> String {
     let result = tool(session, name, arguments.clone());
@@ -183,6 +236,11 @@ fn initialize_describes_the_server() {
         instructions.contains("command_list") && instructions.contains("command_run"),
         "{instructions}"
     );
+    // The notes the person pins to the model, and what an agent does
+    // with them (2026-11-17).
+    for word in ["note.list", "note.resolve", "note.add"] {
+        assert!(instructions.contains(word), "{word}: {instructions}");
+    }
     assert!(
         instructions.len() < 1000,
         "short enough to sit in every context"

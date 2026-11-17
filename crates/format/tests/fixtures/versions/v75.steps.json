@@ -1,0 +1,16 @@
+[
+ ["variable.set", {"name": "t", "expr": "5 mm"}],
+ ["feature.block", {"name": "Plate", "size": ["40 mm", "20 mm", "t"]}],
+ ["feature.cylinder", {"name": "Pin", "position": ["20 mm", "10 mm", "0 mm"], "radius": "3 mm", "height": "t"}],
+ ["note.add", {"text": "2 mm thicker here", "on": "Plate:face(1)"}],
+ {"command": "note.add", "params": {"text": "Should this hole go all the way through?", "on": "Pin:face(0)"}, "agent": "Claude Code"},
+ ["feature.boolean", {"op": "subtract", "target": "Plate", "tool": "Pin", "name": "Drilled"}],
+ ["variable.set", {"name": "t", "expr": "7 mm"}],
+ {"command": "note.resolve", "params": {"id": 1, "reply": "Done: t is 7 mm now."}, "agent": "Claude Code"},
+ ["feature.block", {"name": "Lug", "position": ["40 mm", "5 mm", "0 mm"], "size": ["6 mm", "10 mm", "t"]}],
+ ["note.add", {"text": "this lug can go", "on": "Lug:face(5)"}],
+ ["feature.delete", {"feature": "Lug"}],
+ ["note.add", {"text": "the whole part in aluminium", "on": "Drilled"}],
+ ["note.add", {"text": "a note deleted again", "on": "Drilled"}],
+ ["note.delete", {"id": 5}]
+]

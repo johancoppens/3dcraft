@@ -478,7 +478,7 @@ fn origin_of(shared: &Shared, client: Option<&String>) -> Option<crate::consent:
             },
             None => crate::consent::Origin {
                 key: String::new(),
-                name: "An agent".to_string(),
+                name: craft3d_engine::agent_log::UNNAMED_AGENT.to_string(),
                 cwd: None,
                 grant: None,
             },

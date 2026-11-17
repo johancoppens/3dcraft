@@ -20,6 +20,7 @@ pub mod edge_ref;
 pub mod fold;
 pub mod identity;
 pub mod name;
+pub mod note;
 pub mod output;
 pub mod public;
 pub mod repoint;
@@ -51,6 +52,10 @@ pub use name::{
     MAX_CURVE_LEVELS, MAX_GLYPH_FIELD, MAX_NAME_DEPTH, MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole,
     OffsetGroup, OffsetHead, OffsetKind, PersistentName, curve_groups, decode_continuation,
     offset_groups,
+};
+pub use note::{
+    MAX_NOTE_AUTHOR_CHARS, MAX_NOTE_CHARS, MAX_NOTES, Note, NoteAuthor, NoteDone, NoteKind, NoteOn,
+    NoteStamp, Notes, check_note_point, clean_note_author, clean_note_text, unseen,
 };
 pub use output::{MAX_OUTPUTS, Output, OutputDef};
 pub use public::{
@@ -2554,6 +2559,11 @@ pub struct Document {
     /// allows keeping them ([`text`]).
     #[serde(default)]
     pub fonts: Vec<DocFont>,
+    /// Notes pinned to the model ([`note`]): by the person or an agent,
+    /// open or done. Not part of the history: regeneration does not read
+    /// them, and nothing published holds them.
+    #[serde(default)]
+    pub notes: Notes,
 }
 
 fn check_feature_name(name: &str) -> Result<(), DocError> {
@@ -3033,6 +3043,7 @@ impl Document {
         self.validate_outputs()?;
         self.validate_inserted()?;
         self.validate_assembly()?;
+        self.validate_notes()?;
         match self.rollback {
             Some(id) if !ids.contains(&id) => Err(DocError::UnknownFeature(id)),
             _ => Ok(()),

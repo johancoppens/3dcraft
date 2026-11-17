@@ -43,7 +43,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("assembly.reload", "Reload Sources", r#"{}"#,
         "Reads the active assembly's source files again (and those of its subassemblies) and lists the instances whose source changed: an instance follows its file unless it is pinned, and only a changed source is regenerated. A source that changed and cannot be read again keeps the last version read (listed under unread, with why). Not an undo step. Saving a source in this session, activating the assembly's tab and assembly.follow read what changed by themselves.", doc: true, assembly_reload),
     spec!("assembly.pack", "Pack Sources", r#"{}"#,
-        "Packs every source document into the assembly (one undo step): each instance then refers to its source by hash, and the saved .3dcraftasm file carries the sources, subassemblies packed with their own sources, so it rebuilds anywhere. Returns the packed sources.", doc: true, assembly_pack),
+        "Packs every source document into the assembly (one undo step): each instance then refers to its source by hash, and the saved .3dcraftasm file carries the sources, subassemblies packed with their own sources, so it rebuilds anywhere. The parts keep their notes pinned to the model (a packed assembly is a file to hand on, not a published one): partNotes says how many they carry ({count, open}), as document.inspect does. Returns the packed sources.", doc: true, assembly_pack),
     spec!("assembly.unpack", "Unpack Sources", r#"{"folder": path = "parts", "overwrite": boolean = false}"#,
         "Writes each packed source document as a file into folder (beneath the write root, relative to the assembly's file) and makes its instances refer to that file (one undo step). Returns the files written.", doc: true, assembly_unpack),
 ];
@@ -1532,9 +1532,18 @@ fn assembly_pack(session: &mut Session, params: &Value) -> Run {
         Ok(())
     })?;
     let assembly = assembly_of(session, ID)?;
-    Ok(json!({
+    let mut result = json!({
         "packed": assembly.packed.iter().map(|b| json!({ "hash": b.sha256(), "bytes": b.len() })).collect::<Vec<_>>(),
-    }))
+    });
+    // The parts carry their notes into the packed file, which is handed
+    // on: said, so that none travels unseen.
+    let (notes, open) = crate::note_cmds::notes_in_parts(session.document()?.history.current());
+    if notes > 0
+        && let Some(map) = result.as_object_mut()
+    {
+        map.insert("partNotes".into(), json!({"count": notes, "open": open}));
+    }
+    Ok(result)
 }
 
 /// A file name for a packed source: its first instance's name, with what

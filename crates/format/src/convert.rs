@@ -50,6 +50,7 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         inserted,
         assembly,
         fonts,
+        notes,
     } = document;
     let doc::Units { length, angle } = units;
     let doc::Tolerance {
@@ -127,6 +128,145 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
                     sha256: sha256.clone(),
                     embedding: embedding.clone(),
                     embedded: blob.is_some(),
+                }
+            })
+            .collect(),
+        notes: (*notes != doc::Notes::default()).then(|| notes_to_manifest(notes)),
+    }
+}
+
+fn notes_to_manifest(notes: &doc::Notes) -> manifest::Notes {
+    let doc::Notes { items, next_id } = notes;
+    manifest::Notes {
+        next: *next_id,
+        items: items
+            .iter()
+            .map(|note| {
+                let doc::Note {
+                    id,
+                    text,
+                    on,
+                    point,
+                    by,
+                    time_ms,
+                    edited,
+                    done,
+                } = note;
+                manifest::Note {
+                    id: *id,
+                    text: text.clone(),
+                    on: on.as_ref().map(|on| {
+                        let doc::NoteOn {
+                            kind,
+                            feature: doc::FeatureId(feature),
+                            name,
+                        } = on;
+                        manifest::NoteOn {
+                            kind: match kind {
+                                doc::NoteKind::Body => manifest::NoteKind::Body,
+                                doc::NoteKind::Face => manifest::NoteKind::Face,
+                                doc::NoteKind::Edge => manifest::NoteKind::Edge,
+                                doc::NoteKind::Vertex => manifest::NoteKind::Vertex,
+                            },
+                            feature: *feature,
+                            name: name.as_ref().map(name_to_manifest),
+                        }
+                    }),
+                    point: *point,
+                    by: note_by_to_manifest(by),
+                    time_ms: *time_ms,
+                    edited: edited.as_ref().map(|edited| {
+                        let doc::NoteStamp { by, time_ms } = edited;
+                        manifest::NoteStamp {
+                            by: note_by_to_manifest(by),
+                            time_ms: *time_ms,
+                        }
+                    }),
+                    done: done.as_ref().map(|done| {
+                        let doc::NoteDone { by, time_ms, reply } = done;
+                        manifest::NoteDone {
+                            by: note_by_to_manifest(by),
+                            time_ms: *time_ms,
+                            reply: reply.clone(),
+                        }
+                    }),
+                }
+            })
+            .collect(),
+    }
+}
+
+fn note_by_to_manifest(by: &doc::NoteAuthor) -> manifest::NoteBy {
+    match by {
+        doc::NoteAuthor::Person => manifest::NoteBy::Person,
+        doc::NoteAuthor::Agent(name) => manifest::NoteBy::Agent(name.clone()),
+        doc::NoteAuthor::Unknown => manifest::NoteBy::Unknown,
+    }
+}
+
+fn note_by_to_doc(by: manifest::NoteBy) -> doc::NoteAuthor {
+    match by {
+        manifest::NoteBy::Person => doc::NoteAuthor::Person,
+        manifest::NoteBy::Agent(name) => doc::NoteAuthor::Agent(name),
+        manifest::NoteBy::Unknown => doc::NoteAuthor::Unknown,
+    }
+}
+
+fn notes_to_doc(notes: manifest::Notes) -> doc::Notes {
+    let manifest::Notes { next, items } = notes;
+    doc::Notes {
+        next_id: next,
+        items: items
+            .into_iter()
+            .map(|note| {
+                let manifest::Note {
+                    id,
+                    text,
+                    on,
+                    point,
+                    by,
+                    time_ms,
+                    edited,
+                    done,
+                } = note;
+                doc::Note {
+                    id,
+                    text,
+                    on: on.map(|on| {
+                        let manifest::NoteOn {
+                            kind,
+                            feature,
+                            name,
+                        } = on;
+                        doc::NoteOn {
+                            kind: match kind {
+                                manifest::NoteKind::Body => doc::NoteKind::Body,
+                                manifest::NoteKind::Face => doc::NoteKind::Face,
+                                manifest::NoteKind::Edge => doc::NoteKind::Edge,
+                                manifest::NoteKind::Vertex => doc::NoteKind::Vertex,
+                            },
+                            feature: doc::FeatureId(feature),
+                            name: name.map(name_to_doc),
+                        }
+                    }),
+                    point,
+                    by: note_by_to_doc(by),
+                    time_ms,
+                    edited: edited.map(|edited| {
+                        let manifest::NoteStamp { by, time_ms } = edited;
+                        doc::NoteStamp {
+                            by: note_by_to_doc(by),
+                            time_ms,
+                        }
+                    }),
+                    done: done.map(|done| {
+                        let manifest::NoteDone { by, time_ms, reply } = done;
+                        doc::NoteDone {
+                            by: note_by_to_doc(by),
+                            time_ms,
+                            reply,
+                        }
+                    }),
                 }
             })
             .collect(),
@@ -3137,6 +3277,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
         inserted,
         assembly,
         fonts,
+        notes,
     } = document;
     doc::Document {
         units: doc::Units {
@@ -3219,6 +3360,7 @@ pub(crate) fn to_doc(document: manifest::Document, blobs: &Blobs) -> doc::Docume
                 }
             })
             .collect(),
+        notes: notes.map(notes_to_doc).unwrap_or_default(),
     }
 }
 
