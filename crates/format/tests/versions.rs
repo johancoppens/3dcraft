@@ -135,6 +135,10 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // The same rod tipped at both ends at places given as points in the
     // model: the end's at the tip itself, the start's on the end.
     (74, 4707, 0x0ce8_95ff_b006_7eec),
+    // A plate drilled by a pin, with the notes pinned to it: one done by an
+    // agent with a reply, an agent's open question on the hole's wall, one
+    // whose face was deleted (detached), one on the body, one deleted.
+    (75, 3655, 0x9c49_686a_a159_6410),
 ];
 
 fn dir() -> PathBuf {
