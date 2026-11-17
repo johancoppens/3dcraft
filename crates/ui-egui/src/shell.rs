@@ -2378,6 +2378,19 @@ impl Shell {
                         _ => "free",
                     }
                 },
+                "made": if cache.face {
+                    Some(crate::state::SectionMade::Face)
+                } else {
+                    self.state.section.made
+                },
+                "fromSelection": self.section_handle.face.as_ref().map(|choice| serde_json::json!({
+                    "made": choice.made,
+                    "faces": choice.faces.iter().map(|(feature, face)| serde_json::json!({
+                        "feature": feature,
+                        "face": face,
+                    })).collect::<Vec<_>>(),
+                    "refused": choice.refused,
+                })),
                 "snaps": section_handle::nearest_snaps(&cache.snaps, self.state.section.offset)
                     .iter()
                     .map(|snap| serde_json::json!({

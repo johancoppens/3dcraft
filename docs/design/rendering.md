@@ -1782,6 +1782,48 @@ refused `ui.set` leaves the state as it was, every field (`a_refused_section_cha
 the_planes`: the coordinator saw the section on after a refusal in the desktop window; the state is put back
 whole here, and was on `main` too, so what he saw was not reproduced).
 
+*The arrow's shape* (2026-11-17, the developer's choice from five drawn variants, "pijl misschien iets
+eleganter?": variant B, slim like a dimension arrow; it replaces the shape of round two above, not its
+colours, sizes in length or place). A shaft 2 points of the light fill with a 1 point dark edge each side and
+round ends, into the notch of a small sharp head: a notched dart 16 points long and 11 wide, notched 3 back
+from its base (`section_head`, `section_head_width`, `section_head_notch`); at the foot a ring of radius 4.5
+with a dark dot of 1.6 to take it by (`section_grip`, `section_grip_dot`); 64 points long seen side on, as
+before. At touch sizes the whole shape is scaled as one (by the touch arrow's length over 64). It is hit as
+before, within `section_hit` (9 points, a finger's half target at touch sizes) of the line from the foot to
+the tip, whatever its drawn width: the test takes it 8.5 points off its shaft, its head and its ring. The
+head is `dart`, shared with the dimension lines of measuring by selecting, so the two read as one family.
+
+*The plane from the selection* (2026-11-17, the developer: "2 vlakken selecteren = snijden onder 45 graden?").
+The fourth button (∥) is always there and takes its plane from what is selected
+(`Shell::sync_face_choice`, once per selection and scene): one flat face, the plane along it as before; two
+flat faces, each face's plane by the engine's own test (`Session::section_plane`: a point of it and its
+outward normal, refused in words when the face is not flat), then `planes_of`. Parallel (the sine of their
+angle at most 1e-9, facing the same way or apart): the plane midway, along the first's normal. Otherwise the two
+bisectors of their angle, through the line where the planes meet: `x · (n1 − n2) = p1 · n1 − p2 · n2`, the
+points as far behind the one face as behind the other, so the one through the material (behind both, where
+both bodies are), first; `x · (n1 + n2) = p1 · n1 + p2 · n2`, square to it, at the next click. Each is kept as
+its point nearest the middle of the two faces' points (near the model, never the far end of a line two nearly
+parallel faces meet on) and its unit normal, in `state.section` as `point` and `normal` with `made` (`face`,
+`mid`, `bisector`), which the handle's number shows in place of an axis and `ui.get` reports; the plane stays
+when the selection changes. Anything else greys the button with why on hover. In the narrow layout the bar's
+four cells (X, Y, Z, ∥) share the room three had, as they did while a face was selected (open: whether a
+phone wants them a finger's width each, which makes the bar wider).
+
+*The review of the plane and the group* (2026-11-17, `review-view-section`). (1) Faces a hair off parallel
+(1.5e-9 to 1.7e-5 rad, the same way) gave a "bisector" through a line 3.4e6 to 6.9e10 away, which cut
+everything or nothing: `planes_of` now takes the model's box and counts two faces parallel also when the
+line their planes meet in passes farther from the box's middle than its whole diagonal (a frustum's sides,
+meeting a little above it, keep their bisector); the review's two blocks, one turned by 5e-8 to 1e-3
+degrees, give the plane midway, which cuts the model. (2) A `made` that does not fit its plane is refused by
+`ui.set`, not dropped. (3) After an edit the plane stays where it was, a view like the camera; the shell
+remembers the two faces it was made from and, once they no longer make it (`check_made`, when the scene
+changes), takes `made` away, so the number no longer says "mid". (4) A hidden body's face is refused in the
+window's words. (5) The group hopped sides 283 times in 4356 frames of a turning view, up to 237 points,
+twice under the bar and the triad: `group_place` now keeps the way it went last frame while that place stays
+clear (sliding along the viewport's edge rather than hopping), tries round the compass after its four ways,
+keeps `GAP` of air from the controls, and where no place is clear takes the one that covers them least; its
+plate has a hairline of the handle's light colour, so its edge shows on a dark body.
+
 ### Per-sample stages on Vulkan (2026-11-16)
 
 *Found.* The window of 0.1.1 and 0.1.2 died within seconds of its start on a Windows 11 laptop with a Core

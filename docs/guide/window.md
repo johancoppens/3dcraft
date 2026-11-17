@@ -460,7 +460,13 @@ an **Offset** slider and **Flip side**.
 | Click the number | Type a distance, such as `12.5` or `width / 2`; Enter sets it, Escape leaves it |
 | Click **X**, **Y** or **Z** | Turn the plane across that axis, through the middle of the model |
 | Click **⇅** | Keep the other half |
-| Select a flat face, then click **∥** | Lay the plane on that face: along it, through it, the arrow pointing out of the body; drag the arrow in to cut. The plane stays when you select something else. A face that is not flat greys **∥** and says why |
+| Select a flat face, then click **∥** | Lay the plane on that face: along it, through it, the arrow pointing out of the body; drag the arrow in to cut |
+| Select two flat faces, then click **∥** | Two parallel faces (the two walls of a slot): the plane midway between them. Two faces at an angle: the plane that halves it, through the line where they meet and through the material; click again for the other one, square to it. Faces so nearly parallel that they would meet far outside the model count as parallel |
+
+The number says what the plane is: **X**, **Y** or **Z**, **∥ face**, **mid** or **bisector**. A plane made
+with **∥** stays when you select something else, and where it is when you change the model (it is then no
+longer called **mid** or **bisector** once its faces have moved); anything but one or two flat faces greys **∥**, and it says
+so when you point at it.
 
 Seen straight along the arrow (a section across Z from the top), the arrow is a ring that cannot be dragged:
 type the distance into the group's number, or use its buttons.

@@ -429,6 +429,7 @@ impl Nav<'_> {
         let see = self.see_w();
         let off_w = pad + sketches + sp + datums + sp + edges + sp + see + gap + section + pad;
         let flip = self.chip(self.w.flip);
+        // X, Y, Z, and the plane from the selection sharing their room.
         let axes = 3.0 * self.w.axis;
         let extra = if self.wrap {
             0.0
@@ -1447,18 +1448,20 @@ impl Shell {
         if let (true, Some(axes), Some(offset), Some(side)) =
             (on, layout.axes, layout.offset, layout.side)
         {
-            // X, Y, Z, and while a face is selected (or the plane is a
-            // face's) a fourth: parallel to that face.
+            // X, Y, Z, and a fourth: the plane from the selection (along
+            // one flat face, midway between two, or halving their angle).
             let face = self.section_face_choice().cloned();
-            let on_face = self.section_on_face();
-            let face_words = face
-                .as_ref()
-                .and_then(|f| f.refused.clone())
-                .unwrap_or_else(|| "Parallel to the selected face".to_string());
-            let mut items = vec![(None, "X"), (None, "Y"), (None, "Z")];
-            if face.is_some() || on_face {
-                items.push((Some(Icon::Parallel), face_words.as_str()));
-            }
+            let on_face = self.section_from_selection();
+            let face_words = face.as_ref().map_or_else(
+                || super::section_handle::TAKES_FACES.to_string(),
+                |f| f.words(&section),
+            );
+            let items = vec![
+                (None, "X"),
+                (None, "Y"),
+                (None, "Z"),
+                (Some(Icon::Parallel), face_words.as_str()),
+            ];
             let chosen = if on_face {
                 Some(super::section_handle::FACE_DOT)
             } else {
@@ -1470,9 +1473,9 @@ impl Shell {
             }
             if let Some(cell) = cells.get(super::section_handle::FACE_DOT) {
                 hits.push(("face", *cell));
-                // A face that is not flat: the cell greyed, its words on
-                // hover say why.
-                if !on_face && face.as_ref().is_some_and(|f| f.refused.is_some()) {
+                // A selection that gives no plane: the cell greyed, its
+                // words on hover say why.
+                if !on_face && face.as_ref().is_none_or(|f| f.refused.is_some()) {
                     ui.painter().rect_filled(
                         cell.shrink(tokens.nav_segment_inset),
                         egui::CornerRadius::same(tokens.nav_segment_radius),
@@ -1483,7 +1486,8 @@ impl Shell {
             match clicked {
                 Some(super::section_handle::FACE_DOT) => {
                     if let Some(face) = &face {
-                        super::section_handle::choose_face(&mut section, face);
+                        super::section_handle::choose_plane(&mut section, face);
+                        self.remember_made(&section, face);
                     }
                 }
                 Some(axis) => choose_axis(&mut section, axis, scene),
