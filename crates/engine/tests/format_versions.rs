@@ -583,6 +583,49 @@ fn the_v73_rod_tipped_at_both_ends_is_its_closed_form() {
     }
 }
 
+/// What pins v76's fades besides their fixture: two blocks 40 × 30 × 40
+/// mm whose upright edge is rounded 3 mm, the first fading to a point at
+/// its top over `over` = 15 mm, the second at both ends (over 10 mm to a
+/// point 4 mm short of its top, over `over` at its foot). Each round
+/// takes `(1 − π/4) R²` per length where its radius is whole and `9/14`
+/// of that over a fade (`∫ f² = 9/14` of the fade's cubic); the fades
+/// follow `over`.
+#[test]
+fn the_v76_fades_are_their_closed_form() {
+    let dir = workdir("format-versions", "v76-fade");
+    std::fs::copy(fixtures().join("v76.3dcraft"), dir.join("v76.3dcraft")).unwrap();
+    let mut s = session_in(&dir);
+    run(&mut s, "file.open", json!({"path": "v76.3dcraft"}));
+    let spandrel = (1.0 - std::f64::consts::FRAC_PI_4) * 9.0;
+    for over in [15.0_f64, 12.0] {
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "over", "expr": format!("{over} mm")}),
+        );
+        let inspect = run(&mut s, "document.inspect", json!({}));
+        let volume = |name: &str| {
+            inspect["bodies"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|b| b["name"] == name)
+                .unwrap_or_else(|| panic!("no {name} in {inspect}"))["volume"]
+                .as_f64()
+                .unwrap()
+        };
+        let round = 48_000.0 - spandrel * (40.0 - over + 9.0 / 14.0 * over);
+        let both = 48_000.0 - spandrel * (40.0 - 14.0 - over + 9.0 / 14.0 * (10.0 + over));
+        for (name, want) in [("Round", round), ("Both", both)] {
+            let got = volume(name);
+            assert!(
+                (got - want).abs() <= 1e-4,
+                "{name}, over {over}: {got} against {want}"
+            );
+        }
+    }
+}
+
 /// What pins v75's notes besides their fixture: the plate they are pinned
 /// to is its closed form (40 × 20 × t less a hole of radius 3, t = 7 mm),
 /// and the notes follow an edit after opening: the top's note stays on

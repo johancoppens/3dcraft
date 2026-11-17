@@ -1,0 +1,232 @@
+{
+  "format_version": 76,
+  "written_by": "08889588109f100034e0b4297af640ae05b663cb",
+  "how": "craft3d-cli of that commit (a release build, on the developer's laptop): craft3d-cli run --new '{\"units\": \"mm\"}' --script v76.steps.json --out v76.3dcraft, then craft3d-cli run v76.3dcraft --cmd document.inspect for the features and bodies; format 76: two blocks 40 x 30 x 40 mm whose upright edge is rounded 3 mm with fades (fade: [{at, over, back}]): Round fading to a point at its top over the variable over = 15 mm, 48000 - (1 - pi/4) 9 (25 + 9/14 15) = 47933.090213 mm3; Both fading at both ends, over 10 mm to a point 4 mm short of its top and over `over` at its foot, 48000 - (1 - pi/4) 9 (11 + 9/14 25) = 47947.713795 mm3 in closed form",
+  "rollback": null,
+  "features": [
+    {
+      "bodyUsedBy": "F2",
+      "id": "F1",
+      "name": "Box",
+      "params": {
+        "orientation": {
+          "angle": "0 deg",
+          "axis": [
+            "0",
+            "0",
+            "1"
+          ]
+        },
+        "position": [
+          "0",
+          "0",
+          "0"
+        ],
+        "size": [
+          "40",
+          "30",
+          "40"
+        ],
+        "type": "block"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "fades": [
+        {
+          "at": "F1:vertex(4)",
+          "back": 0.0,
+          "edge": 0,
+          "length": 40.0,
+          "over": 15.0,
+          "tip": [
+            0.0,
+            0.0,
+            40.0
+          ],
+          "vertex": "F2:corner[F2:copy(0)/F1:face(1),F2:copy(0)/F1:face(2),F2:copy(0)/F1:face(4),F2:fillet(0)]"
+        }
+      ],
+      "id": "F2",
+      "name": "Round",
+      "params": {
+        "chain": false,
+        "edges": [
+          "F1:edge(9)"
+        ],
+        "fade": [
+          {
+            "at": "F1:vertex(4)",
+            "over": "over"
+          }
+        ],
+        "radius": "3 mm",
+        "type": "fillet"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "bodyUsedBy": "F4",
+      "id": "F3",
+      "name": "Tall",
+      "params": {
+        "orientation": {
+          "angle": "0 deg",
+          "axis": [
+            "0",
+            "0",
+            "1"
+          ]
+        },
+        "position": [
+          "60",
+          "0",
+          "0"
+        ],
+        "size": [
+          "40",
+          "30",
+          "40"
+        ],
+        "type": "block"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "fades": [
+        {
+          "at": "F3:vertex(4)",
+          "back": 4.0,
+          "edge": 0,
+          "length": 40.0,
+          "over": 10.0,
+          "tip": [
+            60.0,
+            0.0,
+            36.0
+          ],
+          "vertex": "F4:corner[F4:copy(0)/F3:face(2),F4:copy(0)/F3:face(4),F4:fillet(0)]"
+        },
+        {
+          "at": "F3:vertex(0)",
+          "back": 0.0,
+          "edge": 0,
+          "length": 40.0,
+          "over": 15.0,
+          "tip": [
+            60.0,
+            0.0,
+            0.0
+          ],
+          "vertex": "F4:corner[F4:copy(0)/F3:face(0),F4:copy(0)/F3:face(2),F4:copy(0)/F3:face(4),F4:fillet(0)]"
+        }
+      ],
+      "id": "F4",
+      "name": "Both",
+      "params": {
+        "chain": false,
+        "edges": [
+          "F3:edge(9)"
+        ],
+        "fade": [
+          {
+            "at": "F3:vertex(4)",
+            "back": "4 mm",
+            "over": "10 mm"
+          },
+          {
+            "at": "F3:vertex(0)",
+            "over": "over"
+          }
+        ],
+        "radius": "3 mm",
+        "type": "fillet"
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 7951.478332861918,
+      "bbox": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          40.0,
+          30.0,
+          40.0
+        ]
+      ],
+      "bboxTolerance": 0.12614826735598872,
+      "centroid": [
+        20.027008633395706,
+        15.020029134826208,
+        20.003572497085138
+      ],
+      "edges": 14,
+      "faceNames": [
+        "F2:copy(0)/F1:face(0)",
+        "F2:copy(0)/F1:face(1)",
+        "F2:copy(0)/F1:face(2)",
+        "F2:copy(0)/F1:face(3)",
+        "F2:copy(0)/F1:face(4)",
+        "F2:copy(0)/F1:face(5)",
+        "F2:fillet(0)"
+      ],
+      "faces": 7,
+      "feature": "F2",
+      "kind": "solid",
+      "name": "Round",
+      "shells": 1,
+      "valid": true,
+      "vertices": 9,
+      "volume": 47933.09021122189
+    },
+    {
+      "area": 7961.907024056087,
+      "bbox": [
+        [
+          59.999999999999986,
+          0.0,
+          0.0
+        ],
+        [
+          100.0,
+          30.0,
+          40.0
+        ]
+      ],
+      "bboxTolerance": 0.12614826735598872,
+      "centroid": [
+        80.02112231993823,
+        15.015669900992568,
+        20.001299804885825
+      ],
+      "edges": 14,
+      "faceNames": [
+        "F4:copy(0)/F3:face(0)",
+        "F4:copy(0)/F3:face(1)",
+        "F4:copy(0)/F3:face(2)",
+        "F4:copy(0)/F3:face(3)",
+        "F4:copy(0)/F3:face(4)",
+        "F4:copy(0)/F3:face(5)",
+        "F4:fillet(0)"
+      ],
+      "faces": 7,
+      "feature": "F4",
+      "kind": "solid",
+      "name": "Both",
+      "shells": 1,
+      "valid": true,
+      "vertices": 9,
+      "volume": 47947.713795380245
+    }
+  ]
+}
