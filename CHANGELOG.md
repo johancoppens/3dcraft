@@ -81,18 +81,33 @@ What 3DCraft answered before can differ now: a measure, a proof, a check, or a b
 - **A STEP cone given as a line turned about its axis imports at every size.** Where the line ran from a point of the cone up towards its tip, a small part (a millimetre across) was refused ("cannot tell which way the swept surface's normal points"): the way its surface faces was looked at a fixed distance along the line, past the tip.
 - **An imported part refused because an edge could not be proven on its faces says what would read it.** Where the edge lies within the cap on an entity's tolerance at the 1025 places it is measured at, the message now gives that distance and says that the document's own linear tolerance set to at least that (and how many times its present one that is, `document.setTolerance`) accepts the edge on those places, counted as unproven. A composite curve whose segments do not meet is refused naming the segment, and an edge on a hyperbola whose vertices lie on its other branch is refused saying so.
 
-## [0.1.2] - 2026-11-13
+## [0.1.3] - 2026-11-16
 
-Fixes for the first things a new user meets: on Windows no console window opens beside 3DCraft any more, the web version's page says what it is, and the MCP server says more about itself to the tools that connect to it. Files of 0.1.0 and 0.1.1 open unchanged.
+One fix: the window no longer closes when the graphics card cannot keep up with the studio look, which happened on Windows computers with older Intel graphics, the ones 0.1.2 draws through OpenGL on. Files of 0.1.0, 0.1.1 and 0.1.2 open unchanged.
 
 ### Fixed
 
+- **The window no longer closes when the graphics card cannot keep up with the studio look** (seen on Windows, with older Intel graphics drawing through OpenGL). There, a minute after the studio look was switched on for a large model, 3DCraft closed without a word: the graphics library stopped the program when the card did not finish a picture within about two seconds. 3DCraft now catches such errors on every system and carries on. When the graphics card reports an error while the studio look is on, the look is turned off for the rest of the session, a bar under the menu says so, and the window keeps working in the plain look. When 3DCraft draws through OpenGL, the viewport says *Preparing the studio look…* the first time the studio look is switched on, because preparing it can take a minute there and the window does not answer meanwhile.
+
+### Known limitations
+
+- On a computer whose graphics card cannot finish the studio look's pictures in time (measured: Intel UHD Graphics 615 with a driver of 2020, drawing through OpenGL), the studio look is not available for a large model: it is turned off for the session and the plain look is shown. A small model is drawn in the studio look there. Preparing the studio look still holds the window for up to a minute on such a computer, after the viewport said so.
+- The known limitations of [0.1.2](https://github.com/johancoppens/3dcraft/releases/tag/v0.1.2) and of [0.1.0](https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0) still hold.
+
+## [0.1.2] - 2026-11-16
+
+Fixes for the first things a new user meets: on many Windows computers the window no longer closes at once (measured: Intel and AMD graphics), no console window opens beside 3DCraft any more, the web version's page says what it is, and the MCP server says more about itself to the tools that connect to it. Files of 0.1.0 and 0.1.1 open unchanged.
+
+### Fixed
+
+- **Windows: the window no longer closes at once on many computers** (measured: Intel and AMD graphics). On them 3DCraft 0.1.0 and 0.1.1 opened and closed again without a word. There were two causes. For the way it draws see-through bodies and cut-open models, 3DCraft handed the graphics driver a shader that Vulkan's rules forbid: lenient drivers took it, but the Vulkan drivers of Intel and of AMD on Windows closed the program while they prepared it. Through Vulkan 3DCraft now draws those pictures in another way, which Vulkan's rules allow, on every system and whatever the graphics card. On Linux the picture stays the same on the graphics it was measured with; a graphics card whose Vulkan driver cannot shade each sample by itself now draws the model with one sample per pixel (edges a little less smooth), and says so in a terminal. Through OpenGL, DirectX 12 and Metal, and in the browser, they are drawn as before. On older Intel graphics with an older driver, the Vulkan driver itself crashed while 3DCraft started, before anything was drawn: 3DCraft now notices that and starts through OpenGL instead (below).
 - **Windows: no console window beside 3DCraft any more.** The Start menu entry and a double-clicked `.3dcraft`, `.3dcraftjig` or `.3dcraftasm` file start 3DCraft through a small launcher, `3DCraft.exe`, which opens no console window, so there is none to close 3DCraft by. If the window cannot start, a message box says why. In the zip, double-click `3DCraft.exe`. `craft3d.exe` and `craft3d-cli.exe` are unchanged for terminals and AI agents.
 - **Linux: a 3DCraft window that is killed or crashes no longer leaves a `gsettings monitor` process behind.** The window follows the desktop's light or dark setting through that program, which now ends with the window however the window ends.
 - **The web version's page says what it is**: its title, *3DCraft in your browser: parametric 3D CAD*, stays while no document is open, and it has a description for search engines.
 
 ### Changed
 
+- **Windows: when a graphics interface fails at start, 3DCraft tries the next and says so.** The window draws through Vulkan, OpenGL or DirectX 12. When one of them ends a start (a driver that crashes), the next start passes over it and takes the next in that order, and `3DCraft.exe` starts the window again by itself, at most three times in a row, so you need not do anything. A bar under the menu says which interface 3DCraft draws through and why, with **Details…**, a button to try the other interface again next time, and **Dismiss**. An interface is tried again after seven days or when your graphics driver or 3DCraft is updated; `craft3d.exe --reset-graphics` tries every interface again at once. Several windows can start at the same time: one that is still starting is never taken for one that failed. When no Vulkan driver is there, the window now prefers OpenGL to DirectX 12, which can take minutes to show the studio look. The guide's [*The window does not start or closes at once on Windows*](https://github.com/johancoppens/3dcraft/blob/v0.1.2/docs/guide/troubleshooting.md#the-window-does-not-start-or-closes-at-once-on-windows) says how to choose an interface yourself and how to make a trace of what the graphics card was asked to do, to send with a report (`CRAFT3D_GPU_TRACE`, `CRAFT3D_GPU_TOUR`).
 - **The MCP server says more about itself.** It gives its display name, *3DCraft*, to clients that speak protocol version 2025-06-18 or later; its tools carry annotations, so a client knows that `command_list`, `doc_inspect` and `doc_render_preview` only read and that none of the tools reaches beyond your computer; and `command_run`'s description says that opening, saving, importing and exporting files are commands. The tools, their names and their inputs are unchanged.
 
 ### Known limitations
@@ -227,7 +242,8 @@ The first release for people outside the project. 3DCraft is a parametric 3D CAD
 - An AI agent cannot drive the web version yet.
 - Some modelling cases are refused rather than built (the message says which): among them some booleans and freeform fillets, curved sheet-metal bends along a spline and some sharp ones, curved origami creases, and text wrapped onto a surface other than a cylinder or a cone. Text is laid out glyph by glyph with kerning; shaping for complex scripts (such as Arabic or the Indic scripts) is for a later version. Every refusal reported helps.
 
-[Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/johancoppens/3dcraft/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/johancoppens/3dcraft/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/johancoppens/3dcraft/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/johancoppens/3dcraft/releases/tag/v0.1.0

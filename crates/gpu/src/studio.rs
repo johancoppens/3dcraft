@@ -19,6 +19,7 @@
 //! still picture are summed as integers (`accumulate.wgsl`).
 
 use crate::GpuError;
+use crate::diag::Traced;
 use crate::mesh::GpuMesh;
 use crate::renderer::{MESH_ATTRIBUTES, uniform_entry};
 use craft3d_math::Vec3;
@@ -471,8 +472,8 @@ pub(crate) struct StudioGpu {
 /// The shader of the studio look: the scene's with `studio.wgsl` and
 /// `polish.wgsl` appended.
 pub(crate) fn studio_module(device: &wgpu::Device) -> wgpu::ShaderModule {
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("craft3d studio"),
+    device.traced_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("craft3d studio (scene.wgsl + studio.wgsl + polish.wgsl)"),
         source: wgpu::ShaderSource::Wgsl(
             crate::renderer::scene_source(
                 device,
@@ -520,7 +521,7 @@ pub(crate) fn fullscreen_pipeline_to(
         bind_group_layouts: groups,
         immediate_size: 0,
     });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
@@ -557,7 +558,7 @@ impl StudioGpu {
     ) -> StudioGpu {
         let both = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
         let layout = |label: &str, entries: &[wgpu::BindGroupLayoutEntry]| {
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            device.traced_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some(label),
                 entries,
             })
@@ -620,7 +621,7 @@ impl StudioGpu {
             bind_group_layouts: &[Some(scene_layout), Some(&layout_uniform)],
             immediate_size: 0,
         });
-        let shadow = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let shadow = device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("craft3d shadow"),
             layout: Some(&shadow_layout),
             vertex: wgpu::VertexState {
@@ -696,8 +697,8 @@ impl StudioGpu {
             ],
             1,
         );
-        let accumulate_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("craft3d accumulate"),
+        let accumulate_module = device.traced_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("craft3d accumulate (accumulate.wgsl)"),
             source: wgpu::ShaderSource::Wgsl(include_str!("accumulate.wgsl").into()),
         });
         let accumulate = fullscreen_pipeline_to(
@@ -774,7 +775,7 @@ impl StudioGpu {
             bind_group_layouts: &[Some(scene_layout), Some(&layout_uniform)],
             immediate_size: 0,
         });
-        let parity = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let parity = device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("craft3d studio count"),
             layout: Some(&parity_layout),
             vertex: wgpu::VertexState {
@@ -1563,7 +1564,7 @@ impl StudioOnscreen {
                 bind_group_layouts: groups,
                 immediate_size: 0,
             });
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            device.traced_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&layout),
                 vertex: wgpu::VertexState {

@@ -879,6 +879,12 @@ impl Agents {
         self.token_file.as_deref().filter(|_| self.server.is_some())
     }
 
+    /// The channel the window's requests come in by, for requests of the
+    /// window's own (the GPU tour, `tour.rs`).
+    pub fn request_sender(&self) -> Sender<Request> {
+        self.requests.clone()
+    }
+
     /// Something went wrong around the switch that the person should see
     /// (the folder picker could not be shown).
     pub fn note_error(&mut self, error: String) {
