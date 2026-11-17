@@ -940,7 +940,7 @@ pub fn fillet_fade_text(fault: fillet::FadeFault, unit: &str) -> String {
             fits_at_least(least)
         ),
         fillet::FadeFault::CurvatureJump { at } => format!(
-            "the edge's curvature jumps at {} (its curve has only a continuous tangent there), a place the fillet runs through: a fillet whose radius varies is not built along an edge with such a place yet (where the radius is changing the face would crease across it); draw the edge so that its curvature runs on smoothly (one curve, not pieces that are only tangent)",
+            "the edge's curvature jumps at {} (its curve has only a continuous tangent there, and turns markedly tighter on one side than on the other), a place the fillet runs through: a fillet whose radius varies is not built across such a place yet (its sections bunch up there, and where the radius is changing the face would crease across it); draw the edge so that its curvature runs on smoothly (one curve, not pieces that are only tangent)",
             place_text(at, unit)
         ),
         fillet::FadeFault::EndTooSmall { to, least } => format!(

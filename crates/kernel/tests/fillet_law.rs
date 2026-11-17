@@ -1288,11 +1288,14 @@ fn a_steep_law_is_refused_or_measured_and_searched() {
 /// The prism with a spline wall of the rim's test, and its rim.
 fn rim_prism(frame: &Frame, k: f64) -> (Body, EdgeId) {
     let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 1.0];
-    rim_prism_with(frame, k, knots)
+    rim_prism_with(frame, k, knots, 1.0)
 }
 
-/// That prism with its spline on the knots given.
-fn rim_prism_with(frame: &Frame, k: f64, knots: Vec<f64>) -> (Body, EdgeId) {
+/// That prism with its spline on the knots given. With a double knot at
+/// the middle the spline's curvature jumps there; `jump` scales that jump
+/// (1: the control points as they are; 0: none, the two inner points
+/// moved until the second differences either side agree).
+fn rim_prism_with(frame: &Frame, k: f64, knots: Vec<f64>, jump: f64) -> (Body, EdgeId) {
     let tol = tolerance(k);
     let scaled = |p: [f64; 2]| [p[0] * k, p[1] * k];
     let line = |id: u64, a: [f64; 2], b: [f64; 2]| SketchCurve {
@@ -1302,7 +1305,7 @@ fn rim_prism_with(frame: &Frame, k: f64, knots: Vec<f64>) -> (Body, EdgeId) {
             end: scaled(b),
         },
     };
-    let control = [
+    let mut control = [
         [30.0, 10.0],
         [25.0, 10.0],
         [20.0, 13.0],
@@ -1310,6 +1313,21 @@ fn rim_prism_with(frame: &Frame, k: f64, knots: Vec<f64>) -> (Body, EdgeId) {
         [5.0, 10.0],
         [0.0, 10.0],
     ];
+    if jump != 1.0 {
+        let [_, p1, p2, p3, p4, _] = control;
+        let defect = [
+            (p1[0] - 2.0 * p2[0]) - (p4[0] - 2.0 * p3[0]),
+            (p1[1] - 2.0 * p2[1]) - (p4[1] - 2.0 * p3[1]),
+        ];
+        let moved = |p: [f64; 2], sign: f64| {
+            [
+                p[0] + sign * (1.0 - jump) * defect[0] / 4.0,
+                p[1] + sign * (1.0 - jump) * defect[1] / 4.0,
+            ]
+        };
+        control[2] = moved(p2, 1.0);
+        control[3] = moved(p3, -1.0);
+    }
     let curves = [
         line(1, [0.0, 0.0], [30.0, 0.0]),
         line(2, [30.0, 0.0], [30.0, 10.0]),
@@ -1345,14 +1363,54 @@ fn rim_prism_with(frame: &Frame, k: f64, knots: Vec<f64>) -> (Body, EdgeId) {
 /// the spline rim and the cone's cut edge; the radius falling to a third,
 /// a tenth and a hundredth, growing to twice and to three times, and
 /// changing by a tenth; fades of half the change, a hundredth short of
-/// it, the change itself, a hundredth past it, and three times it.
+/// it, the change itself, a hundredth past it, and three times it. All of
+/// that at scale 1 on the world frame; at 1e-3 and 1e6 and on the tilted
+/// frame, the bound itself and a hundredth short of it, the radius
+/// falling to a third and growing to twice. (The whole grid at every
+/// scale and frame: the test after this one, on request.)
 #[test]
 fn a_law_at_the_bound_of_how_fast_it_may_change_is_built_sound_and_past_it_refused() {
+    let (built, refused) = sweep_the_bound(false);
+    println!("{built} built and sound, {refused} refused as too short");
+    assert!(
+        built > 100 && refused > 80,
+        "{built} built, {refused} refused"
+    );
+}
+
+/// The whole grid of the test before at every scale and on both frames
+/// (441 built, 294 refused; 150 s on the build server).
+#[test]
+#[ignore = "the whole sweep: minutes"]
+fn the_whole_sweep_across_the_bound_at_every_scale_and_frame() {
+    let (built, refused) = sweep_the_bound(true);
+    println!("{built} built and sound, {refused} refused as too short");
+    assert!(
+        built > 250 && refused > 200,
+        "{built} built, {refused} refused"
+    );
+}
+
+/// The sweep across the bound: how many laws were built and sound, and
+/// how many refused as too short. `whole`: every ratio and fade at every
+/// scale and frame.
+fn sweep_the_bound(whole: bool) -> (usize, usize) {
     let mut built = 0;
     let mut refused = 0;
     for k in SCALES {
         let tol = tolerance(k);
         for (index, frame) in common::frames(k).iter().enumerate() {
+            let all = whole || (k == 1.0 && index == 0);
+            let ratios: &[f64] = if all {
+                &[1.0 / 3.0, 0.1, 0.01, 2.0, 3.0, 0.9]
+            } else {
+                &[1.0 / 3.0, 2.0]
+            };
+            let parts: &[f64] = if all {
+                &[0.5, 0.99, 1.0, 1.01, 3.0]
+            } else {
+                &[0.99, 1.0]
+            };
             let block = extrude(
                 &detect_profiles(
                     &common::scale_curves(&common::rectangle(1, 1, (0.0, 40.0), (0.0, 30.0)), k),
@@ -1416,14 +1474,14 @@ fn a_law_at_the_bound_of_how_fast_it_may_change_is_built_sound_and_past_it_refus
                 cases.push(("cone", &frustum, cut, 0.08));
             }
             for (name, body, edge, radius) in cases {
-                for ratio in [1.0 / 3.0, 0.1, 0.01, 2.0, 3.0, 0.9] {
+                for &ratio in ratios {
                     // (Radii this edge has room for.)
                     if (name == "cone" || name == "rim" || name == "60°") && ratio > 2.5 {
                         continue;
                     }
                     let to = radius * ratio;
                     let change = (radius - to).abs();
-                    for part in [0.5, 0.99, 1.0, 1.01, 3.0] {
+                    for &part in parts {
                         let what = format!(
                             "{name}, {radius} to {to} over {part} of the change, scale {k}, frame {index}"
                         );
@@ -1471,11 +1529,7 @@ fn a_law_at_the_bound_of_how_fast_it_may_change_is_built_sound_and_past_it_refus
             }
         }
     }
-    println!("{built} built and sound, {refused} refused as too short");
-    assert!(
-        built > 250 && refused > 200,
-        "{built} built, {refused} refused"
-    );
+    (built, refused)
 }
 
 /// What is wrong with a fade is said of the fade: its length with the
@@ -1564,7 +1618,7 @@ fn a_law_along_an_edge_whose_curvature_jumps_is_refused_with_the_place() {
         for (index, frame) in common::frames(k).iter().enumerate() {
             let what = format!("scale {k}, frame {index}");
             let knots = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0];
-            let (body, rim) = rim_prism_with(frame, k, knots);
+            let (body, rim) = rim_prism_with(frame, k, knots.clone(), 1.0);
             let data = body.edge(rim).unwrap();
             let middle = data.curve.eval(0.5 * (data.range.0 + data.range.1));
             let try_law = |low: Option<(f64, f64)>, high: Option<(f64, f64)>| {
@@ -1606,6 +1660,194 @@ fn a_law_along_an_edge_whose_curvature_jumps_is_refused_with_the_place() {
             }
             let text = try_law(Some((0.6, 25.0)), None).unwrap_err().to_string();
             assert!(text.contains("curvature jumps at ("), "{text}");
+            // The same knot with three thousandths of the jump (the jump
+            // times the radius squared 1,800 tolerances, under the 2,000 a
+            // law is built across): built, and sound.
+            let (body, rim) = rim_prism_with(frame, k, knots, 0.003);
+            for (low, high) in [
+                (Some((0.6, 9.0)), Some((2.2, 7.0))),
+                (Some((1.2, 25.0)), None),
+            ] {
+                let law = Law {
+                    radius: 1.5,
+                    low,
+                    high,
+                };
+                let made = fillet_by_law(
+                    &body,
+                    &[FilletLawEdge {
+                        edge: rim,
+                        law: law.on(&body, rim, -frame.x(), k),
+                    }],
+                    &tol,
+                )
+                .unwrap_or_else(|e| panic!("{what}: a small jump: {e}"));
+                sound(&made.body, k, &format!("{what}: a small jump"));
+            }
+        }
+    }
+}
+
+/// The nearest edge of `body` to `target`.
+fn edge_through(body: &Body, target: Vec3) -> EdgeId {
+    let mut best = (EdgeId(0), f64::INFINITY);
+    for (i, e) in body.edges.iter().enumerate() {
+        for j in 0..=256 {
+            let t = e.range.0 + (e.range.1 - e.range.0) * f64::from(j) / 256.0;
+            let d = e.curve.eval(t).distance(target);
+            if d < best.1 {
+                best = (EdgeId(i as u32), d);
+            }
+        }
+    }
+    best.0
+}
+
+/// The review's step (`review-fade-law`): a block 40 × 30 × 16 (z from −6
+/// to 10) less the part above z = 0 beyond a wall that is one extruded
+/// cubic. Its top edge is the curve the boolean fitted where the top
+/// meets the wall: a spline of some 120 control points with every
+/// interior knot doubled, its curvature jumping at each by the fit's own
+/// error (1.7e-5 at most at scale 1).
+fn spline_step(frame: &Frame, k: f64) -> (Body, EdgeId) {
+    let tol = tolerance(k);
+    let block = primitives::block(
+        &frame.at(frame.point(0.0, 0.0, -6.0 * k)).unwrap(),
+        40.0 * k,
+        30.0 * k,
+        16.0 * k,
+    )
+    .unwrap();
+    let wall = [[-5.0, 15.0], [10.0, 25.0], [30.0, 0.0], [45.0, 11.0]];
+    let scaled = |p: [f64; 2]| [p[0] * k, p[1] * k];
+    let line = |id: u64, a: [f64; 2], b: [f64; 2]| SketchCurve {
+        id,
+        curve: Curve2::Line {
+            start: scaled(a),
+            end: scaled(b),
+        },
+    };
+    let curves = [
+        SketchCurve {
+            id: 1,
+            curve: Curve2::Spline(Spline2 {
+                degree: 3,
+                knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                control: wall.iter().map(|p| scaled(*p)).collect(),
+            }),
+        },
+        line(2, [45.0, 11.0], [45.0, 40.0]),
+        line(3, [45.0, 40.0], [-5.0, 40.0]),
+        line(4, [-5.0, 40.0], [-5.0, 15.0]),
+    ];
+    let profiles = detect_profiles(&curves, &tol).unwrap();
+    let tool = extrude(&profiles, frame, 0.0, 20.0 * k, &tol).unwrap().body;
+    let body = boolean(&block, &tool, BooleanOp::Subtract, &tol)
+        .unwrap()
+        .body;
+    let top = edge_through(&body, frame.point(20.0 * k, 12.625 * k, 10.0 * k));
+    (body, top)
+}
+
+/// The review's first finding of its second round: an edge a boolean
+/// fitted has a doubled knot at every joint of its fit, and its curvature
+/// jumps there by the fit's error; a law along it is built (3900d7ab
+/// refused every one, by the knots' multiplicity).
+#[test]
+fn a_law_along_a_boolean_fitted_edge_is_built() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        for (index, frame) in common::frames(k).iter().enumerate() {
+            let (body, top) = spline_step(frame, k);
+            let data = body.edge(top).unwrap();
+            let craft3d_geom::Curve3::Nurbs(spline) = &data.curve else {
+                panic!("a fitted curve");
+            };
+            let doubled = spline
+                .knots()
+                .windows(2)
+                .filter(|w| w[0] == w[1] && w[0] > data.range.0 && w[0] < data.range.1)
+                .count();
+            assert!(doubled > 20, "scale {k}: {doubled} doubled knots");
+            for (low, high) in [
+                (Some((0.8, 5.0)), None),
+                (Some((0.8, 5.0)), Some((3.0, 4.0))),
+                (Some((1.0, 12.0)), Some((1.0, 12.0))),
+            ] {
+                let what = format!("{low:?} {high:?}, scale {k}, frame {index}");
+                let law = Law {
+                    radius: 2.0,
+                    low,
+                    high,
+                };
+                let made = fillet_by_law(
+                    &body,
+                    &[FilletLawEdge {
+                        edge: top,
+                        law: law.on(&body, top, frame.x(), k),
+                    }],
+                    &tol,
+                )
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+                sound(&made.body, k, &what);
+            }
+        }
+    }
+}
+
+/// The review's cone: a cone of radius 10 and height 30 cut at z = 15 and
+/// by the plane y = 2.5; the edge where that plane meets the cone is a
+/// curve (a hyperbola), slanted against both its ends.
+fn cut_cone(frame: &Frame, k: f64) -> (Body, EdgeId) {
+    let tol = tolerance(k);
+    let cone = primitives::cone(frame, 10.0 * k, 30.0 * k).unwrap();
+    let block = primitives::block(
+        &frame.at(frame.point(-20.0 * k, 2.5 * k, 0.0)).unwrap(),
+        40.0 * k,
+        30.0 * k,
+        15.0 * k,
+    )
+    .unwrap();
+    let body = boolean(&cone, &block, BooleanOp::Intersect, &tol)
+        .unwrap()
+        .body;
+    let x = (56.25_f64 - 6.25).sqrt();
+    let edge = edge_through(&body, frame.point(x * k, 2.5 * k, 7.5 * k));
+    (body, edge)
+}
+
+/// The review's second finding: a radius growing 1.2 to 2.4 over 1.2 at
+/// the wide end of the cone's curved edge (the edge's end, on the cone's
+/// base, slanted against it), inside the bound. With the steps past an
+/// end doubling without a cap the face was followed to where no ball was
+/// found, and refused as not followed. (At the narrow end no ball of 1.5
+/// or more fits, with one radius either: refused there as before.)
+#[test]
+fn a_growing_fade_at_the_cones_slanted_end_is_built() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        for (index, frame) in common::frames(k).iter().enumerate() {
+            let (body, edge) = cut_cone(frame, k);
+            let data = body.edge(edge).unwrap();
+            let height = |t: f64| frame.local(data.curve.eval(t)).2;
+            // The fade at the end on the base.
+            let fade = Some(Fade {
+                to: 2.4 * k,
+                over: 1.2 * k,
+            });
+            let fades = if height(data.range.1) < height(data.range.0) {
+                [None, fade]
+            } else {
+                [fade, None]
+            };
+            let what = format!("scale {k}, frame {index}");
+            let law = RadiusLaw {
+                radius: 1.2 * k,
+                fades,
+            };
+            let made = fillet_by_law(&body, &[FilletLawEdge { edge, law }], &tol)
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+            sound(&made.body, k, &what);
         }
     }
 }
