@@ -464,6 +464,54 @@ fn the_v72_wedge_under_a_grid_is_its_closed_form() {
     assert!((volume - 6800.0).abs() <= 1e-9 * 6800.0, "{volume}");
 }
 
+/// What pins v74's tips besides their fixture: the rod of radius `r`
+/// lofted 20 mm long through equal circles, its end tipped as long as `r`
+/// at the point given in the model where the tip is to be,
+/// `(0, 0, 20 mm + r)`, and its start at a point in the model on the end,
+/// `(0, 0, 0)`: a half ball on each end, ⅔ π r³ each, that follows `r`;
+/// the places stay three expressions.
+#[test]
+fn the_v74_rod_tipped_at_points_in_the_model_is_its_closed_form() {
+    let dir = workdir("format-versions", "v74-tip");
+    std::fs::copy(fixtures().join("v74.3dcraft"), dir.join("v74.3dcraft")).unwrap();
+    let mut s = session_in(&dir);
+    run(&mut s, "file.open", json!({"path": "v74.3dcraft"}));
+    for r in [5.0_f64, 4.0] {
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "r", "expr": format!("{r} mm")}),
+        );
+        let inspect = run(&mut s, "document.inspect", json!({}));
+        let got = inspect["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == "Tail")
+            .unwrap_or_else(|| panic!("no Tail in {inspect}"))["volume"]
+            .as_f64()
+            .unwrap();
+        let pi = std::f64::consts::PI;
+        let want = pi * r * r * 20.0 + 4.0 / 3.0 * pi * r * r * r;
+        assert!(
+            (got - want).abs() <= 1e-11 * want,
+            "r {r}: {got} against {want}"
+        );
+        let nose = inspect["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == "Nose")
+            .unwrap();
+        assert_eq!(
+            nose["params"]["at"],
+            json!(["0 mm", "0 mm", "20 mm + r"]),
+            "{nose}"
+        );
+        assert_eq!(nose["tip"]["placed"], "givenPoint", "{nose}");
+    }
+}
+
 /// What pins v73's tips besides their fixture: the rod of radius `r`
 /// lofted 20 mm long through equal circles, its end tipped as long as `r`
 /// at the default fullness (a half ball, ⅔ π r³) and its start at the

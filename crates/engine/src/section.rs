@@ -111,7 +111,8 @@ impl SectionPlane {
     /// Found on the scene's mesh and edge lines, whose points lie on the
     /// exact faces and curves, in one pass over each; sorted by offset,
     /// one per offset (an axis before a face there), at most
-    /// [`MAX_SECTION_SNAPS`]. What a drag of the section's handle snaps to.
+    /// [`MAX_SECTION_SNAPS`], those nearest the plane where it is when
+    /// there are more. What a drag of the section's handle snaps to.
     pub fn snaps(&self, scene: &Scene) -> Vec<SectionSnap> {
         let size = scene.bodies_box.diagonal().max(scene.bbox.diagonal());
         if !(size.is_finite() && size > 0.0 && self.along.is_finite() && self.base.is_finite()) {
@@ -141,7 +142,7 @@ impl SectionPlane {
             }
         }
         out.sort_by(|a, b| a.offset.total_cmp(&b.offset).then(a.kind.cmp(&b.kind)));
-        let mut kept: Vec<SectionSnap> = Vec::with_capacity(out.len().min(MAX_SECTION_SNAPS));
+        let mut kept: Vec<SectionSnap> = Vec::with_capacity(out.len());
         for snap in out {
             if kept
                 .last()
@@ -149,17 +150,26 @@ impl SectionPlane {
             {
                 continue;
             }
-            if kept.len() == MAX_SECTION_SNAPS {
-                break;
-            }
             kept.push(snap);
+        }
+        // More than the cap: those nearest the plane where it is now.
+        if kept.len() > MAX_SECTION_SNAPS {
+            let here = (self.origin - self.base).dot(self.along);
+            let at = kept.partition_point(|snap| snap.offset < here);
+            let first = at
+                .saturating_sub(MAX_SECTION_SNAPS / 2)
+                .min(kept.len() - MAX_SECTION_SNAPS);
+            kept.truncate(first + MAX_SECTION_SNAPS);
+            kept.drain(..first);
         }
         kept
     }
 }
 
-/// Most places a section snaps to ([`SectionPlane::snaps`]).
-pub const MAX_SECTION_SNAPS: usize = 1024;
+/// Most places a section snaps to ([`SectionPlane::snaps`]): as many as
+/// the faces and edges of a large model give, kept in a sorted list a
+/// drag looks into by halving.
+pub const MAX_SECTION_SNAPS: usize = 1 << 16;
 /// How flat a face and how round a circle must be to be a place a section
 /// snaps to, as a share of the model's size: rounding, nothing more.
 const SNAP_ROUNDING: f64 = 1e-7;

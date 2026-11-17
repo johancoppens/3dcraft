@@ -2373,10 +2373,8 @@ impl Shell {
                         _ => "free",
                     }
                 },
-                "snaps": cache
-                    .snaps
+                "snaps": section_handle::nearest_snaps(&cache.snaps, self.state.section.offset)
                     .iter()
-                    .take(section_handle::REPORTED_SNAPS)
                     .map(|snap| serde_json::json!({
                         "offset": snap.offset,
                         "kind": snap.kind.name(),
@@ -2384,6 +2382,7 @@ impl Shell {
                         "name": snap.name,
                     }))
                     .collect::<Vec<_>>(),
+                "snapsTotal": cache.snaps.len(),
             })),
             (None, Some(why)) => Some(serde_json::json!({ "lost": why })),
             (None, None) => None,
