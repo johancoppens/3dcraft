@@ -12,7 +12,7 @@
 use super::super::Shell;
 use super::agent::ago;
 use crate::kit::{Button, Glyph, Kit};
-use crate::shell::notes::{NoteRow, PinKind};
+use crate::shell::notes::{MAX_MARKERS, NoteRow, PinKind};
 use crate::state::SideTab;
 use crate::theme::color;
 use serde_json::json;
@@ -186,7 +186,7 @@ impl Shell {
                             kit.paragraph(
                                 ui,
                                 &format!(
-                                    "{unpinned} of the {in_view} notes in view have no pin: too many close together. Zoom in to see them."
+                                    "{unpinned} of the {in_view} notes in view have no pin: at most {MAX_MARKERS} pins are drawn. Zoom in to see them."
                                 ),
                                 true,
                             );

@@ -329,6 +329,8 @@ The field stops at 2000 characters and counts them near the end. When the note c
 stays open with your text and says why. The note sits where you clicked on that face (the face's middle
 when you chose it in a list).
 
+![The Notes tab beside a plate with its pins: an agent's question with ?, an open note, a detached one in grey, one held by place, and a done note unfolded with its reply after the closing; the done note chosen, its text beside its pin](images/notes.png)
+
 Once a document has notes, the side panel has a **Notes** tab, its open notes counted on the tab. It lists
 them with their number, their text, where each is (*face of Rib*; *by place: near an edge of Bookend* for
 an edge or face whose name may move to another: held near what the feature that made it makes there now,
