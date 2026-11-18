@@ -161,9 +161,9 @@ pub(crate) struct SideMemory {
     /// review of 2026-11-17: a quick run of selections ran them side by
     /// side).
     pub(crate) between: Option<((u64, u64, u64), craft3d_engine::BetweenJob)>,
-    /// Frames the feature list has gone on scrolling to the row it was
-    /// asked to (`features::SCROLL_TRIES` at most).
-    pub(crate) scroll_tries: u8,
+    /// Where the Features tab's foot (the checks and the card) began in
+    /// the last frame: the list's room ends there.
+    pub(crate) foot_top: Option<f32>,
     waiting: Option<((u64, u64, u64), Value)>,
     /// Commands waiting for the session.
     pending: Vec<SideRequest>,
