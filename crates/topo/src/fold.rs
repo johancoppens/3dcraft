@@ -382,16 +382,28 @@ fn face_folds(body: &Body, face: &Face, t: f64) -> Found {
     let mut spent = false;
     for suspect in &suspects {
         let p = surface.eval(suspect.uv.0, suspect.uv.1);
-        if in_tip(p) || searched.iter().any(|q| q.distance(p) <= 2.0 * t) {
-            continue;
+        // Where to search: the suspect's place, unless a tip ball holds it,
+        // and its span's least concave radius (which keeps out of the tip
+        // balls), each not within two tolerances of a place searched.
+        let mut starts: Vec<((f64, f64), Vec3)> = Vec::new();
+        if !in_tip(p) {
+            starts.push((suspect.uv, p));
         }
+        if let Some(uv) = least_concave(surface, outward, suspect.span, &tips, t) {
+            starts.push((uv, surface.eval(uv.0, uv.1)));
+        }
+        starts.retain(|(_, q)| !searched.iter().any(|s| s.distance(*q) <= 2.0 * t));
+        let Some(&(_, first)) = starts.first() else {
+            continue;
+        };
         if searched.len() >= MOST_SEARCHES {
             spent = true;
             break;
         }
-        searched.push(p);
+        searched.extend(starts.iter().map(|(_, q)| *q));
         SEARCHES.fetch_add(1, Ordering::Relaxed);
         if suspect.no_normal
+            && !in_tip(p)
             && let Some((uv, q)) = no_normal(surface, suspect.uv, suspect.span)
             && !in_tip(q)
         {
@@ -406,13 +418,9 @@ fn face_folds(body: &Body, face: &Face, t: f64) -> Found {
             }
             continue;
         }
-        let mut starts = vec![suspect.uv];
-        if let Some(uv) = least_concave(surface, outward, suspect.span, &tips, t) {
-            starts.push(uv);
-        }
         let mut shown: Option<(Vec3, f64)> = None;
         let mut doubtful = false;
-        for start in starts {
+        for (start, _) in starts {
             let found = layers(surface, outward, start, t, &tips, &chart);
             if let Some((at, gap)) = found.shown
                 && shown.is_none_or(|s| gap < s.1)
@@ -424,7 +432,7 @@ fn face_folds(body: &Body, face: &Face, t: f64) -> Found {
         match shown {
             Some((at, gap)) => out.push((at, FoldKind::Layers { gap })),
             None if doubtful => out.push((
-                p,
+                first,
                 FoldKind::NotProven {
                     why: "two of its layers come within the tolerance of each other near an edge, or where its loops cannot be followed",
                 },
