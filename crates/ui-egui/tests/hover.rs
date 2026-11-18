@@ -88,6 +88,31 @@ fn where_kind(
     panic!("no {kind} found at {points:?}");
 }
 
+/// `hovered` names what a click on `picked` (a `ui.pick` answer) selects:
+/// its vertex, else its edge, else its face. (The pointer of a window is
+/// a position in points, an `f32`: beside a silhouette the face under it
+/// may be another than under the exact position, the vertex or the edge
+/// it points at the same.)
+fn same_target(hovered: &Value, picked: &Value, context: &str) {
+    assert_eq!(hovered["kind"], picked["kind"], "{context}: kind");
+    match picked["kind"].as_str() {
+        Some("face") => {
+            for key in ["feature", "name", "face", "faceIndex"] {
+                assert_eq!(hovered[key], picked[key], "{context}: {key}");
+            }
+        }
+        Some(entity) => {
+            for key in ["feature", "body", "name", "index", "faces"] {
+                assert_eq!(
+                    hovered[entity][key], picked[entity][key],
+                    "{context}: {entity}.{key}"
+                );
+            }
+        }
+        None => panic!("{context}: nothing picked"),
+    }
+}
+
 /// `hovered` names what `picked` (a `ui.pick` answer) names.
 fn same_thing(hovered: &Value, picked: &Value, context: &str) {
     for key in ["kind", "feature", "name", "face", "faceIndex"] {
@@ -322,7 +347,7 @@ fn the_resting_mouse_outlines_what_a_click_selects() {
         let hovered = &got["hovered"];
         let context = format!("the {what} at ({x}, {y}): {hovered}");
         assert_eq!(hovered["kind"], what, "{context}");
-        same_thing(hovered, &picked, &context);
+        same_target(hovered, &picked, &context);
         // Within a hundredth of a pixel: the pointer's place in points
         // and back.
         assert!(

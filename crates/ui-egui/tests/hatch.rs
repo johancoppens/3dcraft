@@ -152,7 +152,8 @@ fn the_cut_is_hatched_paper_and_never_the_selections_colour() {
     // shows the cap hatched where the renderer has it, away from its
     // outline (drawn over it as an edge); its samples may lie elsewhere
     // in the pixel, so a pixel is the paper mixed with the ink, by as much
-    // or a little more or less.
+    // or a little more or less. (The world axes are drawn over everything,
+    // the cap too: three quarters of it, at least, is the cap.)
     let shot = call(
         &mut shell,
         &mut session,
@@ -244,7 +245,7 @@ fn the_cut_is_hatched_paper_and_never_the_selections_colour() {
         .count();
     assert!(inner.len() > 1_000, "{} pixels inside the cap", inner.len());
     assert!(
-        hatched * 10 >= inner.len() * 9,
+        hatched * 4 >= inner.len() * 3,
         "{hatched} of {} inside the cap hatched",
         inner.len()
     );

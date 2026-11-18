@@ -140,16 +140,17 @@ impl Hover {
     }
 }
 
-/// Whether two picks name the same thing to select: the same face, or
-/// edge, or vertex, of the same body.
+/// Whether two picks name the same thing to select: the same vertex, or
+/// edge, of the same body (whatever face lies under the position), or the
+/// same face.
 fn same_thing(a: &Picked, b: &Picked) -> bool {
     let entity = |e: &Option<PickedEntity>| e.as_ref().map(|e| (e.feature.clone(), e.index));
     a.kind == b.kind
-        && a.feature == b.feature
-        && a.face == b.face
-        && a.face_index == b.face_index
-        && entity(&a.edge) == entity(&b.edge)
-        && entity(&a.vertex) == entity(&b.vertex)
+        && match a.kind {
+            Some(PickedKind::Vertex) => entity(&a.vertex) == entity(&b.vertex),
+            Some(PickedKind::Edge) => entity(&a.edge) == entity(&b.edge),
+            _ => a.feature == b.feature && a.face == b.face && a.face_index == b.face_index,
+        }
 }
 
 /// The outline of what `found` points at in `scene`: the vertex as a dot,
