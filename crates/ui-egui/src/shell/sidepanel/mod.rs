@@ -193,6 +193,9 @@ pub(crate) struct SideMemory {
     /// the Parameters tab's own memory (`state.parameters.open`).
     last_tab: Option<SideTab>,
     pub(crate) hits: SideHits,
+    /// How high the selection's card under a tab drew its content in the
+    /// last frame: its height next.
+    card_content: Option<f32>,
 }
 
 impl SideMemory {
@@ -556,16 +559,25 @@ impl Shell {
         // selected was nowhere in sight).
         if tab != SideTab::Features && self.side.props.is_some() {
             let inset = f32::from(crate::shell::side_inset(&tokens));
-            let height = self
-                .props_height()
-                .min(ui.available_height() * 0.5)
-                .max(0.0);
+            // As high as its content drew in the last frame (the estimate
+            // before the first), so its buttons are never out of reach;
+            // at most what leaves the tab three rows (review-pins 2b: on a
+            // short window Measure and Copy name ended below the panel).
+            let wanted = self
+                .side
+                .card_content
+                .filter(|h| h.is_finite() && *h > 0.0)
+                .unwrap_or_else(|| self.props_height());
+            let room = ui.available_height();
+            let most = (room - 3.0 * tokens.row_height).max(room * 0.5);
+            let height = wanted.min(most).max(0.0);
+            let mut drawn = None;
             egui::Panel::bottom("craft3d-side-selection")
                 .resizable(false)
                 .exact_size(height)
                 .frame(egui::Frame::new())
                 .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
+                    let shown = egui::ScrollArea::vertical()
                         .id_salt("craft3d-side-selection-scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
@@ -573,7 +585,11 @@ impl Shell {
                             ui.spacing_mut().item_spacing.y = 0.0;
                             self.props_ui(ui);
                         });
+                    drawn = Some(shown.content_size.y);
                 });
+            self.side.card_content = drawn;
+        } else {
+            self.side.card_content = None;
         }
         match tab {
             SideTab::Parameters => {
