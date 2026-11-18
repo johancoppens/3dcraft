@@ -593,7 +593,11 @@ impl Shell {
         }
         let assembly = self.is_assembly_shown();
         let mut offered = tabs_for(assembly, jig || joints, self.agent_tab_offered());
-        notes::offer(&mut offered, !assembly && self.notes_tab_offered());
+        notes::offer(
+            &mut offered,
+            !assembly && self.notes_tab_offered(),
+            self.notes_for_you() > 0,
+        );
         let tab = self.reconcile_tab(&offered, jig || joints);
         let chosen = self.tab_bar(ui, &offered, tab);
         if chosen != tab {

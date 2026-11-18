@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.1.3 has 183 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.1.3 has 184 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -107,7 +107,7 @@ The full description of any command, with every value it takes and what it refus
 | `variable.measure`, `variable.output`, `output.list` | Outputs: read-only variables computed after regeneration from measures and formulas, for assertions ([Measuring and assertions](measure.md#outputs-measures-in-formulas)) |
 | `select.get`, `select.set`, `select.query` | The selection, and finding things by description ([Selection and named sets](selection.md)) |
 | `agent.log` | What agents did to the document, newest first, with the intent they gave, and which agent made each feature |
-| `note.add`, `note.list`, `note.resolve`, `note.edit`, `note.delete` | Notes pinned to places of the model: written by you or an agent, worked through and closed by an agent with a reply ([Working with an AI agent](agent.md#notes-on-the-model)) |
+| `note.add`, `note.list`, `note.resolve`, `note.reply`, `note.edit`, `note.delete` | Notes pinned to places of the model: written by you or an agent, answered on by both (`note.reply`), worked through and closed by an agent with a reply ([Working with an AI agent](agent.md#notes-on-the-model)) |
 | `set.define`, `set.edit`, `set.remove`, `set.list` | Named sets |
 | `view.render`, `view.pick` | A picture, and what is at a point of it |
 | `view.scrub`, `view.replay` | The model at a step of its history; a video of how it was built |

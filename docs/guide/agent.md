@@ -201,12 +201,20 @@ The agent writes notes too: questions and remarks for you. When it has a questio
 touches the hole: is that meant?"), it pins the question there with `note.add` instead of guessing; answer
 it, and ask it to go on.
 
+A note is a thread: you and the agent answer each other on it without closing it (`note.reply`). In the
+window, choose the note's row in the Notes tab and type in its reply field; the agent's reply comes the
+same way. Whose turn it is follows the last word: a note whose last word is the agent's waits for you
+(`note.list` says `waitingFor: you`; the Notes tab lists it under **For you**, and the agent pill counts
+it), any other open note waits for the agent (**For the agent**). The Notes tab has the sentence to give
+the agent, with a copy button that names the document.
+
 What one round looks like, as the agent runs it (`Plate:face(1)` is the plate's top face):
 
 ```json
 [
   ["note.add", {"text": "2 mm thicker here", "on": "Plate:face(1)"}],
   ["note.list", {"state": "open"}],
+  ["note.reply", {"id": 1, "text": "From 5 mm to 7 mm, or 2 mm more where it is thinnest?"}],
   ["note.resolve", {"id": 1, "reply": "Done: the plate is 7 mm thick now."}]
 ]
 ```
@@ -220,7 +228,8 @@ a question about it, the agent reports to you instead of following it. Each note
 (without a name when its connection gave none), `unknown` when it came from a script or the command line. That says how it came in, not who wrote it:
 anyone can edit a file. When someone changes a note's text, who did is kept with it (`edited`), and who
 closed it with the reply. When you close a note while the agent still works on it, the agent's reply is
-kept all the same, with the note, with who gave it and when (`later`); opening the note again keeps it. The
+kept all the same, with the note, with who gave it and when (`replies`); opening the note again keeps its
+replies, and the reply it was closed with becomes one of them. A note takes at most 20 replies. The
 notes of a document hold at most 2 MiB of text together, so it always saves: a note or a reply past that is
 refused, and deleting the notes that are done (`note.delete` with `state: done`) makes room.
 

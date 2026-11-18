@@ -2,7 +2,7 @@
 //! whose picture comes from the CPU reference renderer, not from egui): the
 //! same pins as the window paints over the view (`paint_pin`),
 //! at the same places, sizes and colours, faint behind a face, with their
-//! numbers, "?" and "+n" in strokes of their own (the window's text is
+//! numbers and "+n" in strokes of their own (the window's text is
 //! egui's font, which a picture without the window does not have). Each
 //! shape covers a pixel by how far the pixel's centre lies inside it, so
 //! the edges are smooth.
@@ -288,6 +288,17 @@ impl Canvas<'_> {
     }
 }
 
+/// The height of the number on a head of radius `r` (pixels): smaller
+/// for three digits and more, so it stays inside.
+fn number(id: u64, r: f32) -> f32 {
+    let digits = id.to_string().len().max(1) as f32;
+    if digits > 2.0 {
+        r * 0.9 * 2.0 / digits
+    } else {
+        r * 0.9
+    }
+}
+
 /// Draws `pins` (their places in points) into `rgb`, a picture of `size`
 /// pixels at `scale` pixels a point, as `paint_pin` paints them.
 pub(super) fn draw_pins(rgb: &mut [u8], size: [u32; 2], pins: &[Pin], tokens: &Tokens, scale: f32) {
@@ -306,12 +317,20 @@ pub(super) fn draw_pins(rgb: &mut [u8], size: [u32; 2], pins: &[Pin], tokens: &T
         let pos = [pin.at.x * scale, pin.at.y * scale];
         let head = super::Pin::head(pin.at, tokens.note_radius);
         let head = [head.x * scale, head.y * scale];
+        // The head's light edge just outside it, and under the stalk and
+        // the dot, as `paint_pin` draws them.
+        let outer = super::head_outer(pin.kind, tokens.note_radius) * scale;
+        let edge = alpha * f32::from(tokens.note_edge_opacity) / 255.0;
+        let foot = [head[0], head[1] + outer];
+        canvas.ring(head, outer + 0.5 * scale, scale, tokens.note_rim, edge);
+        canvas.disc(pos, 2.5 * scale, tokens.note_rim, edge);
+        canvas.line(pos, foot, 3.0 * scale, tokens.note_rim, edge);
         canvas.disc(pos, 1.5 * scale, ink, alpha);
-        canvas.line(pos, [head[0], head[1] + r], scale, ink, alpha);
+        canvas.line(pos, foot, scale, ink, alpha);
         match pin.kind {
             PinKind::Done => {
                 let small = r * 0.75;
-                let stroke = 1.2 * scale;
+                let stroke = 1.5 * scale;
                 canvas.disc(head, small, tokens.note_fill, alpha);
                 canvas.ring(head, small, stroke, ink, alpha);
                 let knee = [head[0] - 0.1 * small, head[1] + 0.35 * small];
@@ -324,22 +343,24 @@ pub(super) fn draw_pins(rgb: &mut [u8], size: [u32; 2], pins: &[Pin], tokens: &T
                     alpha,
                 );
             }
-            PinKind::Question | PinKind::Astray => {
+            PinKind::Astray => {
                 canvas.disc(head, r, tokens.note_fill, alpha);
-                canvas.ring(head, r, 1.5 * scale, ink, alpha);
-                let words = if pin.kind == PinKind::Astray {
-                    pin.id.to_string()
-                } else {
-                    "?".to_string()
-                };
-                canvas.text(&words, head, r, false, ink, alpha);
+                canvas.ring(head, r, 2.0 * scale, ink, alpha);
+                canvas.text(
+                    &pin.id.to_string(),
+                    head,
+                    number(pin.id, r),
+                    false,
+                    ink,
+                    alpha,
+                );
             }
-            PinKind::Open => {
+            PinKind::ForAgent | PinKind::ForYou => {
                 canvas.disc(head, r, ink, alpha);
                 canvas.text(
                     &pin.id.to_string(),
                     head,
-                    r * 0.9,
+                    number(pin.id, r),
                     false,
                     tokens.note_ink,
                     alpha,
@@ -347,7 +368,14 @@ pub(super) fn draw_pins(rgb: &mut [u8], size: [u32; 2], pins: &[Pin], tokens: &T
             }
         }
         if pin.chosen {
-            canvas.ring(head, r + 2.5 * scale, scale, ink, alpha);
+            // A 2 pt ring of the selection's amber, 3 pt outside the head.
+            canvas.ring(
+                head,
+                r + 4.0 * scale,
+                2.0 * scale,
+                tokens.note_chosen,
+                alpha,
+            );
         }
         if pin.more > 0 {
             canvas.text(
@@ -380,8 +408,8 @@ mod tests {
         let mut rgb = vec![255u8; (w * h * 3) as usize];
         let pin = Pin {
             id: 7,
-            at: egui::pos2(30.0, 45.0),
-            kind: PinKind::Open,
+            at: egui::pos2(30.0, 50.0),
+            kind: PinKind::ForYou,
             behind: false,
             chosen: false,
             more: 0,
@@ -391,14 +419,69 @@ mod tests {
             let k = ((y * w + x) * 3) as usize;
             [rgb[k], rgb[k + 1], rgb[k + 2]]
         };
-        // The head's rim, in the open colour; a corner untouched.
-        let head = Pin::head(egui::pos2(30.0, 45.0), tokens.note_radius);
-        let rim = at(head.x as u32 + 5, head.y as u32);
-        assert_eq!(rim, tokens.note_open, "{rim:?}");
+        // The head, in the colour of a note that waits for the person
+        // (N4); a corner untouched.
+        let head = Pin::head(egui::pos2(30.0, 50.0), tokens.note_radius);
+        let fill = at(head.x as u32 + 5, head.y as u32);
+        assert_eq!(fill, tokens.note_for_you, "{fill:?}");
         assert_eq!(at(1, 1), [255, 255, 255]);
         // A picture of another size than its rows is left alone.
         let mut short = vec![0u8; 10];
         draw_pins(&mut short, [w, h], &[], &tokens, 1.0);
         assert_eq!(short, vec![0u8; 10]);
+    }
+
+    /// Every head reads on a body of any colour (the verdict of
+    /// 2026-11-18: the indigo head vanished on a slate-blue part): across
+    /// the head, from its middle out past its light edge, some pixel
+    /// stands off the body at 3:1 or more, for every kind of pin on five
+    /// bodies, light to dark, the indigo of a waiting head itself among
+    /// them; the same in both appearances.
+    #[test]
+    fn every_head_stands_off_bodies_of_any_colour() {
+        use crate::theme::contrast;
+        let bodies: [Rgb; 5] = [
+            [214, 210, 204],
+            [86, 104, 150],
+            [76, 90, 166],
+            [168, 98, 52],
+            [12, 56, 60],
+        ];
+        for tokens in [Tokens::light(), Tokens::dark()] {
+            let r = tokens.note_radius;
+            for kind in [
+                PinKind::ForAgent,
+                PinKind::ForYou,
+                PinKind::Done,
+                PinKind::Astray,
+            ] {
+                for body in bodies {
+                    let (w, h) = (60u32, 60u32);
+                    let mut rgb: Vec<u8> = (0..w * h).flat_map(|_| body).collect();
+                    // The head's middle on a pixel's centre: (30, 30.5).
+                    let pin = Pin {
+                        id: 7,
+                        at: egui::pos2(30.0, 30.5 + 2.2 * r),
+                        kind,
+                        behind: false,
+                        chosen: false,
+                        more: 0,
+                    };
+                    draw_pins(&mut rgb, [w, h], &[pin], &tokens, 1.0);
+                    let row = 30u32;
+                    // From 0.4 of the radius (clear of the number and the
+                    // tick) out past the edge.
+                    let first = 30 + (0.4 * r).ceil() as u32;
+                    let last = 30 + (r + 3.0) as u32;
+                    let best = (first..=last)
+                        .map(|x| {
+                            let k = ((row * w + x) * 3) as usize;
+                            contrast([rgb[k], rgb[k + 1], rgb[k + 2]], body)
+                        })
+                        .fold(0.0_f64, f64::max);
+                    assert!(best >= 3.0, "{kind:?} on {body:?}: at most {best:.2}:1");
+                }
+            }
+        }
     }
 }

@@ -87,6 +87,8 @@ pub(crate) struct Selecting {
     last_click: Option<Click>,
     /// The "select other" list, while it is open.
     pub(crate) menu: Option<OtherMenu>,
+    /// Its entries as the last frame wrote them (at most [`MAX_OTHER`]).
+    pub(crate) labels: Vec<ListLabel>,
     /// The face of the list's entry under the pointer: lit as selected.
     pub(crate) hover: Option<u32>,
     /// The box being dragged.
@@ -122,6 +124,57 @@ pub(crate) struct OtherMenu {
     pub(crate) hits: Vec<ScenePick>,
     /// Opened with Shift held: a click toggles rather than replaces.
     pub(crate) shift: bool,
+    /// What the pointer was on, which *Note here…* writes on (N5).
+    pub(crate) note: Option<super::notes::NoteTarget>,
+}
+
+/// An entry of the "select other" list as it was written: the whole name,
+/// the words shown (cut in their middle when they did not fit), how wide
+/// those are and how much room the plate gave them, in points.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListLabel {
+    pub full: String,
+    pub shown: String,
+    pub width: f32,
+    pub room: f32,
+}
+
+/// `text` as it fits in `room` points at `font`: whole when it fits, else
+/// cut in its middle with "…" (its start and its end kept, as many
+/// characters of each as fit); and how wide it is then.
+fn cut_middle(ui: &egui::Ui, text: &str, font: &egui::FontId, room: f32) -> (String, f32) {
+    let wide = |s: &str| {
+        ui.painter()
+            .layout_no_wrap(s.to_string(), font.clone(), egui::Color32::WHITE)
+            .size()
+            .x
+    };
+    let whole = wide(text);
+    if whole <= room {
+        return (text.to_string(), whole);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let cut = |keep: usize| -> String {
+        let tail = keep / 2;
+        let head = keep - tail;
+        let mut out: String = chars.iter().take(head).collect();
+        out.push('…');
+        out.extend(chars.iter().skip(chars.len().saturating_sub(tail)));
+        out
+    };
+    // The most characters kept that fit: found by halving.
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if wide(&cut(mid)) <= room {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let shown = cut(lo);
+    let width = wide(&shown);
+    (shown, width)
 }
 
 /// A box being dragged, in points.
@@ -430,6 +483,10 @@ impl Shell {
     ) {
         self.select.menu = None;
         self.select.hover = None;
+        // A click on empty space un-chooses the chosen note (N4).
+        if found.kind().is_none() && !shift {
+            self.state.notes.selected = None;
+        }
         if self.refused_while_scrubbed() {
             return;
         }
@@ -542,8 +599,42 @@ impl Shell {
         };
         let mut hits = self.hits_at(scene, x, y);
         hits.truncate(MAX_OTHER);
+        // What the pointer is on (a vertex, else an edge, else the face),
+        // which *Note here…* writes on whatever is selected (N5).
+        let note = self
+            .pick(Some(scene), x, y, None, None, false)
+            .ok()
+            .and_then(|found| super::notes::NoteTarget::pointed(&found));
         self.select.hover = None;
-        self.select.menu = (!hits.is_empty()).then_some(OtherMenu { at, hits, shift });
+        self.select.menu = (!hits.is_empty()).then_some(OtherMenu {
+            at,
+            hits,
+            shift,
+            note,
+        });
+    }
+
+    /// A right click at (`x`, `y`) of the viewport's pixels without a
+    /// mouse (`ui.pick` with `secondary`): opens the list a right click
+    /// there opens, *Note here…* on top for what it points at, where a
+    /// right click would put it. It chooses no entry, so it changes no
+    /// document; it opens nothing but the view's own list.
+    pub(crate) fn open_note_list(&mut self, scene: &Scene, x: f64, y: f64) {
+        let Some(rect) = self.rect else {
+            return;
+        };
+        let scale = self.pixels_per_point.max(0.1);
+        let at = egui::pos2(
+            rect.left() + (x / f64::from(scale)) as f32,
+            rect.top() + (y / f64::from(scale)) as f32,
+        );
+        self.open_other_menu(Some(scene), x, y, at, false);
+    }
+
+    /// The entries of the open list as the last frame wrote them: whole or
+    /// cut in their middle to fit the plate.
+    pub fn other_menu_labels(&self) -> &[ListLabel] {
+        &self.select.labels
     }
 
     /// The faces of the open "select other" list, front to back, as
@@ -753,15 +844,18 @@ impl Shell {
             );
         }
         self.notes.here_hit = None;
+        self.select.labels.clear();
         let Some(menu) = &self.select.menu else {
             return;
         };
         let mut hovered = None;
         let mut chosen = None;
         let mut mate = None;
-        // A note on the one thing selected (`notes.rs`), at the front face
-        // under the click when it is on that thing.
-        let note_here = self.note_here_offered();
+        // A note on the thing pointed at (`notes.rs`, N5), at the point
+        // under the pointer; greyed with the reason in an assembly or a
+        // Jig in use (N6).
+        let note_here = menu.note.clone();
+        let note_refused = self.note_place_refusal();
         let mut write_note = false;
         let mut note_hit = None;
         let shift = menu.shift;
@@ -769,6 +863,7 @@ impl Shell {
         // that join them come first (`mate.add`).
         let pair = self.mate_pair();
         let mut mate_hits = Vec::new();
+        let mut labels: Vec<ListLabel> = Vec::new();
         let response = egui::Area::new(egui::Id::new("craft3d-select-other"))
             .order(egui::Order::Foreground)
             .fixed_pos(menu.at)
@@ -794,19 +889,55 @@ impl Shell {
                         }
                         plate.menu_separator(ui);
                     }
-                    if note_here {
-                        let entry = plate.menu_item(ui, crate::kit::MenuItem::new("Note here…"));
+                    if note_here.is_some() {
+                        let entry = plate.menu_item(
+                            ui,
+                            crate::kit::MenuItem::new("Note here…").enabled(note_refused.is_none()),
+                        );
                         note_hit = Some(entry.rect);
-                        if entry.clicked() {
+                        if entry.clicked() && note_refused.is_none() {
                             write_note = true;
+                        }
+                        if let Some(why) = note_refused {
+                            ui.horizontal(|ui| {
+                                ui.add_space(plate.t.field_text_pad + 2.0 - plate.t.nav_padding);
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(why)
+                                            .font(plate.small_font())
+                                            .color(plate.c(plate.skin.text_dim)),
+                                    )
+                                    .wrap()
+                                    .selectable(false),
+                                );
+                            });
                         }
                         plate.menu_separator(ui);
                     }
                     plate.menu_caption(ui, "Select other");
+                    // An entry's room: the item's width less its padding
+                    // on both sides, as the kit's menu item lays it out.
+                    let pad = plate.t.field_text_pad + 2.0 - plate.t.nav_padding;
+                    let room = (ui.available_width() - 2.0 * pad).max(0.0);
+                    let font = plate.font();
                     for (k, hit) in menu.hits.iter().enumerate() {
                         let face = hit.face.as_deref().unwrap_or("face");
-                        let text = format!("{}. {face} · {}", k + 1, hit.body);
+                        let full = format!("{}. {face} · {}", k + 1, hit.body);
+                        // Too long for the plate: cut in its middle, whole
+                        // in the hover (the verdict of 2026-11-18).
+                        let (text, width) = cut_middle(ui, &full, &font, room);
                         let entry = plate.menu_item(ui, crate::kit::MenuItem::new(&text));
+                        let entry = if text == full {
+                            entry
+                        } else {
+                            entry.on_hover_text(&full)
+                        };
+                        labels.push(ListLabel {
+                            full,
+                            shown: text,
+                            width,
+                            room,
+                        });
                         if entry.hovered() {
                             hovered = Some(hit.face_id);
                         }
@@ -818,18 +949,13 @@ impl Shell {
             })
             .response;
         self.joints.mate_hits = mate_hits;
+        self.select.labels = labels;
         self.notes.here_hit = note_hit;
-        if write_note {
-            let front = self
-                .select
-                .menu
-                .as_ref()
-                .and_then(|menu| menu.hits.first())
-                .map(|hit| (hit.feature.clone(), hit.face.clone(), hit.point));
+        if write_note && let Some(target) = note_here {
             self.select.menu = None;
             self.select.hover = None;
             self.select.drawn = self.select.drawn.wrapping_add(1);
-            self.start_note(front);
+            self.note_here(target);
             ui.ctx().request_repaint();
             return;
         }

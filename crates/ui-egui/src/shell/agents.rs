@@ -518,13 +518,15 @@ impl Shell {
             self.agents_now(),
             cfg!(target_arch = "wasm32"),
         );
-        // An agent's open questions, pinned to the model (`notes.rs`).
-        let questions = self.notes_questions();
-        if questions > 0 && view.kind != PillKind::Web {
+        // The notes that wait for the person (`notes.rs`), the count first
+        // so a short bar cuts the agent's name and not the count (N1); an
+        // access question keeps the pill to itself.
+        let waiting = self.notes_for_you();
+        if waiting > 0 && !matches!(view.kind, PillKind::Web | PillKind::Asks) {
             view.label = format!(
-                "{} · {questions} question{}",
-                view.label,
-                if questions == 1 { "" } else { "s" }
+                "{waiting} note{} for you · {}",
+                if waiting == 1 { "" } else { "s" },
+                view.label
             );
         }
         view
@@ -890,9 +892,9 @@ impl Shell {
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         self.agents.pill = Some(response.rect);
         if response.clicked() {
-            // An agent's open questions first: to the Notes tab; there,
-            // the pill opens the panel as always.
-            if self.notes_questions() > 0
+            // Notes that wait for the person first: to the Notes tab;
+            // there, the pill opens the panel as always.
+            if self.notes_for_you() > 0
                 && self.state.panels.side_tab != crate::state::SideTab::Notes
             {
                 self.show_notes_tab();

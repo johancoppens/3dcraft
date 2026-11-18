@@ -557,7 +557,7 @@ fn notes_change_no_body_and_rebuild_nothing() {
 fn every_note_command_is_one_undo_step() {
     let mut s = session();
     plate(&mut s);
-    let steps: [(&str, Value); 5] = [
+    let steps: [(&str, Value); 6] = [
         ("note.add", json!({"text": "a", "on": "F1:face(1)"})),
         ("note.resolve", json!({"id": 1, "reply": "b"})),
         ("note.resolve", json!({"id": 1, "done": false})),
@@ -565,6 +565,7 @@ fn every_note_command_is_one_undo_step() {
             "note.edit",
             json!({"id": 1, "text": "c", "point": [1, 1, 5]}),
         ),
+        ("note.reply", json!({"id": 1, "text": "d"})),
         ("note.delete", json!({"id": 1})),
     ];
     let mut states = vec![s.document_bytes().unwrap()];
@@ -1050,15 +1051,16 @@ fn a_reply_to_a_done_note_is_kept_and_an_unnamed_connection_is_an_agent() {
         "closed as it was: {replied}"
     );
     assert!(replied["done"]["reply"].is_null(), "{replied}");
-    let later = &replied["later"][0];
+    // The note's replies (`replies` since 2026-11-18, `later` before).
+    let later = &replied["replies"][0];
     assert_eq!(later["author"], "agent", "{replied}");
     assert_eq!(later["agent"], "Claude Code");
-    assert_eq!(later["reply"], "Made it 7 mm.");
+    assert_eq!(later["text"], "Made it 7 mm.");
     // One undo step takes the reply back; the closing stays.
     run(&mut s, "edit.undo", json!({}));
     let back = note(&mut s, 1);
     assert_eq!(back["state"], "done");
-    assert!(back.get("later").is_none(), "{back}");
+    assert_eq!(back["replies"], json!([]), "{back}");
     // Without a reply, a done note is still an error that says what to do.
     let e = error(&mut s, "note.resolve", json!({"id": 1}));
     assert!(e.contains("give a reply to add one"), "{e}");
@@ -1068,12 +1070,167 @@ fn a_reply_to_a_done_note_is_kept_and_an_unnamed_connection_is_an_agent() {
     })
     .unwrap();
     let again = note(&mut s, 1);
-    assert_eq!(again["later"][0]["author"], "agent", "{again}");
-    assert!(again["later"][0]["agent"].is_null(), "{again}");
+    assert_eq!(again["replies"][0]["author"], "agent", "{again}");
+    assert!(again["replies"][0]["agent"].is_null(), "{again}");
     // Opened again, its replies stay (review-pins 2b).
     let reopened = run(&mut s, "note.resolve", json!({"id": 1, "done": false}));
     assert_eq!(reopened["state"], "open");
-    assert_eq!(reopened["later"][0]["reply"], "checked", "{reopened}");
+    assert_eq!(reopened["replies"][0]["text"], "checked", "{reopened}");
+}
+
+/// A note is a thread (2026-11-18, the UX round's N1: a person could not
+/// answer an agent in the window): `note.reply` answers on an open note or
+/// a done one, by whoever sends it, without opening or closing it, one
+/// undo step; `waitingFor` follows the last word, and `forYou` and
+/// `forAgent` count it; the caps hold (2000 code points, 20 replies); a
+/// closing's reply stays in the thread when the note is opened again.
+#[test]
+fn note_reply_answers_on_a_note_and_says_whose_turn_it_is() {
+    let mut s = session();
+    plate(&mut s);
+    as_person(
+        &mut s,
+        "note.add",
+        json!({"text": "2 mm thicker here", "on": "Plate:face(1)"}),
+    );
+    let turn = |s: &mut Session| {
+        let listed = notes(s);
+        (
+            listed["notes"][0]["waitingFor"].clone(),
+            listed["forYou"].clone(),
+            listed["forAgent"].clone(),
+        )
+    };
+    // The person's note waits for an agent.
+    assert_eq!(turn(&mut s), (json!("agent"), json!(0), json!(1)));
+    // The agent asks back: the note waits for the person, still open.
+    let asked = as_agent(
+        &mut s,
+        "note.reply",
+        json!({"id": 1, "text": "From 5 mm to 7 mm, or 2 mm more where it is thinnest?"}),
+    );
+    assert_eq!(asked["state"], "open", "{asked}");
+    assert_eq!(asked["replies"][0]["author"], "agent", "{asked}");
+    assert_eq!(asked["replies"][0]["agent"], "Claude Code");
+    assert_eq!(asked["waitingFor"], "you", "{asked}");
+    assert!(
+        asked["summary"].as_str().unwrap().contains("reply added"),
+        "{asked}"
+    );
+    assert_eq!(turn(&mut s), (json!("you"), json!(1), json!(0)));
+    assert!(
+        notes(&mut s)["summary"]
+            .as_str()
+            .unwrap()
+            .contains("1 waiting for the person"),
+        "{}",
+        notes(&mut s)
+    );
+    // One undo step takes it back, redo brings it again.
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(turn(&mut s), (json!("agent"), json!(0), json!(1)));
+    assert_eq!(note(&mut s, 1)["replies"], json!([]));
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(turn(&mut s), (json!("you"), json!(1), json!(0)));
+    // The person answers: the agent's turn; over a channel that says no
+    // one, the agent's turn too.
+    let answered = as_person(&mut s, "note.reply", json!({"id": 1, "text": "To 7 mm."}));
+    assert_eq!(answered["replies"][1]["author"], "person", "{answered}");
+    assert_eq!(answered["replies"][1]["text"], "To 7 mm.");
+    assert_eq!(turn(&mut s), (json!("agent"), json!(0), json!(1)));
+    run(&mut s, "note.reply", json!({"id": 1, "text": "(a script)"}));
+    assert_eq!(note(&mut s, 1)["replies"][2]["author"], "unknown");
+    assert_eq!(turn(&mut s), (json!("agent"), json!(0), json!(1)));
+    // Closed with a reply; then a reply on the done note keeps the
+    // closing; opened again, the closing's reply stays as a reply and the
+    // note waits for the person, whose note it was, again.
+    as_agent(
+        &mut s,
+        "note.resolve",
+        json!({"id": 1, "reply": "Made it 7 mm."}),
+    );
+    assert_eq!(note(&mut s, 1)["waitingFor"], Value::Null);
+    let more = as_agent(
+        &mut s,
+        "note.reply",
+        json!({"id": 1, "text": "The fillet followed."}),
+    );
+    assert_eq!(more["state"], "done", "{more}");
+    assert_eq!(more["done"]["reply"], "Made it 7 mm.");
+    assert_eq!(more["replies"][3]["text"], "The fillet followed.");
+    let reopened = as_person(&mut s, "note.resolve", json!({"id": 1, "done": false}));
+    let texts: Vec<&str> = reopened["replies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "From 5 mm to 7 mm, or 2 mm more where it is thinnest?",
+            "To 7 mm.",
+            "(a script)",
+            "The fillet followed.",
+            "Made it 7 mm."
+        ],
+        "{reopened}"
+    );
+    assert_eq!(reopened["waitingFor"], "you", "{reopened}");
+    // The caps: 2000 code points a reply; 20 replies a note.
+    let long = "x".repeat(2001);
+    let e = error(&mut s, "note.reply", json!({"id": 1, "text": long}));
+    assert!(e.contains("at most 2000"), "{e}");
+    for k in 5..20 {
+        run(
+            &mut s,
+            "note.reply",
+            json!({"id": 1, "text": format!("reply {k}")}),
+        );
+    }
+    let e = error(&mut s, "note.reply", json!({"id": 1, "text": "one more"}));
+    assert!(e.contains("20 replies"), "{e}");
+    assert_eq!(note(&mut s, 1)["replies"].as_array().unwrap().len(), 20);
+}
+
+/// `note.reply` refuses what is not a reply to a note the document has,
+/// with what is wrong, and changes nothing (rule 13).
+#[test]
+fn note_reply_refuses_bad_params_and_changes_nothing() {
+    let mut s = session();
+    let e = error(&mut s, "note.reply", json!({"id": 1, "text": "x"}));
+    assert!(!e.is_empty());
+    plate(&mut s);
+    as_person(
+        &mut s,
+        "note.add",
+        json!({"text": "here", "on": "Plate:face(1)"}),
+    );
+    let before = s.document_bytes().unwrap();
+    for params in [
+        json!({}),
+        json!({"id": 1}),
+        json!({"text": "x"}),
+        json!({"id": 0, "text": "x"}),
+        json!({"id": -1, "text": "x"}),
+        json!({"id": "1", "text": "x"}),
+        json!({"id": 1.5, "text": "x"}),
+        json!({"id": 99, "text": "x"}),
+        json!({"id": 1, "text": 7}),
+        json!({"id": 1, "text": ""}),
+        json!({"id": 1, "text": " \n "}),
+        json!({"id": 1, "text": "a\u{7}b"}),
+        json!({"id": 1, "text": "x", "done": true}),
+        json!({"id": [1], "text": "x"}),
+        json!(null),
+        json!([1, "x"]),
+    ] {
+        let e = error(&mut s, "note.reply", params.clone());
+        assert!(e.contains("note.reply"), "{params}: {e}");
+    }
+    let e = error(&mut s, "note.reply", json!({"id": 99, "text": "x"}));
+    assert!(e.contains("there is no note 99"), "{e}");
+    assert!(s.document_bytes().unwrap() == before, "nothing changed");
 }
 
 /// Review-pins 1c (minor): the hole of a trimmed sheet is not on the

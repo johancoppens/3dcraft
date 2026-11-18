@@ -55,7 +55,7 @@ pub use name::{
 };
 pub use note::{
     MAX_NOTE_AUTHOR_CHARS, MAX_NOTE_CHARS, MAX_NOTE_REPLIES, MAX_NOTES, MAX_NOTES_BYTES, Note,
-    NoteAuthor, NoteDone, NoteKind, NoteOn, NoteReply, NoteStamp, Notes, check_note_point,
+    NoteAuthor, NoteDone, NoteKind, NoteOn, NoteReply, NoteStamp, Notes, Turn, check_note_point,
     clean_note_author, clean_note_text, unseen,
 };
 pub use output::{MAX_OUTPUTS, Output, OutputDef};
