@@ -1501,7 +1501,8 @@ impl Shell {
                 (tokens.control_font * room / galley.size().x).max(tokens.control_font * 0.7);
             galley = lay(size);
         }
-        painter.galley(
+        // Never past its cell, however narrow (the hover has it whole).
+        painter.with_clip_rect(cell).galley(
             pos2(
                 cell.center().x - galley.size().x * 0.5,
                 cell.center().y - galley.size().y * 0.5 - 1.0,
