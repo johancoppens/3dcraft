@@ -741,9 +741,14 @@ impl Shell {
         // Taken out while the list is drawn (and put back after): no copy
         // of every row each frame.
         let rows = std::mem::take(&mut self.rows);
+        // Never taller than the room left above the foot: egui's least
+        // height for a scrolled area (64 points) drew the list over the
+        // card in a short drawer (the review of 2026-11-18).
         let list = egui::ScrollArea::vertical()
             .id_salt(("craft3d-side-features", self.viewing))
             .auto_shrink([false, false])
+            .min_scrolled_height(ui.available_height().max(0.0))
+            .max_height(ui.available_height().max(0.0))
             .show(ui, |ui| {
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
@@ -1181,10 +1186,15 @@ impl Shell {
             }
         }
         self.tree_view = Some(list_rect);
-        // The roll-back bar's grip drags the marker.
-        if let Some(bar) = bar_rect {
+        // The roll-back bar's grip drags the marker: where the list shows
+        // it (scrolled out of the list's room, under the card, a click
+        // there is the card's: the review of 2026-11-18).
+        if let Some(bar) = bar_rect
+            && bar.intersects(list_rect)
+        {
             let grip =
-                Rect::from_min_size(bar.min, vec2(tokens.control_height * 1.6, bar.height()));
+                Rect::from_min_size(bar.min, vec2(tokens.control_height * 1.6, bar.height()))
+                    .intersect(list_rect);
             self.side.hits.targets.push(("rollback".to_string(), grip));
             let drag = ui
                 .interact(

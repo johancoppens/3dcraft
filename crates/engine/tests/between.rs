@@ -18,6 +18,7 @@
 mod common;
 
 use common::plain::{run, session, session_in};
+use common::workdir;
 use craft3d_engine::Session;
 use craft3d_math::Portable;
 use serde_json::{Value, json};
@@ -1134,4 +1135,57 @@ fn a_rim_and_an_axis_a_tenth_of_a_degree_apart_are_parallel() {
             assert_eq!(got["parallel"], true, "{got}");
         }
     }
+}
+
+/// The developer looks at sections of assemblies (2026-11-18): the axis
+/// of a hole in an instance posed in the assembly (turned a quarter about
+/// X and moved) is found in the assembly's space, as the window's plane
+/// through it needs it: the scene's mesh of an instance is posed.
+#[test]
+fn a_hole_of_a_posed_instance_has_its_axis_in_the_assemblys_space() {
+    let dir = workdir("between", "posed-axis");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [40, 20, 6], "name": "Plate"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 3, "height": 10, "position": [20, 10, -2], "name": "Bore"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Plate", "tool": "Bore", "name": "Holed"}),
+    );
+    run(&mut s, "file.save", json!({"path": "plate.3dcraft"}));
+    run(&mut s, "assembly.new", json!({}));
+    run(
+        &mut s,
+        "instance.add",
+        json!({"source": "plate.3dcraft", "name": "Turned", "position": [100, 50, 30], "rotation": [90, 0, 0]}),
+    );
+    let scene = s.scene(None).unwrap().expect("the assembly's scene");
+    // The one round face among the instance's: its axis.
+    let mut axes = Vec::new();
+    for body in scene.bodies.iter() {
+        for name in body.face_names.iter() {
+            if let Ok(axis) = s.face_axis(&scene, Some(body.feature.as_str()), name) {
+                axes.push(axis);
+            }
+        }
+    }
+    assert_eq!(axes.len(), 1, "{axes:?}");
+    let (point, direction) = axes[0];
+    // Turned a quarter about X: (x, y, z) goes to (x, -z, y), then moved
+    // by (100, 50, 30); the bore's axis x = 20, y = 10 along Z becomes the
+    // line x = 120, z = 40 along Y.
+    assert!(direction.y.abs() > 1.0 - 1e-9, "{direction:?}");
+    assert!(
+        (point.x - 120.0).abs() < 1e-6 && (point.z - 40.0).abs() < 1e-6,
+        "{point:?}"
+    );
 }

@@ -860,48 +860,71 @@ fn a_range_fits_the_card_at_the_panels_least_width() {
 }
 
 /// The notes' review of 2026-11-18: on the Features tab in a short window
-/// (1280 × 460, and a phone's 390 × 500 with the drawer open) the card of
-/// one face selected is drawn short, and keeps its actions: Fly to it,
-/// Measure and Copy name, each inside the window.
+/// (1280 × 460, 480 × 500 and a phone's 390 × 500 with the drawer open)
+/// the card is drawn short and keeps its actions: for one face Fly to it,
+/// Measure and Copy name; for two things Fly and Keep as a check. Each is
+/// inside the panel (the measuring's review of 2026-11-18: Keep reached 8
+/// points past its edge), and none lies over the roll-back bar's grip.
 #[test]
 fn in_a_short_window_the_card_of_one_face_keeps_fly_measure_and_copy_name() {
-    for (width, height, drawer) in [(1280.0, 460.0, false), (390.0, 500.0, true)] {
-        let mut session = part();
-        let mut shell = Shell::with_renderer(RendererChoice::Cpu);
-        let mut window = Window::new(width, height);
-        window.frames(&mut shell, &mut session, 3);
-        if drawer {
-            call(
-                &mut shell,
-                &mut session,
-                "ui.set",
-                json!({"panels": {"drawer": true}}),
-            );
-            // The drawer slides in, in a tenth of a second.
-            window.frames(&mut shell, &mut session, 20);
-        }
-        select(
-            &mut session,
-            "face",
-            json!({"in": "Bevel", "hole": true, "inside": [[0, 0, -10], [30, 40, 30]]}),
-            1,
-        );
-        window.frames(&mut shell, &mut session, 3);
-        let targets = shell.side_hits().targets.clone();
-        for name in ["fly", "measure", "copy name"] {
-            let rect = targets
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, r)| *r)
-                .unwrap_or_else(|| panic!("{width} × {height}: no {name}: {targets:?}"));
-            assert!(
-                rect.width() > 0.0
-                    && rect.left() >= 0.0
-                    && rect.right() <= width
-                    && rect.top() >= 0.0
-                    && rect.bottom() <= height,
-                "{width} × {height}: {name} at {rect:?}"
-            );
+    for (width, height, drawer) in [
+        (1280.0, 460.0, false),
+        (480.0, 500.0, true),
+        (390.0, 500.0, true),
+    ] {
+        for (things, names) in [
+            (1, &["fly", "measure", "copy name"][..]),
+            (2, &["fly", "keep"][..]),
+        ] {
+            let mut session = part();
+            let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+            let mut window = Window::new(width, height);
+            window.frames(&mut shell, &mut session, 3);
+            if drawer {
+                call(
+                    &mut shell,
+                    &mut session,
+                    "ui.set",
+                    json!({"panels": {"drawer": true}}),
+                );
+                // The drawer slides in, in a tenth of a second.
+                window.frames(&mut shell, &mut session, 20);
+            }
+            let filter = if things == 1 {
+                json!({"in": "Bevel", "hole": true, "inside": [[0, 0, -10], [30, 40, 30]]})
+            } else {
+                json!({"in": "Bevel", "hole": true})
+            };
+            select(&mut session, "face", filter, things);
+            window.frames(&mut shell, &mut session, 3);
+            let targets = shell.side_hits().targets.clone();
+            let at = |name: &str| {
+                targets
+                    .iter()
+                    .rev()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, r)| *r)
+            };
+            // The panel's edge: where its summary line ends.
+            let edge = at("summary").expect("the summary line").right() + 0.5;
+            let bar = at("rollback");
+            for &name in names {
+                let rect = at(name).unwrap_or_else(|| {
+                    panic!("{width} × {height}, {things}: no {name}: {targets:?}")
+                });
+                assert!(
+                    rect.width() > 0.0
+                        && rect.left() >= 0.0
+                        && rect.right() <= edge
+                        && rect.top() >= 0.0
+                        && rect.bottom() <= height,
+                    "{width} × {height}, {things}: {name} at {rect:?}, the panel's edge {edge}"
+                );
+                assert!(
+                    bar.is_none_or(|bar| !bar.intersects(rect)),
+                    "{width} × {height}, {things}: {name} at {rect:?} over the roll-back bar {bar:?}"
+                );
+            }
         }
     }
 }

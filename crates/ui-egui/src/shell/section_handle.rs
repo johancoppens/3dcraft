@@ -367,7 +367,7 @@ fn round_axis(
 /// of meshes and names (every way it says a face is not in the scene).
 pub fn in_window_words(why: String) -> String {
     if why.contains("not flat") {
-        "Not a flat face: the plane takes one or two flat faces".to_string()
+        "Not a flat face: the plane takes one or two flat faces, or one round face".to_string()
     } else if [
         "no area",
         "no body has",

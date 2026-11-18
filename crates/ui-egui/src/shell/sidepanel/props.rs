@@ -1414,41 +1414,43 @@ impl Shell {
                 .request_repaint_after(std::time::Duration::from_millis(30));
         }
         let (mut keep, mut fly, mut measure, mut copy) = (false, false, false, false);
-        // The line, and against its right edge the target that flies to
-        // it (and Keep for two things).
-        ui.horizontal(|ui| {
-            let button = if props.measurement.is_some() {
-                120.0
-            } else {
-                0.0
-            };
-            let room = (ui.available_width() - button - kit.hit(t.control_height)).max(40.0);
-            let shown = clip(ui, &kit, &text, ValueStyle::Plain, room);
-            let (rect, line) =
-                ui.allocate_exact_size(vec2(room, kit.hit(t.control_height)), Sense::click());
-            let galley = kit.galley(ui, shown, kit.font(), kit.skin.text);
-            ui.painter().galley(
-                pos2(rect.left(), rect.center().y - galley.size().y * 0.5),
-                galley,
-                kit.c(kit.skin.text),
-            );
-            self.side.hits.targets.push(("compact".to_string(), rect));
-            line.on_hover_text(text.clone());
-            let target = kit.icon_button(
-                ui,
-                Glyph::Nav(crate::shell::icons::Icon::ZoomTo),
-                false,
-                "Fly to it",
-            );
-            self.side
-                .hits
-                .targets
-                .push(("fly".to_string(), target.rect));
-            fly = target.clicked();
-            if props.measurement.is_some() {
-                keep = self.keep_button(ui, keepable);
-            }
-        });
+        // The line, and against its right edge Keep (for two things) and
+        // the target that flies to it, laid from the right so that the
+        // line is cut to what is left and nothing passes the panel's edge
+        // (the review of 2026-11-18: Keep reached 8 points past it).
+        let width = ui.available_width();
+        ui.allocate_ui_with_layout(
+            vec2(width, kit.hit(t.control_height)),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                if props.measurement.is_some() {
+                    keep = self.keep_button(ui, keepable);
+                }
+                let target = kit.icon_button(
+                    ui,
+                    Glyph::Nav(crate::shell::icons::Icon::ZoomTo),
+                    false,
+                    "Fly to it",
+                );
+                self.side
+                    .hits
+                    .targets
+                    .push(("fly".to_string(), target.rect));
+                fly = target.clicked();
+                let room = ui.available_width().max(0.0);
+                let shown = clip(ui, &kit, &text, ValueStyle::Plain, room);
+                let (rect, line) =
+                    ui.allocate_exact_size(vec2(room, kit.hit(t.control_height)), Sense::click());
+                let galley = kit.galley(ui, shown, kit.font(), kit.skin.text);
+                ui.painter().galley(
+                    pos2(rect.left(), rect.center().y - galley.size().y * 0.5),
+                    galley,
+                    kit.c(kit.skin.text),
+                );
+                self.side.hits.targets.push(("compact".to_string(), rect));
+                line.on_hover_text(text.clone());
+            },
+        );
         // One thing: its buttons on a second line, as the whole card has
         // them (the notes' review of 2026-11-18: in a short window Fly,
         // Measure and Copy name were not drawn at all).
