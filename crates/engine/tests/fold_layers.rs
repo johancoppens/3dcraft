@@ -145,6 +145,9 @@ struct Chart {
     edges: Vec<(Vec<Vec3>, f64)>,
     followed: Result<(), String>,
     poles: usize,
+    /// How far the walk's chords may stray from the edges' feet, in
+    /// parameters (measured at the middles of the chords).
+    margin: f64,
 }
 
 const PER_EDGE: usize = 96;
@@ -168,6 +171,7 @@ fn chart(body: &Body, face: &Face) -> Chart {
         edges: Vec::new(),
         followed: Ok(()),
         poles: poles.len(),
+        margin: 0.0,
     };
     for id in &face.loops {
         let Some(lp) = body.loop_(*id) else {
@@ -225,11 +229,34 @@ fn chart(body: &Body, face: &Face) -> Chart {
                     });
                 }
             }
-            for uv in uvs {
-                let Some(uv) = uv else {
-                    out.followed = Err("a point of an edge has no foot on the surface".into());
-                    return out;
-                };
+            let Some(firm) = uvs.into_iter().collect::<Option<Vec<(f64, f64)>>>() else {
+                out.followed = Err("a point of an edge has no foot on the surface".into());
+                return out;
+            };
+            for i in 0..PER_EDGE {
+                let s = (f64::from(i as u32) + 0.5) / PER_EDGE as f64;
+                let s = if coedge.reversed { 1.0 - s } else { s };
+                let middle = edge.curve.eval(t0 + (t1 - t0) * s);
+                if poles
+                    .iter()
+                    .any(|(_, q)| q.distance(middle) <= 1e-6 * size.max(1e-300))
+                {
+                    continue;
+                }
+                if let Ok(m) = surface.project(middle) {
+                    let chord = (
+                        0.5 * (firm[i].0 + firm[i + 1].0),
+                        0.5 * (firm[i].1 + firm[i + 1].1),
+                    );
+                    let off = ((m.0 - chord.0) * (m.0 - chord.0)
+                        + (m.1 - chord.1) * (m.1 - chord.1))
+                        .sqrt();
+                    if off.is_finite() {
+                        out.margin = out.margin.max(off);
+                    }
+                }
+            }
+            for uv in firm {
                 if let Some(last) = ring.last() {
                     let jump_u = (uv.0 - last.0).abs() / (u1 - u0).abs().max(1e-300);
                     let jump_v = (uv.1 - last.1).abs() / (v1 - v0).abs().max(1e-300);
@@ -284,13 +311,27 @@ enum Held {
     NotTold,
 }
 
-fn held(chart: &Chart, uv: (f64, f64), p: Vec3, t: f64) -> Held {
+fn to_segment_2d(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let d = (b.0 - a.0, b.1 - a.1);
+    let l = d.0 * d.0 + d.1 * d.1;
+    let s = if l > 0.0 {
+        (((p.0 - a.0) * d.0 + (p.1 - a.1) * d.1) / l).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (x, y) = (p.0 - a.0 - d.0 * s, p.1 - a.1 - d.1 * s);
+    (x * x + y * y).sqrt()
+}
+
+fn held(chart: &Chart, uv: (f64, f64)) -> Held {
     if chart.followed.is_err() {
         return Held::NotTold;
     }
-    for (points, sag) in &chart.edges {
-        for w in points.windows(2) {
-            if to_segment(p, w[0], w[1]) <= t + sag {
+    let room = 2.0 * chart.margin + 1e-12;
+    for ring in &chart.rings {
+        let n = ring.len();
+        for i in 0..n {
+            if to_segment_2d(uv, ring[i], ring[(i + 1) % n]) <= room {
                 return Held::Near;
             }
         }
@@ -444,6 +485,9 @@ struct Layers {
     /// Through material, within `t`, normals opposite (a blade).
     material: f64,
     crossings: usize,
+    /// The least sine between the parameter directions in the box (no
+    /// normal where it is below rounding).
+    least_sine: f64,
 }
 
 fn segment_hits(p: Vec3, q: Vec3, a: Vec3, b: Vec3, c: Vec3) -> bool {
@@ -534,6 +578,16 @@ fn layers(
         })
         .collect();
     out.points = keep.len();
+    let mut told: BTreeMap<usize, Held> = BTreeMap::new();
+    out.least_sine = f64::INFINITY;
+    for &k in &keep {
+        told.insert(k, held(chart, all[k].0));
+        let (_, a, b) = surface.derivatives(all[k].0.0, all[k].0.1);
+        let size = a.length() * b.length();
+        if size > 0.0 {
+            out.least_sine = out.least_sine.min(a.cross(b).length() / size);
+        }
+    }
     // Pairs within t: a grid of cells t wide.
     let cell = |p: Vec3| {
         (
@@ -569,8 +623,9 @@ fn layers(
                         }
                         let room = 1e-12 * p0.length().max(t);
                         if d.dot(m) > room && -d.dot(other) > room {
-                            let held_p = held(chart, uv_p, p, t);
-                            let held_q = held(chart, uv_q, q, t);
+                            let _ = (uv_p, uv_q);
+                            let held_p = told.get(&k).copied().unwrap_or(Held::NotTold);
+                            let held_q = told.get(&l).copied().unwrap_or(Held::NotTold);
                             match (held_p, held_q) {
                                 (Held::In, Held::In) => {
                                     out.shown += 1;
@@ -586,84 +641,6 @@ fn layers(
                         } else if d.dot(m) < -room && -d.dot(other) < -room {
                             out.material = out.material.min(gap);
                         }
-                    }
-                }
-            }
-        }
-    }
-    // The grid's triangles crossing each other, away from neighbours,
-    // each crossing's corners in the face.
-    let index = |i: usize, j: usize| i * (n + 1) + j;
-    let usable = |k: usize| {
-        let (_, p, m) = &all[k];
-        m.is_some()
-            && p.distance(p0) <= reach
-            && !tips.iter().any(|tip| tip.distance(*p) <= TIP * t)
-    };
-    let mut triangles: Vec<([Vec3; 3], (usize, usize), [usize; 3])> = Vec::new();
-    for i in 0..n {
-        for j in 0..n {
-            let (a, b, c, d) = (
-                index(i, j),
-                index(i + 1, j),
-                index(i + 1, j + 1),
-                index(i, j + 1),
-            );
-            if ![a, b, c, d].iter().all(|&k| usable(k)) {
-                continue;
-            }
-            triangles.push(([all[a].1, all[b].1, all[c].1], (i, j), [a, b, c]));
-            triangles.push(([all[a].1, all[c].1, all[d].1], (i, j), [a, c, d]));
-        }
-    }
-    let size = (2.0 * reach / n as f64).max(1e-300) * 4.0;
-    let box_cells = |tri: &[Vec3; 3]| {
-        let lo = Vec3::new(
-            tri[0].x.min(tri[1].x).min(tri[2].x),
-            tri[0].y.min(tri[1].y).min(tri[2].y),
-            tri[0].z.min(tri[1].z).min(tri[2].z),
-        );
-        let hi = Vec3::new(
-            tri[0].x.max(tri[1].x).max(tri[2].x),
-            tri[0].y.max(tri[1].y).max(tri[2].y),
-            tri[0].z.max(tri[1].z).max(tri[2].z),
-        );
-        let f = |x: f64| (x / size).floor() as i64;
-        let mut list = Vec::new();
-        for x in f(lo.x)..=f(hi.x).min(f(lo.x) + 3) {
-            for y in f(lo.y)..=f(hi.y).min(f(lo.y) + 3) {
-                for z in f(lo.z)..=f(hi.z).min(f(lo.z) + 3) {
-                    list.push((x, y, z));
-                }
-            }
-        }
-        list
-    };
-    let mut buckets: BTreeMap<(i64, i64, i64), Vec<usize>> = BTreeMap::new();
-    for (k, (tri, _, _)) in triangles.iter().enumerate() {
-        for c in box_cells(tri) {
-            buckets.entry(c).or_default().push(k);
-        }
-    }
-    let mut seen: BTreeMap<(usize, usize), ()> = BTreeMap::new();
-    for list in buckets.values() {
-        for (x, &a) in list.iter().enumerate() {
-            for &b in &list[x + 1..] {
-                let ((ta, ca, ka), (tb, cb, kb)) = (&triangles[a], &triangles[b]);
-                if ca.0.abs_diff(cb.0) <= 1 && ca.1.abs_diff(cb.1) <= 1 {
-                    continue;
-                }
-                let key = (a.min(b), a.max(b));
-                if seen.insert(key, ()).is_some() {
-                    continue;
-                }
-                if triangles_cross(*ta, *tb) {
-                    let inside = ka.iter().chain(kb.iter()).all(|&k| {
-                        let (uv, p, _) = all[k];
-                        held(chart, uv, p, t) == Held::In
-                    });
-                    if inside {
-                        out.crossings += 1;
                     }
                 }
             }
@@ -692,6 +669,7 @@ struct Sum {
     near: usize,
     charts_not_followed: usize,
     material: f64,
+    least_sine: f64,
     suspect_ms: f64,
     search_ms: f64,
 }
@@ -701,6 +679,7 @@ impl Sum {
         Sum {
             least: f64::INFINITY,
             material: f64::INFINITY,
+            least_sine: f64::INFINITY,
             ..Sum::default()
         }
     }
@@ -723,13 +702,14 @@ impl Sum {
         self.near += o.near;
         self.charts_not_followed += o.charts_not_followed;
         self.material = self.material.min(o.material);
+        self.least_sine = self.least_sine.min(o.least_sine);
         self.suspect_ms += o.suspect_ms;
         self.search_ms += o.search_ms;
     }
 
     fn said(&self, t: f64) -> String {
         format!(
-            "faces {} freeform {} spans {} proven {} pole spans {} | suspects {:?}, {} searched | layers shown on {} faces ({} pairs, least {:.4} t) | crossings seen on {} faces | pairs near an edge {}, not told {} | charts not followed {} | through material least {:.3} t | {:.1} ms suspects, {:.1} ms searches",
+            "faces {} freeform {} spans {} proven {} pole spans {} | suspects {:?}, {} searched | layers shown on {} faces ({} pairs, least {:.4} t) | least sine searched {:.2e} | pairs near an edge {}, not told {} | charts not followed {} | through material least {:.3} t | {:.1} ms suspects, {:.1} ms searches",
             self.faces,
             self.freeform,
             self.spans,
@@ -740,7 +720,7 @@ impl Sum {
             self.shown_faces,
             self.shown_pairs,
             self.least / t,
-            self.crossing_faces,
+            self.least_sine,
             self.near,
             self.not_told,
             self.charts_not_followed,
@@ -818,6 +798,7 @@ fn rule(tag: &str, body: &Body, t: f64, detail: bool) -> Sum {
             face_crossings += l.crossings;
             face_material = face_material.min(l.material);
             sum.not_told += l.not_told;
+            sum.least_sine = sum.least_sine.min(l.least_sine);
             sum.near += l.near;
         }
         sum.search_ms += ms(start);
