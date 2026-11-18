@@ -149,7 +149,10 @@ fn section_hatch_color(rel: vec3<f32>) -> vec3<f32> {
     }
     // A whole number of 255ths (`Hatching::color`): never a half between
     // two bytes, so the conversion to bytes rounds it as the CPU does.
-    return mix(paper, scene.section_ink.rgb, round(c * 255.0) / 255.0);
+    // And each channel a whole byte, as the CPU rounds it: a value between
+    // two bytes is converted by the hardware, which some round otherwise.
+    let mixed = mix(paper, scene.section_ink.rgb, round(c * 255.0) / 255.0);
+    return round(mixed * 255.0) / 255.0;
 }
 
 struct VertexIn {

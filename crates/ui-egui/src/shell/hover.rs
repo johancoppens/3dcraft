@@ -464,7 +464,6 @@ impl Shell {
             self.hover.at = None;
         }
         let blocked = moving
-            || down
             || touch
             || self.touch_gesture
             || self.select.menu.is_some()
@@ -476,6 +475,11 @@ impl Shell {
             self.clear_hovered();
             return;
         };
+        // A button down: what is outlined holds, no new pick (a click
+        // does not flicker; a drag clears it as the camera moves).
+        if down {
+            return;
+        }
         // The costs measured on a model of another size do not hold.
         let triangles = scene.mesh.triangles.len();
         let other = self.hover.costs_for.is_none_or(|n| {

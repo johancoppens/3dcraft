@@ -412,17 +412,13 @@ fn the_outline_goes_with_a_button_down_the_mouse_gone_and_the_mouse_moving_in() 
     window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
     window.frames(&mut shell, &mut session, 4);
     assert_eq!(hovered(&mut shell, &mut session)["kind"], "face");
-    // A button down (a drag about to turn the view): no outline.
+    // A button down: what was outlined holds, and no new pick is made
+    // (a click does not flicker; a drag that turns the view takes the
+    // outline away as the camera moves).
+    let picks = shell.hover_picks();
     window.button(&mut shell, &mut session, at, true);
-    assert_eq!(hovered(&mut shell, &mut session), Value::Null);
-    assert!(
-        !shell
-            .overlay()
-            .0
-            .lines
-            .iter()
-            .any(|l| l.kind == LineKind::Hover)
-    );
+    assert_eq!(hovered(&mut shell, &mut session)["kind"], "face");
+    assert_eq!(shell.hover_picks(), picks);
     window.button(&mut shell, &mut session, at, false);
     call(
         &mut shell,

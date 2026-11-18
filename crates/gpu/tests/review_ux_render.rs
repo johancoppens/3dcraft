@@ -127,8 +127,8 @@ fn elevation_for(perspective: bool, ratio: f64, across: f64) -> f64 {
 /// largest channel difference: 0, 1, 2, 3 or more.
 fn cap_differences(cpu: &Frame, gpu: &Frame, band: &[bool]) -> [usize; 4] {
     let mut out = [0; 4];
-    for i in 0..cpu.ids.len() {
-        if band[i] || cpu.ids[i] != SECTION_FACE || gpu.ids[i] != SECTION_FACE {
+    for (i, &in_band) in band.iter().enumerate().take(cpu.ids.len()) {
+        if in_band || cpu.ids[i] != SECTION_FACE || gpu.ids[i] != SECTION_FACE {
             continue;
         }
         let off = (0..3)
@@ -307,7 +307,7 @@ fn far_from_the_origin_the_gpus_hatching_is_the_one_at_the_origin() {
                 let shift = Vec3::new(d, -d, d / 3.0);
                 let mut far = mesh.clone();
                 for p in &mut far.positions {
-                    *p = *p + shift;
+                    *p += shift;
                 }
                 let far_camera = Camera {
                     eye: near_camera.eye + shift,
