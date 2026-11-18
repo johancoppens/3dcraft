@@ -446,11 +446,12 @@ impl Nav<'_> {
         // X, Y, Z, and the word button at its widest label's width (the UX
         // round of 2026-11-18, V2: so nothing moves as the selection
         // changes) where the bar, centred, leaves room for it, else what
-        // it leaves, a control's width at least (its label drawn
-        // smaller); the phone's plate lays it out on its own (below).
+        // it leaves (with none, the four share the room of three, as
+        // before; its label drawn smaller); the phone's plate lays it out
+        // on its own (below).
         let rest = gap + 3.0 * self.w.axis + sp + self.offset_w() + sp + flip;
         let spare = area.right() - (area.center().x + off_w * 0.5) - rest;
-        let word = spare.min(self.w.word).max(self.w.axis);
+        let word = spare.min(self.w.word).max(0.0);
         let axes = 3.0 * self.w.axis + word;
         let extra = if self.wrap { 0.0 } else { rest + word };
         let bar_w = if self.on { off_w + extra } else { off_w };
@@ -1558,8 +1559,10 @@ impl Shell {
             let on_face = self.section_from_selection();
             let word = self.section_word();
             // X, Y and Z at their width; after them the word button at
-            // its label's (the layout's room for it, V2).
-            let xyz_width = (3.0 * axis_width).min(axes.width());
+            // its label's (the layout's room for it, V2), a quarter of the
+            // track at least.
+            let word_width = (axes.width() - 3.0 * axis_width).max(axes.width() * 0.25);
+            let xyz_width = (axes.width() - word_width).max(0.0);
             let xyz = Rect::from_min_size(axes.min, vec2(xyz_width, axes.height()));
             let word_cell = Rect::from_min_max(pos2(xyz.right(), axes.top()), axes.max);
             let items = vec![(None, "X"), (None, "Y"), (None, "Z")];
