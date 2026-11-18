@@ -402,21 +402,23 @@ fn face_folds(body: &Body, face: &Face, t: f64) -> Found {
         }
         searched.extend(starts.iter().map(|(_, q)| *q));
         SEARCHES.fetch_add(1, Ordering::Relaxed);
-        if suspect.no_normal
-            && !in_tip(p)
-            && let Some((uv, q)) = no_normal(surface, suspect.uv, suspect.span)
-            && !in_tip(q)
-        {
-            match held(&chart, uv) {
-                Held::In => out.push((q, FoldKind::NoNormal)),
-                _ => out.push((
-                    q,
-                    FoldKind::NotProven {
-                        why: "its surface has no normal at a place not told in or out of the face",
-                    },
-                )),
+        if suspect.no_normal && !in_tip(p) {
+            let places: Vec<((f64, f64), Vec3)> = no_normal(surface, suspect.uv, suspect.span)
+                .into_iter()
+                .filter(|(_, q)| !in_tip(*q))
+                .collect();
+            if let Some(&(_, q)) = places.first() {
+                match places.iter().find(|(uv, _)| held(&chart, *uv) == Held::In) {
+                    Some(&(_, at)) => out.push((at, FoldKind::NoNormal)),
+                    None => out.push((
+                        q,
+                        FoldKind::NotProven {
+                            why: "its surface has no normal at a place not told in or out of the face",
+                        },
+                    )),
+                }
+                continue;
             }
-            continue;
         }
         let mut shown: Option<(Vec3, f64)> = None;
         let mut doubtful = false;
@@ -569,7 +571,7 @@ fn no_normal(
     surface: &Surface,
     start: (f64, f64),
     span: ((f64, f64), (f64, f64)),
-) -> Option<((f64, f64), Vec3)> {
+) -> Vec<((f64, f64), Vec3)> {
     let ((u0, u1), (v0, v1)) = span;
     let size = |u: f64, v: f64| {
         let (_, a, b) = surface.derivatives(u, v);
@@ -616,7 +618,21 @@ fn no_normal(
             }
         }
     }
-    (value <= 1e-12 * reference).then(|| (at, surface.eval(at.0, at.1)))
+    // Where a whole row has no normal (a loft through its axis) the
+    // search may run along it to the face's edge: the row's place across
+    // from the start is tried too.
+    if !(value <= 1e-12 * reference) {
+        return Vec::new();
+    }
+    [
+        at,
+        (start.0.clamp(u0, u1), at.1),
+        (at.0, start.1.clamp(v0, v1)),
+    ]
+    .into_iter()
+    .filter(|c| size(c.0, c.1).0 <= 1e-12 * reference)
+    .map(|c| (c, surface.eval(c.0, c.1)))
+    .collect()
 }
 
 // ---------------------------------------------------------------------
