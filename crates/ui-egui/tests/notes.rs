@@ -677,12 +677,27 @@ fn a_reply_in_the_tab_answers_the_agent() {
     w.click(&mut shell, &mut session, done.center());
     w.frames(&mut shell, &mut session, 2);
     let listed = run(&mut session, "note.list", json!({"state": "done"}));
+    let targets: Vec<(String, Rect)> = shell
+        .side_hits()
+        .targets
+        .iter()
+        .filter(|(k, _)| k.starts_with("note"))
+        .cloned()
+        .collect();
     let two = listed["notes"]
         .as_array()
         .unwrap()
         .iter()
         .find(|n| n["id"] == 2)
-        .unwrap_or_else(|| panic!("{listed}"))
+        .unwrap_or_else(|| {
+            let problem = get(&mut shell, &mut session)["problem"].clone();
+            panic!(
+                "{listed}\nclicked {done:?}; refused {:?}; field {:?}; chosen {:?}; problem {problem}\n{targets:?}",
+                shell.note_act_error(),
+                shell.note_reply_field(),
+                shell.state.notes.selected,
+            )
+        })
         .clone();
     assert_eq!(two["done"]["author"], "person", "{two}");
     assert_eq!(two["done"]["reply"], "Closing: kept as it is.", "{two}");
