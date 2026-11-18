@@ -2211,9 +2211,10 @@ pub fn rasterise(composed: Composed, tokens: &Tokens, scale: f64) -> Picture {
     }
 }
 
-/// The same as fractions of the segment: it is inside the box from the
-/// first to the second.
-fn clip_range(a: [f64; 2], b: [f64; 2], lo: [f64; 2], hi: [f64; 2]) -> Option<(f64, f64)> {
+/// Where the segment from `a` to `b` on the screen is inside the box from
+/// `lo` to `hi`, as fractions of the segment: it is inside from the first
+/// to the second; `None` where it passes by.
+pub fn clip_range(a: [f64; 2], b: [f64; 2], lo: [f64; 2], hi: [f64; 2]) -> Option<(f64, f64)> {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
     for (delta, start, low, high) in [(dx, a[0], lo[0], hi[0]), (dy, a[1], lo[1], hi[1])] {

@@ -1784,8 +1784,9 @@ whole here, and was on `main` too, so what he saw was not reproduced).
 
 *The arrow's shape* (2026-11-17, the developer's choice from five drawn variants, "pijl misschien iets
 eleganter?": variant B, slim like a dimension arrow; it replaces the shape of round two above, not its
-colours, sizes in length or place). A shaft 2 points of the light fill with a 1 point dark edge each side and
-round ends, into the notch of a small sharp head: a notched dart 16 points long and 11 wide, notched 3 back
+colours, sizes in length or place). A shaft 2 points of the light fill with a dark edge each side and
+round ends (1 point at first; 1.5 since the pictures of 2026-11-17 showed the white arrow reading weakly on
+the light view: 5 points across in all, still slim), into the notch of a small sharp head: a notched dart 16 points long and 11 wide, notched 3 back
 from its base (`section_head`, `section_head_width`, `section_head_notch`); at the foot a ring of radius 4.5
 with a dark dot of 1.6 to take it by (`section_grip`, `section_grip_dot`); 64 points long seen side on, as
 before. At touch sizes the whole shape is scaled as one (by the touch arrow's length over 64). It is hit as
@@ -1808,6 +1809,19 @@ parallel faces meet on) and its unit normal, in `state.section` as `point` and `
 when the selection changes. Anything else greys the button with why on hover. In the narrow layout the bar's
 four cells (X, Y, Z, ∥) share the room three had, as they did while a face was selected (open: whether a
 phone wants them a finger's width each, which makes the bar wider).
+
+*The plane through an axis* (2026-11-18, the developer: "Ja, na de spelden"). One cylindrical face selected (a
+hole, a shaft: its axis from the scene's mesh, `Session::face_axis`, whose normals are the surface's own at
+the corners, all square to the axis, so nothing is regenerated for it) makes the fourth button
+lay the plane through that axis, turned to face the viewer: its normal is the camera's direction toward the
+eye less its part along the axis (`CameraState::toward_eye` at the click), so the half toward the viewer is
+cut away and one looks into the hole. A second click, on that plane already, turns it a quarter about the
+axis (the axis crossed with the normal). Looking within 2 degrees of the axis (`ALONG`, its sine) no plane
+through it faces the viewer steadily: the button says *Looking along the axis: turn the view to cut through
+it* and does nothing. `made` is `axis` (with a point and a normal, as midway and a bisector are); the number
+says *axis*; after an edit it stays where it was and stops being called *axis* once the face's axis no
+longer holds its point or lies in it. The handle's number and the Offset field print the offset by the one
+rule for lengths since then (the document's tolerance, no trailing zeros), not two fixed decimals.
 
 *The review of the plane and the group* (2026-11-17, `review-view-section`). (1) Faces a hair off parallel
 (1.5e-9 to 1.7e-5 rad, the same way) gave a "bisector" through a line 3.4e6 to 6.9e10 away, which cut
@@ -1835,6 +1849,29 @@ twice under the bar and the triad: `group_place` now keeps the way it went last 
 clear (sliding along the viewport's edge rather than hopping), tries round the compass after its four ways,
 keeps `GAP` of air from the controls, and where no place is clear takes the one that covers them least; its
 plate has a hairline of the handle's light colour, so its edge shows on a dark body.
+
+*The runaway (2026-11-18).* The developer's window was ended by the kernel three times in one morning at
+13.4 to 13.7 GB of its own heap, each time with the section on while he turned and zoomed the view of an
+assembly; the coordinator reproduced it with that loop and the stacks of all threads (taken past 2 GB) showed
+the window's thread in epaint's `dashes_from_line`, under the outline's `Shape::dashed_line`. Seen from close
+by, a side of the outline is cut only at the eye plane (`Projector::segment`, a ten-thousandth of its depth)
+and its projection runs far past the view: up to 1.45e9 points in that loop. epaint dashes it in `f32`, and
+past 2^27 points a step of a dash or a gap (5 and 4 points) no longer moves on: the dashing never ended,
+pushing a dash a turn. The outline is now dashed where it shows (`dashed_sides`): each side, cut in space at
+the eye plane (`Projector::segment_cut`), is cut on the screen, in `f64`, to the viewport grown by 8 points,
+and dashed by our own loop (`outline_dashes`, at most `MAX_OUTLINE_DASHES` = 4096 dashes in all, whatever it
+is given). The pattern runs on round the outline from its first corner in front of the eye, as along the one
+path it was, so the dashes keep their place on a line however much of it is cut off; a side cut at the eye
+plane takes it from its corner in front. The window's other painting over the picture is bounded too: the
+dimension line and an angle's 25-point arc, the darts, the notes' pins (one each), the datums' names (one
+each, in view), the triad and the plates are fixed shapes; edges, sketches, grids, datum planes' lines, mate
+markers, the cap's outline and highlighted edges are 3D segments, drawn by the GPU on the window's path and,
+on the CPU's, cut into at most `MAX_DEPTH_STEPS` stretches each and painted in pieces (`paint_overlay`): an
+edge longer than four of the image's diagonals is now painted only where it is over the image, as many pieces
+as a line across it takes, not 4096 of each (shorter ones exactly as before).
+`crates/ui-egui/tests/section_close_by.rs` counts a frame's shapes (under 20 000) at the loop's worst camera,
+face on from a millimetre (hundreds of thousands of dashes before), from a millionth to a million times the
+fitted distance, with the eye in the plane and inside the body, and orthographic zoomed in to a billionth.
 
 ### Per-sample stages on Vulkan (2026-11-16)
 

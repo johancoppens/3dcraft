@@ -46,6 +46,9 @@ pub(crate) struct SourcesRead {
     /// The sources that changed but could not be read again, with why;
     /// they keep the last bytes read.
     pub failed: Vec<(String, String)>,
+    /// The relative source paths read, each with the folder on disk it
+    /// was read beneath (`Session::read_source_at`).
+    pub folders: Vec<(String, String)>,
 }
 
 impl Session {
@@ -131,6 +134,9 @@ impl Session {
             .get_mut(index)
             .ok_or_else(|| CommandError::new("no document is open"))?;
         open.asm.stamps = stamps;
+        for (key, folder) in &out.folders {
+            open.asm.read_from.insert(key.clone(), folder.clone());
+        }
         let mut again = false;
         // Without a file, its sources are placed from where they were
         // read until it is saved.
@@ -182,7 +188,12 @@ impl Session {
         if !look {
             return before.and_then(Result::ok);
         }
-        let now = self.read_source_file(full);
+        let now = self.read_source_at(full).map(|(blob, folder)| {
+            if let Some(folder) = folder {
+                out.folders.push((full.to_string(), folder));
+            }
+            blob
+        });
         match (before, now) {
             // Changed and not read: the last bytes read stay, and it is
             // read again at the next look (its stamp is not taken).
@@ -255,19 +266,20 @@ impl Session {
     }
 
     /// Reads again what changed of the sources of the open assemblies
-    /// (all of them, or only document `only`), as `assembly.follow` does;
-    /// `saved` is read again whatever its stamp says. Returns, per
-    /// assembly whose sources changed or failed, its index and what was
-    /// found. An assembly whose sources cannot be gone through (no base)
-    /// is left as it is.
+    /// (all of them, or only document `only`; never document `except`),
+    /// as `assembly.follow` does; `saved` is read again whatever its stamp
+    /// says. Returns, per assembly whose sources changed or failed, its
+    /// index and what was found. An assembly whose sources cannot be gone
+    /// through (no base) is left as it is.
     pub(crate) fn follow_sources(
         &mut self,
         only: Option<usize>,
+        except: Option<usize>,
         saved: Option<&std::path::Path>,
     ) -> Vec<(usize, SourcesRead)> {
         let mut out = Vec::new();
         for index in 0..self.documents.len() {
-            if only.is_some_and(|only| only != index) {
+            if only.is_some_and(|only| only != index) || except == Some(index) {
                 continue;
             }
             let is_assembly = self
@@ -311,7 +323,7 @@ type Kept<'a> = (
 
 fn assembly_follow(session: &mut Session, params: &Value) -> Run {
     Params::new("assembly.follow", params, &[])?;
-    let followed = session.follow_sources(None, None);
+    let followed = session.follow_sources(None, None, None);
     let failed: usize = followed.iter().map(|(_, r)| r.failed.len()).sum();
     Ok(json!({
         "followed": session.followed_json(&followed),

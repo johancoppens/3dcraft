@@ -19,6 +19,14 @@ pub const MAX_ASSERTIONS: usize = 1_000;
 /// of 2026-11-17, round three: two faces of a profile of 2000 segments,
 /// named in 12 KB each, could not be kept as a check under 16 KiB).
 pub const MAX_ASSERTION_TEXT: usize = 4 << 20;
+/// Longest text of what a document's assertions measure, all together, in
+/// bytes: 16 MiB, a quarter of the 64 MiB a document's manifest may take
+/// (`craft3d_format::MAX_MANIFEST_BYTES`). The text is written escaped in
+/// the manifest, up to twice as long, and the features, sketches and
+/// variables need the rest; without it 1000 assertions of 4 MiB would be 4
+/// GiB that could never be saved (the review of 2026-11-17). An ordinary
+/// check measures a few hundred bytes: some 50 000 of them would fit.
+pub const MAX_ASSERTIONS_TEXT: usize = 16 << 20;
 
 /// One assertion.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -108,7 +116,35 @@ impl Document {
                 assertion.name
             )));
         }
+        self.check_assertions_text(None, &assertion)?;
         self.assertions.push(assertion);
+        Ok(())
+    }
+
+    /// Refuses `assertion` (in place of the one named `instead`) when what
+    /// the document's assertions measure would then pass
+    /// [`MAX_ASSERTIONS_TEXT`] together, with what to do about it.
+    fn check_assertions_text(
+        &self,
+        instead: Option<&str>,
+        assertion: &Assertion,
+    ) -> Result<(), DocError> {
+        let others: usize = self
+            .assertions
+            .iter()
+            .filter(|a| Some(a.name.as_str()) != instead)
+            .map(|a| a.measure.len())
+            .fold(0, usize::saturating_add);
+        let mib = |bytes: usize| bytes as f64 / f64::from(1_u32 << 20);
+        if others.saturating_add(assertion.measure.len()) > MAX_ASSERTIONS_TEXT {
+            return Err(DocError::Invalid(format!(
+                "what the document's assertions measure is {:.1} MiB together; `{}` would add {:.1} MiB to it, past the {} MiB a document holds (so it can still be saved): delete checks that are no longer needed (assert.delete), or name fewer things or things with shorter names",
+                mib(others),
+                assertion.name,
+                mib(assertion.measure.len()),
+                MAX_ASSERTIONS_TEXT >> 20
+            )));
+        }
         Ok(())
     }
 
@@ -121,6 +157,7 @@ impl Document {
                 assertion.name
             )));
         }
+        self.check_assertions_text(Some(name), &assertion)?;
         let slot = self
             .assertions
             .iter_mut()
@@ -145,6 +182,16 @@ impl Document {
             return Err(DocError::Invalid(format!(
                 "the document has {} assertions; at most {MAX_ASSERTIONS} are read",
                 self.assertions.len()
+            )));
+        }
+        let total = self
+            .assertions
+            .iter()
+            .map(|a| a.measure.len())
+            .fold(0, usize::saturating_add);
+        if total > MAX_ASSERTIONS_TEXT {
+            return Err(DocError::Invalid(format!(
+                "what the document's assertions measure is {total} bytes together; at most {MAX_ASSERTIONS_TEXT} are read"
             )));
         }
         let mut names = std::collections::BTreeSet::new();
@@ -189,4 +236,48 @@ fn check_assertion(assertion: &Assertion) -> Result<(), DocError> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Units;
+
+    fn measuring(name: &str, bytes: usize) -> Assertion {
+        Assertion {
+            name: name.to_string(),
+            measure: "x".repeat(bytes),
+            expect: Expect::Is(true),
+            when: None,
+        }
+    }
+
+    /// The review of 2026-11-17: what a document's assertions measure is
+    /// held to MAX_ASSERTIONS_TEXT together, each to MAX_ASSERTION_TEXT;
+    /// the refusal says how much there is and what to do; a replacement
+    /// counts in place of what it replaces; a file past it is not read.
+    #[test]
+    fn what_assertions_measure_is_held_together_to_a_total() {
+        let mut doc = Document::new(Units::default());
+        for k in 0..4 {
+            doc.add_assertion(measuring(&format!("check {k}"), MAX_ASSERTION_TEXT))
+                .unwrap();
+        }
+        let refused = doc
+            .add_assertion(measuring("one more", 1))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("16.0 MiB together") && refused.contains("assert.delete"),
+            "{refused}"
+        );
+        doc.replace_assertion("check 0", measuring("check 0", MAX_ASSERTION_TEXT))
+            .unwrap();
+        doc.remove_assertion("check 3").unwrap();
+        doc.add_assertion(measuring("one more", 1)).unwrap();
+        doc.validate().unwrap();
+        doc.assertions
+            .push(measuring("past it", MAX_ASSERTION_TEXT));
+        assert!(doc.validate().is_err());
+    }
 }

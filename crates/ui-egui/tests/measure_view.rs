@@ -197,6 +197,10 @@ fn two_holes_show_their_centre_distance_by_themselves_and_escape_takes_it_away()
         (single.measure, single.text.as_str()),
         ("diameter", "Ø 6 mm")
     );
+    // Across its rim in view, the top's (z = 20), not at mid-depth (the
+    // review of 2026-11-17).
+    let (centre, _, _) = single.round.expect("drawn across its rim");
+    assert!((centre[2] - 20.0).abs() < 1e-9, "{centre:?}");
     assert_eq!(
         shell.dimension_place().map(|p| p.text.as_str()),
         Some("Ø 6 mm")
@@ -789,4 +793,197 @@ fn faces_named_in_over_8192_bytes_are_measured_and_kept() {
     let rows = listed["assertions"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{listed}");
     assert_eq!(rows[0]["status"], "passed", "{listed}");
+}
+
+/// The review of 2026-11-17: a range's large number fits the card at the
+/// panel's least width (it was cut at the edge): broken after its dash,
+/// or drawn smaller. An edge in an inner corner and a ball near both of
+/// its faces: the faces come nearer than the edge, so the least is a range.
+#[test]
+fn a_range_fits_the_card_at_the_panels_least_width() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({"size": [20, 10, 2], "name": "Base"}),
+    );
+    run(
+        &mut session,
+        "feature.block",
+        json!({"size": [2, 10, 20], "name": "Wall"}),
+    );
+    run(
+        &mut session,
+        "feature.boolean",
+        json!({"op": "union", "target": "Base", "tool": "Wall", "name": "L"}),
+    );
+    run(
+        &mut session,
+        "feature.sphere",
+        json!({"radius": 0.5, "position": [3, 5, 3], "name": "Ball"}),
+    );
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"panels": {"treeWidth": 190}}),
+    );
+    select(
+        &mut session,
+        "edge",
+        json!({"in": "L", "inside": [[1.9, -1, 1.9], [2.1, 11, 2.1]]}),
+        1,
+    );
+    run(
+        &mut session,
+        "select.query",
+        json!({"kind": "body", "where": {"in": "Ball"}, "then": "add"}),
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let m = shell.measurement().cloned().unwrap();
+    assert!(m.text.contains(" – "), "{}", m.text);
+    let number = target(&shell, "copy value");
+    assert!(
+        number.right() <= 190.0 && number.width() > 0.0,
+        "{} drawn at {number:?}",
+        m.text
+    );
+    // Smaller, not taller: within the line the card keeps for it (the
+    // measure font's 24 points and a half), so Keep stays in reach.
+    assert!(number.height() <= 36.0, "{number:?}");
+    let keep = target(&shell, "keep");
+    assert!(keep.top() >= number.bottom(), "{keep:?} under {number:?}");
+}
+
+/// The notes' review of 2026-11-18: on the Features tab in a short window
+/// (1280 × 460, 480 × 500 and a phone's 390 × 500 with the drawer open)
+/// the card is drawn short and keeps its actions: for one face Fly to it,
+/// Measure and Copy name; for two things Fly and Keep as a check. Each is
+/// inside the panel (the measuring's review of 2026-11-18: Keep reached 8
+/// points past its edge), and none lies over the roll-back bar's grip.
+#[test]
+fn in_a_short_window_the_card_of_one_face_keeps_fly_measure_and_copy_name() {
+    for (width, height, drawer) in [
+        (1280.0, 460.0, false),
+        (480.0, 500.0, true),
+        (390.0, 500.0, true),
+    ] {
+        for (things, names) in [
+            (1, &["fly", "measure", "copy name"][..]),
+            (2, &["fly", "keep"][..]),
+        ] {
+            let mut session = part();
+            let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+            let mut window = Window::new(width, height);
+            window.frames(&mut shell, &mut session, 3);
+            if drawer {
+                call(
+                    &mut shell,
+                    &mut session,
+                    "ui.set",
+                    json!({"panels": {"drawer": true}}),
+                );
+                // The drawer slides in, in a tenth of a second.
+                window.frames(&mut shell, &mut session, 20);
+            }
+            let filter = if things == 1 {
+                json!({"in": "Bevel", "hole": true, "inside": [[0, 0, -10], [30, 40, 30]]})
+            } else {
+                json!({"in": "Bevel", "hole": true})
+            };
+            select(&mut session, "face", filter, things);
+            window.frames(&mut shell, &mut session, 3);
+            let targets = shell.side_hits().targets.clone();
+            let at = |name: &str| {
+                targets
+                    .iter()
+                    .rev()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, r)| *r)
+            };
+            // The panel's edge: where its summary line ends.
+            let edge = at("summary").expect("the summary line").right() + 0.5;
+            let bar = at("rollback");
+            for &name in names {
+                let rect = at(name).unwrap_or_else(|| {
+                    panic!("{width} × {height}, {things}: no {name}: {targets:?}")
+                });
+                assert!(
+                    rect.width() > 0.0
+                        && rect.left() >= 0.0
+                        && rect.right() <= edge
+                        && rect.top() >= 0.0
+                        && rect.bottom() <= height,
+                    "{width} × {height}, {things}: {name} at {rect:?}, the panel's edge {edge}"
+                );
+                assert!(
+                    bar.is_none_or(|bar| !bar.intersects(rect)),
+                    "{width} × {height}, {things}: {name} at {rect:?} over the roll-back bar {bar:?}"
+                );
+            }
+        }
+    }
+}
+
+/// 2026-11-18: the status bar is laid out before the viewport draws, so a
+/// frame that draws a new picture leaves the bar saying the numbers of the
+/// one before; a window that painted one frame after a pause kept the
+/// empty document's "0 triangles" beside the model. Such a frame now asks
+/// for one more, which says them.
+#[test]
+fn a_frame_whose_picture_changed_the_numbers_asks_for_one_more() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    run(
+        &mut session,
+        "feature.block",
+        json!({"size": [60, 40, 20], "name": "Block"}),
+    );
+    let mut asked = false;
+    let mut caught_up = false;
+    for _ in 0..400 {
+        window.time += 1.0 / 60.0;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, window.size)),
+            time: Some(window.time),
+            ..Default::default()
+        };
+        let mut output = window.ctx.run_ui(input, |ui| shell.ui(ui, &mut session));
+        output.textures_delta.clear();
+        let delay = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map_or(std::time::Duration::MAX, |v| v.repaint_delay);
+        let got = call(&mut shell, &mut session, "ui.get", json!({}));
+        let drawn = got["render"]["triangles"].as_u64();
+        let said = shell
+            .status_shown(craft3d_ui_egui::StatusSlot::Render)
+            .map(str::to_string);
+        let says_drawn = match (drawn, &said) {
+            (Some(n), Some(text)) => text.contains(&format!("{n} triangles")),
+            _ => true,
+        };
+        if !says_drawn {
+            // The bar is a picture behind: this frame asks for the next
+            // (egui says so as a frame's time at most, not as zero).
+            assert!(
+                delay <= std::time::Duration::from_millis(20),
+                "{said:?} for {drawn:?}: next frame in {delay:?}"
+            );
+            asked = true;
+        } else if drawn.is_some_and(|n| n > 0) {
+            caught_up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(caught_up, "the bar never said the block's triangles");
+    let _ = asked;
 }

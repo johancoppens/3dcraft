@@ -39,7 +39,7 @@ pub use assembly::{
     Assembly, Coupling, CouplingKind, CouplingTerm, Instance, InstanceMode, MAX_COUPLING_TERMS,
     MOTIONS, Mate, MateKind, MateRef, ParamOverride, Placement, Source, WORLD, WORLD_FRAMES,
 };
-pub use assertion::{Assertion, Expect, MAX_ASSERTION_TEXT, MAX_ASSERTIONS};
+pub use assertion::{Assertion, Expect, MAX_ASSERTION_TEXT, MAX_ASSERTIONS, MAX_ASSERTIONS_TEXT};
 pub use blob::{Blob, sha256};
 pub use datum::{
     AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, HelixExtent, HelixStart,
@@ -54,8 +54,9 @@ pub use name::{
     offset_groups,
 };
 pub use note::{
-    MAX_NOTE_AUTHOR_CHARS, MAX_NOTE_CHARS, MAX_NOTES, Note, NoteAuthor, NoteDone, NoteKind, NoteOn,
-    NoteStamp, Notes, check_note_point, clean_note_author, clean_note_text, unseen,
+    MAX_NOTE_AUTHOR_CHARS, MAX_NOTE_CHARS, MAX_NOTE_REPLIES, MAX_NOTES, MAX_NOTES_BYTES, Note,
+    NoteAuthor, NoteDone, NoteKind, NoteOn, NoteReply, NoteStamp, Notes, check_note_point,
+    clean_note_author, clean_note_text, unseen,
 };
 pub use output::{MAX_OUTPUTS, Output, OutputDef};
 pub use public::{

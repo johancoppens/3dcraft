@@ -28,6 +28,7 @@ pub mod agent;
 pub mod bodies;
 pub mod checks;
 pub mod features;
+pub mod notes;
 pub mod props;
 pub mod variables;
 
@@ -160,6 +161,9 @@ pub(crate) struct SideMemory {
     /// review of 2026-11-17: a quick run of selections ran them side by
     /// side).
     pub(crate) between: Option<((u64, u64, u64), craft3d_engine::BetweenJob)>,
+    /// Where the Features tab's foot (the checks and the card) began in
+    /// the last frame: the list's room ends there.
+    pub(crate) foot_top: Option<f32>,
     waiting: Option<((u64, u64, u64), Value)>,
     /// Commands waiting for the session.
     pending: Vec<SideRequest>,
@@ -192,6 +196,9 @@ pub(crate) struct SideMemory {
     /// the Parameters tab's own memory (`state.parameters.open`).
     last_tab: Option<SideTab>,
     pub(crate) hits: SideHits,
+    /// How high the selection's card under a tab drew its content in the
+    /// last frame: its height next.
+    card_content: Option<f32>,
 }
 
 impl SideMemory {
@@ -295,7 +302,14 @@ impl Shell {
     pub(crate) fn apply_side_requests(&mut self, session: &mut Session) -> bool {
         let pending = std::mem::take(&mut self.side.pending);
         for request in &pending {
-            match session.execute(request.command, &request.params) {
+            // The notes the window writes are the person's: typed here.
+            let run = |session: &mut Session| session.execute(request.command, &request.params);
+            let done = if request.command.starts_with("note.") {
+                session.by_person(run)
+            } else {
+                run(session)
+            };
+            match done {
                 Ok(result) => {
                     self.side.problem = None;
                     if request.command.starts_with("measure.") {
@@ -438,6 +452,7 @@ impl Shell {
                 .map(Arc::new);
             self.side.checks_for = Some(key);
         }
+        self.sync_notes(session, key, bodies_here);
         let serial = session.selection_serial();
         let props_key = (doc, revision, serial);
         if self.side.props_for != Some(props_key) {
@@ -529,7 +544,8 @@ impl Shell {
             return;
         }
         let assembly = self.is_assembly_shown();
-        let offered = tabs_for(assembly, jig || joints, self.agent_tab_offered());
+        let mut offered = tabs_for(assembly, jig || joints, self.agent_tab_offered());
+        notes::offer(&mut offered, !assembly && self.notes_tab_offered());
         let tab = self.reconcile_tab(&offered, jig || joints);
         let chosen = self.tab_bar(ui, &offered, tab);
         if chosen != tab {
@@ -546,16 +562,25 @@ impl Shell {
         // selected was nowhere in sight).
         if tab != SideTab::Features && self.side.props.is_some() {
             let inset = f32::from(crate::shell::side_inset(&tokens));
-            let height = self
-                .props_height()
-                .min(ui.available_height() * 0.5)
-                .max(0.0);
+            // As high as its content drew in the last frame (the estimate
+            // before the first), so its buttons are never out of reach;
+            // at most what leaves the tab three rows (review-pins 2b: on a
+            // short window Measure and Copy name ended below the panel).
+            let wanted = self
+                .side
+                .card_content
+                .filter(|h| h.is_finite() && *h > 0.0)
+                .unwrap_or_else(|| self.props_height());
+            let room = ui.available_height();
+            let most = (room - 3.0 * tokens.row_height).max(room * 0.5);
+            let height = wanted.min(most).max(0.0);
+            let mut drawn = None;
             egui::Panel::bottom("craft3d-side-selection")
                 .resizable(false)
                 .exact_size(height)
                 .frame(egui::Frame::new())
                 .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
+                    let shown = egui::ScrollArea::vertical()
                         .id_salt("craft3d-side-selection-scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
@@ -563,7 +588,11 @@ impl Shell {
                             ui.spacing_mut().item_spacing.y = 0.0;
                             self.props_ui(ui);
                         });
+                    drawn = Some(shown.content_size.y);
                 });
+            self.side.card_content = drawn;
+        } else {
+            self.side.card_content = None;
         }
         match tab {
             SideTab::Parameters => {
@@ -579,6 +608,7 @@ impl Shell {
             SideTab::Variables => self.variables_tab(ui),
             SideTab::Bodies => self.bodies_tab(ui),
             SideTab::Agent => self.agent_tab(ui),
+            SideTab::Notes => self.notes_tab(ui),
         }
     }
 
@@ -628,7 +658,7 @@ impl Shell {
             .map(|tab| {
                 let w = ui
                     .painter()
-                    .layout_no_wrap(tab.label().to_string(), font.clone(), egui::Color32::BLACK)
+                    .layout_no_wrap(self.tab_words(*tab), font.clone(), egui::Color32::BLACK)
                     .size()
                     .x;
                 (w + 2.0 * t.field_inset).max(t.hit_min)
@@ -659,7 +689,9 @@ impl Shell {
             }
         }
         let mut active = shown.iter().position(|s| *s == tab).unwrap_or(0);
-        let labels: Vec<Tab<'_>> = shown.iter().map(|tab| Tab::new(tab.label())).collect();
+        // The Notes tab says how many are open.
+        let words: Vec<String> = shown.iter().map(|tab| self.tab_words(*tab)).collect();
+        let labels: Vec<Tab<'_>> = words.iter().map(|words| Tab::new(words)).collect();
         let mut chosen = tab;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;

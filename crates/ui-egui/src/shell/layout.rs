@@ -1451,10 +1451,11 @@ impl Shell {
             // X, Y, Z, and a fourth: the plane from the selection (along
             // one flat face, midway between two, or halving their angle).
             let face = self.section_face_choice().cloned();
+            let toward_eye = self.state.camera.toward_eye();
             let on_face = self.section_from_selection();
             let face_words = face.as_ref().map_or_else(
                 || super::section_handle::TAKES_FACES.to_string(),
-                |f| f.words(&section),
+                |f| f.words(&section, toward_eye),
             );
             let items = vec![
                 (None, "X"),
@@ -1486,7 +1487,7 @@ impl Shell {
             match clicked {
                 Some(super::section_handle::FACE_DOT) => {
                     if let Some(face) = &face {
-                        super::section_handle::choose_plane(&mut section, face);
+                        super::section_handle::choose_plane(&mut section, face, toward_eye);
                         self.remember_made(&section, face);
                     }
                 }

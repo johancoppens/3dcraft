@@ -847,6 +847,41 @@ fn every_face_of_the_ship_propeller_takes_a_note() {
     assert!(placed >= 48, "{placed} faces");
 }
 
+/// `view.render {notes: true}` draws the notes' markers, so an agent can
+/// look at them without a window: the picture with them differs from the
+/// one without, and a document without notes draws the same either way.
+#[test]
+fn view_render_draws_the_notes_markers() {
+    let dir = workdir("notes", "render");
+    let mut s = session_in(&dir);
+    plate(&mut s);
+    let picture = |s: &mut Session, notes: bool, name: &str| {
+        run(
+            s,
+            "view.render",
+            json!({"path": name, "width": 320, "height": 240, "notes": notes, "renderer": "cpu"}),
+        );
+        std::fs::read(dir.join(name)).unwrap()
+    };
+    let plain = picture(&mut s, false, "plain.png");
+    assert_eq!(
+        picture(&mut s, true, "plain-notes.png"),
+        plain,
+        "no notes, nothing drawn"
+    );
+    run(
+        &mut s,
+        "note.add",
+        json!({"text": "here", "on": "F1:face(1)"}),
+    );
+    assert_eq!(
+        picture(&mut s, false, "noted.png"),
+        plain,
+        "not asked for, not drawn"
+    );
+    assert_ne!(picture(&mut s, true, "noted-notes.png"), plain);
+}
+
 /// Review-pins 1b-R1 (rule 4): a vertex is followed by its name, never by
 /// where something lies. The plate moved 40 mm in −x, or mirrored in its
 /// middle plane, brings another corner to where the note's corner was:
@@ -976,6 +1011,69 @@ fn a_note_on_a_large_grid_sheet_needs_no_mesh() {
     let started = std::time::Instant::now();
     run(&mut s, "note.list", json!({}));
     println!("note.list after it: {:?}", started.elapsed());
+}
+
+/// The developer, 2026-11-17, with the notes in his window: a note written
+/// over a connection of the window that gave no name is an agent's (its
+/// question for the person), without a name, not unknown; and a note the
+/// person closed while the agent worked on it takes the agent's reply all
+/// the same, kept under its closing with who gave it and when, one undo
+/// step.
+#[test]
+fn a_reply_to_a_done_note_is_kept_and_an_unnamed_connection_is_an_agent() {
+    let mut s = session();
+    plate(&mut s);
+    let unnamed = craft3d_engine::agent_log::UNNAMED_AGENT;
+    let added = s
+        .acting(Some(unnamed), None, |s| {
+            s.execute(
+                "note.add",
+                &json!({"text": "should this be thicker?", "on": "Plate:face(1)"}),
+            )
+        })
+        .unwrap();
+    assert_eq!(added["author"], "agent", "{added}");
+    assert!(added["agent"].is_null(), "{added}");
+    let inspected = run(&mut s, "document.inspect", json!({"measures": false}));
+    assert_eq!(inspected["notes"]["fromAgents"], 1, "{inspected}");
+    // The person closes it; then the agent says what it did.
+    s.by_person(|s| s.execute("note.resolve", &json!({"id": 1})))
+        .unwrap();
+    let replied = as_agent(
+        &mut s,
+        "note.resolve",
+        json!({"id": 1, "reply": "Made it 7 mm."}),
+    );
+    assert_eq!(replied["state"], "done");
+    assert_eq!(
+        replied["done"]["author"], "person",
+        "closed as it was: {replied}"
+    );
+    assert!(replied["done"]["reply"].is_null(), "{replied}");
+    let later = &replied["later"][0];
+    assert_eq!(later["author"], "agent", "{replied}");
+    assert_eq!(later["agent"], "Claude Code");
+    assert_eq!(later["reply"], "Made it 7 mm.");
+    // One undo step takes the reply back; the closing stays.
+    run(&mut s, "edit.undo", json!({}));
+    let back = note(&mut s, 1);
+    assert_eq!(back["state"], "done");
+    assert!(back.get("later").is_none(), "{back}");
+    // Without a reply, a done note is still an error that says what to do.
+    let e = error(&mut s, "note.resolve", json!({"id": 1}));
+    assert!(e.contains("give a reply to add one"), "{e}");
+    // An unnamed agent's closing reads as such.
+    s.acting(Some(unnamed), None, |s| {
+        s.execute("note.resolve", &json!({"id": 1, "reply": "checked"}))
+    })
+    .unwrap();
+    let again = note(&mut s, 1);
+    assert_eq!(again["later"][0]["author"], "agent", "{again}");
+    assert!(again["later"][0]["agent"].is_null(), "{again}");
+    // Opened again, its replies stay (review-pins 2b).
+    let reopened = run(&mut s, "note.resolve", json!({"id": 1, "done": false}));
+    assert_eq!(reopened["state"], "open");
+    assert_eq!(reopened["later"][0]["reply"], "checked", "{reopened}");
 }
 
 /// Review-pins 1c (minor): the hole of a trimmed sheet is not on the

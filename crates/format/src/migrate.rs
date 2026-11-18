@@ -39,7 +39,7 @@ const STEPS: &[Step] = &[
     v50_to_v51, v51_to_v52, v52_to_v53, v53_to_v54, v54_to_v55, v55_to_v56, v56_to_v57, v57_to_v58,
     v58_to_v59, v59_to_v60, v60_to_v61, v61_to_v62, v62_to_v63, v63_to_v64, v64_to_v65, v65_to_v66,
     v66_to_v67, v67_to_v68, v68_to_v69, v69_to_v70, v70_to_v71, v71_to_v72, v72_to_v73, v73_to_v74,
-    v74_to_v75, v75_to_v76,
+    v74_to_v75, v75_to_v76, v76_to_v77,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -1268,6 +1268,49 @@ fn v75_to_v76(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
+/// Version 77 keeps the replies given to a note after it was closed with
+/// the note itself (`later` beside `done`), so they stay when the note is
+/// opened again. The builds of 2026-11-17 (versions 75 and 76) kept them
+/// under the closing (`done.later`): they move to the note, before any it
+/// has of its own, in the order they came. A note without them is as it
+/// was.
+fn v76_to_v77(mut manifest: Value) -> Result<Value, String> {
+    let Some(notes) = manifest
+        .get_mut("document")
+        .and_then(|d| d.get_mut("notes"))
+        .and_then(|n| n.get_mut("items"))
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(manifest);
+    };
+    for note in notes {
+        let Some(note) = note.as_object_mut() else {
+            continue;
+        };
+        let under = note
+            .get_mut("done")
+            .and_then(Value::as_object_mut)
+            .and_then(|done| done.remove("later"));
+        let Some(under) = under else {
+            continue;
+        };
+        let Value::Array(mut moved) = under else {
+            return Err("a note's replies after its closing are not a list".to_string());
+        };
+        match note.get_mut("later") {
+            Some(Value::Array(own)) => {
+                moved.append(own);
+                *own = moved;
+            }
+            Some(_) => return Err("a note's replies are not a list".to_string()),
+            None => {
+                note.insert("later".to_string(), Value::Array(moved));
+            }
+        }
+    }
+    Ok(manifest)
+}
+
 // One step per version after the first: forgetting either half of a
 // version bump does not compile.
 const _: () = assert!(STEPS.len() + 1 == FORMAT_VERSION as usize);
@@ -1600,5 +1643,43 @@ mod tests {
         // Nothing to do without assertions.
         let plain = json!({"document": {"features": []}});
         assert_eq!(v35_to_v36(plain.clone()).unwrap(), plain);
+    }
+
+    /// Version 77: the replies after a closing move from under it to the
+    /// note, before any of its own; a note without them is as it was.
+    #[test]
+    fn replies_after_the_closing_move_to_the_note() {
+        let reply = |text: &str| json!({"by": "person", "timeMs": 1, "text": text});
+        let old = json!({"document": {"notes": {"next": 4, "items": [
+            {"id": 1, "text": "a", "point": [0, 0, 0], "by": "person",
+             "done": {"by": "person", "later": [reply("first")]}},
+            {"id": 2, "text": "b", "point": [0, 0, 0], "by": "person",
+             "done": {"by": "person", "later": [reply("first")]}, "later": [reply("own")]},
+            {"id": 3, "text": "c", "point": [0, 0, 0], "by": "person", "done": {"by": "person"}}
+        ]}}});
+        let new = v76_to_v77(old).unwrap();
+        let items = &new["document"]["notes"]["items"];
+        assert_eq!(items[0]["later"], json!([reply("first")]));
+        assert_eq!(items[0]["done"], json!({"by": "person"}));
+        assert_eq!(items[1]["later"], json!([reply("first"), reply("own")]));
+        assert!(items[2].get("later").is_none());
+        let wrong = json!({"document": {"notes": {"items": [
+            {"id": 1, "done": {"later": 3}}
+        ]}}});
+        assert!(v76_to_v77(wrong).is_err());
+        let plain = json!({"document": {"features": []}});
+        assert_eq!(v76_to_v77(plain.clone()).unwrap(), plain);
+    }
+
+    /// A version-77 file to a build whose last version is 76 (main's of
+    /// b9b9ed3e, the developer's): it says a newer 3DCraft is needed, not
+    /// that a field is unknown.
+    #[test]
+    fn a_77_file_tells_a_76_build_that_a_newer_3dcraft_is_needed() {
+        let steps = STEPS.get(..75).unwrap();
+        let manifest = json!({"format": "3dcraft", "format_version": 77, "document": {}});
+        let e = migrate_with(manifest, 77, steps).unwrap_err();
+        assert!(e.to_string().contains("a newer 3DCraft is needed"), "{e}");
+        assert!(e.to_string().contains("76"), "{e}");
     }
 }

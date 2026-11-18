@@ -40,7 +40,7 @@ use super::Shell;
 use super::controls::{SECTION_PLANES, choose_axis, chosen_axis};
 use crate::camera::Projector;
 use crate::kit::Kit;
-use crate::kit::slider::{Typing, nice_step, shown, snapped};
+use crate::kit::slider::{Typing, nice_step, places_of, shown_trimmed, snapped};
 use crate::state::{CameraState, SectionMade, SectionState};
 use crate::theme::{Tokens, color, color_alpha};
 use craft3d_engine::{Scene, SectionPlane, SectionSnap, SnapKind};
@@ -68,6 +68,15 @@ pub fn nearest_snaps(snaps: &[SectionSnap], offset: f64) -> &[SectionSnap] {
 /// How far the outline reaches past the model's box, as a share of the
 /// box's larger side in the plane.
 const OUTLINE_MARGIN: f64 = 0.04;
+/// How far past the viewport the outline is dashed, in points: no dash
+/// ends where it shows.
+const DASH_MARGIN: f64 = 8.0;
+/// Most dashes the outline is drawn in, whatever the view: its sides are
+/// cut to the viewport ([`dashed_sides`]), which takes some hundreds; this
+/// holds whatever reaches [`outline_dashes`] (the runaway of 2026-11-18:
+/// a side seen from close by ran 1.45e9 points and was dashed until the
+/// memory ran out).
+pub const MAX_OUTLINE_DASHES: usize = 4096;
 /// Shorter than this share of its length, the arrow is seen end on.
 const END_ON: f64 = 0.3;
 /// How far the number keeps from the arrow's tip, the dots from the
@@ -95,7 +104,16 @@ pub enum HandlePart {
 pub const FACE_DOT: usize = 3;
 
 /// What the fourth button says while the selection gives no plane.
-pub const TAKES_FACES: &str = "Takes one or two flat faces: select them first";
+pub const TAKES_FACES: &str = "Takes one or two flat faces, or one round face: select them first";
+
+/// What it says looking straight along the axis of the round face
+/// selected: no plane through the axis faces the viewer there.
+pub const ALONG_AXIS: &str = "Looking along the axis: turn the view to cut through it";
+
+/// Looking within this angle of a round face's axis (2 degrees, as its
+/// sine) is looking along it: the plane through the axis facing the
+/// viewer turns wildly with the view there.
+pub const ALONG: f64 = 0.034_899_496_702_500_97;
 
 /// Two faces' normals closer than this (the sine of the angle between
 /// them, or between one and the other's opposite) are parallel, where the
@@ -131,6 +149,37 @@ impl PlaneChoice {
         }
     }
 
+    /// The plane through the axis of the round face selected (`planes`
+    /// holds its point and unit direction) a click makes for `section` as
+    /// it is, seen along `toward_eye` (the unit direction from the view's
+    /// target to the eye): its normal the part of that square to the
+    /// axis, toward the viewer, so the half toward them is cut away; a
+    /// second click, on that plane already, turns it a quarter about the
+    /// axis. `None` looking along the axis (within [`ALONG`]).
+    fn axis_plane(&self, section: &SectionState, toward_eye: Vec3) -> Option<([f64; 3], [f64; 3])> {
+        let &(point, [ax, ay, az]) = self.planes.first()?;
+        let axis = Vec3::new(ax, ay, az).normalized()?;
+        let normal = match section.normal {
+            Some([nx, ny, nz])
+                if section.made == Some(SectionMade::Axis)
+                    && section.point == Some(point)
+                    && Vec3::new(nx, ny, nz).dot(axis).abs() < 1e-9 =>
+            {
+                axis.cross(Vec3::new(nx, ny, nz)).normalized()?
+            }
+            _ => {
+                let across = toward_eye - axis * toward_eye.dot(axis);
+                if across.length() < ALONG {
+                    return None;
+                }
+                across.normalized()?
+            }
+        };
+        normal
+            .is_finite()
+            .then_some((point, [normal.x, normal.y, normal.z]))
+    }
+
     /// Which of `planes` a click takes for `section` as it is: the other
     /// bisector when the section lies on the first one already and there
     /// is another.
@@ -148,11 +197,24 @@ impl PlaneChoice {
         }
     }
 
-    /// What a click on the fourth button does, for `section` as it is; or
-    /// why it does nothing.
-    pub fn words(&self, section: &SectionState) -> String {
+    /// What a click on the fourth button does, for `section` as it is and
+    /// the view seen along `toward_eye`; or why it does nothing.
+    pub fn words(&self, section: &SectionState, toward_eye: Vec3) -> String {
         if let Some(why) = &self.refused {
             return why.clone();
+        }
+        if self.made == Some(SectionMade::Axis) {
+            let on_axis = section.made == Some(SectionMade::Axis)
+                && self
+                    .planes
+                    .first()
+                    .is_some_and(|(point, _)| section.point == Some(*point));
+            return match self.axis_plane(section, toward_eye) {
+                None => ALONG_AXIS,
+                Some(_) if on_axis => "Through the axis, turned a quarter",
+                Some(_) => "Through the axis, facing you",
+            }
+            .to_string();
         }
         match self.made {
             Some(SectionMade::Face) => "Along the selected face, through it",
@@ -161,7 +223,7 @@ impl PlaneChoice {
                 "The other bisector of the two faces, square to this one"
             }
             Some(SectionMade::Bisector) => "Halving the angle of the two faces",
-            None => TAKES_FACES,
+            Some(SectionMade::Axis) | None => TAKES_FACES,
         }
         .to_string()
     }
@@ -171,14 +233,27 @@ impl PlaneChoice {
 /// flipped: along the one face, through it, with its outward normal
 /// (what lies outside the face is cut away, so nothing is yet: the arrow,
 /// dragged in, cuts into the body); midway between two; or the bisector
-/// through the material, and at a second click the other one. The plane
-/// it lies on already (but a bisector) keeps its offset; a choice that
-/// gives no plane leaves the section as it is.
-pub fn choose_plane(section: &mut SectionState, choice: &PlaneChoice) {
+/// through the material, and at a second click the other one; or through
+/// the axis of the one round face, facing the view seen along
+/// `toward_eye`, and at a second click turned a quarter about the axis.
+/// The plane it lies on already (but a bisector and an axis's) keeps its
+/// offset; a choice that gives no plane, and looking along the axis,
+/// leave the section as it is.
+pub fn choose_plane(section: &mut SectionState, choice: &PlaneChoice, toward_eye: Vec3) {
     if choice.refused.is_some() {
         return;
     }
     match choice.made {
+        Some(SectionMade::Axis) => {
+            let Some((point, normal)) = choice.axis_plane(section, toward_eye) else {
+                return;
+            };
+            section.plane = None;
+            section.feature = None;
+            section.point = Some(point);
+            section.normal = Some(normal);
+            section.made = Some(SectionMade::Axis);
+        }
         Some(SectionMade::Face) => {
             let Some((feature, face)) = choice.faces.first() else {
                 return;
@@ -283,11 +358,25 @@ pub fn planes_of(
     Some((made, std::iter::once(first).chain(second).collect()))
 }
 
+/// The axis of the round face `face` of the body of `feature` (a hole, a
+/// shaft: part of a cylinder), from the scene's mesh
+/// (`Session::face_axis`: nothing is run or regenerated for it, the web
+/// keeps its bodies elsewhere): a point of it and its unit direction.
+/// `None` for any other face.
+fn round_axis(
+    session: &craft3d_engine::Session,
+    scene: &Scene,
+    feature: &str,
+    face: &str,
+) -> Option<(Vec3, Vec3)> {
+    session.face_axis(scene, Some(feature), face).ok()
+}
+
 /// Why a face gives no plane, in the window's words: the engine's speak
 /// of meshes and names (every way it says a face is not in the scene).
 pub fn in_window_words(why: String) -> String {
     if why.contains("not flat") {
-        "Not a flat face: the plane takes one or two flat faces".to_string()
+        "Not a flat face: the plane takes one or two flat faces, or one round face".to_string()
     } else if [
         "no area",
         "no body has",
@@ -368,8 +457,12 @@ pub enum Snapped {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlaneFrame {
     /// The sides of the plane's outline, as far as they are in front of
-    /// the eye, in the window's points.
+    /// the eye, in the window's points. Seen from close by they reach far
+    /// past the viewport; what is drawn is [`PlaneFrame::dashed`].
     pub outline: Vec<[Pos2; 2]>,
+    /// The sides as their dashes are drawn: cut to the viewport, each with
+    /// where it starts in the dash pattern ([`dashed_sides`]).
+    pub dashed: Vec<DashedSide>,
     /// The arrow's foot: a corner of the plane's outline, the same one
     /// however the view turns (the one furthest along x, then against y
     /// and z), moved along the plane into the viewport where it is out of
@@ -391,6 +484,16 @@ pub struct PlaneFrame {
     pub toward: bool,
     /// Model units per point along the arrow on the screen.
     pub per_point: f64,
+}
+
+/// A side of the plane's outline as its dashes are drawn: its ends in the
+/// window's points, within the viewport grown by [`DASH_MARGIN`], and
+/// where its first end lies in the dash pattern: points past the start of
+/// a dash, from 0 to a dash and a gap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DashedSide {
+    pub ends: [Pos2; 2],
+    pub phase: f32,
 }
 
 /// Where the handle was drawn, in the window's points.
@@ -701,6 +804,7 @@ pub fn plane_frame(
             Some([to_window(a.x, a.y)?, to_window(b.x, b.y)?])
         })
         .collect();
+    let dashed = dashed_sides(&projector, &corners, viewport, tokens.section_dash);
     let centre = projector.project(middle).and_then(|p| to_window(p.x, p.y));
     // The arrow's foot: the corner furthest along x - y - z, a rule of
     // the model's, so it stays where it is while the view turns.
@@ -732,6 +836,7 @@ pub fn plane_frame(
     let side_on = shown >= END_ON * f64::from(tokens.section_arrow_length);
     Some(PlaneFrame {
         outline,
+        dashed,
         middle: foot,
         at,
         centre: centre.unwrap_or(at),
@@ -916,47 +1021,191 @@ pub(super) fn paint_slim_line(
     }
 }
 
-/// How the outline is drawn: as one closed path when its sides join,
-/// as one segment between its farthest points when it is seen edge on
-/// (its sides lie over each other), else side by side.
-pub fn outline_paths(outline: &[[Pos2; 2]]) -> Vec<Vec<Pos2>> {
-    let joined = !outline.is_empty()
-        && outline.iter().enumerate().all(|(k, [_, end])| {
-            outline
-                .get((k + 1) % outline.len())
-                .is_some_and(|[next, _]| next.distance(*end) < 0.01)
-        });
-    if !joined {
-        return outline.iter().map(|side| side.to_vec()).collect();
+/// A side of the outline on the screen, from the viewport's corner: its
+/// ends, and whether each was cut at the eye plane.
+type ScreenSide = ([f64; 2], [f64; 2], [bool; 2]);
+
+/// How long the line from `a` to `b` is.
+fn screen_length(a: [f64; 2], b: [f64; 2]) -> f64 {
+    (b[0] - a[0]).phypot(b[1] - a[1])
+}
+
+/// The sides of the outline through `corners` (in space, in order round
+/// it) as their dashes are drawn in the `viewport` (the window's points)
+/// seen by `projector`, `dash` on and `gap` off ([`DashedSide`]).
+///
+/// A side is cut in space where it crosses the eye plane
+/// ([`Projector::segment_cut`]) and then projected; on the screen, in
+/// `f64`, it is cut to the viewport grown by [`DASH_MARGIN`], so only what
+/// shows is dashed. Seen from close by, a side reaches millions of points
+/// past the view: the runaway of 2026-11-18 (the section on while the view
+/// turned and zoomed in) was a side 1.45e9 points long, which epaint
+/// dashed in `f32` steps that stop adding up past 2^27 points, so the
+/// dashing never ended and its dashes filled the memory. The pattern runs
+/// on round the outline from its first corner in front of the eye, as when
+/// the outline was dashed as one path, so a dash stays where it is on the
+/// line however much of the line is cut off; a side cut at the eye plane
+/// takes it from its other end, the corner in front of the eye. Seen edge
+/// on (its sides lie over each other, thinner than a point and a half) the
+/// outline is its trace: one line between its farthest points.
+pub fn dashed_sides(
+    projector: &Projector,
+    corners: &[Vec3],
+    viewport: Rect,
+    [dash, gap]: [f32; 2],
+) -> Vec<DashedSide> {
+    let period = f64::from(dash) + f64::from(gap);
+    if !(dash > 0.0 && gap >= 0.0 && period.is_finite()) {
+        return Vec::new();
     }
-    let points: Vec<Pos2> = outline.iter().map(|[a, _]| *a).collect();
-    let n = points.len();
-    let (mut area, mut perimeter) = (0.0_f32, 0.0_f32);
-    for k in 0..n {
-        let (Some(a), Some(b)) = (points.get(k), points.get((k + 1) % n)) else {
-            continue;
-        };
-        area += a.x * b.y - b.x * a.y;
-        perimeter += a.distance(*b);
-    }
-    // Thinner than a point and a half: edge on.
-    if perimeter > 0.0 && area.abs() / perimeter < 1.5 {
-        let mut far = (0.0_f32, None);
-        for a in &points {
-            for b in &points {
-                let d = a.distance(*b);
-                if d > far.0 {
-                    far = (d, Some([*a, *b]));
+    let n = corners.len();
+    let mut sides: Vec<Option<ScreenSide>> = (0..n)
+        .map(|k| {
+            let (a, b) = (*corners.get(k)?, *corners.get((k + 1) % n)?);
+            let (p, q, cut) = projector.segment_cut(a, b)?;
+            let (p, q) = ([p.x, p.y], [q.x, q.y]);
+            p.iter()
+                .chain(&q)
+                .all(|c| c.is_finite())
+                .then_some((p, q, cut))
+        })
+        .collect();
+    // Every corner in front of the eye: seen edge on, the trace.
+    let whole = n > 0
+        && sides
+            .iter()
+            .all(|s| matches!(s, Some((_, _, [false, false]))));
+    if whole {
+        let points: Vec<[f64; 2]> = sides.iter().flatten().map(|(a, _, _)| *a).collect();
+        let (mut area, mut perimeter) = (0.0_f64, 0.0_f64);
+        for k in 0..points.len() {
+            let (Some(a), Some(b)) = (points.get(k), points.get((k + 1) % points.len())) else {
+                continue;
+            };
+            area += a[0] * b[1] - b[0] * a[1];
+            perimeter += screen_length(*a, *b);
+        }
+        if perimeter > 0.0 && area.abs() / perimeter < 1.5 {
+            let (mut most, mut far) = (0.0_f64, None);
+            for a in &points {
+                for b in &points {
+                    let d = screen_length(*a, *b);
+                    if d > most {
+                        (most, far) = (d, Some((*a, *b)));
+                    }
                 }
             }
+            sides = far
+                .map(|(a, b)| vec![Some((a, b, [false, false]))])
+                .unwrap_or_default();
         }
-        return far.1.map(|[a, b]| vec![vec![a, b]]).unwrap_or_default();
     }
-    let mut closed = points;
-    if let Some(&first) = closed.first() {
-        closed.push(first);
+    let count = sides.len();
+    // The pattern starts at the first corner in front of the eye.
+    let first = (0..count)
+        .find(|&k| matches!(sides.get(k), Some(Some((_, _, [false, _])))))
+        .unwrap_or(0);
+    let (w, h) = (f64::from(viewport.width()), f64::from(viewport.height()));
+    let (lo, hi) = (
+        [-DASH_MARGIN, -DASH_MARGIN],
+        [w + DASH_MARGIN, h + DASH_MARGIN],
+    );
+    let mut out = Vec::new();
+    // Where the pattern is at the start of the side walked now: where the
+    // side before ended, when it ended at that corner.
+    let mut at: Option<f64> = Some(0.0);
+    for step in 0..count {
+        let Some(Some((a, b, cut))) = sides.get((first + step) % count).copied() else {
+            at = None;
+            continue;
+        };
+        let long = screen_length(a, b);
+        if !long.is_finite() {
+            at = None;
+            continue;
+        }
+        let start = match (at, cut[0]) {
+            (Some(p), false) => p,
+            (None, false) => 0.0,
+            // Cut at the eye plane: from the corner in front, at its end.
+            (_, true) => -long,
+        };
+        at = (!cut[1]).then_some(start + long);
+        let Some((t0, t1)) = crate::viewport::clip_range(a, b, lo, hi) else {
+            continue;
+        };
+        let point = |t: f64| {
+            pos2(
+                viewport.left() + (a[0] + (b[0] - a[0]) * t) as f32,
+                viewport.top() + (a[1] + (b[1] - a[1]) * t) as f32,
+            )
+        };
+        out.push(DashedSide {
+            ends: [point(t0), point(t1)],
+            phase: (start + long * t0).rem_euclid(period) as f32,
+        });
     }
-    vec![closed]
+    out
+}
+
+/// The dashes of `sides`, `dash` on and `gap` off along each from its
+/// phase (a dash across a corner goes on round it, as along one path), at
+/// most [`MAX_OUTLINE_DASHES`] in all however long the sides are; a gap of
+/// nothing draws each side whole.
+pub fn outline_dashes(sides: &[DashedSide], [dash, gap]: [f32; 2]) -> Vec<[Pos2; 2]> {
+    let (dash, gap) = (f64::from(dash), f64::from(gap));
+    let period = dash + gap;
+    let mut out: Vec<[Pos2; 2]> = Vec::new();
+    if !(dash > 0.0 && gap >= 0.0 && period.is_finite()) {
+        return out;
+    }
+    for side in sides {
+        if out.len() >= MAX_OUTLINE_DASHES {
+            break;
+        }
+        let [a, b] = side.ends;
+        let (ax, ay, bx, by) = (
+            f64::from(a.x),
+            f64::from(a.y),
+            f64::from(b.x),
+            f64::from(b.y),
+        );
+        let long = (bx - ax).phypot(by - ay);
+        if !(long.is_finite() && long > 0.0) {
+            continue;
+        }
+        if gap <= 0.0 {
+            out.push(side.ends);
+            continue;
+        }
+        let at = |s: f64| {
+            let t = (s / long).clamp(0.0, 1.0);
+            pos2((ax + (bx - ax) * t) as f32, (ay + (by - ay) * t) as f32)
+        };
+        // How far along the side, and where that is in the pattern.
+        let mut s = 0.0_f64;
+        let mut p = f64::from(side.phase).rem_euclid(period);
+        if p.is_nan() || p >= period {
+            p = 0.0;
+        }
+        while s < long && out.len() < MAX_OUTLINE_DASHES {
+            let next = if p < dash {
+                let end = s + (dash - p);
+                out.push([at(s), at(end.min(long))]);
+                p = dash;
+                end
+            } else {
+                let end = s + (period - p);
+                p = 0.0;
+                end
+            };
+            if next.is_nan() || next <= s {
+                break;
+            }
+            s = next;
+        }
+    }
+    out
 }
 
 /// The parameter `t` of the point of the line `origin + direction · t`
@@ -1106,12 +1355,13 @@ impl Shell {
     }
 
     /// Whether the section's plane is the one the selection made (the
-    /// fourth button chosen): on a face, midway or a bisector.
+    /// fourth button chosen): on a face, midway, a bisector or through an
+    /// axis.
     pub(super) fn section_from_selection(&self) -> bool {
         self.section_on_face()
             || matches!(
                 self.state.section.made,
-                Some(SectionMade::Mid | SectionMade::Bisector)
+                Some(SectionMade::Mid | SectionMade::Bisector | SectionMade::Axis)
             )
     }
 
@@ -1149,6 +1399,19 @@ impl Shell {
             .collect();
         if faces.is_empty() || faces.len() > 2 || faces.len() != items.len() {
             self.section_handle.face = Some(PlaneChoice::refused(faces, TAKES_FACES));
+            return;
+        }
+        // One round face (a hole, a shaft): the plane through its axis
+        // (the developer, 2026-11-18).
+        if let [(feature, face)] = faces.as_slice()
+            && let Some((point, axis)) = round_axis(session, scene, feature, face)
+        {
+            self.section_handle.face = Some(PlaneChoice {
+                made: Some(SectionMade::Axis),
+                faces,
+                planes: vec![([point.x, point.y, point.z], [axis.x, axis.y, axis.z])],
+                refused: None,
+            });
             return;
         }
         let mut planes = Vec::new();
@@ -1204,14 +1467,15 @@ impl Shell {
     }
 
     /// Remembers which faces made `section`'s plane, when the fourth
-    /// button made it midway or a bisector of `choice`'s two faces.
+    /// button made it midway, a bisector of `choice`'s two faces, or
+    /// through the axis of its round one.
     pub(super) fn remember_made(&mut self, section: &SectionState, choice: &PlaneChoice) {
         let Some(document) = self.shown_status.as_ref().map(|s| s.id) else {
             return;
         };
         let made = match (section.made, section.point, section.normal) {
             (
-                Some(made @ (SectionMade::Mid | SectionMade::Bisector)),
+                Some(made @ (SectionMade::Mid | SectionMade::Bisector | SectionMade::Axis)),
                 Some(point),
                 Some(normal),
             ) => Some(MadeFrom {
@@ -1262,6 +1526,31 @@ impl Shell {
             self.section_handle.made_from.remove(&document);
             return;
         }
+        let [px, py, pz] = from.point;
+        let [nx, ny, nz] = from.normal;
+        let (point, normal) = (Vec3::new(px, py, pz), Vec3::new(nx, ny, nz));
+        let reach = scene
+            .bodies_box
+            .corners()
+            .map_or(1.0, |(lo, hi)| lo.distance(hi).max(1e-9));
+        // Through an axis: while the face's axis still holds the point and
+        // lies in the plane.
+        if from.made == SectionMade::Axis {
+            let holds = match from.faces.as_slice() {
+                [(feature, face)] => {
+                    round_axis(session, scene, feature, face).is_some_and(|(p, a)| {
+                        let off = (point - p) - a * (point - p).dot(a);
+                        off.length() <= 1e-9 * reach && normal.dot(a).abs() <= 1e-9
+                    })
+                }
+                _ => false,
+            };
+            if !holds {
+                self.state.section.made = None;
+                self.section_handle.made_from.remove(&document);
+            }
+            return;
+        }
         let mut planes = Vec::new();
         for (feature, face) in &from.faces {
             let spec = craft3d_engine::SectionSpec {
@@ -1274,13 +1563,6 @@ impl Shell {
                 Err(_) => break,
             }
         }
-        let [px, py, pz] = from.point;
-        let [nx, ny, nz] = from.normal;
-        let (point, normal) = (Vec3::new(px, py, pz), Vec3::new(nx, ny, nz));
-        let reach = scene
-            .bodies_box
-            .corners()
-            .map_or(1.0, |(lo, hi)| lo.distance(hi).max(1e-9));
         let holds = match planes.as_slice() {
             [a, b] => planes_of(
                 *a,
@@ -1461,7 +1743,13 @@ impl Shell {
             HandlePart::Number => {
                 self.typing = Some(Typing {
                     field: NUMBER_FIELD,
-                    text: shown(section.offset, 1.0, 2, ""),
+                    text: shown_trimmed(
+                        section.offset,
+                        1.0,
+                        places_of(self.length_tolerance),
+                        "",
+                        true,
+                    ),
                     ..Typing::default()
                 });
                 self.fields.focus = None;
@@ -1469,7 +1757,7 @@ impl Shell {
             }
             HandlePart::Dot(FACE_DOT) => {
                 if let Some(choice) = self.section_handle.face.clone() {
-                    choose_plane(&mut section, &choice);
+                    choose_plane(&mut section, &choice, self.state.camera.toward_eye());
                     self.remember_made(&section, &choice);
                 }
             }
@@ -1538,7 +1826,13 @@ impl Shell {
                 };
                 made.map(|made| made.label().to_string())
             });
-        let number = shown(self.state.section.offset, 1.0, 2, self.length_unit);
+        let number = shown_trimmed(
+            self.state.section.offset,
+            1.0,
+            places_of(self.length_tolerance),
+            self.length_unit,
+            true,
+        );
         let font = kit.font();
         let letter_galley = letter.map(|l| {
             ui.painter()
@@ -1593,24 +1887,22 @@ impl Shell {
             || pointer.is_some_and(|p| rect.contains(p) && place.near(p, tokens.section_near));
         let painter = ui.painter_at(rect);
         // The outline, dashed, in the accent alone, faint until the pointer
-        // is near: one path, one dash pattern, one line seen edge on.
+        // is near: one dash pattern round it, one line seen edge on, only
+        // where it shows ([`dashed_sides`]).
         let outline_alpha = if near {
             255
         } else {
             tokens.section_rest_opacity
         };
-        let [dash, gap] = tokens.section_dash;
-        for path in outline_paths(&place.frame.outline) {
-            painter.extend(egui::Shape::dashed_line(
-                &path,
-                egui::Stroke::new(
-                    tokens.section_outline_width,
-                    color_alpha(tokens.accent, outline_alpha),
-                ),
-                dash,
-                gap,
-            ));
-        }
+        let outline_stroke = egui::Stroke::new(
+            tokens.section_outline_width,
+            color_alpha(tokens.accent, outline_alpha),
+        );
+        painter.extend(
+            outline_dashes(&place.frame.dashed, tokens.section_dash)
+                .into_iter()
+                .map(|ends| egui::Shape::line_segment(ends, outline_stroke)),
+        );
         // The arrow, or the ring seen end on: a light fill with a dark
         // edge, so it reads on the cap, a body and the background; the
         // accent under the pointer and while it is dragged.
@@ -1784,7 +2076,9 @@ impl Shell {
             });
             let words = match part {
                 HandlePart::Dot(FACE_DOT) => Some(match &choice {
-                    Some(choice) => choice.words(&self.state.section),
+                    Some(choice) => {
+                        choice.words(&self.state.section, self.state.camera.toward_eye())
+                    }
                     None => TAKES_FACES.to_string(),
                 }),
                 HandlePart::Flip => Some("Keep the other half".to_string()),
@@ -2389,12 +2683,19 @@ mod tests {
         );
     }
 
+    /// The developer, 2026-11-18: one round face (a hole, a shaft) gives
+    /// the plane through its axis, facing the viewer (the view direction
+    /// less its part along the axis, toward the eye); a second click turns
+    /// it a quarter about the axis; looking along the axis it is refused
+    /// in words and nothing changes; `made` is `axis`, kept by the state
+    /// with a point and a normal.
     #[test]
-    fn the_fourth_button_lays_the_plane_and_a_second_click_takes_the_other_bisector() {
-        let face = |made, planes: Vec<([f64; 3], [f64; 3])>| PlaneChoice {
-            made: Some(made),
-            faces: vec![("F1".to_string(), "F1:face(1)".to_string())],
-            planes,
+    fn a_round_face_gives_the_plane_through_its_axis_facing_the_viewer() {
+        let axis = ([15.0, 20.0, -5.0], [0.0, 0.0, 1.0]);
+        let round = PlaneChoice {
+            made: Some(SectionMade::Axis),
+            faces: vec![("F6".to_string(), "F6:copy(0)/F2:face(0)".to_string())],
+            planes: vec![axis],
             refused: None,
         };
         let mut section = SectionState {
@@ -2404,18 +2705,91 @@ mod tests {
             flip: true,
             ..SectionState::default()
         };
+        let eye = Vec3::new(0.6, -0.6, 0.53).normalized().unwrap();
+        assert_eq!(round.words(&section, eye), "Through the axis, facing you");
+        choose_plane(&mut section, &round, eye);
+        assert_eq!(section.made, Some(SectionMade::Axis));
+        assert_eq!((section.plane.clone(), section.point), (None, Some(axis.0)));
+        assert_eq!((section.offset, section.flip), (0.0, false));
+        let [nx, ny, nz] = section.normal.unwrap();
+        let n = Vec3::new(nx, ny, nz);
+        // The plane holds the axis, and faces the viewer.
+        assert!(n.dot(Vec3::Z).abs() < 1e-12, "{n:?}");
+        assert!((n.length() - 1.0).abs() < 1e-12);
+        let across = Vec3::new(eye.x, eye.y, 0.0).normalized().unwrap();
+        assert!((n - across).length() < 1e-12, "{n:?} {across:?}");
+        // A second click: a quarter about the axis.
+        assert_eq!(
+            round.words(&section, eye),
+            "Through the axis, turned a quarter"
+        );
+        choose_plane(&mut section, &round, eye);
+        let [mx, my, mz] = section.normal.unwrap();
+        let m = Vec3::new(mx, my, mz);
+        assert!(
+            m.dot(n).abs() < 1e-12 && m.dot(Vec3::Z).abs() < 1e-12,
+            "{m:?}"
+        );
+        assert_eq!(section.point, Some(axis.0));
+        // Looking along the axis (1 degree off it): refused, nothing changes.
+        let along = Vec3::new(
+            1.0_f64.to_radians().psin(),
+            0.0,
+            1.0_f64.to_radians().pcos(),
+        );
+        let before = section.clone();
+        let mut elsewhere = SectionState {
+            on: true,
+            plane: Some("xy".to_string()),
+            ..SectionState::default()
+        };
+        assert_eq!(round.words(&elsewhere, along), ALONG_AXIS);
+        let kept = elsewhere.clone();
+        choose_plane(&mut elsewhere, &round, along);
+        assert_eq!(elsewhere, kept);
+        assert_eq!(section, before);
+        // The state keeps `axis` with a point and a normal, not with a name.
+        assert_eq!(
+            section.clone().validated().unwrap().made,
+            Some(SectionMade::Axis)
+        );
+        let mut named = section.clone();
+        named.plane = Some("xy".to_string());
+        named.point = None;
+        named.normal = None;
+        assert_eq!(named.validated().unwrap().made, None);
+        assert_eq!(SectionMade::Axis.label(), "axis");
+    }
+
+    #[test]
+    fn the_fourth_button_lays_the_plane_and_a_second_click_takes_the_other_bisector() {
+        let face = |made, planes: Vec<([f64; 3], [f64; 3])>| PlaneChoice {
+            made: Some(made),
+            faces: vec![("F1".to_string(), "F1:face(1)".to_string())],
+            planes,
+            refused: None,
+        };
+        // The view from the front and above (not along any axis here).
+        let eye = Vec3::new(0.3, -0.8, 0.52).normalized().unwrap();
+        let mut section = SectionState {
+            on: true,
+            plane: Some("xy".to_string()),
+            offset: 7.0,
+            flip: true,
+            ..SectionState::default()
+        };
         // Along one face: its name, offset 0, not flipped; again: kept.
-        choose_plane(&mut section, &face(SectionMade::Face, Vec::new()));
+        choose_plane(&mut section, &face(SectionMade::Face, Vec::new()), eye);
         assert_eq!(section.plane.as_deref(), Some("F1:face(1)"));
         assert_eq!(section.feature.as_deref(), Some("F1"));
         assert_eq!(section.made, Some(SectionMade::Face));
         assert_eq!((section.offset, section.flip), (0.0, false));
         section.offset = -3.0;
-        choose_plane(&mut section, &face(SectionMade::Face, Vec::new()));
+        choose_plane(&mut section, &face(SectionMade::Face, Vec::new()), eye);
         assert_eq!(section.offset, -3.0);
         // Midway: point and normal, no name.
         let mid = ([30.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
-        choose_plane(&mut section, &face(SectionMade::Mid, vec![mid]));
+        choose_plane(&mut section, &face(SectionMade::Mid, vec![mid]), eye);
         assert_eq!(
             (section.plane.clone(), section.point, section.normal),
             (None, Some(mid.0), Some(mid.1))
@@ -2429,26 +2803,26 @@ mod tests {
         let other = ([1.0, 2.0, 3.0], [0.8, 0.0, 0.6]);
         let bisectors = face(SectionMade::Bisector, vec![through, other]);
         assert_eq!(
-            bisectors.words(&section),
+            bisectors.words(&section, eye),
             "Halving the angle of the two faces"
         );
-        choose_plane(&mut section, &bisectors);
+        choose_plane(&mut section, &bisectors, eye);
         assert_eq!(section.normal, Some(through.1));
         assert_eq!(
-            bisectors.words(&section),
+            bisectors.words(&section, eye),
             "The other bisector of the two faces, square to this one"
         );
-        choose_plane(&mut section, &bisectors);
+        choose_plane(&mut section, &bisectors, eye);
         assert_eq!(section.normal, Some(other.1));
         assert_eq!(section.made, Some(SectionMade::Bisector));
-        choose_plane(&mut section, &bisectors);
+        choose_plane(&mut section, &bisectors, eye);
         assert_eq!(section.normal, Some(through.1));
         // A selection that gives no plane changes nothing, and says why.
         let before = section.clone();
         let none = PlaneChoice::refused(Vec::new(), TAKES_FACES);
-        choose_plane(&mut section, &none);
+        choose_plane(&mut section, &none, eye);
         assert_eq!(section, before);
-        assert_eq!(none.words(&section), TAKES_FACES);
+        assert_eq!(none.words(&section, eye), TAKES_FACES);
         // The state keeps `made` only with a plane it fits.
         let mut odd = section.clone();
         odd.plane = Some("xy".to_string());

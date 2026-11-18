@@ -526,7 +526,12 @@ impl Shell {
             Slider::new(label, &mut value, lo..=hi)
                 .widths(label_w, value_w)
                 .step(field_range.map_or(1.0, number_field::nice_step))
-                .shown_as(1.0, 2, unit)
+                .shown_as(
+                    1.0,
+                    crate::kit::slider::places_of(self.length_tolerance),
+                    unit,
+                )
+                .trimmed(true)
                 .enabled(on && field_range.is_some()),
             Some(SliderState {
                 field: "offset",

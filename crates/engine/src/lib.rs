@@ -30,6 +30,7 @@ mod asm_export;
 mod asm_follow;
 mod asm_measure;
 mod asm_outline;
+mod asm_paths;
 mod asm_solve;
 mod assert_check;
 mod assert_cmds;
@@ -154,6 +155,8 @@ pub use commands_elsewhere::{Answered, CommandAnswer, CommandRequest};
 /// entries (`craft3d-changelog`), for the hosts and the shell that show
 /// the release notes.
 pub use craft3d_changelog as changelog;
+/// The longest text of a note, in code points (the window's field stops there).
+pub use craft3d_doc::MAX_NOTE_CHARS;
 pub use craft3d_regen::progress::Progress;
 pub use history_view::{HistoryEntry, HistoryView, KeyEdit, VariableEntry};
 pub use memory_files::{MAX_MEMORY_BYTES, MAX_MEMORY_FILE_BYTES, MAX_MEMORY_FILES};

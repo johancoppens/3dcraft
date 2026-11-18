@@ -257,10 +257,11 @@ checks):
 
 The view shows the measure of **one thing selected** beside it, in a thin dimension line in the accent: a
 straight edge its length along a line beside it, a whole circle (a hole's rim) its diameter **Ø**, an arc
-its radius **R**, a curved edge its length by its middle, a hole's or a boss's wall its diameter, part of a
-cylinder (a fillet's round) its radius. A flat face, a vertex and a body show nothing there: their facts are
+its radius **R**, a curved edge its length by its middle, a hole's or a boss's wall its diameter across its
+rim where it opens (as two holes' line is drawn), part of a cylinder (a fillet's round) its radius. A flat face, a vertex and a body show nothing there: their facts are
 at the foot of the panel. Numbers are shown to the document's tolerance, without trailing zeros (`30 mm`,
-`0.006 mm`). Click the number to copy it with its unit, as shown. While two things are being measured the
+`0.006 mm`), in the view and in the facts at the foot of the panel alike; a number too long for the card is
+drawn smaller, down to half the size, and past that a range is broken after its dash. Click the number to copy it with its unit, as shown. While two things are being measured the
 card says *Measuring…*; the window goes on meanwhile. In a short window the Features tab shows the card as one
 line, with **Keep as a check**.
 
@@ -272,6 +273,8 @@ give their centre distance, two parallel faces the distance between them, two fa
 ([Measuring and assertions › Between two things](measure.md#between-two-things)). Click the number, in the
 panel or on the line, to copy it with its unit. Another selection, or Escape, takes it away.
 
+![Two holes selected: their centre distance, 30 mm, on a line between the centres of their rims on the top, and at the foot of the panel with "Centre distance · axes parallel", its parts along X, Y and Z and Keep as a check](images/measure.png)
+
 **Keep as a check** keeps that relation as a check of the document: named after the two things (*Centre
 distance Left face – Right face*), its value now, within the document's tolerance. It shows under
 **Checks**, is measured again after every change, and is one step to undo. A least distance shown as a
@@ -280,7 +283,7 @@ or as *about* a number (found on samples of a freeform curve or face, or with no
 the tolerance; it is kept as what is proven, at most the number and no less than the bound, and fails when the
 things move nearer or farther than that.
 
-![A hole selected: the foot of the side panel names its surface, its area and axis, the feature that made it and its name](images/selection.png)
+![A hole selected: its diameter, Ø 6 mm, in the view, and at the foot of the side panel its surface, its area and axis, the feature that made it, its name and Measure](images/selection.png)
 
 ### Variables
 
@@ -318,6 +321,44 @@ meant to do.
 
 A feature an agent made, or last changed, carries a small indigo ✦ after its name in the Features tab.
 The desktop app only: in the browser, agents cannot connect.
+
+### Notes
+
+A note is one sentence pinned to a place of the model, for whoever works on it next
+([Working with an AI agent](agent.md#notes-on-the-model)). Select one face, edge, vertex or body and press
+**N**, or choose **Note here…** at the top of the list under the right mouse button: a field opens at the
+place you clicked. Type, then Enter; Shift+Enter starts a new line, and the field grows; Escape leaves it.
+The field stops at 2000 characters and counts them near the end. When the note cannot be added, the field
+stays open with your text and says why. The note sits where you clicked on that face (the face's middle
+when you chose it in a list).
+
+![The Notes tab beside a plate with its pins: an agent's question with ?, an open note, a detached one in grey, one held by place, and a done note unfolded with its reply after the closing; the done note chosen, its text beside its pin](images/notes.png)
+
+Once a document has notes, the side panel has a **Notes** tab, its open notes counted on the tab. It lists
+them with their number, their text, where each is (*face of Rib*; *by place: near an edge of Bookend* for
+an edge or face whose name may move to another: held near what the feature that made it makes there now,
+which the row names, not what the note was pinned to; *place gone* when that feature no longer makes anything there,
+a note that needs a look; *detached* for one whose face is gone), who wrote it (*you*, or an agent by its
+name followed by *(agent)*, whatever it calls itself) and when. An agent's
+questions come first, marked with **?**; the done notes fold away under the open ones, each with its reply,
+and the replies given after it was closed (an agent's account of what it did when you closed the note
+first). A click on a row flies to the note and selects what it is on; the chosen row offers **Edit**,
+**Done** (or **Open again**) and **Delete**, each one step that **Ctrl+Z** takes back. **Hide in view** at
+the top hides the markers.
+
+In the view each note is a small numbered pin in the accent colour; an agent's question is a ring with
+**?**, a done note a small green tick, a detached one (or one whose place is gone) a grey ring at the place
+it was put. The pins keep their colours in the dark appearance, as the model does. A pin behind the model
+is drawn faint and cannot be clicked. A click on a pin chooses its note and shows its text beside it. Notes
+close together on the model share one pin, which says how many more it stands for; which notes have a pin
+does not change as you turn the view, only as you zoom. At most 400 pins are drawn, and none under the
+view's own controls (the toolbar, the view cube, the axes); when notes in view are left without one, the
+Notes tab says how many, and zooming in or turning the view shows them.
+
+When an agent has left open questions, the agent pill in the status bar says how many; a click on it opens
+the Notes tab. A document without notes shows nothing of them. On a phone the tab is in the drawer, and
+**Note here…** is in the list a press and hold opens; there is no **N** without a keyboard. On the web
+page the Notes tab lists the notes, but the view draws no pins and a row does not fly to its note yet.
 
 ## The history player
 
@@ -442,7 +483,7 @@ the display bar then shows only **Section**: the group has the rest. On a phone 
 are left out (a finger's drag in the middle of the model turns it), and the bar keeps **X**, **Y**, **Z**,
 an **Offset** slider and **Flip side**.
 
-![The flange cut open across X through the middle of a bolt hole: the plane's dashed outline, the arrow at the cut's edge, and the group with X 30.00 mm, X, Y, Z and the flip button](images/section.png)
+![The flange cut open across X through the middle of a bolt hole: the plane's dashed outline, the slim arrow at the cut's edge, and the group with X 30.00 mm, X, Y, Z, the plane from the selection (greyed: nothing selected) and the flip button](images/section.png)
 
 | Do | To |
 |---|---|
@@ -453,11 +494,13 @@ an **Offset** slider and **Flip side**.
 | Click **⇅** | Keep the other half |
 | Select a flat face, then click **∥** | Lay the plane on that face: along it, through it, the arrow pointing out of the body; drag the arrow in to cut |
 | Select two flat faces, then click **∥** | Two parallel faces (the two walls of a slot): the plane midway between them. Two faces at an angle: the plane that halves it, between them, through the line where they meet; click again for the other one, square to it, where that one cuts the model |
+| Select a hole's or a shaft's round face, then click **∥** | The plane through its axis, turned to face you: the half toward you is cut away, so you look into the hole; click again to turn it a quarter about the axis. Looking straight along the axis it says so: turn the view first |
 
-The number says what the plane is: **X**, **Y** or **Z**, **∥ face**, **mid** or **bisector**. A plane made
-with **∥** stays when you select something else, and where it is when you change the model (it is then no
-longer called **mid** or **bisector** once its faces have moved); anything but one or two flat faces greys **∥**, and it says
-so when you point at it.
+The number says what the plane is: **X**, **Y** or **Z**, **∥ face**, **mid**, **bisector** or **axis**. A plane
+made with **∥** stays when you select something else, and where it is when you change the model (it is then
+no longer called **mid**, **bisector** or **axis** once its faces have moved); anything but one or two flat faces
+or one round face greys **∥**, and it says so when you point at it. The number is a length as everywhere else:
+to the document's tolerance, without trailing zeros (`30 mm`, `12.5 mm`).
 
 Seen straight along the arrow (a section across Z from the top), the arrow is a ring that cannot be dragged:
 type the distance into the group's number, or use its buttons.
@@ -488,6 +531,7 @@ The browser on a phone or a tablet, and any window narrower than about 800 point
 | Pinch | Zoom about the middle of your fingers |
 | Tap | Select, as a click does |
 | Double-tap | What **F** does: fly to what you tapped, or frame the whole model |
+| Press and hold | The list the right mouse button opens: the faces under your finger, and **Note here…** |
 | Press and hold | The list of everything under your finger (as a right click) |
 | **☰** at the left of the menu bar | Open or close the feature list, Parameters and the player as a drawer (a tap beside it, or Escape, closes it too) |
 

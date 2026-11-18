@@ -1,0 +1,133 @@
+{
+  "format_version": 77,
+  "written_by": "e6aceb7f6f0f47958be48dd380f5a78022b66af4",
+  "how": "craft3d-cli of that commit (a debug build, on the developer's laptop): craft3d-cli run --new '{\"units\": \"mm\"}' --script v77.steps.json --out v77.3dcraft, then craft3d-cli run v77.3dcraft --cmd document.inspect for the features and bodies and --cmd note.list for the notes (their times left out: the clock of the writing build); format 77: a plate 40 x 20 x 5 mm (4000 mm3) and two notes whose replies after their closing stay with the note: 1 from the script (author unknown) on the top, closed by the script, replied to after by Claude Code (Made it 7 mm.) and opened again, its reply kept; 2 Claude Code's question on a side, closed by the script with a reply, replied to after by Claude Code (Left it sharp.)",
+  "rollback": null,
+  "features": [
+    {
+      "id": "F1",
+      "name": "Plate",
+      "params": {
+        "orientation": {
+          "angle": "0 deg",
+          "axis": [
+            "0",
+            "0",
+            "1"
+          ]
+        },
+        "position": [
+          "0",
+          "0",
+          "0"
+        ],
+        "size": [
+          "40 mm",
+          "20 mm",
+          "5 mm"
+        ],
+        "type": "block"
+      },
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 2200.000000000002,
+      "bbox": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          40.0,
+          20.0,
+          5.0
+        ]
+      ],
+      "bboxTolerance": 0.04690415759823431,
+      "centroid": [
+        20.0,
+        10.0,
+        2.5
+      ],
+      "edges": 12,
+      "faceNames": [
+        "F1:face(0)",
+        "F1:face(1)",
+        "F1:face(2)",
+        "F1:face(3)",
+        "F1:face(4)",
+        "F1:face(5)"
+      ],
+      "faces": 6,
+      "feature": "F1",
+      "kind": "solid",
+      "name": "Plate",
+      "shells": 1,
+      "valid": true,
+      "vertices": 8,
+      "volume": 4000.000000000002
+    }
+  ],
+  "notes": [
+    {
+      "id": 1,
+      "text": "2 mm thicker here",
+      "state": "open",
+      "author": "unknown",
+      "agent": null,
+      "on": {
+        "kind": "face",
+        "name": "F1:face(1)",
+        "feature": "F1"
+      },
+      "attachment": "attached",
+      "now": null,
+      "point": [
+        20.0,
+        10.0,
+        5.0
+      ],
+      "reply": null,
+      "closedBy": null,
+      "later": [
+        {
+          "author": "agent",
+          "agent": "Claude Code",
+          "reply": "Made it 7 mm."
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "text": "Should this edge stay sharp?",
+      "state": "done",
+      "author": "agent",
+      "agent": "Claude Code",
+      "on": {
+        "kind": "face",
+        "name": "F1:face(2)",
+        "feature": "F1"
+      },
+      "attachment": "attached",
+      "now": null,
+      "point": [
+        20.0,
+        0.0,
+        2.5
+      ],
+      "reply": "Yes, keep it sharp.",
+      "closedBy": null,
+      "later": [
+        {
+          "author": "agent",
+          "agent": "Claude Code",
+          "reply": "Left it sharp."
+        }
+      ]
+    }
+  ]
+}

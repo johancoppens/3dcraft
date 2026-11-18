@@ -18,6 +18,7 @@
 mod common;
 
 use common::plain::{run, session, session_in};
+use common::workdir;
 use craft3d_engine::Session;
 use craft3d_math::Portable;
 use serde_json::{Value, json};
@@ -1046,4 +1047,145 @@ fn a_face_named_in_over_8192_bytes_goes_wherever_a_selection_goes() {
         json!({"text": "here", "on": name, "feature": top["feature"]}),
     );
     assert!(note.get("id").is_some(), "{note}");
+}
+
+/// The review of 2026-11-17: a circular edge and an axis (a round face's)
+/// give their centre distance only where their axes are parallel (a
+/// pitch, said so with `parallel`); at an angle, the least distance as the
+/// things are. A rim of radius 10 at z = 2 under a bar of radius 2 lying
+/// along X with its axis at z = 4.5: 0.5 at the rim's ends on X; beside
+/// it a post standing parallel 30 away: its centre distance.
+#[test]
+fn a_rim_at_an_angle_to_an_axis_gives_the_least_distance() {
+    for k in [1e-3, 1.0, 1e6] {
+        let mut s = session();
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 10.0 * k, "height": 2.0 * k, "name": "Disk"}),
+        );
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 2.0 * k, "height": 40.0 * k, "position": [-20.0 * k, 0, 4.5 * k], "axis": [1, 0, 0], "name": "Cross"}),
+        );
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 1.0 * k, "height": 5.0 * k, "position": [30.0 * k, 0, 0], "name": "Post"}),
+        );
+        let rim = item(
+            &mut s,
+            "edge",
+            json!({"in": "Disk", "radius": 10.0 * k, "above": {"z": 1.0 * k}}),
+        );
+        let bar = item(
+            &mut s,
+            "face",
+            json!({"in": "Cross", "surface": "cylinder"}),
+        );
+        let got = between(&mut s, &rim, &bar);
+        assert_eq!(got["relation"], "leastDistance", "k={k}: {got}");
+        let tol = got["tolerance"].as_f64().unwrap();
+        assert!(
+            (got["value"].as_f64().unwrap() - 0.5 * k).abs() <= tol.max(1e-9 * k),
+            "k={k}: {got}"
+        );
+        let post = item(&mut s, "face", json!({"in": "Post", "surface": "cylinder"}));
+        let got = between(&mut s, &rim, &post);
+        assert_eq!(got["relation"], "centerDistance", "k={k}: {got}");
+        assert_eq!(got["parallel"], true, "k={k}: {got}");
+        assert!(
+            close(got["value"].as_f64().unwrap(), 30.0 * k, k),
+            "k={k}: {got}"
+        );
+    }
+}
+
+/// The review of 2026-11-18: parallel, for a circle's centre with an axis,
+/// as a person sees it: within half a degree a pitch (the centre
+/// distance, `parallel: true`), not only within the kernel's 1e-9 radians;
+/// at 5 degrees the least distance as the things are.
+#[test]
+fn a_rim_and_an_axis_a_tenth_of_a_degree_apart_are_parallel() {
+    for (degrees, relation) in [(0.1, "centerDistance"), (5.0, "leastDistance")] {
+        let t = f64::to_radians(degrees);
+        let mut s = session();
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 10, "height": 2, "name": "Disk"}),
+        );
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 1, "height": 5, "position": [30, 0, 0], "axis": [t.psin(), 0, t.pcos()], "name": "Post"}),
+        );
+        let rim = item(
+            &mut s,
+            "edge",
+            json!({"in": "Disk", "radius": 10, "above": {"z": 1}}),
+        );
+        let post = item(&mut s, "face", json!({"in": "Post", "surface": "cylinder"}));
+        let got = between(&mut s, &rim, &post);
+        assert_eq!(got["relation"], relation, "{degrees} degrees: {got}");
+        if relation == "centerDistance" {
+            assert_eq!(got["parallel"], true, "{got}");
+        }
+    }
+}
+
+/// The developer looks at sections of assemblies (2026-11-18): the axis
+/// of a hole in an instance posed in the assembly (turned a quarter about
+/// X and moved) is found in the assembly's space, as the window's plane
+/// through it needs it: the scene's mesh of an instance is posed.
+#[test]
+fn a_hole_of_a_posed_instance_has_its_axis_in_the_assemblys_space() {
+    let dir = workdir("between", "posed-axis");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [40, 20, 6], "name": "Plate"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 3, "height": 10, "position": [20, 10, -2], "name": "Bore"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Plate", "tool": "Bore", "name": "Holed"}),
+    );
+    run(&mut s, "file.save", json!({"path": "plate.3dcraft"}));
+    run(&mut s, "assembly.new", json!({}));
+    run(
+        &mut s,
+        "instance.add",
+        json!({"source": "plate.3dcraft", "name": "Turned", "position": [100, 50, 30], "rotation": [90, 0, 0]}),
+    );
+    let scene = s.scene(None).unwrap().expect("the assembly's scene");
+    // The one round face among the instance's: its axis.
+    let mut axes = Vec::new();
+    for body in scene.bodies.iter() {
+        for name in body.face_names.iter() {
+            if let Ok(axis) = s.face_axis(&scene, Some(body.feature.as_str()), name) {
+                axes.push(axis);
+            }
+        }
+    }
+    assert_eq!(axes.len(), 1, "{axes:?}");
+    let (point, direction) = axes[0];
+    // Turned a quarter about X: (x, y, z) goes to (x, -z, y), then moved
+    // by (100, 50, 30); the bore's axis x = 20, y = 10 along Z becomes the
+    // line x = 120, z = 40 along Y.
+    assert!(direction.y.abs() > 1.0 - 1e-9, "{direction:?}");
+    assert!(
+        (point.x - 120.0).abs() < 1e-6 && (point.z - 40.0).abs() < 1e-6,
+        "{point:?}"
+    );
 }

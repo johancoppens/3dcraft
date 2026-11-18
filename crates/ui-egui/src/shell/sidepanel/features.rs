@@ -546,7 +546,7 @@ impl Shell {
             .min(ui.available_height() * 0.6)
             .max(0.0);
         let show_props = props_h > 0.0;
-        egui::Panel::bottom("craft3d-side-foot")
+        let foot = egui::Panel::bottom("craft3d-side-foot")
             .resizable(false)
             .exact_size(height)
             .frame(egui::Frame::new())
@@ -565,6 +565,7 @@ impl Shell {
                         }
                     });
             });
+        self.side.foot_top = Some(foot.response.rect.top());
         ui.scope(|ui| {
             ui.set_max_width((ui.available_width() - inset).max(40.0));
             self.side_filter(ui, Filter::Features, "Filter features");
@@ -1181,10 +1182,21 @@ impl Shell {
             }
         }
         self.tree_view = Some(list_rect);
-        // The roll-back bar's grip drags the marker.
-        if let Some(bar) = bar_rect {
+        // The roll-back bar's grip drags the marker: where the list shows
+        // it (scrolled out of the list's room, under the card, a click
+        // there is the card's: the review of 2026-11-18).
+        // The list's own room: above the foot, which the list (egui's
+        // least height for a scrolled area) may be drawn over in a short
+        // drawer.
+        let shown = self.side.foot_top.map_or(list_rect, |y| {
+            list_rect.intersect(Rect::everything_above(y))
+        });
+        if let Some(bar) = bar_rect
+            && bar.intersects(shown)
+        {
             let grip =
-                Rect::from_min_size(bar.min, vec2(tokens.control_height * 1.6, bar.height()));
+                Rect::from_min_size(bar.min, vec2(tokens.control_height * 1.6, bar.height()))
+                    .intersect(shown);
             self.side.hits.targets.push(("rollback".to_string(), grip));
             let drag = ui
                 .interact(

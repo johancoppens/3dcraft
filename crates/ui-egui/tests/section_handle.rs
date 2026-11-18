@@ -16,7 +16,9 @@
 )]
 
 use craft3d_engine::{Session, SnapKind, Workspace};
-use craft3d_ui_egui::shell::section_handle::{HandlePart, NUMBER_FIELD, Snapped, TAKES_FACES};
+use craft3d_ui_egui::shell::section_handle::{
+    ALONG_AXIS, HandlePart, NUMBER_FIELD, Snapped, TAKES_FACES,
+};
 use craft3d_ui_egui::state::SectionMade;
 use craft3d_ui_egui::{RendererChoice, Shell};
 use egui::{Event, Modifiers, PointerButton, Pos2, pos2, vec2};
@@ -868,23 +870,15 @@ fn the_plane_goes_parallel_to_a_selected_flat_face_and_stays_when_the_selection_
     window.frames(&mut shell, &mut session, 2);
     assert_eq!(shell.state.section, before);
 
-    // A hole's wall is not flat: the dot and the cell say so and do
-    // nothing, and ui.set refuses it in words.
+    // A hole's wall is not flat: the fourth button gives the plane through
+    // its axis instead (the developer, 2026-11-18;
+    // `a_hole_gives_the_plane_through_its_axis_facing_the_viewer`), and
+    // ui.set still refuses to lay a plane on it, in words.
     let wall = select_face(&mut session, json!({"hole": true, "radius": 3}));
     window.frames(&mut shell, &mut session, 3);
-    let refused = shell.section_face_choice().cloned().unwrap();
-    assert!(
-        refused
-            .refused
-            .as_deref()
-            .is_some_and(|why| why.contains("Not a flat face")),
-        "{refused:?}"
-    );
+    let round = shell.section_face_choice().cloned().unwrap();
+    assert_eq!(round.made, Some(SectionMade::Axis), "{round:?}");
     let before = shell.state.section.clone();
-    let dot = shell.section_handle().unwrap().dots[3];
-    window.click(&mut shell, &mut session, dot);
-    window.frames(&mut shell, &mut session, 2);
-    assert_eq!(shell.state.section, before);
     let error = shell
         .handle_method(
             &mut session,
@@ -1736,4 +1730,96 @@ fn another_body_beyond_does_not_make_a_convex_edges_outer_bisector_cut() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     let n = got["section"]["normal"][0].as_f64().unwrap();
     assert!(n.abs() > 0.9, "{}", got["section"]);
+}
+
+/// The developer's decision of 2026-11-18 ("Ja, na de spelden"): one
+/// round face selected (a hole) makes the fourth button lay the plane
+/// through its axis, turned to face the viewer (the view's direction
+/// toward the eye less its part along the axis), so the half toward the
+/// viewer is cut away; a second click turns it a quarter about the axis;
+/// looking along the axis it is refused in words and nothing changes. The
+/// plate says `axis`; the plane holds the axis; a drag moves it along its
+/// normal and the offset field prints the offset by the one rule.
+#[test]
+fn a_hole_gives_the_plane_through_its_axis_facing_the_viewer() {
+    let mut session = chamfered();
+    let (mut shell, mut window) = window_on(&mut session, [1200.0, 800.0], "xy", 4.0, "iso");
+    select_face(&mut session, json!({"hole": true, "radius": 3}));
+    window.frames(&mut shell, &mut session, 3);
+    let choice = shell.section_face_choice().cloned().unwrap();
+    assert_eq!(choice.made, Some(SectionMade::Axis), "{choice:?}");
+    let eye = shell.state.camera.toward_eye();
+    assert_eq!(
+        choice.words(&shell.state.section, eye),
+        "Through the axis, facing you"
+    );
+    let dot = shell.section_handle().unwrap().dots[3];
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 3);
+    let (point, first, made) = plane_of(&mut shell, &mut session);
+    assert_eq!(made, "axis");
+    assert_eq!(shell.state.section.made, Some(SectionMade::Axis));
+    // The hole drilled down at (45, 20): the plane holds its axis.
+    assert!(
+        (point[0] - 45.0).abs() < 1e-9 && (point[1] - 20.0).abs() < 1e-9,
+        "{point:?}"
+    );
+    assert!(first[2].abs() < 1e-9, "square to the axis: {first:?}");
+    // Facing the viewer: the normal is the eye's direction across the axis.
+    let across = craft3d_math::Vec3::new(eye.x, eye.y, 0.0)
+        .normalized()
+        .unwrap();
+    assert!(
+        (first[0] - across.x).abs() < 1e-9 && (first[1] - across.y).abs() < 1e-9,
+        "{first:?} {across:?}"
+    );
+    // The plate says what the plane is, and the offset is a length.
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["section"]["direction"], "free", "{}", got["section"]);
+    assert!(shell.section_handle().unwrap().number.width() > 0.0);
+    // A second click: a quarter about the axis.
+    assert_eq!(
+        choice.words(&shell.state.section, eye),
+        "Through the axis, turned a quarter"
+    );
+    let dot = shell.section_handle().unwrap().dots[3];
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 3);
+    let (again, second, made) = plane_of(&mut shell, &mut session);
+    assert_eq!(made, "axis");
+    assert_eq!(again, point);
+    let dot_product = first[0] * second[0] + first[1] * second[1] + first[2] * second[2];
+    assert!(
+        dot_product.abs() < 1e-9 && second[2].abs() < 1e-9,
+        "{second:?}"
+    );
+    // Another plane, then looking down the hole: refused in words,
+    // nothing changes. (On the axis's plane already, a click still turns
+    // it a quarter: no view is needed for that.)
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"section": {"plane": "yz", "offset": 30}}),
+    );
+    let _ = shell.handle_method(&mut session, "ui.fit", Some(&json!({"view": "top"})));
+    window.frames(&mut shell, &mut session, 3);
+    let eye = shell.state.camera.toward_eye();
+    assert_eq!(choice.words(&shell.state.section, eye), ALONG_AXIS);
+    let before = shell.state.section.clone();
+    let dot = shell.section_handle().map(|h| h.dots[3]);
+    if let Some(dot) = dot {
+        window.click(&mut shell, &mut session, dot);
+        window.frames(&mut shell, &mut session, 2);
+    }
+    assert_eq!(shell.state.section, before);
+    // Taken by an agent: ui.set with made axis, a point and a normal.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"section": {"point": [45, 20, 0], "normal": [1, 0, 0], "made": "axis"}}),
+    );
+    assert_eq!(shell.state.section.made, Some(SectionMade::Axis));
+    let _ = TAKES_FACES;
 }

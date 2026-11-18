@@ -229,12 +229,22 @@ fn single_of(
                     round: Some(([at.x, at.y, at.z], [a.x, a.y, a.z], r)),
                 });
             }
+            // A whole hole or boss: across its rim in view, where it opens
+            // (`opening`, as two holes' line is drawn; the review of
+            // 2026-11-17: at mid-depth it floated on the top face below
+            // the opening); by the middle where it opens nowhere in view.
+            let rim = item
+                .get("opening")
+                .and_then(triple)
+                .map(|[x, y, z]| Vec3::new(x, y, z))
+                .filter(|p| p.is_finite())
+                .unwrap_or(at);
             Some(Single {
                 measure: "diameter",
                 value: 2.0 * r,
                 text: format!("Ø {}", with_unit(2.0 * r)),
                 points: Vec::new(),
-                round: Some(([at.x, at.y, at.z], [a.x, a.y, a.z], r)),
+                round: Some(([rim.x, rim.y, rim.z], [a.x, a.y, a.z], r)),
             })
         }
         _ => None,
@@ -829,6 +839,10 @@ pub(crate) fn read(
         _ => None,
     };
     let local = local_name(&first.name);
+    // Lengths in the facts as everywhere else: to the document's
+    // tolerance, without trailing zeros (the review of 2026-11-17: the
+    // card said 60.00 mm where the view said 60 mm).
+    let tolerance = session.linear_tolerance().unwrap_or(1e-6);
     if let Some(item) = &described {
         if let Some(origin) = item.get("origin") {
             let id = origin.get("feature").and_then(Value::as_str).unwrap_or("");
@@ -839,16 +853,19 @@ pub(crate) fn read(
             }
         }
         if let Some(surface) = item.get("surface") {
-            rows.push(plain("Type", surface_text(surface, &unit)));
+            rows.push(plain("Type", surface_text(surface, &unit, tolerance)));
         }
         if let Some(area) = item.get("area").and_then(Value::as_f64) {
-            rows.push(plain("Area", format!("{} {unit}²", grouped(area, 0))));
+            rows.push(plain("Area", area_text(area, &unit)));
         }
         if let Some(surface) = item.get("surface") {
             if let Some(n) = surface.get("normal") {
                 rows.push(plain("Normal", direction_text(n)));
             } else if let Some(axis) = surface.get("axis") {
-                let through = surface.get("center").map(point_text).unwrap_or_default();
+                let through = surface
+                    .get("center")
+                    .map(|c| point_text(c, tolerance))
+                    .unwrap_or_default();
                 rows.push(plain(
                     "Axis",
                     format!("{}  through {through}", direction_text(axis)),
@@ -856,13 +873,13 @@ pub(crate) fn read(
             }
         }
         if let Some(curve) = item.get("curve") {
-            rows.push(plain("Type", curve_text(curve, &unit)));
+            rows.push(plain("Type", curve_text(curve, &unit, tolerance)));
             if let Some(length) = curve.get("length").and_then(Value::as_f64) {
-                rows.push(plain("Length", format!("{} {unit}", decimals(length, 2))));
+                rows.push(plain("Length", length_text(length, tolerance, &unit)));
             }
         }
         if let Some(point) = item.get("point") {
-            rows.push(plain("Point", point_text(point)));
+            rows.push(plain("Point", point_text(point, tolerance)));
         }
     }
     if subtitle.is_empty() {
@@ -995,14 +1012,29 @@ fn plain(label: &'static str, value: String) -> PropRow {
     }
 }
 
-/// `v` with `places` decimals, trailing zeros kept (a length read off a
-/// curve: `21.99`).
-fn decimals(v: f64, places: usize) -> String {
-    if v.is_finite() {
-        format!("{v:.places$}")
-    } else {
-        "?".to_string()
+/// A face's area in the unit squared, with digits for its size: none
+/// after the point from 100 up, three significant ones below, in powers of
+/// ten under a ten-thousandth (the review of 2026-11-18: a tiny face read
+/// `0 mm²`).
+pub fn area_text(area: f64, unit: &str) -> String {
+    if !area.is_finite() {
+        return format!("? {unit}²");
     }
+    if area != 0.0 && area.abs() < 1e-4 {
+        return format!("{area:.2e} {unit}²");
+    }
+    let decimals = if area == 0.0 || area.abs() >= 100.0 {
+        0
+    } else {
+        (2.0 - area.abs().plog10().floor()).clamp(0.0, 6.0) as usize
+    };
+    let text = grouped(area, decimals);
+    let text = if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        text
+    };
+    format!("{text} {unit}²")
 }
 
 /// A volume: cm³ in a millimetre document, else the unit cubed.
@@ -1088,8 +1120,16 @@ fn face_words(name: &str, scene: Option<&Scene>) -> String {
     format!("{feature} {local}")
 }
 
-fn surface_text(surface: &Value, unit: &str) -> String {
-    let r = |key: &str| surface.get(key).and_then(Value::as_f64).map(number);
+fn surface_text(surface: &Value, unit: &str, tolerance: f64) -> String {
+    // Radii are lengths: to the tolerance; a cone's half angle is not.
+    let r = |key: &str| {
+        let v = surface.get(key).and_then(Value::as_f64)?;
+        Some(if key == "halfAngle" {
+            number(v)
+        } else {
+            number_to(v, tolerance)
+        })
+    };
     // A measure that is missing leaves the surface's word alone, not
     // `R  mm`.
     let with = |word: &str, text: Option<String>| {
@@ -1122,11 +1162,11 @@ fn surface_text(surface: &Value, unit: &str) -> String {
     }
 }
 
-fn curve_text(curve: &Value, unit: &str) -> String {
+fn curve_text(curve: &Value, unit: &str, tolerance: f64) -> String {
     match curve.get("type").and_then(Value::as_str).unwrap_or("") {
         "line" => "Line".to_string(),
         "circle" => match curve.get("radius").and_then(Value::as_f64) {
-            Some(r) => format!("Circle  R {} {unit}", number(r)),
+            Some(r) => format!("Circle  R {} {unit}", number_to(r, tolerance)),
             None => "Circle".to_string(),
         },
         "ellipse" => "Ellipse".to_string(),
@@ -1155,10 +1195,15 @@ fn direction_text(d: &Value) -> String {
     format!("({}, {}, {})", number(*x), number(*y), number(*z))
 }
 
-fn point_text(p: &Value) -> String {
+fn point_text(p: &Value, tolerance: f64) -> String {
     let v: Vec<String> = p
         .as_array()
-        .map(|a| a.iter().filter_map(Value::as_f64).map(number).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_f64)
+                .map(|x| number_to(x, tolerance))
+                .collect()
+        })
         .unwrap_or_default();
     format!("({})", v.join(", "))
 }
@@ -1234,16 +1279,30 @@ impl Shell {
         let kit = Kit::panel(&self.tokens);
         let t = kit.t;
         let sk = kit.skin;
-        let big = kit.galley(
-            ui,
-            m.text.clone(),
-            egui::FontId::proportional(t.measure_font),
-            sk.text,
-        );
-        let (rect, number) = ui.allocate_exact_size(
-            vec2(ui.available_width(), t.measure_font * 1.5),
-            Sense::click(),
-        );
+        // The number fits the card at the panel's least width (the review
+        // of 2026-11-17: a range was cut at its edge): smaller where there
+        // is no room, down to half the size; past that a range is broken
+        // after its dash, two lines of half the size, within the height
+        // the card keeps for it (`props_height`), so Keep stays in reach.
+        let room = ui.available_width().max(1.0);
+        let lay = |text: &str, size: f32| {
+            kit.galley(
+                ui,
+                text.to_string(),
+                egui::FontId::proportional(size),
+                sk.text,
+            )
+        };
+        let mut big = lay(&m.text, t.measure_font);
+        if big.size().x > room {
+            let size = (t.measure_font * room / big.size().x).max(t.measure_font * 0.5);
+            big = lay(&m.text, size);
+            if big.size().x > room && m.text.contains(" – ") {
+                big = lay(&m.text.replacen(" – ", " –\n", 1), size);
+            }
+        }
+        let (rect, number) =
+            ui.allocate_exact_size(vec2(room, t.measure_font * 1.5), Sense::click());
         let at = pos2(rect.left(), rect.center().y - big.size().y * 0.5);
         let ink = if number.hovered() && m.value.is_some() {
             sk.info_ink
@@ -1334,10 +1393,11 @@ impl Shell {
         }
     }
 
-    /// The card in one line, where the Features tab has no room for it (a
-    /// short window: the review of 2026-11-17 found the relation and Keep
-    /// out of reach there): what is selected and its number, and Keep as a
-    /// check for two things.
+    /// The card short, where the Features tab has no room for it (a short
+    /// window: the review of 2026-11-17 found the relation and Keep out of
+    /// reach there): one line of what is selected and its number, the
+    /// target that flies to it, and Keep as a check for two things or
+    /// Measure and Copy for one.
     pub(super) fn props_compact_ui(&mut self, ui: &mut egui::Ui) {
         let Some(props) = self.side.props.clone() else {
             return;
@@ -1353,35 +1413,75 @@ impl Shell {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(30));
         }
-        let mut keep = false;
-        ui.horizontal(|ui| {
-            let button = if props.measurement.is_some() {
-                120.0
-            } else {
-                0.0
-            };
-            let room = (ui.available_width() - button).max(40.0);
-            let shown = clip(ui, &kit, &text, ValueStyle::Plain, room);
-            let (rect, line) =
-                ui.allocate_exact_size(vec2(room, kit.hit(t.control_height)), Sense::click());
-            let galley = kit.galley(ui, shown, kit.font(), kit.skin.text);
-            ui.painter().galley(
-                pos2(rect.left(), rect.center().y - galley.size().y * 0.5),
-                galley,
-                kit.c(kit.skin.text),
-            );
-            self.side.hits.targets.push(("compact".to_string(), rect));
-            line.on_hover_text(text.clone());
-            if props.measurement.is_some() {
-                keep = self.keep_button(ui, keepable);
-            }
-        });
+        let (mut keep, mut fly, mut measure, mut copy) = (false, false, false, false);
+        // One line, as high as it was before its buttons came (a taller
+        // foot moved the list under a selected row: views.rs): against its
+        // right edge Keep for two things, or Copy and Measure for one (the
+        // notes' review of 2026-11-18: they were not drawn at all), and the
+        // target that flies to it, laid from the right so that the line is
+        // cut to what is left and nothing passes the panel's edge (the
+        // review of 2026-11-18: Keep reached 8 points past it).
+        let width = ui.available_width();
+        ui.allocate_ui_with_layout(
+            vec2(width, kit.hit(t.control_height)),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                if props.measurement.is_some() {
+                    keep = self.keep_button(ui, keepable);
+                } else {
+                    let c = kit.button(ui, Button::secondary("Copy"));
+                    self.side
+                        .hits
+                        .targets
+                        .push(("copy name".to_string(), c.rect));
+                    copy = c.clicked();
+                    let m = kit.button(
+                        ui,
+                        Button::primary("Measure").enabled(props.measure.is_some()),
+                    );
+                    self.side.hits.targets.push(("measure".to_string(), m.rect));
+                    measure = m.clicked();
+                }
+                let target = kit.icon_button(
+                    ui,
+                    Glyph::Nav(crate::shell::icons::Icon::ZoomTo),
+                    false,
+                    "Fly to it",
+                );
+                self.side
+                    .hits
+                    .targets
+                    .push(("fly".to_string(), target.rect));
+                fly = target.clicked();
+                let room = ui.available_width().max(0.0);
+                let shown = clip(ui, &kit, &text, ValueStyle::Plain, room);
+                let (rect, line) =
+                    ui.allocate_exact_size(vec2(room, kit.hit(t.control_height)), Sense::click());
+                let galley = kit.galley(ui, shown, kit.font(), kit.skin.text);
+                ui.painter().galley(
+                    pos2(rect.left(), rect.center().y - galley.size().y * 0.5),
+                    galley,
+                    kit.c(kit.skin.text),
+                );
+                self.side.hits.targets.push(("compact".to_string(), rect));
+                line.on_hover_text(text.clone());
+            },
+        );
         if keep && let Some(m) = &props.measurement {
             self.keep(m);
         }
+        if measure && let Some((command, params)) = props.measure.clone() {
+            self.side_queue(command, params, None);
+        }
+        if copy {
+            ui.ctx().copy_text(props.name.clone());
+        }
+        if fly {
+            self.request_fly(FlyTo::Selection);
+        }
     }
 
-    /// How high the one-line card is.
+    /// How high the short card is: one line.
     pub(super) fn props_compact_height(&self) -> f32 {
         let kit = Kit::panel(&self.tokens);
         kit.hit(kit.t.control_height) + 2.0 * kit.t.nav_spacing
@@ -1664,6 +1764,14 @@ mod tests {
             ]
         );
         assert_eq!(volume_text(112_123.08, "mm"), "112.12 cm³");
+        // The review of 2026-11-18: a tiny face's area is not 0.
+        assert_eq!(area_text(1200.0, "mm"), "1200 mm²");
+        assert_eq!(area_text(314.159_265, "mm"), "314 mm²");
+        assert_eq!(area_text(12.345, "mm"), "12.3 mm²");
+        assert_eq!(area_text(0.000_4, "mm"), "0.0004 mm²");
+        assert_eq!(area_text(0.012_34, "mm"), "0.0123 mm²");
+        assert_eq!(area_text(2.5e-9, "mm"), "2.50e-9 mm²");
+        assert_eq!(area_text(0.0, "mm"), "0 mm²");
         assert_eq!(mass_text(0.3027), "302.7 g");
         assert_eq!(
             measured_line(

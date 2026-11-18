@@ -155,6 +155,111 @@ impl Session {
         String::new()
     }
 
+    /// How a save of the active assembly as `kept` (the path the save
+    /// keeps for it, written at `resolved`) rewrites its source paths
+    /// ([`Relinker`]). An error where the folder the file is written into
+    /// cannot be placed on disk.
+    pub(crate) fn relinker(
+        &self,
+        kept: &str,
+        resolved: &std::path::Path,
+    ) -> Result<Relinker, String> {
+        let open = self.document().map_err(|e| e.message().to_string())?;
+        let old_base = self.asm_base().map_err(|e| e.message().to_string())?;
+        let new_base = asm::dir_of(kept);
+        let (new_folder, write_frame) = if self.writes_to_memory() {
+            (None, None)
+        } else if crate::asm_paths::is_absolute(&new_base) {
+            (Some(new_base.clone()), None)
+        } else {
+            let frame = self.folder_beneath(kept, resolved).ok_or_else(|| {
+                format!(
+                    "the folder `{new_base}` cannot be found on disk to write the sources relative to it; give the path in full"
+                )
+            })?;
+            let folder = if new_base.is_empty() {
+                frame.clone()
+            } else {
+                format!("{frame}/{new_base}")
+            };
+            (Some(folder), Some(frame))
+        };
+        Ok(Relinker {
+            old_base,
+            new_base,
+            new_folder,
+            write_frame,
+            read_root: self.read_root_on_disk(),
+            read_from: open.asm.read_from.clone(),
+            default_folder: self.default_folder(),
+        })
+    }
+
+    /// The folder on disk this session reads a path relative to the root
+    /// beneath now (`Workspace::resolve_read`): its first read root, the
+    /// working folder with access to every file; `None` when it reads
+    /// nothing, or from memory.
+    fn read_root_on_disk(&self) -> Option<String> {
+        let root = match &self.workspace.read {
+            crate::Access::Unrestricted => std::path::PathBuf::from("."),
+            access => access.roots().first()?.to_path_buf(),
+        };
+        std::path::absolute(root)
+            .ok()?
+            .to_str()
+            .map(str::to_string)
+            .filter(|r| crate::asm_paths::is_absolute(r))
+    }
+
+    /// The folder on disk a source path relative to the root stands for
+    /// when it was not read in this session (`AsmState::read_from` has it
+    /// otherwise): for an assembly with a file, that file's folder without
+    /// the parts of its relative path; else the folder this session reads
+    /// such a path beneath now.
+    fn default_folder(&self) -> Option<String> {
+        let open = self.document().ok()?;
+        if let (Some(path), Some(file)) = (&open.path, &open.file)
+            && let Some(folder) = self.folder_beneath(path, std::path::Path::new(file))
+        {
+            return Some(folder);
+        }
+        self.read_root_on_disk()
+    }
+
+    /// The folder on disk a relative `path` was resolved beneath:
+    /// `resolved` (what `Workspace::resolve_read` or `resolve_write` made
+    /// of it, the root joined with its parts) without those parts,
+    /// absolute. `None` for an absolute `path`, for files in memory (they
+    /// have no folder) and where there is no file system.
+    pub(crate) fn folder_beneath(&self, path: &str, resolved: &std::path::Path) -> Option<String> {
+        use std::path::Component;
+        if crate::asm_paths::is_absolute(path) || self.reads_from_memory() {
+            return None;
+        }
+        let mut parts = 0_usize;
+        for component in std::path::Path::new(path).components() {
+            match component {
+                Component::Normal(_) => parts = parts.saturating_add(1),
+                Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+            }
+        }
+        let mut folder = resolved.to_path_buf();
+        for _ in 0..parts {
+            if !folder.pop() {
+                return None;
+            }
+        }
+        if folder.as_os_str().is_empty() {
+            folder.push(".");
+        }
+        std::path::absolute(&folder)
+            .ok()?
+            .to_str()
+            .map(str::to_string)
+            .filter(|f| crate::asm_paths::is_absolute(f))
+    }
+
     /// A source path as the request gave it, written as [`asm::join`]
     /// writes paths: absolute with unrestricted access, beneath the root
     /// otherwise.
@@ -180,12 +285,21 @@ impl Session {
 
     /// Reads one file for an assembly, by its full path.
     pub(crate) fn read_source_file(&self, full: &str) -> Result<Blob, String> {
+        self.read_source_at(full).map(|(blob, _)| blob)
+    }
+
+    /// [`Session::read_source_file`], with the folder on disk a relative
+    /// `full` was read beneath ([`Session::folder_beneath`]): where the
+    /// assembly's relative source paths stand (`AsmState::read_from`).
+    pub(crate) fn read_source_at(&self, full: &str) -> Result<(Blob, Option<String>), String> {
         let resolved = self
             .workspace
             .resolve_read(full)
             .map_err(|e| e.message().to_string())?;
-        self.read_input(full, &resolved, craft3d_format::MAX_FILE_BYTES)
-            .map(Blob::new)
+        let blob = self
+            .read_input(full, &resolved, craft3d_format::MAX_FILE_BYTES)
+            .map(Blob::new)?;
+        Ok((blob, self.folder_beneath(full, &resolved)))
     }
 
     /// Reads the source files of the active assembly that are not read
@@ -564,7 +678,7 @@ fn source_relative(
     base: &str,
     full: &str,
 ) -> Result<String, CommandError> {
-    let absolute = |p: &str| p.starts_with('/') || p.starts_with('\\') || p.get(1..2) == Some(":");
+    let absolute = crate::asm_paths::is_absolute;
     if !absolute(full) && !absolute(base) {
         return Ok(asm::relative_to(base, full));
     }
@@ -610,8 +724,8 @@ fn instance_add(session: &mut Session, params: &Value) -> Run {
     let path = p.required_str("source")?;
     let base = session.asm_base()?;
     let full = session.full_source_path(path)?;
-    let blob = session
-        .read_source_file(&full)
+    let (blob, folder) = session
+        .read_source_at(&full)
         .map_err(|e| CommandError::new(format!("{ID}: cannot read the source `{path}`: {e}")))?;
     // Something a document reads as, or nothing is added.
     let source_doc = craft3d_format::from_bytes(blob.bytes())
@@ -666,6 +780,9 @@ fn instance_add(session: &mut Session, params: &Value) -> Run {
     let keep = instance.pinned.is_some().then(|| blob.clone());
     {
         let open = session.document_mut()?;
+        if let Some(folder) = folder {
+            open.asm.read_from.insert(full.clone(), folder);
+        }
         open.asm.files.insert(full, Ok(blob));
         open.asm.invalidate();
     }
@@ -708,7 +825,7 @@ fn instance_edit(session: &mut Session, params: &Value) -> Run {
     // A new source, read now.
     if let Some(path) = p.str("source")? {
         let full = session.full_source_path(path)?;
-        let blob = session.read_source_file(&full).map_err(|e| {
+        let (blob, folder) = session.read_source_at(&full).map_err(|e| {
             CommandError::new(format!("{ID}: cannot read the source `{path}`: {e}"))
         })?;
         craft3d_format::from_bytes(blob.bytes()).map_err(|e| {
@@ -723,6 +840,9 @@ fn instance_edit(session: &mut Session, params: &Value) -> Run {
             hash: blob.sha256(),
         };
         let open = session.document_mut()?;
+        if let Some(folder) = folder {
+            open.asm.read_from.insert(full.clone(), folder);
+        }
         open.asm.files.insert(full, Ok(blob));
         open.asm.invalidate();
     }
@@ -1673,29 +1793,322 @@ fn file_exists(session: &Session, resolved: &std::path::Path) -> bool {
     }
 }
 
-/// Rewrites the active assembly's source paths for a save into the
-/// folder `new_base` (as [`asm::join`] writes it), so they stay relative
-/// to its file. Not an undo step of its own: part of the save.
-pub(crate) fn rebased(doc: &Document, old_base: &str, new_base: &str) -> Option<Document> {
-    let assembly = doc.assembly.as_ref()?;
-    if old_base == new_base {
-        return None;
+/// How a save rewrites an assembly's source paths
+/// ([`Session::relinker`]): each source is followed to the file on disk
+/// it names (an absolute path as it is; a path relative to the root
+/// beneath the folder it was read beneath, `AsmState::read_from`, else
+/// [`Session::default_folder`]), and written as the path from the folder
+/// the file is written into to that file (2026-11-18: an assembly whose
+/// sources were relative to the read root, saved under an absolute path,
+/// had them written as if the root were the file system's). In memory,
+/// where every path is a name in one store, the paths are rewritten as
+/// text.
+pub(crate) struct Relinker {
+    /// The folder the source paths are relative to now, as the session
+    /// joins them ([`Session::asm_base`]).
+    old_base: String,
+    /// The folder of the path the save keeps.
+    new_base: String,
+    /// The folder on disk the file is written into, absolute; `None` in
+    /// memory.
+    new_folder: Option<String>,
+    /// For a path kept relative to the write root: that root on disk.
+    write_frame: Option<String>,
+    /// The folder on disk this session reads paths relative to the root
+    /// beneath ([`Session::read_root_on_disk`]).
+    read_root: Option<String>,
+    /// The folder each relative source path was read beneath.
+    read_from: std::collections::BTreeMap<String, String>,
+    /// For a relative source path not read in this session.
+    default_folder: Option<String>,
+}
+
+impl Relinker {
+    /// The file on disk the session's path `key` (as [`asm::join`] writes
+    /// it from [`Session::asm_base`]) names, absolute.
+    fn file_of(&self, key: &str) -> Result<String, String> {
+        if crate::asm_paths::is_absolute(key) {
+            return Ok(key.to_string());
+        }
+        let mut folder = self
+            .read_from
+            .get(key)
+            .or(self.default_folder.as_ref())
+            .ok_or_else(|| {
+                "it was not read in this session and the assembly has no file, so the folder it is relative to is not known here (there is no read root); read the sources first (assembly.reload where they can be read)".to_string()
+            })?;
+        // Read beneath a root spelled another way than the write root
+        // (`alias` and the folder it is a link to): written as the write
+        // root spells it, where the two are one place.
+        if let Some(frame) = &self.write_frame
+            && folder != frame
+            && same_place(folder, frame)
+        {
+            folder = frame;
+        }
+        asm::join(folder, key)
     }
+
+    /// The path a source written `old` (relative to [`Relinker::old_base`])
+    /// is written as in the saved file. An error, the reason, where no
+    /// path leads from the new folder to its file, or where the open
+    /// assembly would then read another file than the one it names.
+    pub(crate) fn link(&self, old: &str) -> Result<String, String> {
+        let key = match asm::join(&self.old_base, old) {
+            Ok(key) => key,
+            // A path that led to no file stays as it is in its own folder.
+            Err(_) if self.same_folder() => return Ok(old.to_string()),
+            Err(_) => {
+                return Err(format!(
+                    "from `{}` it climbs above the start of the file system, so it leads to no file",
+                    self.old_base
+                ));
+            }
+        };
+        let lost = |new: &str, now: &str, then: &str| {
+            format!(
+                "the source would no longer lead to its file: `{old}` from `{}` is `{then}`, `{new}` from `{}` would be `{now}`",
+                self.old_base, self.new_base
+            )
+        };
+        if self.new_folder.is_none() {
+            // In memory: names in one store, as text.
+            let new = crate::asm_paths::relink(&self.old_base, old, &self.new_base)?;
+            let now = asm::join(&self.new_base, &new)?;
+            return if now == key {
+                Ok(new)
+            } else {
+                Err(lost(&new, &now, &key))
+            };
+        }
+        let (file, new, now) = self.written(&key)?;
+        // The last line of defence: from the folder the file is written
+        // into, the new path names the file the old one named, both
+        // written by `asm::join` from the texts as given.
+        if now != file {
+            return Err(lost(&new, &now, &file));
+        }
+        // On disk too: from a folder reached through a link, `..` climbs
+        // from where the link leads, not from the text (compared only
+        // where the file system spells both as plain paths).
+        if let Some(folder) = &self.new_folder
+            && let Some(real) = plain_real(folder)
+            && asm::join(folder, "").ok().as_deref() != Some(real.as_str())
+            && let Ok(there) = asm::join(&real, &new)
+            && !same_file(&there, &file)
+        {
+            return Err(format!(
+                "the folder `{folder}` is reached through a symbolic link (it is `{real}` on disk), from where `{new}` leads to `{there}`, not to `{file}`; save it by the folder's own path, `{real}`"
+            ));
+        }
+        // And this session never reads another file by it: a path kept
+        // relative to the root is read beneath the read root, which may
+        // not be the folder the file was written beneath (a read root that
+        // is not the write root). One that climbs out of the root (its
+        // first part `..`) is not read at all: the root refuses it, the
+        // bytes read stay, and the save says so (`not_followed`).
+        let new_key = asm::join(&self.new_base, &new)?;
+        if !crate::asm_paths::is_absolute(&new_key)
+            && !climbs(&new_key)
+            && let Some(root) = &self.read_root
+            && !asm::join(root, &new_key).is_ok_and(|read| same_file(&read, &file))
+        {
+            return Err(format!(
+                "it is `{file}`, and this session, which reads beneath the read root `{root}`, would read another file by `{new_key}` (the file is written beneath another folder than the read root); give the path in full"
+            ));
+        }
+        Ok(new)
+    }
+
+    /// The file the session's path `key` names, the path written for it
+    /// from the folder written into, and that folder joined with that
+    /// path: all from the texts as given. Not in memory.
+    fn written(&self, key: &str) -> Result<(String, String, String), String> {
+        let folder = self
+            .new_folder
+            .as_ref()
+            .ok_or_else(|| "files in memory have no folder".to_string())?;
+        let file = self.file_of(key)?;
+        let name = file.rsplit(['/', '\\']).next().unwrap_or(&file);
+        let new = crate::asm_paths::relink(&asm::dir_of(&file), name, folder)?;
+        let now = asm::join(folder, &new)?;
+        Ok((file, new, now))
+    }
+
+    /// The sources of `doc` (saved) the open assembly can no longer follow:
+    /// their path, joined with its folder, climbs out of the read root (a
+    /// read root that is not the write root), so the root refuses to read
+    /// them again; it shows the version read. Per instance: its name, its
+    /// source path, the path the session would read.
+    pub(crate) fn not_followed(&self, doc: &Document) -> Vec<(String, String, String)> {
+        let base = &self.new_base;
+        doc.assembly
+            .iter()
+            .flat_map(|a| a.instances.iter())
+            .filter_map(|instance| {
+                let Source::File { path, .. } = &instance.source else {
+                    return None;
+                };
+                let key = asm::join(base, path).ok()?;
+                (!crate::asm_paths::is_absolute(&key) && climbs(&key))
+                    .then(|| (instance.name.clone(), path.clone(), key))
+            })
+            .collect()
+    }
+
+    /// Whether the file is written into the folder the assembly's own
+    /// file is in.
+    fn same_folder(&self) -> bool {
+        match (&self.new_folder, &self.default_folder) {
+            (None, _) => self.old_base == self.new_base,
+            (Some(new), _) if crate::asm_paths::is_absolute(&self.old_base) => {
+                asm::join(new, "").ok() == asm::join(&self.old_base, "").ok()
+            }
+            (Some(new), Some(frame)) => {
+                asm::join(new, "").ok() == asm::join(frame, &self.old_base).ok()
+            }
+            (Some(_), None) => false,
+        }
+    }
+
+    /// The path the open assembly reads the file it read as `key` by after
+    /// the save: the same file, by the path the rewritten sources name it
+    /// by. `None` where it cannot be told (it is read again).
+    fn new_key(&self, key: &str) -> Option<String> {
+        let (file, new, now) = self.written(key).ok()?;
+        if now != file {
+            return None;
+        }
+        asm::join(&self.new_base, &new).ok()
+    }
+
+    /// The source files the open assembly read, carried over to the paths
+    /// it reads them by after the save: the rewritten paths lead to the
+    /// same files, so their bytes stay, and a save by a session that
+    /// cannot read them again (the person's Save As at the window) leaves
+    /// every instance placed. Nothing changes in memory, or where the
+    /// paths keep their text.
+    pub(crate) fn carry(&self, state: &mut asm::AsmState) {
+        if self.new_folder.is_none() {
+            return;
+        }
+        let mapped: std::collections::BTreeMap<String, Option<String>> = state
+            .files
+            .keys()
+            .chain(state.stamps.keys())
+            .chain(state.unfollowed.keys())
+            .chain(state.read_from.keys())
+            .map(|key| (key.clone(), self.new_key(key)))
+            .collect();
+        if mapped
+            .iter()
+            .all(|(key, new)| new.as_deref() == Some(key.as_str()))
+        {
+            return;
+        }
+        fn carried<V: Clone>(
+            map: &std::collections::BTreeMap<String, V>,
+            mapped: &std::collections::BTreeMap<String, Option<String>>,
+        ) -> std::collections::BTreeMap<String, V> {
+            map.iter()
+                .filter_map(|(key, value)| {
+                    let new = mapped.get(key)?.clone()?;
+                    Some((new, value.clone()))
+                })
+                .collect()
+        }
+        state.files = carried(&state.files, &mapped);
+        state.stamps = carried(&state.stamps, &mapped);
+        state.unfollowed = carried(&state.unfollowed, &mapped);
+        // A path kept relative is read beneath the write root from now on
+        // (`link` made sure that is the read root).
+        state.read_from = match &self.write_frame {
+            Some(frame) => mapped
+                .values()
+                .flatten()
+                .filter(|key| !crate::asm_paths::is_absolute(key))
+                .map(|key| (key.clone(), frame.clone()))
+                .collect(),
+            None => std::collections::BTreeMap::new(),
+        };
+        state.invalidate();
+    }
+}
+
+/// The folder `folder` as the file system spells it (`workspace::canonical`:
+/// its links followed), for comparing two folders only
+/// ([`crate::asm_paths::plain_spelling`]): `None` where the file system is
+/// not at hand (the browser), the folder is not there, or it is spelled as
+/// a share or a verbatim path. Never stored, shown or written.
+fn plain_real(folder: &str) -> Option<String> {
+    let real = crate::workspace::canonical(std::path::Path::new(folder)).ok()?;
+    crate::asm_paths::plain_spelling(real.to_str()?)
+}
+
+/// Whether the folders `a` and `b` are one place: the same text (written
+/// by [`asm::join`]), or the same as the file system spells both as plain
+/// paths ([`plain_real`]); anything else is two places.
+fn same_place(a: &str, b: &str) -> bool {
+    let text = |p: &str| asm::join(p, "").ok();
+    if text(a).is_some() && text(a) == text(b) {
+        return true;
+    }
+    matches!((plain_real(a), plain_real(b)), (Some(x), Some(y)) if x == y)
+}
+
+/// Whether the paths `a` and `b` name one file: the same name in folders
+/// that are one place ([`same_place`]; the file itself is not followed,
+/// so what may be read is not widened).
+fn same_file(a: &str, b: &str) -> bool {
+    let name = |p: &str| p.rsplit(['/', '\\']).next().map(str::to_string);
+    name(a) == name(b) && same_place(&asm::dir_of(a), &asm::dir_of(b))
+}
+
+/// Whether `path`'s first part is `..`, so that it climbs out of the
+/// folder it is relative to (a folder named `..x` does not).
+fn climbs(path: &str) -> bool {
+    path.split(['/', '\\']).next() == Some("..")
+}
+
+/// Whether an instance of `doc` refers to its source by a file's path.
+pub(crate) fn has_file_sources(doc: &Document) -> bool {
+    doc.assembly.as_ref().is_some_and(|a| {
+        a.instances
+            .iter()
+            .any(|i| matches!(i.source, Source::File { .. }))
+    })
+}
+
+/// Rewrites the active assembly's source paths for a save ([`Relinker`]),
+/// so each still leads to the file it led to. Not an undo step of its
+/// own: part of the save. An error naming the instance where a source
+/// cannot be written so (2026-11-18: before, such a source kept its path,
+/// which then led elsewhere from the new folder): the save is refused
+/// rather than write a path that leads to another file.
+pub(crate) fn rebased(doc: &Document, relinker: &Relinker) -> Result<Option<Document>, String> {
+    let Some(assembly) = doc.assembly.as_ref() else {
+        return Ok(None);
+    };
     let mut doc = doc.clone();
     let mut changed = false;
     if let Some(a) = doc.assembly.as_mut() {
         for (instance, before) in a.instances.iter_mut().zip(&assembly.instances) {
             if let (Source::File { path, .. }, Source::File { path: old, .. }) =
                 (&mut instance.source, &before.source)
-                && let Ok(full) = asm::join(old_base, old)
             {
-                let new = asm::relative_to(new_base, &full);
-                if new != *path && craft3d_doc::assembly::check_source_path(&new).is_ok() {
+                let new = relinker.link(old).map_err(|why| {
+                    format!(
+                        "the source `{old}` of instance `{}` cannot be written relative to the folder `{}`: {why}",
+                        before.name,
+                        relinker.new_folder.as_ref().unwrap_or(&relinker.new_base)
+                    )
+                })?;
+                if new != *path {
                     *path = new;
                     changed = true;
                 }
             }
         }
     }
-    changed.then_some(doc)
+    Ok(changed.then_some(doc))
 }

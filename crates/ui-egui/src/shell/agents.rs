@@ -513,11 +513,21 @@ impl Shell {
 
     /// What the pill shows now.
     pub fn agents_pill_view(&self) -> PillView {
-        pill_view(
+        let mut view = pill_view(
             &self.agents.status,
             self.agents_now(),
             cfg!(target_arch = "wasm32"),
-        )
+        );
+        // An agent's open questions, pinned to the model (`notes.rs`).
+        let questions = self.notes_questions();
+        if questions > 0 && view.kind != PillKind::Web {
+            view.label = format!(
+                "{} · {questions} question{}",
+                view.label,
+                if questions == 1 { "" } else { "s" }
+            );
+        }
+        view
     }
 
     /// Where the pill was drawn in the last frame.
@@ -880,7 +890,15 @@ impl Shell {
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         self.agents.pill = Some(response.rect);
         if response.clicked() {
-            self.state.dialogs.agents = !self.state.dialogs.agents;
+            // An agent's open questions first: to the Notes tab; there,
+            // the pill opens the panel as always.
+            if self.notes_questions() > 0
+                && self.state.panels.side_tab != crate::state::SideTab::Notes
+            {
+                self.show_notes_tab();
+            } else {
+                self.state.dialogs.agents = !self.state.dialogs.agents;
+            }
         }
         // Drawn again once the activity fades back to "connected" (the
         // kit's working pill asks for its own frames while it turns).

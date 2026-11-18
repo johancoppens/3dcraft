@@ -141,6 +141,32 @@ fn a_note_over_mcp_is_the_clients_by_the_name_it_gave() {
     assert!(refused.contains("unknown parameter `author`"), "{refused}");
 }
 
+/// An MCP client is an agent's by its nature: one that gives no name in
+/// `initialize` writes its notes as an agent without a name, not unknown
+/// (the developer, 2026-11-17).
+#[test]
+fn a_note_over_mcp_from_a_client_without_a_name_is_an_agents() {
+    let mut s = session();
+    tool_json(&mut s, "command_run", json!({"id": "file.new"}));
+    tool_json(
+        &mut s,
+        "command_run",
+        json!({"id": "feature.block", "params": {"name": "Plate", "size": [40, 20, 5]}}),
+    );
+    result(
+        &mut s,
+        "initialize",
+        json!({"protocolVersion": "2025-06-18", "capabilities": {}}),
+    );
+    let note = tool_json(
+        &mut s,
+        "command_run",
+        json!({"id": "note.add", "params": {"text": "a question", "on": "Plate:face(1)"}}),
+    );
+    assert_eq!(note["author"], "agent", "{note}");
+    assert!(note["agent"].is_null(), "{note}");
+}
+
 /// Calls a tool that must fail in execution; returns the error text.
 fn tool_error(session: &mut Session, name: &str, arguments: Value) -> String {
     let result = tool(session, name, arguments.clone());

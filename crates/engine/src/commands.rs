@@ -106,7 +106,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies, each body held to the document's cap on any entity's own tolerance, broken assertions, and a sketch line the solver shrank to a point under two directions or more (horizontal and vertical, or a direction and a perpendicular or an angle: a contradiction it reports as holding; with line and constraints). ok is true when there is none. warnings (never part of ok), each with kind: assertion (one not proven either way), collapsedLine (a line with no length under one direction), pointOffArc (a point held on an arc by pointOn that lies on its circle beyond its ends, so the arc does not pass through it: an arc drawn through a point turns the long way round once the point crosses the line through its ends; with feature, point, arc and constraint), lostFace (a face colour whose face is gone: it colours nothing, as lostFaces in document.inspect says, with feature and face), gridSurface (what a grid surface's result warns of as it stands now: a sheet with more spans than a boolean takes, heights far steeper than the step, a grid far from the origin; with feature and name), underConstrained (one entry for every sketch with degrees of freedom left, listed under sketches with feature, name and dof), plainAngle (a parameter read as an angle, in a document whose angle unit is degrees, whose value is a plain number with a pi in it that has no unit and is not inside sin, cos or tan, itself or in a variable it uses: `2 * pi / n` is a few degrees there; with feature, name, parameter and expr; the value is kept). loose lists the bodies with entities that have a tolerance of their own (edges, vertices, the largest), when there are. With feature only that feature is checked (whether it failed, its own body, and deep its boolean), its status is given under status (ok, failed, suppressed, rolledBack), and a feature that is suppressed or after the rollback marker is a problem (nothing is built to check): what an edit at the end of a long history did, without checking the rest again. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh, and that the shells of a body of several are the outsides of lumps and their cavities, each cavity in the material of one lump, from the exact geometry: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal; and for two shells of a body that touch at a vertex or the middle of an edge (zero thickness). deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked), and meshes every body with loose entities at a thousandth of its size, every point of a face's mesh on its surface or, on its boundary, within the tolerance of the edge or vertex it lies on (counted under looseMeshesChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies, "bound": boolean = false, "inertia": boolean = true}"#,
         "Returns volume, area and centroid, per body and in total, in document units. With bound also volumeBound and areaBound, per body and summed: how far the volume and the area can be off by the integrator's own account (every sum refined until two in a row agree; an estimate, not a guarantee). A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one. inertia: false leaves the inertia out and does not integrate it (on a body with large spline faces that takes seconds): the mass is then the measured volume times the density.", doc: true, document_measure),
-    spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's, "background": "light|dark" = "light", "look": {mode: "plain|studio" = "studio", environment: "studio|outdoor|workshop" = "studio", exposure: stops = 0, rotation: degrees = 0, ground: boolean = true, ao: boolean = true, shadows: boolean = true, tonemap: "agx|aces|linear" = "agx", light: [azimuth, elevation] = the environment's, background: "environment|plain" = "environment", reflections: boolean = true, contactShadows: boolean = true, specularShadow: boolean = true, groundReflection: 0 to 1 = 0, bloom: 0 to 1 = 0.04, dof: {fstop: positive f-number, clamped to 0.5 to 64 = 2.8, focus: distance or [x, y, z] or "selection" (the centre of the box of the session's selection, select.get; the model's centre when nothing is selected) or "centre" = "centre"} = null, accumulate: frames 1 to 256 = 1} = the plain look, "analysis": {mode: "zebra|highlight|curvature|draft|none" = "none", stripes: 1 to 512 = 16, direction: degrees = 0, width: 0 to 1 = 0.5, offset: periods = 0, pull: [x, y, z] = [0, 0, 1], minDraft: degrees = 1, curvature: "gaussian|mean|max" = "gaussian", range: [low, high] = from the values, combs: {edges: boolean or [edge name, ...], iso: [{face, feature, u or v from 0 to 1}], scale: number = automatic, density: 2 to 400 = 40} = null} = none, "renderer": "auto|cpu|gpu" = "auto", "camera": {eye, target, up, projection, fovY, height} = framed by view, projection, zoom and box, "sketches": boolean = false}"#,
+    spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's, "background": "light|dark" = "light", "look": {mode: "plain|studio" = "studio", environment: "studio|outdoor|workshop" = "studio", exposure: stops = 0, rotation: degrees = 0, ground: boolean = true, ao: boolean = true, shadows: boolean = true, tonemap: "agx|aces|linear" = "agx", light: [azimuth, elevation] = the environment's, background: "environment|plain" = "environment", reflections: boolean = true, contactShadows: boolean = true, specularShadow: boolean = true, groundReflection: 0 to 1 = 0, bloom: 0 to 1 = 0.04, dof: {fstop: positive f-number, clamped to 0.5 to 64 = 2.8, focus: distance or [x, y, z] or "selection" (the centre of the box of the session's selection, select.get; the model's centre when nothing is selected) or "centre" = "centre"} = null, accumulate: frames 1 to 256 = 1} = the plain look, "analysis": {mode: "zebra|highlight|curvature|draft|none" = "none", stripes: 1 to 512 = 16, direction: degrees = 0, width: 0 to 1 = 0.5, offset: periods = 0, pull: [x, y, z] = [0, 0, 1], minDraft: degrees = 1, curvature: "gaussian|mean|max" = "gaussian", range: [low, high] = from the values, combs: {edges: boolean or [edge name, ...], iso: [{face, feature, u or v from 0 to 1}], scale: number = automatic, density: 2 to 400 = 40} = null} = none, "renderer": "auto|cpu|gpu" = "auto", "camera": {eye, target, up, projection, fovY, height} = framed by view, projection, zoom and box, "sketches": boolean = false, "notes": boolean = false}"#,
         "With camera ({eye, target, up} and fovY in degrees, or projection orthographic with height, as view.pick takes it) the picture is the one that camera sees, instead of one framed by view, projection, zoom and box (give one or the other); the result then says view: camera and the camera's projection. Renders the bodies, on the window's light viewport background (235, 233, 229; background: dark for the renderer's dark grey). Writes a PNG under the write root when path is given, otherwise returns it as base64. Without tolerance the bodies are meshed for the picture: between a quarter and half a pixel of the picture where it shows the model nearest, never finer than the floor (2e-4 of the diagonal of the box around the bodies), at most 12 degrees per chord, within a total budget of a million triangles (coarser, and coarsened true, when the picture would have more), so a close-up box, a zoom or a larger picture is finer; the same params give the same picture, and the same view, size, zoom and box (or camera, in view.pick) give the same tolerance. With tolerance, at that chordal tolerance alone. A body too fine for the tessellator at it is meshed coarser rather than refused. The result says the tolerance (document units), maxAngle (degrees, or null) and coarsened (true when the tolerance was coarsened for the triangle budget or for a body). orthographic shows lengths across the view to scale. box frames the region between two opposite corners (document units) instead of the whole model, seen from outside the model. zoom magnifies about the centre of the picture (2 shows half as much, twice as large; from 0.01 to 1000). section cuts the picture open with a plane, to look inside a shell, a pocket or a cavity; the document does not change. It is an object: the plane is plane (xy, yz or zx, a datum plane by id or name, or a flat face by its persistent name, with feature to say which body when several have that face) or point and normal ([x, y, z] each), moved by offset (a number, default 0) along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body; flip: true keeps the other half). Where the plane passes through the inside of a body the cut is closed with a flat cap in a colour of its own (cap: false leaves it open). The result then has section: {point, normal, range}, the plane as it was used and the offsets between which it passes through the model. look lights the bodies: the studio look (an environment, soft shadows, ambient occlusion, a ground that catches shadows, a tone curve), and its second layer: reflections of the model in its glossy faces and in the ground (the environment where a reflected ray finds nothing on the picture), contact shadows, the key light's shadow on the specular light, bloom, depth of field of a thin lens with fstop focused at focus (a distance along the view or a point; the model's centre by default; a lens of the document's length unit), and accumulate frames averaged into a still, each with its samples moved within the pixel and the lens turned (refused on the CPU when the frames' samples together, width × height × 4 × frames, pass 2^26). A see-through or cut-open picture is lit the same way: the surface behind a see-through front is lit as the front is and blended under it in light, and the cap of a section is lit as a face of its colour. renderer says what draws: cpu the CPU renderer, the reference every other picture is checked against; gpu the session's wgpu renderer on a device without a window (craft3d-cli render, run and serve have one; a session without one refuses), the same picture within the renderers' documented parity; auto (the default) the GPU when the session has one and it can draw, else the CPU. mode ids is always drawn on the CPU (its pixels are read by machine). The result says renderer (gpu or cpu), adapter (the GPU's, when it drew) and rendererFallback (why auto drew on the CPU after all). sketches: true draws what the window's Sketches toggle shows over the picture, one pixel wide and left out where a body is in front (not in mode ids): the lines and points of every sketch that is not hidden (feature.visible), a datum helix, and the grid a grid surface was made through (its rows and columns as construction lines, the sheet's own curves through its points, and the points; drawn also when a later feature took the sheet, every k-th row or column when a side has more than 65); the result then says sketches (how many were drawn) and grids ([{feature, name, rows, columns, every: [rows, columns], thinned}]).", doc: true, names: ["section"], view_render),
 ];
 
@@ -1192,11 +1192,22 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     // An assembly's source paths stay relative to its file: saved into
     // another folder, they are rewritten for it. The rewritten document is
     // what is written; the open one takes it (with every undo state) only
-    // once the file is written, together with its new path.
+    // once the file is written, together with its new path. Each source
+    // is followed to its file and written from the new folder
+    // (`asm_cmds::Relinker`).
     let rebase = if is_assembly {
-        let old_base = session.asm_base()?;
-        let new_base = crate::asm::dir_of(&crate::workspace::kept_path(&access, &path, &resolved));
-        Some((old_base, new_base))
+        let kept = crate::workspace::kept_path(&access, &path, &resolved);
+        match session.relinker(&kept, &resolved) {
+            Ok(relinker) => Some(relinker),
+            // Only a source in a file needs its folder: an assembly whose
+            // sources are all packed (an example) is saved anywhere.
+            Err(why)
+                if crate::asm_cmds::has_file_sources(session.document()?.history.current()) =>
+            {
+                return fail(format!("file.save: cannot save `{path}`: {why}"));
+            }
+            Err(_) => None,
+        }
     } else {
         None
     };
@@ -1230,10 +1241,16 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     };
     let open = session.document_mut()?;
     let mut document = std::sync::Arc::clone(open.history.current());
-    if let Some((old_base, new_base)) = &rebase
-        && let Some(rebased) = crate::asm_cmds::rebased(&document, old_base, new_base)
-    {
-        document = std::sync::Arc::new(rebased);
+    if let Some(relinker) = &rebase {
+        match crate::asm_cmds::rebased(&document, relinker) {
+            Ok(Some(rebased)) => document = std::sync::Arc::new(rebased),
+            Ok(None) => {}
+            Err(why) => {
+                return fail(format!(
+                    "file.save: cannot save `{path}`: {why}; nothing was written. Save it into a folder from which its sources can be reached, point the instance at its file again (instance.edit with a `source`), or pack the sources into the assembly (assembly.pack)"
+                ));
+            }
+        }
     }
     if in_memory {
         let bytes =
@@ -1246,12 +1263,20 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         save_to_disk(&resolved, &document, png.as_deref().map(Vec::as_slice)).map_err(cannot)?;
     }
     let open = session.document_mut()?;
-    if let Some((old_base, new_base)) = &rebase {
+    let kept = crate::workspace::kept_path(&access, &path, &resolved);
+    let mut not_followed = Vec::new();
+    if let Some(relinker) = &rebase {
+        // The state written was rewritten whole above. A state undo or
+        // redo reaches whose sources cannot be (an instance deleted since,
+        // whose source is on another drive) keeps its paths.
         open.history
-            .rewrite_all(|doc| crate::asm_cmds::rebased(doc, old_base, new_base));
+            .rewrite_all(|doc| crate::asm_cmds::rebased(doc, relinker).ok().flatten());
+        // The files read stay the files read, under the paths the
+        // rewritten sources name them by.
+        relinker.carry(&mut open.asm);
+        not_followed = relinker.not_followed(&document);
     }
     open.mark_saved();
-    let kept = crate::workspace::kept_path(&access, &path, &resolved);
     open.path = Some(kept.clone());
     open.disk = file_stamp(in_memory, &resolved);
     open.file = file_on_disk(in_memory, &resolved);
@@ -1262,23 +1287,46 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     // document without one).
     open.title = None;
     let mut result = json!({ "path": kept });
-    // The open assemblies that have this file as a source follow it
-    // (`asm_follow.rs`): what an instance shows is what was saved.
-    let followed = session.follow_sources(None, Some(&resolved));
-    if let (false, Some(map)) = (followed.is_empty(), result.as_object_mut()) {
-        let warnings: Vec<Value> = followed
+    // A source the saved assembly can no longer follow (its path climbs
+    // out of the read root: a read root that is not the write root) is
+    // said, as a field and as a warning the status bar counts.
+    let mut warnings: Vec<Value> = not_followed
+        .iter()
+        .map(|(instance, source, key)| {
+            Value::from(format!(
+                "instance `{instance}`: this session can no longer follow its source `{source}` (read as `{key}`, which leaves the read root); it shows the version read; open the assembly by its full path to follow it"
+            ))
+        })
+        .collect();
+    if let (false, Some(map)) = (not_followed.is_empty(), result.as_object_mut()) {
+        let list: Vec<Value> = not_followed
             .iter()
-            .flat_map(|(_, read)| read.failed.iter())
-            .map(|(path, why)| {
-                Value::from(format!(
-                    "the source `{path}` of an open assembly could not be read again: {why}; it shows the last version read"
-                ))
-            })
+            .map(|(instance, source, key)| json!({ "instance": instance, "source": source, "path": key }))
             .collect();
+        map.insert("notFollowed".into(), list.into());
+    }
+    // The open assemblies that have this file as a source follow it
+    // (`asm_follow.rs`): what an instance shows is what was saved. Not
+    // the one saved, whose sources the save did not change: read again
+    // here, they would be read with the save's access, which may not
+    // reach them (the person's Save As at the window has no read root).
+    let active = session.active;
+    let followed = session.follow_sources(None, Some(active), Some(&resolved));
+    if let (false, Some(map)) = (followed.is_empty(), result.as_object_mut()) {
+        warnings.extend(
+            followed
+                .iter()
+                .flat_map(|(_, read)| read.failed.iter())
+                .map(|(path, why)| {
+                    Value::from(format!(
+                        "the source `{path}` of an open assembly could not be read again: {why}; it shows the last version read"
+                    ))
+                }),
+        );
         map.insert("followed".into(), session.followed_json(&followed).into());
-        if !warnings.is_empty() {
-            map.insert("warnings".into(), warnings.into());
-        }
+    }
+    if let (false, Some(map)) = (warnings.is_empty(), result.as_object_mut()) {
+        map.insert("warnings".into(), warnings.into());
     }
     if let Some(map) = result.as_object_mut()
         && wants_thumbnail
@@ -5002,6 +5050,7 @@ const VIEW_RENDER_PARAMS: &[&str] = &[
     "renderer",
     "camera",
     "sketches",
+    "notes",
 ];
 
 /// The colour of curvature combs in `view.render` (the window's theme has
@@ -5153,6 +5202,7 @@ fn render_picture(
     let look = crate::look::look_param("view.render", p.get("look"))?;
     let analysis = crate::analysis::analysis_param("view.render", p.get("analysis"))?;
     let sketches = p.bool("sketches")?.unwrap_or(false);
+    let notes = p.bool("notes")?.unwrap_or(false);
     let aspect = width as f64 / height as f64;
     let pixel = |model: &craft3d_math::Bbox3| {
         let camera = match given {
@@ -5315,6 +5365,14 @@ fn render_picture(
     } else {
         None
     };
+    // The notes pinned to the model, as small rings where the window
+    // draws their markers (`note_cmds::markers`), hidden behind the bodies
+    // as curvature combs are.
+    if notes && !ids {
+        let markers = crate::note_cmds::markers(session)?;
+        crate::note_cmds::draw_markers(&mut frame, &camera, &markers, model.diagonal())
+            .map_err(|e| CommandError::new(format!("view.render: {e}")))?;
+    }
     let png = if ids {
         craft3d_render::encode_png(frame.width, frame.height, &frame.false_color())
     } else {

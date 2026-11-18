@@ -38,6 +38,7 @@ mod layout;
 pub mod look_panel;
 mod mate_view;
 mod menus;
+pub mod notes;
 pub mod number_field;
 mod params;
 mod player;
@@ -992,6 +993,10 @@ pub struct Shell {
     typing: Option<number_field::Typing>,
     /// The active document's length unit, for the Offset field.
     length_unit: &'static str,
+    /// The active document's linear tolerance: the Offset field and the
+    /// handle's number print a length by the one rule, to its places
+    /// without trailing zeros (the review of 2026-11-18).
+    length_tolerance: f64,
     /// Where the section's controls were drawn: `toggle` and, while the
     /// section is on, `x`, `y`, `z`, `offset`, `front` and `back`.
     section_hits: Vec<(&'static str, egui::Rect)>,
@@ -1081,6 +1086,9 @@ pub struct Shell {
     section_lost: Option<String>,
     /// The section's handle in the view (`section_handle.rs`).
     section_handle: section_handle::HandleView,
+    /// The notes pinned to the model: their markers, the field a note is
+    /// written in, what `note.list` said (`notes.rs`).
+    pub(crate) notes: notes::NoteMemory,
     /// Where the dimension of the two things selected was drawn
     /// (`dimension.rs`).
     dimension: Option<dimension::DimensionPlace>,
@@ -1611,6 +1619,7 @@ impl Shell {
             fields: number_field::FieldMemory::default(),
             typing: None,
             length_unit: "",
+            length_tolerance: 1e-6,
             section_hits: Vec::new(),
             show_hits: Vec::new(),
             look_hits: Vec::new(),
@@ -1649,6 +1658,7 @@ impl Shell {
             section_cache: None,
             section_lost: None,
             section_handle: section_handle::HandleView::default(),
+            notes: notes::NoteMemory::default(),
             dimension: None,
             framed: Bbox3::EMPTY,
             following: views::Following::Opening,
@@ -3285,6 +3295,7 @@ impl Shell {
         let (scene, status) = match session.as_deref_mut() {
             Some(session) => {
                 self.length_unit = session.length_unit().unwrap_or("");
+                self.length_tolerance = session.linear_tolerance().unwrap_or(1e-6);
                 (self.sync(session), session.document_status())
             }
             None => (self.shown_scene.clone(), self.shown_status.clone()),
@@ -3473,12 +3484,20 @@ impl Shell {
         // frame-exact recording the frame says those of its own picture
         // (the quick first picture and the sharp one differ in their
         // triangles): the pass is laid out again with them.
-        if self.frame_exact
-            && let Some(said) = self.status_render
+        // Otherwise one more frame says them: without it a window that
+        // painted one frame after a pause (hidden, an agent's commands,
+        // a picture of it) kept the numbers of the picture before, the
+        // empty document's "0 triangles" beside the model (2026-11-18).
+        // A picture of the window is laid out again, as a recording.
+        if let Some(said) = self.status_render
             && self.stats.as_ref().map(RenderStats::key) != said
         {
-            ui.ctx()
-                .request_discard("the status bar says the numbers of this frame's picture");
+            if self.frame_exact || self.capturing {
+                ui.ctx()
+                    .request_discard("the status bar says the numbers of this frame's picture");
+            } else {
+                ui.ctx().request_repaint();
+            }
         }
         // The side panel's split, over the viewport's edge: interacted
         // after it, so a drag there resizes the panel and does not orbit.
@@ -5240,13 +5259,16 @@ impl Shell {
                 self.fit_key(scene, ui.input(|i| i.time));
             // A picture that cannot be made has nothing to point at; the
             // viewport says why already.
+            } else if self.click_note_marker(at) {
+                // A note's marker chose its note.
             } else if let Ok(found) = self.pick(scene, x, y, None, None, true) {
                 self.click_select(scene, x, y, &found, (keys.0, keys.1, double));
             }
             ui.ctx().request_repaint();
         }
-        // A right click lists every face under it.
-        if response.secondary_clicked()
+        // A right click lists every face under it; so does a press and
+        // hold of a finger (with *Note here…*, `notes.rs`).
+        if (response.secondary_clicked() || response.long_touched())
             && let Some(at) = response.interact_pointer_pos()
         {
             let (x, y) = pixel(at);
@@ -5391,6 +5413,11 @@ impl Shell {
             self.paint_dimension(ui, rect);
         } else {
             self.dimension = None;
+        }
+        // The notes' markers, the chosen one's text, the field a note is
+        // written in (`notes.rs`).
+        if !self.welcome() {
+            self.paint_notes(ui, rect, scene);
         }
 
         let inset = tokens.inset;
@@ -6248,6 +6275,10 @@ fn chrome_frame(fill: crate::theme::Rgb) -> egui::Frame {
         .inner_margin(egui::Margin::symmetric(8, 2))
 }
 
+/// Longer than this many of the image's diagonals, an edge of the overlay
+/// is drawn only where it is over the image ([`paint_overlay`]).
+const LONG_LINE: f64 = 4.0;
+
 fn paint_overlay(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -6261,6 +6292,8 @@ fn paint_overlay(
         f64::from(rect.width()) / f64::from(w.max(1)),
         f64::from(rect.height()) / f64::from(h.max(1)),
     );
+    let (wf, hf) = (f64::from(w), f64::from(h));
+    let diagonal = wf.phypot(hf);
     let place = |p: [f64; 2]| {
         egui::pos2(
             rect.left() + (p[0] * sx) as f32,
@@ -6294,7 +6327,26 @@ fn paint_overlay(
         };
         let long = viewport::fade_short(edge.extent, tokens, pixels_per_point);
         let length = (line.to[0] - line.from[0]).phypot(line.to[1] - line.from[1]);
-        let pieces = (length / piece).ceil();
+        // Seen from close by, an edge reaches far past the image (it is
+        // cut only at the eye plane): past [`LONG_LINE`] of the image's
+        // diagonals only its part over the image is drawn, in as many
+        // pieces as a line across the image takes, not 4096 of each such
+        // edge (the review of the runaway of 2026-11-18). A shorter one
+        // whole, as always.
+        let (t_from, t_to) = if length > LONG_LINE * diagonal {
+            match viewport::clip_range(
+                line.from,
+                line.to,
+                [-piece, -piece],
+                [wf + piece, hf + piece],
+            ) {
+                Some(span) => span,
+                None => continue,
+            }
+        } else {
+            (0.0, 1.0)
+        };
+        let pieces = (length * (t_to - t_from) / piece).ceil();
         let pieces = if pieces.is_finite() {
             pieces.clamp(1.0, 4096.0) as usize
         } else {
@@ -6308,7 +6360,10 @@ fn paint_overlay(
         };
         let wide = f64::from(line.width(tokens)) * pixels_per_point;
         for k in 0..pieces {
-            let (t0, t1) = (k as f64 / pieces as f64, (k + 1) as f64 / pieces as f64);
+            let (t0, t1) = (
+                t_from + (t_to - t_from) * (k as f64 / pieces as f64),
+                t_from + (t_to - t_from) * ((k + 1) as f64 / pieces as f64),
+            );
             let middle = at(0.5 * (t0 + t1));
             let mut fade = viewport::edge_fade(long, density.at(middle[0], middle[1]), tokens);
             // Where the studio look's lens blurs it, as at the piece's middle.
