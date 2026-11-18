@@ -68,6 +68,15 @@ pub fn nearest_snaps(snaps: &[SectionSnap], offset: f64) -> &[SectionSnap] {
 /// How far the outline reaches past the model's box, as a share of the
 /// box's larger side in the plane.
 const OUTLINE_MARGIN: f64 = 0.04;
+/// How far past the viewport the outline is dashed, in points: no dash
+/// ends where it shows.
+const DASH_MARGIN: f64 = 8.0;
+/// Most dashes the outline is drawn in, whatever the view: its sides are
+/// cut to the viewport ([`dashed_sides`]), which takes some hundreds; this
+/// holds whatever reaches [`outline_dashes`] (the runaway of 2026-11-18:
+/// a side seen from close by ran 1.45e9 points and was dashed until the
+/// memory ran out).
+pub const MAX_OUTLINE_DASHES: usize = 4096;
 /// Shorter than this share of its length, the arrow is seen end on.
 const END_ON: f64 = 0.3;
 /// How far the number keeps from the arrow's tip, the dots from the
@@ -448,8 +457,12 @@ pub enum Snapped {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlaneFrame {
     /// The sides of the plane's outline, as far as they are in front of
-    /// the eye, in the window's points.
+    /// the eye, in the window's points. Seen from close by they reach far
+    /// past the viewport; what is drawn is [`PlaneFrame::dashed`].
     pub outline: Vec<[Pos2; 2]>,
+    /// The sides as their dashes are drawn: cut to the viewport, each with
+    /// where it starts in the dash pattern ([`dashed_sides`]).
+    pub dashed: Vec<DashedSide>,
     /// The arrow's foot: a corner of the plane's outline, the same one
     /// however the view turns (the one furthest along x, then against y
     /// and z), moved along the plane into the viewport where it is out of
@@ -471,6 +484,16 @@ pub struct PlaneFrame {
     pub toward: bool,
     /// Model units per point along the arrow on the screen.
     pub per_point: f64,
+}
+
+/// A side of the plane's outline as its dashes are drawn: its ends in the
+/// window's points, within the viewport grown by [`DASH_MARGIN`], and
+/// where its first end lies in the dash pattern: points past the start of
+/// a dash, from 0 to a dash and a gap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DashedSide {
+    pub ends: [Pos2; 2],
+    pub phase: f32,
 }
 
 /// Where the handle was drawn, in the window's points.
@@ -781,6 +804,7 @@ pub fn plane_frame(
             Some([to_window(a.x, a.y)?, to_window(b.x, b.y)?])
         })
         .collect();
+    let dashed = dashed_sides(&projector, &corners, viewport, tokens.section_dash);
     let centre = projector.project(middle).and_then(|p| to_window(p.x, p.y));
     // The arrow's foot: the corner furthest along x - y - z, a rule of
     // the model's, so it stays where it is while the view turns.
@@ -812,6 +836,7 @@ pub fn plane_frame(
     let side_on = shown >= END_ON * f64::from(tokens.section_arrow_length);
     Some(PlaneFrame {
         outline,
+        dashed,
         middle: foot,
         at,
         centre: centre.unwrap_or(at),
@@ -996,47 +1021,191 @@ pub(super) fn paint_slim_line(
     }
 }
 
-/// How the outline is drawn: as one closed path when its sides join,
-/// as one segment between its farthest points when it is seen edge on
-/// (its sides lie over each other), else side by side.
-pub fn outline_paths(outline: &[[Pos2; 2]]) -> Vec<Vec<Pos2>> {
-    let joined = !outline.is_empty()
-        && outline.iter().enumerate().all(|(k, [_, end])| {
-            outline
-                .get((k + 1) % outline.len())
-                .is_some_and(|[next, _]| next.distance(*end) < 0.01)
-        });
-    if !joined {
-        return outline.iter().map(|side| side.to_vec()).collect();
+/// A side of the outline on the screen, from the viewport's corner: its
+/// ends, and whether each was cut at the eye plane.
+type ScreenSide = ([f64; 2], [f64; 2], [bool; 2]);
+
+/// How long the line from `a` to `b` is.
+fn screen_length(a: [f64; 2], b: [f64; 2]) -> f64 {
+    (b[0] - a[0]).phypot(b[1] - a[1])
+}
+
+/// The sides of the outline through `corners` (in space, in order round
+/// it) as their dashes are drawn in the `viewport` (the window's points)
+/// seen by `projector`, `dash` on and `gap` off ([`DashedSide`]).
+///
+/// A side is cut in space where it crosses the eye plane
+/// ([`Projector::segment_cut`]) and then projected; on the screen, in
+/// `f64`, it is cut to the viewport grown by [`DASH_MARGIN`], so only what
+/// shows is dashed. Seen from close by, a side reaches millions of points
+/// past the view: the runaway of 2026-11-18 (the section on while the view
+/// turned and zoomed in) was a side 1.45e9 points long, which epaint
+/// dashed in `f32` steps that stop adding up past 2^27 points, so the
+/// dashing never ended and its dashes filled the memory. The pattern runs
+/// on round the outline from its first corner in front of the eye, as when
+/// the outline was dashed as one path, so a dash stays where it is on the
+/// line however much of the line is cut off; a side cut at the eye plane
+/// takes it from its other end, the corner in front of the eye. Seen edge
+/// on (its sides lie over each other, thinner than a point and a half) the
+/// outline is its trace: one line between its farthest points.
+pub fn dashed_sides(
+    projector: &Projector,
+    corners: &[Vec3],
+    viewport: Rect,
+    [dash, gap]: [f32; 2],
+) -> Vec<DashedSide> {
+    let period = f64::from(dash) + f64::from(gap);
+    if !(dash > 0.0 && gap >= 0.0 && period.is_finite()) {
+        return Vec::new();
     }
-    let points: Vec<Pos2> = outline.iter().map(|[a, _]| *a).collect();
-    let n = points.len();
-    let (mut area, mut perimeter) = (0.0_f32, 0.0_f32);
-    for k in 0..n {
-        let (Some(a), Some(b)) = (points.get(k), points.get((k + 1) % n)) else {
-            continue;
-        };
-        area += a.x * b.y - b.x * a.y;
-        perimeter += a.distance(*b);
-    }
-    // Thinner than a point and a half: edge on.
-    if perimeter > 0.0 && area.abs() / perimeter < 1.5 {
-        let mut far = (0.0_f32, None);
-        for a in &points {
-            for b in &points {
-                let d = a.distance(*b);
-                if d > far.0 {
-                    far = (d, Some([*a, *b]));
+    let n = corners.len();
+    let mut sides: Vec<Option<ScreenSide>> = (0..n)
+        .map(|k| {
+            let (a, b) = (*corners.get(k)?, *corners.get((k + 1) % n)?);
+            let (p, q, cut) = projector.segment_cut(a, b)?;
+            let (p, q) = ([p.x, p.y], [q.x, q.y]);
+            p.iter()
+                .chain(&q)
+                .all(|c| c.is_finite())
+                .then_some((p, q, cut))
+        })
+        .collect();
+    // Every corner in front of the eye: seen edge on, the trace.
+    let whole = n > 0
+        && sides
+            .iter()
+            .all(|s| matches!(s, Some((_, _, [false, false]))));
+    if whole {
+        let points: Vec<[f64; 2]> = sides.iter().flatten().map(|(a, _, _)| *a).collect();
+        let (mut area, mut perimeter) = (0.0_f64, 0.0_f64);
+        for k in 0..points.len() {
+            let (Some(a), Some(b)) = (points.get(k), points.get((k + 1) % points.len())) else {
+                continue;
+            };
+            area += a[0] * b[1] - b[0] * a[1];
+            perimeter += screen_length(*a, *b);
+        }
+        if perimeter > 0.0 && area.abs() / perimeter < 1.5 {
+            let (mut most, mut far) = (0.0_f64, None);
+            for a in &points {
+                for b in &points {
+                    let d = screen_length(*a, *b);
+                    if d > most {
+                        (most, far) = (d, Some((*a, *b)));
+                    }
                 }
             }
+            sides = far
+                .map(|(a, b)| vec![Some((a, b, [false, false]))])
+                .unwrap_or_default();
         }
-        return far.1.map(|[a, b]| vec![vec![a, b]]).unwrap_or_default();
     }
-    let mut closed = points;
-    if let Some(&first) = closed.first() {
-        closed.push(first);
+    let count = sides.len();
+    // The pattern starts at the first corner in front of the eye.
+    let first = (0..count)
+        .find(|&k| matches!(sides.get(k), Some(Some((_, _, [false, _])))))
+        .unwrap_or(0);
+    let (w, h) = (f64::from(viewport.width()), f64::from(viewport.height()));
+    let (lo, hi) = (
+        [-DASH_MARGIN, -DASH_MARGIN],
+        [w + DASH_MARGIN, h + DASH_MARGIN],
+    );
+    let mut out = Vec::new();
+    // Where the pattern is at the start of the side walked now: where the
+    // side before ended, when it ended at that corner.
+    let mut at: Option<f64> = Some(0.0);
+    for step in 0..count {
+        let Some(Some((a, b, cut))) = sides.get((first + step) % count).copied() else {
+            at = None;
+            continue;
+        };
+        let long = screen_length(a, b);
+        if !long.is_finite() {
+            at = None;
+            continue;
+        }
+        let start = match (at, cut[0]) {
+            (Some(p), false) => p,
+            (None, false) => 0.0,
+            // Cut at the eye plane: from the corner in front, at its end.
+            (_, true) => -long,
+        };
+        at = (!cut[1]).then_some(start + long);
+        let Some((t0, t1)) = crate::viewport::clip_range(a, b, lo, hi) else {
+            continue;
+        };
+        let point = |t: f64| {
+            pos2(
+                viewport.left() + (a[0] + (b[0] - a[0]) * t) as f32,
+                viewport.top() + (a[1] + (b[1] - a[1]) * t) as f32,
+            )
+        };
+        out.push(DashedSide {
+            ends: [point(t0), point(t1)],
+            phase: (start + long * t0).rem_euclid(period) as f32,
+        });
     }
-    vec![closed]
+    out
+}
+
+/// The dashes of `sides`, `dash` on and `gap` off along each from its
+/// phase (a dash across a corner goes on round it, as along one path), at
+/// most [`MAX_OUTLINE_DASHES`] in all however long the sides are; a gap of
+/// nothing draws each side whole.
+pub fn outline_dashes(sides: &[DashedSide], [dash, gap]: [f32; 2]) -> Vec<[Pos2; 2]> {
+    let (dash, gap) = (f64::from(dash), f64::from(gap));
+    let period = dash + gap;
+    let mut out: Vec<[Pos2; 2]> = Vec::new();
+    if !(dash > 0.0 && gap >= 0.0 && period.is_finite()) {
+        return out;
+    }
+    for side in sides {
+        if out.len() >= MAX_OUTLINE_DASHES {
+            break;
+        }
+        let [a, b] = side.ends;
+        let (ax, ay, bx, by) = (
+            f64::from(a.x),
+            f64::from(a.y),
+            f64::from(b.x),
+            f64::from(b.y),
+        );
+        let long = (bx - ax).phypot(by - ay);
+        if !(long.is_finite() && long > 0.0) {
+            continue;
+        }
+        if gap <= 0.0 {
+            out.push(side.ends);
+            continue;
+        }
+        let at = |s: f64| {
+            let t = (s / long).clamp(0.0, 1.0);
+            pos2((ax + (bx - ax) * t) as f32, (ay + (by - ay) * t) as f32)
+        };
+        // How far along the side, and where that is in the pattern.
+        let mut s = 0.0_f64;
+        let mut p = f64::from(side.phase).rem_euclid(period);
+        if p.is_nan() || p >= period {
+            p = 0.0;
+        }
+        while s < long && out.len() < MAX_OUTLINE_DASHES {
+            let next = if p < dash {
+                let end = s + (dash - p);
+                out.push([at(s), at(end.min(long))]);
+                p = dash;
+                end
+            } else {
+                let end = s + (period - p);
+                p = 0.0;
+                end
+            };
+            if next.is_nan() || next <= s {
+                break;
+            }
+            s = next;
+        }
+    }
+    out
 }
 
 /// The parameter `t` of the point of the line `origin + direction · t`
@@ -1718,24 +1887,22 @@ impl Shell {
             || pointer.is_some_and(|p| rect.contains(p) && place.near(p, tokens.section_near));
         let painter = ui.painter_at(rect);
         // The outline, dashed, in the accent alone, faint until the pointer
-        // is near: one path, one dash pattern, one line seen edge on.
+        // is near: one dash pattern round it, one line seen edge on, only
+        // where it shows ([`dashed_sides`]).
         let outline_alpha = if near {
             255
         } else {
             tokens.section_rest_opacity
         };
-        let [dash, gap] = tokens.section_dash;
-        for path in outline_paths(&place.frame.outline) {
-            painter.extend(egui::Shape::dashed_line(
-                &path,
-                egui::Stroke::new(
-                    tokens.section_outline_width,
-                    color_alpha(tokens.accent, outline_alpha),
-                ),
-                dash,
-                gap,
-            ));
-        }
+        let outline_stroke = egui::Stroke::new(
+            tokens.section_outline_width,
+            color_alpha(tokens.accent, outline_alpha),
+        );
+        painter.extend(
+            outline_dashes(&place.frame.dashed, tokens.section_dash)
+                .into_iter()
+                .map(|ends| egui::Shape::line_segment(ends, outline_stroke)),
+        );
         // The arrow, or the ring seen end on: a light fill with a dark
         // edge, so it reads on the cap, a body and the background; the
         // accent under the pointer and while it is dragged.
