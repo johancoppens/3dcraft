@@ -544,14 +544,8 @@ impl Shell {
     }
 
     /// The note whose pin, as the last frame drew it, is within reach of
-    /// `at` (points): the nearest.
+    /// `at` (points): the nearest, by the pins' own reach (`notes.rs`).
     fn pin_at(&self, at: egui::Pos2) -> Option<u64> {
-        let reach = self.tokens.note_radius + 3.0;
-        self.notes
-            .markers
-            .iter()
-            .filter(|(_, c)| c.distance(at) <= reach)
-            .min_by(|a, b| a.1.distance(at).total_cmp(&b.1.distance(at)))
-            .map(|(id, _)| *id)
+        self.note_pin_at(at)
     }
 }

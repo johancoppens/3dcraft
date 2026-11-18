@@ -436,7 +436,10 @@ mod tests {
     /// the head, from its middle out past its light edge, some pixel
     /// stands off the body at 3:1 or more, for every kind of pin on five
     /// bodies, light to dark, the indigo of a waiting head itself among
-    /// them; the same in both appearances.
+    /// them; the same in both appearances. Measured on this painter, the
+    /// screenshot's: the window's (`paint_head`, `paint_pin`) draws the
+    /// same edge from the same token, outer radius (`head_outer`) and
+    /// widths, with egui's anti-aliasing instead of this coverage.
     #[test]
     fn every_head_stands_off_bodies_of_any_colour() {
         use crate::theme::contrast;

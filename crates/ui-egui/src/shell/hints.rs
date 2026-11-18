@@ -5,8 +5,8 @@
 //! clears, what the section's arrow and a note's pin take. A refusal that
 //! has words of its own (a key that cannot work, a plane that was lost, a
 //! check that was kept) puts them there for a while instead
-//! ([`Shell::hint`], [`Shell::hint_until_command`]): the other parts of
-//! the window call these. `ui.get` says the hint shown under `hint`.
+//! ([`Shell::hint`], [`Shell::hint_until_next`]): the other parts of the
+//! window call these. `ui.get` says the hint the bar shows under `hint`.
 
 use super::{CommandReport, Shell};
 
@@ -16,6 +16,9 @@ pub const HINT_SECONDS: f32 = 4.0;
 /// A status bar narrower than this, in points, shows the selection's
 /// words alone, without the hint.
 pub const HINT_LEAST_BAR: f32 = 800.0;
+/// The longest a hint given until the next action
+/// ([`Shell::hint_until_next`]) stays while nothing is done, in seconds.
+pub const UNTIL_NEXT_MOST_SECONDS: f32 = 15.0;
 
 /// The state the bar's hint is chosen by.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -52,7 +55,7 @@ pub fn hint_for(state: &HintState) -> Option<&'static str> {
 }
 
 /// A text shown for a while: for `seconds` from the frame it is first
-/// drawn, or until the next command.
+/// drawn, or until the next action.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Timed {
     pub text: String,
@@ -64,12 +67,14 @@ pub struct Timed {
 #[derive(Clone, Debug, PartialEq)]
 enum End {
     Seconds(f32),
-    /// Until the next command: the label of the command it waits for
-    /// first (the one that made it, still queued), then the report it was
-    /// shown with (`Some(None)`: no command yet).
-    Command {
-        after: Option<String>,
-        anchor: Option<Option<CommandReport>>,
+    /// Until the next action of the person's or an agent's, at most
+    /// [`UNTIL_NEXT_MOST_SECONDS`] (the review of the UX round,
+    /// 2026-11-18: the window's own clicks and the side panel's commands
+    /// report no command, so a hint that waited for one stayed through
+    /// any number of clicks): the actions counted and the command
+    /// reported when it was first drawn.
+    Next {
+        anchor: Option<(u64, Option<CommandReport>)>,
     },
 }
 
@@ -88,49 +93,48 @@ impl Timed {
         }
     }
 
-    /// `text` until the next command after the one labelled `after` (that
-    /// one still to come), or after the last one.
-    pub fn until_command(text: impl Into<String>, after: Option<&str>) -> Self {
+    /// `text` until the next action after the frame it is first drawn (a
+    /// pointer's button or a key pressed in the window, a command
+    /// reported), at most [`UNTIL_NEXT_MOST_SECONDS`].
+    pub fn until_next(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
-            end: End::Command {
-                after: after.map(str::to_string),
-                anchor: None,
-            },
+            end: End::Next { anchor: None },
             since: None,
         }
     }
 
-    /// Whether it is still shown at `now`, the last command being
-    /// `last`; and how long until it ends, where that is a time.
+    /// Whether it is still shown at `now`, the last command reported being
+    /// `last`, and how long until it ends by its time: [`Self::live_among`]
+    /// where no action is counted.
     pub fn live(&mut self, now: f64, last: Option<&CommandReport>) -> (bool, Option<f64>) {
+        self.live_among(now, last, 0)
+    }
+
+    /// Whether it is still shown at `now`, the last command reported being
+    /// `last` and the actions counted so far `acts`; and how long until it
+    /// ends by its time.
+    pub fn live_among(
+        &mut self,
+        now: f64,
+        last: Option<&CommandReport>,
+        acts: u64,
+    ) -> (bool, Option<f64>) {
         let since = *self.since.get_or_insert(now);
-        match &mut self.end {
-            End::Seconds(seconds) => {
-                let left = f64::from(*seconds) - (now - since);
-                (left > 0.0, (left > 0.0).then_some(left))
+        let seconds = match &self.end {
+            End::Seconds(seconds) => *seconds,
+            End::Next { .. } => UNTIL_NEXT_MOST_SECONDS,
+        };
+        let left = f64::from(seconds) - (now - since);
+        let quiet = match &mut self.end {
+            End::Seconds(_) => true,
+            End::Next { anchor } => {
+                let (seen_acts, seen_last) = anchor.get_or_insert_with(|| (acts, last.cloned()));
+                *seen_acts == acts && seen_last.as_ref() == last
             }
-            End::Command { after, anchor } => {
-                let ran = after
-                    .as_deref()
-                    .map(|label| last.is_some_and(|r| r.label == label));
-                match ran {
-                    Some(true) => {
-                        *after = None;
-                        *anchor = Some(last.cloned());
-                        (true, None)
-                    }
-                    Some(false) => (true, None),
-                    None => match anchor {
-                        None => {
-                            *anchor = Some(last.cloned());
-                            (true, None)
-                        }
-                        Some(seen) => (seen.as_ref() == last, None),
-                    },
-                }
-            }
-        }
+        };
+        let live = quiet && left > 0.0;
+        (live, live.then_some(left))
     }
 }
 
@@ -142,6 +146,29 @@ pub struct Hints {
     given: Option<Timed>,
     /// What the bar showed in the last frame.
     shown: Option<String>,
+    /// The actions seen in the window so far: a pointer's button or a key
+    /// pressed ([`Shell::count_acts`]).
+    acts: u64,
+}
+
+/// How many of `events` are an action of the person's: a pointer's button
+/// or a key pressed (a key held down and repeating counts once).
+pub fn acts_in(events: &[egui::Event]) -> u64 {
+    let acts = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                egui::Event::PointerButton { pressed: true, .. }
+                    | egui::Event::Key {
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    }
+            )
+        })
+        .count();
+    u64::try_from(acts).unwrap_or(u64::MAX)
 }
 
 impl Shell {
@@ -152,16 +179,29 @@ impl Shell {
         self.hints.given = Some(Timed::seconds(text, seconds));
     }
 
-    /// Shows `text` as the status bar's hint until the next command: the
-    /// one after the command labelled `after` (queued, not yet run), or
-    /// after the last one.
-    pub fn hint_until_command(&mut self, text: impl Into<String>, after: Option<&str>) {
-        self.hints.given = Some(Timed::until_command(text, after));
+    /// Shows `text` as the status bar's hint until the next action after
+    /// the frame it is first drawn (a click, a key, an agent's command), at
+    /// most [`UNTIL_NEXT_MOST_SECONDS`].
+    pub fn hint_until_next(&mut self, text: impl Into<String>) {
+        self.hints.given = Some(Timed::until_next(text));
     }
 
     /// The hint the status bar showed in the last frame: `ui.get` › `hint`.
     pub fn status_hint(&self) -> Option<&str> {
         self.hints.shown.as_deref()
+    }
+
+    /// Counts the actions in this frame's input: called before anything
+    /// is drawn, so a hint given in answer to one is not ended by it.
+    pub(super) fn count_acts(&mut self, ctx: &egui::Context) {
+        let acts = ctx.input(|i| acts_in(&i.events));
+        self.hints.acts = self.hints.acts.saturating_add(acts);
+    }
+
+    /// What the bar shows of the hint this frame (`None` where it shows
+    /// none, as a bar too narrow for it): what `ui.get` says.
+    pub(super) fn hint_shown(&mut self, text: Option<String>) {
+        self.hints.shown = text;
     }
 
     /// The state the hint is chosen by, at the pointer `pointer`.
@@ -171,13 +211,8 @@ impl Shell {
                 place.part_at(p) == Some(super::section_handle::HandlePart::Arrow)
             })
         });
-        let reach = self.tokens.note_radius + 3.0;
-        let on_pin = pointer.is_some_and(|p| {
-            self.notes
-                .markers
-                .iter()
-                .any(|(_, centre)| centre.distance(p) <= reach)
-        });
+        // By the pins' own reach (`notes.rs`), the one place it is measured.
+        let on_pin = pointer.is_some_and(|p| self.note_pin_at(p).is_some());
         HintState {
             bodies: self
                 .shown_scene
@@ -191,19 +226,21 @@ impl Shell {
     }
 
     /// The hint to show now (a given one while it lasts, else the
-    /// state's), and how long until a given one ends; kept for `ui.get`.
+    /// state's), and how long until a given one ends. The bar says what it
+    /// showed of it with [`Self::hint_shown`].
     pub(super) fn hint_now(
         &mut self,
         now: f64,
         pointer: Option<egui::Pos2>,
     ) -> (Option<String>, Option<f64>) {
         let last = self.last_command.clone();
+        let acts = self.hints.acts;
         let mut wait = None;
         match self
             .hints
             .given
             .as_mut()
-            .map(|given| given.live(now, last.as_ref()))
+            .map(|given| given.live_among(now, last.as_ref(), acts))
         {
             Some((true, left)) => wait = left,
             Some((false, _)) => self.hints.given = None,
@@ -213,7 +250,6 @@ impl Shell {
             Some(given) => Some(given.text.clone()),
             None => hint_for(&self.hint_state(pointer)).map(str::to_string),
         };
-        self.hints.shown.clone_from(&text);
         (text, wait)
     }
 }
@@ -280,26 +316,63 @@ mod tests {
     }
 
     #[test]
-    fn a_hint_until_the_next_command_waits_for_its_own_first() {
+    fn a_hint_until_the_next_action_ends_at_a_click_a_key_a_command_or_its_time() {
         let report = |label: &str| CommandReport {
             label: label.to_string(),
             ok: true,
             text: String::new(),
         };
-        let mut timed = Timed::until_command("Kept", Some("assert.add"));
         let before = report("select.pick");
-        assert!(
-            timed.live(0.0, Some(&before)).0,
-            "its command still to come"
+        // Anchored where it is first drawn: what was done before stays.
+        let mut kept = Timed::until_next("Kept");
+        assert_eq!(
+            kept.live_among(0.0, Some(&before), 3),
+            (true, Some(f64::from(UNTIL_NEXT_MOST_SECONDS)))
         );
-        let kept = report("assert.add");
-        assert!(timed.live(0.1, Some(&kept)).0, "its command ran");
-        assert!(timed.live(5.0, Some(&kept)).0, "no command since");
-        assert!(!timed.live(5.1, Some(&report("select.clear"))).0);
-        // Without a command to wait for: until the one after the last.
-        let mut lost = Timed::until_command("Lost", None);
-        assert!(lost.live(0.0, None).0);
-        assert!(lost.live(1.0, None).0);
-        assert!(!lost.live(2.0, Some(&before)).0);
+        assert!(
+            kept.live_among(5.0, Some(&before), 3).0,
+            "nothing done since"
+        );
+        assert!(
+            !kept.live_among(5.1, Some(&before), 4).0,
+            "a click or a key"
+        );
+        let mut lost = Timed::until_next("Lost");
+        assert!(lost.live_among(0.0, None, 0).0);
+        assert!(
+            !lost.live_among(1.0, Some(&before), 0).0,
+            "an agent's command"
+        );
+        let mut idle = Timed::until_next("Idle");
+        assert!(idle.live_among(10.0, None, 0).0);
+        assert!(idle.live_among(24.9, None, 0).0);
+        assert!(!idle.live_among(25.1, None, 0).0, "its time is up");
+    }
+
+    #[test]
+    fn a_pointer_or_a_key_pressed_is_an_action_its_release_and_a_repeat_not() {
+        let key = |pressed: bool, repeat: bool| egui::Event::Key {
+            key: egui::Key::Z,
+            physical_key: None,
+            pressed,
+            repeat,
+            modifiers: egui::Modifiers::CTRL,
+        };
+        let button = |pressed: bool| egui::Event::PointerButton {
+            pos: egui::Pos2::ZERO,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        assert_eq!(acts_in(&[button(true), key(true, false)]), 2);
+        assert_eq!(
+            acts_in(&[
+                button(false),
+                key(false, false),
+                key(true, true),
+                egui::Event::PointerMoved(egui::Pos2::ZERO),
+            ]),
+            0
+        );
     }
 }

@@ -2434,7 +2434,7 @@ impl Shell {
 
     /// The section switched off because its plane was lost (its face is
     /// gone): the view says so for [`LOST_SECONDS`] where the plate was,
-    /// and the status bar until the next command.
+    /// and the status bar until the next click, key or command.
     fn notice_lost_plane(&mut self, ui: &egui::Ui, rect: Rect, now: f64) {
         let lost = self.section_lost().map(str::to_string);
         if lost != self.section_handle.lost_seen {
@@ -2450,7 +2450,7 @@ impl Shell {
                         .is_some_and(|p| p.contains(':'));
                 let words = if face { LOST_FACE } else { LOST_PLANE };
                 self.section_handle.lost = Some(Timed::seconds(words, LOST_SECONDS));
-                self.hint_until_command(words, None);
+                self.hint_until_next(words);
             } else {
                 self.section_handle.lost = None;
             }
