@@ -445,13 +445,14 @@ impl Nav<'_> {
         let flip = self.chip(self.w.flip);
         // X, Y, Z, and the word button at its widest label's width (the UX
         // round of 2026-11-18, V2: so nothing moves as the selection
-        // changes).
-        let axes = 3.0 * self.w.axis + self.w.word;
-        let extra = if self.wrap {
-            0.0
-        } else {
-            gap + axes + sp + self.offset_w() + sp + flip
-        };
+        // changes) where the bar, centred, leaves room for it, else what
+        // it leaves, a control's width at least (its label drawn
+        // smaller); the phone's plate lays it out on its own (below).
+        let rest = gap + 3.0 * self.w.axis + sp + self.offset_w() + sp + flip;
+        let spare = area.right() - (area.center().x + off_w * 0.5) - rest;
+        let word = spare.min(self.w.word).max(self.w.axis);
+        let axes = 3.0 * self.w.axis + word;
+        let extra = if self.wrap { 0.0 } else { rest + word };
         let bar_w = if self.on { off_w + extra } else { off_w };
         // Placed for the bar with the options open, so that the Section
         // chip stays where it is when they open: centred when that fits.
