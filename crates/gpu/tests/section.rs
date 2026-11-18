@@ -705,6 +705,83 @@ fn classed_scenes() -> Vec<Scene> {
     scenes
 }
 
+/// What the classes cost a frame on the GPU (printed, not bounded: the
+/// build server's adapters are shared): 162 balls of about 600 triangles
+/// each in a grid, each touching its neighbours, about the developer's
+/// milling machine (162 instances, 101 772 triangles), cut through the
+/// middle, twenty frames each of the whole picture, the cut without
+/// classes and the cut with them.
+#[test]
+fn what_the_classes_cost_a_frame() {
+    let mut mesh = Mesh::default();
+    let mut colors = FaceColors::new();
+    let mut faces = 0_u32;
+    for k in 0..162_u32 {
+        let (i, j) = (f64::from(k % 18), f64::from(k / 18));
+        let world = Frame::new(Vec3::new(i * 2.0, 0.0, j * 2.0), Vec3::Z, Vec3::X).unwrap();
+        let ball = craft3d_kernel::primitives::sphere(&world, 1.0).unwrap();
+        let part = mesh_of!(&ball, 0.008);
+        let base = mesh.positions.len() as u32;
+        colors.set_hatch_class(faces, k as usize);
+        mesh.positions.extend(&part.positions);
+        mesh.normals.extend(&part.normals);
+        mesh.triangles
+            .extend(part.triangles.iter().map(|t| t.map(|i| i + base)));
+        mesh.face_ids
+            .extend(part.face_ids.iter().map(|f| f + faces));
+        faces += part.face_ids.iter().copied().max().map_or(0, |m| m + 1);
+    }
+    let (lo, hi) = mesh.bbox().corners().unwrap();
+    let cut = Section {
+        color: PAPER,
+        hatch: Some(HATCH),
+        ..section((lo + hi) * 0.5, -Vec3::Y)
+    };
+    let p = params(1280, 800, 1);
+    let camera = perspective(&mesh, Vec3::new(0.3, -1.0, 0.4), 40.0, &p);
+    let mut report = format!("{} triangles\n", mesh.triangles.len());
+    for mut offscreen in offscreens() {
+        let adapter = offscreen.adapter().to_string();
+        for (name, params, colors) in [
+            ("whole", p, FaceColors::new()),
+            (
+                "cut, no classes",
+                RenderParams {
+                    section: Some(cut),
+                    ..p
+                },
+                FaceColors::new(),
+            ),
+            (
+                "cut, 162 parts in 4 classes",
+                RenderParams {
+                    section: Some(cut),
+                    ..p
+                },
+                colors.clone(),
+            ),
+        ] {
+            let uploaded = offscreen.renderer().upload_colored(&mesh, &colors).unwrap();
+            offscreen
+                .render_uploaded(&uploaded, &camera, &params)
+                .unwrap();
+            let started = std::time::Instant::now();
+            for _ in 0..20 {
+                offscreen
+                    .render_uploaded(&uploaded, &camera, &params)
+                    .unwrap();
+            }
+            let line = format!(
+                "{adapter}: {name}: {:.1} ms a frame (with its read back)\n",
+                started.elapsed().as_secs_f64() * 1e3 / 20.0
+            );
+            print!("{line}");
+            report.push_str(&line);
+        }
+    }
+    std::fs::write(evidence("hatch-classes-gpu-cost.txt"), report).unwrap();
+}
+
 /// A direction of hatching per part (2026-11-18): the GPU counts what is
 /// cut away per hatch class (a channel each) and hatches each part's cap
 /// in its class's direction, cross-hatched where parts of two classes
