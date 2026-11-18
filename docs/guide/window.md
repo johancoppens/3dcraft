@@ -307,7 +307,7 @@ or as *about* a number (found on samples of a freeform curve or face, or with no
 the tolerance; it is kept as what is proven, at most the number and no less than the bound, and fails when the
 things move nearer or farther than that.
 
-![A hole selected: its diameter, Ø 6 mm, in the view, and at the foot of the side panel its surface, its area and axis, the feature that made it, its name and Measure](images/selection.png)
+![A hole selected: its diameter, Ø 8 mm, in the view at its rim, and at the head of the card at the foot of the side panel with Diameter under it; then its surface (Cylinder Ø 8 mm), area and axis, the feature that made it, its name, Wall thickness and Copy name](images/selection.png)
 
 ### Variables
 
@@ -511,7 +511,7 @@ the background; under the pointer it turns amber. On a computer the display bar 
 the middle of the model turns it), and the bar keeps **X**, **Y**, **Z**, the word button, the distance's
 slider and **Flip**.
 
-![The flange cut open across X through the middle of a bolt hole: the plane's dashed outline, the slim arrow at the cut's edge, and the group with X 30.00 mm, X, Y, Z, the plane from the selection (greyed: nothing selected) and the flip button](images/section.png)
+![The flange cut open across X through the middle of a bolt hole, the cut drawn as hatched paper: the plane's dashed outline, the slim arrow at the cut's edge, and the group with X 30 mm, X, Y, Z, From selection (greyed: nothing selected) and the flip button](images/section.png)
 
 | Do | To |
 |---|---|
