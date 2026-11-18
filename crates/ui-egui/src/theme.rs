@@ -145,6 +145,11 @@ pub struct Tokens {
     pub note_for_you: Rgb,
     pub note_rim: Rgb,
     pub note_rim_opacity: u8,
+    /// Every head's light edge (and its stalk's): `note_rim` at this
+    /// opacity, so a head reads on a body of any colour at 3:1 or more
+    /// (`pin_pixels`' test samples five bodies; at 60 % a slate-blue part
+    /// gave 2.97:1).
+    pub note_edge_opacity: u8,
     pub note_done: Rgb,
     pub note_astray: Rgb,
     pub note_chosen: Rgb,
@@ -977,6 +982,7 @@ impl Tokens {
             note_for_you: [76, 90, 166],
             note_rim: [250, 248, 244],
             note_rim_opacity: 153,
+            note_edge_opacity: 204,
             note_done: [42, 125, 68],
             note_astray: [104, 100, 94],
             note_chosen: [224, 169, 62],

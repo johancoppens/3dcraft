@@ -444,6 +444,15 @@ pub(crate) fn paint_head(
     let ink = kind.ink(tokens);
     let (number, size) = number_on(tokens, id, r);
     let font = egui::FontId::proportional(size.max(1.0));
+    // Every head carries a light edge just outside it, so it reads on a
+    // body of any colour, as the dimension line wears its casing (the
+    // verdict of 2026-11-18: the indigo head vanished on a slate-blue
+    // part).
+    painter.circle_stroke(
+        centre,
+        head_outer(kind, r) + 0.5,
+        egui::Stroke::new(1.0, color_alpha(tokens.note_rim, edge_alpha(tokens, alpha))),
+    );
     match kind {
         PinKind::Done => {
             // A quiet tick in a small ring.
@@ -472,15 +481,6 @@ pub(crate) fn paint_head(
         }
         PinKind::ForAgent | PinKind::ForYou => {
             painter.circle_filled(centre, r, faded(ink));
-            if kind == PinKind::ForAgent {
-                // The dark plate's light rim, so it reads on a dark face.
-                let rim = (u16::from(tokens.note_rim_opacity) * u16::from(alpha) / 255) as u8;
-                painter.circle_stroke(
-                    centre,
-                    r,
-                    egui::Stroke::new(1.0, color_alpha(tokens.note_rim, rim)),
-                );
-            }
             painter.text(
                 centre,
                 egui::Align2::CENTER_CENTER,
@@ -490,6 +490,21 @@ pub(crate) fn paint_head(
             );
         }
     }
+}
+
+/// How far out a head of `kind` and radius `r` is painted (its ring's
+/// stroke included): its light edge lies just outside.
+pub(crate) fn head_outer(kind: PinKind, r: f32) -> f32 {
+    match kind {
+        PinKind::Done => r * 0.75 + 0.6,
+        PinKind::Astray => r + 0.75,
+        PinKind::ForAgent | PinKind::ForYou => r,
+    }
+}
+
+/// The light edge's alpha on a head drawn at `alpha`.
+fn edge_alpha(tokens: &Tokens, alpha: u8) -> u8 {
+    (u16::from(tokens.note_edge_opacity) * u16::from(alpha) / 255) as u8
 }
 
 /// Paints `pin` with `painter`, standing at `pos` (points), `hovered`
@@ -506,12 +521,14 @@ fn paint_pin(
     let ink = pin.kind.ink(tokens);
     let faded = |c: Rgb| color_alpha(c, alpha);
     let head = Pin::head(pos, r);
-    // The pin: a dot at the place, a short stalk, the head above.
+    // The pin: a dot at the place, a short stalk, the head above; the dot
+    // and the stalk with the head's light edge under them.
+    let edge = color_alpha(tokens.note_rim, edge_alpha(tokens, alpha));
+    let foot = head + egui::vec2(0.0, head_outer(pin.kind, r));
+    painter.circle_filled(pos, 2.5, edge);
+    painter.line_segment([pos, foot], egui::Stroke::new(3.0, edge));
     painter.circle_filled(pos, 1.5, faded(ink));
-    painter.line_segment(
-        [pos, head + egui::vec2(0.0, r)],
-        egui::Stroke::new(1.0, faded(ink)),
-    );
+    painter.line_segment([pos, foot], egui::Stroke::new(1.0, faded(ink)));
     paint_head(painter, tokens, pin.kind, pin.id, head, r, alpha);
     // Chosen: a 2 pt amber ring 3 pt outside the head; under the pointer,
     // that ring fainter.

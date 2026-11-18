@@ -317,8 +317,16 @@ pub(super) fn draw_pins(rgb: &mut [u8], size: [u32; 2], pins: &[Pin], tokens: &T
         let pos = [pin.at.x * scale, pin.at.y * scale];
         let head = super::Pin::head(pin.at, tokens.note_radius);
         let head = [head.x * scale, head.y * scale];
+        // The head's light edge just outside it, and under the stalk and
+        // the dot, as `paint_pin` draws them.
+        let outer = super::head_outer(pin.kind, tokens.note_radius) * scale;
+        let edge = alpha * f32::from(tokens.note_edge_opacity) / 255.0;
+        let foot = [head[0], head[1] + outer];
+        canvas.ring(head, outer + 0.5 * scale, scale, tokens.note_rim, edge);
+        canvas.disc(pos, 2.5 * scale, tokens.note_rim, edge);
+        canvas.line(pos, foot, 3.0 * scale, tokens.note_rim, edge);
         canvas.disc(pos, 1.5 * scale, ink, alpha);
-        canvas.line(pos, [head[0], head[1] + r], scale, ink, alpha);
+        canvas.line(pos, foot, scale, ink, alpha);
         match pin.kind {
             PinKind::Done => {
                 let small = r * 0.75;
@@ -349,11 +357,6 @@ pub(super) fn draw_pins(rgb: &mut [u8], size: [u32; 2], pins: &[Pin], tokens: &T
             }
             PinKind::ForAgent | PinKind::ForYou => {
                 canvas.disc(head, r, ink, alpha);
-                if pin.kind == PinKind::ForAgent {
-                    // The dark plate's light rim.
-                    let rim = f32::from(tokens.note_rim_opacity) / 255.0;
-                    canvas.ring(head, r - 0.5 * scale, scale, tokens.note_rim, alpha * rim);
-                }
                 canvas.text(
                     &pin.id.to_string(),
                     head,
@@ -426,5 +429,59 @@ mod tests {
         let mut short = vec![0u8; 10];
         draw_pins(&mut short, [w, h], &[], &tokens, 1.0);
         assert_eq!(short, vec![0u8; 10]);
+    }
+
+    /// Every head reads on a body of any colour (the verdict of
+    /// 2026-11-18: the indigo head vanished on a slate-blue part): across
+    /// the head, from its middle out past its light edge, some pixel
+    /// stands off the body at 3:1 or more, for every kind of pin on five
+    /// bodies, light to dark, the indigo of a waiting head itself among
+    /// them; the same in both appearances.
+    #[test]
+    fn every_head_stands_off_bodies_of_any_colour() {
+        use crate::theme::contrast;
+        let bodies: [Rgb; 5] = [
+            [214, 210, 204],
+            [86, 104, 150],
+            [76, 90, 166],
+            [168, 98, 52],
+            [12, 56, 60],
+        ];
+        for tokens in [Tokens::light(), Tokens::dark()] {
+            let r = tokens.note_radius;
+            for kind in [
+                PinKind::ForAgent,
+                PinKind::ForYou,
+                PinKind::Done,
+                PinKind::Astray,
+            ] {
+                for body in bodies {
+                    let (w, h) = (60u32, 60u32);
+                    let mut rgb: Vec<u8> = (0..w * h).flat_map(|_| body).collect();
+                    // The head's middle on a pixel's centre: (30, 30.5).
+                    let pin = Pin {
+                        id: 7,
+                        at: egui::pos2(30.0, 30.5 + 2.2 * r),
+                        kind,
+                        behind: false,
+                        chosen: false,
+                        more: 0,
+                    };
+                    draw_pins(&mut rgb, [w, h], &[pin], &tokens, 1.0);
+                    let row = 30u32;
+                    // From 0.4 of the radius (clear of the number and the
+                    // tick) out past the edge.
+                    let first = 30 + (0.4 * r).ceil() as u32;
+                    let last = 30 + (r + 3.0) as u32;
+                    let best = (first..=last)
+                        .map(|x| {
+                            let k = ((row * w + x) * 3) as usize;
+                            contrast([rgb[k], rgb[k + 1], rgb[k + 2]], body)
+                        })
+                        .fold(0.0_f64, f64::max);
+                    assert!(best >= 3.0, "{kind:?} on {body:?}: at most {best:.2}:1");
+                }
+            }
+        }
     }
 }

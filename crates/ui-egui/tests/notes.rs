@@ -835,6 +835,53 @@ fn note_here_writes_on_the_face_pointed_at_not_the_one_selected() {
     );
 }
 
+/// The verdict of 2026-11-18, fix 5: nothing runs past the right-click
+/// list's plate. In the toggle clamp, whose names are the longest of the
+/// examples (`F4:copy(1)/F2:rim(241645167161946)/F2:face(0) ·
+/// Handle/Handle`), every entry fits its room; one too long is cut in its
+/// middle, its start and its end kept, and the whole name stays for the
+/// hover.
+#[test]
+fn the_right_click_lists_names_fit_the_plate() {
+    use craft3d_ui_egui::shell::{EXAMPLES, run_example};
+    let mut session = Session::new(Workspace::none());
+    let clamp = EXAMPLES
+        .iter()
+        .find(|e| e.id == "toggle-clamp")
+        .expect("the toggle clamp");
+    run_example(&mut session, clamp).expect("opened");
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    w.frames(&mut shell, &mut session, 6);
+    let [vw, vh] = shell.viewport_size();
+    shell
+        .handle_method(
+            &mut session,
+            "ui.pick",
+            Some(&json!({"x": f64::from(vw) / 2.0, "y": f64::from(vh) / 2.0, "secondary": true})),
+        )
+        .unwrap()
+        .expect("a right click in the view");
+    w.frames(&mut shell, &mut session, 2);
+    let labels = shell.other_menu_labels().to_vec();
+    assert!(!labels.is_empty(), "the list is open");
+    let mut cut = 0;
+    for label in &labels {
+        assert!(
+            label.width <= label.room + 0.5,
+            "{label:?} runs past the plate"
+        );
+        if label.shown != label.full {
+            cut += 1;
+            assert!(label.shown.contains('…'), "{label:?}");
+            let (head, tail) = label.shown.split_once('…').unwrap();
+            assert!(label.full.starts_with(head), "{label:?}");
+            assert!(label.full.ends_with(tail), "{label:?}");
+        }
+    }
+    assert!(cut > 0, "the clamp's long names are cut: {labels:?}");
+}
+
 /// `ui.pick` with `secondary` (2026-11-18): a right click without a mouse
 /// opens the view's list with *Note here…* on top and returns the faces
 /// under it; it chooses no entry and changes no document; it is refused
