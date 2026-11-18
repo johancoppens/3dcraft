@@ -265,7 +265,8 @@ impl Hatching {
         };
         let n = self.normal;
         let nr = n.dot(r);
-        if !(nr.abs() > 1e-12 * r.length()) {
+        let edge_on = 1e-12 * r.length();
+        if nr.is_nan() || edge_on.is_nan() || nr.abs() <= edge_on {
             return None;
         }
         let across = |step: Vec3| t.dot(step) - t.dot(r) * n.dot(step) / nr;
