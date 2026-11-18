@@ -6695,9 +6695,10 @@ fn notes_are_written_like_this_and_round_trip() {
 }
 
 /// A reply given to a note after it was closed, and an agent that gave no
-/// name (the developer, 2026-11-17): written under the closing as
-/// `later`, the agent as `{"agent": ""}`, read back as they were; a note
-/// without them is written as before.
+/// name (the developer, 2026-11-17): written with the note as `later`
+/// (kept when it is opened again, review-pins 2b), the agent as
+/// `{"agent": ""}`, read back as they were; a note without them is
+/// written as before.
 #[test]
 fn a_reply_after_the_closing_and_an_unnamed_agent_round_trip() {
     use craft3d_doc::NoteAuthor;
@@ -6727,21 +6728,53 @@ fn a_reply_after_the_closing_and_an_unnamed_agent_round_trip() {
     assert_eq!(note["by"], serde_json::json!({"agent": ""}));
     assert_eq!(
         note["done"],
-        serde_json::json!({"by": "person", "timeMs": 2,
-            "later": [{"by": {"agent": "Claude Code"}, "timeMs": 3, "text": "Made it 7 mm."}]})
+        serde_json::json!({"by": "person", "timeMs": 2})
+    );
+    assert_eq!(
+        note["later"],
+        serde_json::json!([{"by": {"agent": "Claude Code"}, "timeMs": 3, "text": "Made it 7 mm."}])
     );
     assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    // Opened again: the reply stays, and is written so.
+    doc.resolve_note(id, false, NoteAuthor::Person, None, 4)
+        .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let back = from_manifest_json(json.as_bytes()).unwrap();
+    assert_eq!(back, doc);
+    assert_eq!(back.note(id).unwrap().later.len(), 1);
+    assert!(back.note(id).unwrap().done.is_none());
 }
 
 /// Within format 75 the replies after the closing came later (the
-/// developer's preview build of b39e4345 writes 75 without them): the
-/// frozen 75 file, written before them, reads here; a note without such
+/// developer's preview build of b39e4345 writes 75 without them; the
+/// workshop's builds of 2026-11-17 wrote them under the closing): the
+/// frozen 75 file, written before them, reads here; a file with them
+/// under the closing reads here, with them on the note; a note without
 /// replies is written as before, so the preview build reads it; only a
-/// note with them needs this build (the preview build's closing refuses a
-/// field it does not know, as every manifest struct does).
+/// note with them needs this build (the preview build refuses a field it
+/// does not know, as every manifest struct does).
 #[test]
 fn replies_after_the_closing_keep_format_75_readable_both_ways() {
     use craft3d_doc::NoteAuthor;
+    /// A note as the preview build reads it (its own fields; the rest as
+    /// they come).
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct NoteBefore {
+        id: u64,
+        text: String,
+        #[serde(default)]
+        on: Option<serde_json::Value>,
+        point: [f64; 3],
+        by: serde_json::Value,
+        #[serde(default)]
+        time_ms: u64,
+        #[serde(default)]
+        edited: Option<serde_json::Value>,
+        #[serde(default)]
+        done: Option<ClosingBefore>,
+    }
     /// A closing as the preview build reads it.
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -6760,13 +6793,7 @@ fn replies_after_the_closing_keep_format_75_readable_both_ways() {
     .unwrap();
     let read = from_bytes(&before).unwrap();
     assert!(!read.notes.items.is_empty());
-    assert!(
-        read.notes
-            .items
-            .iter()
-            .filter_map(|n| n.done.as_ref())
-            .all(|d| d.later.is_empty())
-    );
+    assert!(read.notes.items.iter().all(|n| n.later.is_empty()));
     let mut doc = small();
     let id = doc
         .add_note("x", None, [0.0; 3], NoteAuthor::Person, 1)
@@ -6776,13 +6803,73 @@ fn replies_after_the_closing_keep_format_75_readable_both_ways() {
     let json = to_manifest_json(&doc).unwrap();
     assert!(!json.contains("later"), "{json}");
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    let done = value["document"]["notes"]["items"][0]["done"].clone();
-    assert!(serde_json::from_value::<ClosingBefore>(done).is_ok());
+    let note = value["document"]["notes"]["items"][0].clone();
+    assert!(serde_json::from_value::<NoteBefore>(note).is_ok());
+    // Under the closing, as the builds of 2026-11-17 wrote it: read with
+    // the replies on the note.
+    let under = json.replacen(
+        "\"reply\": \"ok\"",
+        "\"reply\": \"ok\", \"later\": [{\"by\": \"person\", \"timeMs\": 3, \"text\": \"and more\"}]",
+        1,
+    );
+    assert_ne!(under, json);
+    let old = from_manifest_json(under.as_bytes()).unwrap();
+    assert_eq!(old.note(id).unwrap().later.len(), 1);
+    assert_eq!(old.note(id).unwrap().later[0].text, "and more");
     doc.reply_to_note(id, NoteAuthor::Agent("Claude Code".into()), "and more", 3)
         .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    let done = value["document"]["notes"]["items"][0]["done"].clone();
-    assert!(serde_json::from_value::<ClosingBefore>(done).is_err());
+    let note = value["document"]["notes"]["items"][0].clone();
+    assert!(serde_json::from_value::<NoteBefore>(note).is_err());
+}
+
+/// A document whose notes are at their cap in the costliest way still
+/// saves (review-pins 2b: notes the commands took made a document that
+/// could not be saved): 1000 notes, each closed with a reply and 20
+/// replies after, every text all quotes (each written as two bytes), up to
+/// `MAX_NOTES_BYTES`. Its manifest stays under 10 MiB of the 64 MiB.
+#[test]
+fn notes_at_their_cap_always_save() {
+    use craft3d_doc::{MAX_NOTE_REPLIES, MAX_NOTES, MAX_NOTES_BYTES, NoteAuthor};
+    let mut doc = small();
+    let per_note = MAX_NOTES_BYTES / MAX_NOTES;
+    let each = per_note / (MAX_NOTE_REPLIES + 2);
+    let text = "\"".repeat(each);
+    // One note made by the document's own calls, then as many as a
+    // document holds like it (each call measures all the notes).
+    let id = doc
+        .add_note(&text, None, [1.0, 2.0, 3.0], NoteAuthor::Person, 1)
+        .unwrap();
+    doc.resolve_note(id, true, NoteAuthor::Person, Some(&text), 1)
+        .unwrap();
+    for _ in 0..MAX_NOTE_REPLIES {
+        doc.reply_to_note(id, NoteAuthor::Person, &text, 2).unwrap();
+    }
+    let first = doc.note(id).unwrap().clone();
+    for k in 1..MAX_NOTES as u64 {
+        let mut copy = first.clone();
+        copy.id = id + k;
+        doc.notes.items.push(copy);
+    }
+    doc.notes.next_id = id + MAX_NOTES as u64;
+    doc.validate().unwrap();
+    assert!(doc.notes.bytes() <= MAX_NOTES_BYTES);
+    let json = to_manifest_json(&doc).unwrap();
+    println!(
+        "notes at {} bytes of text: a manifest of {} bytes",
+        doc.notes.bytes(),
+        json.len()
+    );
+    assert!(json.len() < 10 * 1024 * 1024, "{}", json.len());
+    let bytes = to_bytes(&doc).unwrap();
+    assert_eq!(from_bytes(&bytes).unwrap(), doc);
+    let started = std::time::Instant::now();
+    let copy = doc.clone();
+    println!(
+        "one copy of it, as an undo step keeps one: {:?}",
+        started.elapsed()
+    );
+    drop(copy);
 }

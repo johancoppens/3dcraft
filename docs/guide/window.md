@@ -333,7 +333,8 @@ Once a document has notes, the side panel has a **Notes** tab, its open notes co
 them with their number, their text, where each is (*face of Rib*; *by place: near an edge of Bookend* for
 an edge or face whose name may move to another: held near what the feature that made it makes there now,
 which the row names, not what the note was pinned to; *place gone* when that feature no longer makes anything there,
-a note that needs a look; *detached* for one whose face is gone), who wrote it and when. An agent's
+a note that needs a look; *detached* for one whose face is gone), who wrote it (*you*, or an agent by its
+name followed by *(agent)*, whatever it calls itself) and when. An agent's
 questions come first, marked with **?**; the done notes fold away under the open ones, each with its reply,
 and the replies given after it was closed (an agent's account of what it did when you closed the note
 first). A click on a row flies to the note and selects what it is on; the chosen row offers **Edit**,

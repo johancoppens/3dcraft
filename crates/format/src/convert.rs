@@ -151,6 +151,7 @@ fn notes_to_manifest(notes: &doc::Notes) -> manifest::Notes {
                     time_ms,
                     edited,
                     done,
+                    later,
                 } = note;
                 manifest::Note {
                     id: *id,
@@ -183,29 +184,25 @@ fn notes_to_manifest(notes: &doc::Notes) -> manifest::Notes {
                         }
                     }),
                     done: done.as_ref().map(|done| {
-                        let doc::NoteDone {
-                            by,
-                            time_ms,
-                            reply,
-                            later,
-                        } = done;
+                        let doc::NoteDone { by, time_ms, reply } = done;
                         manifest::NoteDone {
                             by: note_by_to_manifest(by),
                             time_ms: *time_ms,
                             reply: reply.clone(),
-                            later: later
-                                .iter()
-                                .map(|r| {
-                                    let doc::NoteReply { by, time_ms, text } = r;
-                                    manifest::NoteReply {
-                                        by: note_by_to_manifest(by),
-                                        time_ms: *time_ms,
-                                        text: text.clone(),
-                                    }
-                                })
-                                .collect(),
+                            later: Vec::new(),
                         }
                     }),
+                    later: later
+                        .iter()
+                        .map(|r| {
+                            let doc::NoteReply { by, time_ms, text } = r;
+                            manifest::NoteReply {
+                                by: note_by_to_manifest(by),
+                                time_ms: *time_ms,
+                                text: text.clone(),
+                            }
+                        })
+                        .collect(),
                 }
             })
             .collect(),
@@ -244,7 +241,9 @@ fn notes_to_doc(notes: manifest::Notes) -> doc::Notes {
                     time_ms,
                     edited,
                     done,
+                    later,
                 } = note;
+                let mut old_replies: Vec<manifest::NoteReply> = Vec::new();
                 doc::Note {
                     id,
                     text,
@@ -280,25 +279,29 @@ fn notes_to_doc(notes: manifest::Notes) -> doc::Notes {
                             by,
                             time_ms,
                             reply,
-                            later,
+                            later: under,
                         } = done;
+                        // Replies kept under the closing by the builds of
+                        // 2026-11-17 go to the note, before its own.
+                        old_replies = under;
                         doc::NoteDone {
                             by: note_by_to_doc(by),
                             time_ms,
                             reply,
-                            later: later
-                                .into_iter()
-                                .map(|r| {
-                                    let manifest::NoteReply { by, time_ms, text } = r;
-                                    doc::NoteReply {
-                                        by: note_by_to_doc(by),
-                                        time_ms,
-                                        text,
-                                    }
-                                })
-                                .collect(),
                         }
                     }),
+                    later: old_replies
+                        .into_iter()
+                        .chain(later)
+                        .map(|r| {
+                            let manifest::NoteReply { by, time_ms, text } = r;
+                            doc::NoteReply {
+                                by: note_by_to_doc(by),
+                                time_ms,
+                                text,
+                            }
+                        })
+                        .collect(),
                 }
             })
             .collect(),

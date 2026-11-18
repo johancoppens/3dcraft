@@ -399,10 +399,21 @@ pub struct NoteRow {
     /// note or one whose place is gone; `None` while it is hidden.
     pub marker: Option<[f64; 3]>,
     pub reply: Option<String>,
-    /// Who closed it: "you", the agent's name, "an agent" or "unknown".
+    /// Who closed it, as [`NoteRow::who`] says it.
     pub closed_by: Option<String>,
-    /// The replies given after it was closed: who, and what.
+    /// The replies given after it was closed (kept when it was opened
+    /// again): who, and what.
     pub later: Vec<(String, String)>,
+}
+
+/// An agent in a few words, never as the person reads: "Claude Code
+/// (agent)" whatever it calls itself (an agent named "you" is "you
+/// (agent)"), "an agent" for one without a name.
+pub fn agent_words(name: Option<&str>) -> String {
+    match name {
+        Some(name) => format!("{name} (agent)"),
+        None => "an agent".to_string(),
+    }
 }
 
 impl NoteRow {
@@ -417,12 +428,12 @@ impl NoteRow {
         matches!(self.attachment.as_str(), "detached" | "lost")
     }
 
-    /// Who, in a few words: "you", "Claude Code", "unknown".
+    /// Who, in a few words: "you" for the person alone; an agent as
+    /// [`agent_words`] says it ("Claude Code (agent)"); "unknown".
     pub fn who(&self) -> String {
-        match (self.author.as_str(), &self.agent) {
-            ("person", _) => "you".to_string(),
-            ("agent", Some(name)) => name.clone(),
-            ("agent", None) => "an agent".to_string(),
+        match self.author.as_str() {
+            "person" => "you".to_string(),
+            "agent" => agent_words(self.agent.as_deref()),
             _ => "unknown".to_string(),
         }
     }
@@ -485,14 +496,13 @@ pub fn rows_of(listed: &Value) -> Vec<NoteRow> {
                 _ => None,
             };
             let done = n.get("done").filter(|d| d.is_object());
-            let who_of = |r: &Value| match (text(r, "author").as_deref(), text(r, "agent")) {
-                (Some("agent"), Some(name)) => name,
-                (Some("agent"), None) => "an agent".to_string(),
-                (Some("person"), _) => "you".to_string(),
+            let who_of = |r: &Value| match text(r, "author").as_deref() {
+                Some("person") => "you".to_string(),
+                Some("agent") => agent_words(text(r, "agent").as_deref()),
                 _ => "unknown".to_string(),
             };
-            let later = done
-                .and_then(|d| d.get("later"))
+            let later = n
+                .get("later")
                 .and_then(Value::as_array)
                 .map(|list| {
                     list.iter()
@@ -1091,10 +1101,10 @@ mod tests {
              "at": [0.0, 0.0, 0.0], "point": [0.0, 0.0, 0.0]},
             {"id": 3, "text": "gone", "state": "done", "author": "unknown", "attachment": "detached",
              "on": {"kind": "face", "name": "F4:face(5)", "feature": "F4"}, "point": [9.0, 9.0, 9.0],
-             "done": {"author": "person", "agent": null, "reply": null,
-                      "later": [{"author": "agent", "agent": "Claude Code", "timeMs": 9,
-                                 "reply": "removed it"},
-                                {"author": "agent", "agent": null, "reply": "checked"}]}},
+             "done": {"author": "person", "agent": null, "reply": null},
+             "later": [{"author": "agent", "agent": "Claude Code", "timeMs": 9,
+                        "reply": "removed it"},
+                       {"author": "agent", "agent": null, "reply": "checked"}]},
             {"id": 4, "text": "this corner", "state": "open", "author": "person", "attachment": "lost",
              "on": {"kind": "edge", "name": null, "pinnedAs": "F2:fillet(1)", "feature": "F2",
                     "origin": {"feature": "F2", "name": "Round"}},
@@ -1129,13 +1139,21 @@ mod tests {
         assert_eq!(
             rows[2].later,
             vec![
-                ("Claude Code".to_string(), "removed it".to_string()),
+                ("Claude Code (agent)".to_string(), "removed it".to_string()),
                 ("an agent".to_string(), "checked".to_string())
             ]
         );
         // An agent without a name: its question all the same.
         assert!(rows[4].question());
         assert_eq!(rows[4].who(), "an agent");
+        // An agent that calls itself "you" never reads as the person
+        // (review-pins 2b).
+        let you = rows_of(&json!({"notes": [
+            {"id": 1, "text": "x", "author": "agent", "agent": "you", "attachment": "attached",
+             "done": {"author": "agent", "agent": "you"}}
+        ]}));
+        assert_eq!(you[0].who(), "you (agent)");
+        assert_eq!(you[0].closed_by.as_deref(), Some("you (agent)"));
         assert_eq!(PinKind::of(&rows[4]), PinKind::Question);
         assert_eq!(PinKind::of(&rows[2]), PinKind::Done);
         assert_eq!(PinKind::of(&rows[3]), PinKind::Astray);

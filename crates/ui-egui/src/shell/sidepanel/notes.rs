@@ -64,6 +64,42 @@ impl Shell {
         })
     }
 
+    /// Sends the changed text of note `id` (`note.edit`, as the person);
+    /// its field stays until the answer (`edit_sent`): closed when kept,
+    /// open with the text and the reason when refused.
+    fn save_note_edit(&mut self, id: u64, text: String) {
+        self.notes.editing = Some((id, text.clone()));
+        self.notes.edit_sent = true;
+        self.notes.edit_error = None;
+        self.side_queue(
+            "note.edit",
+            json!({"id": id, "text": text}),
+            Some(NOTE_EDIT.to_string()),
+        );
+    }
+
+    /// The note whose text is being changed in the Notes tab, its text
+    /// there, and why the last change was refused.
+    pub fn note_editing(&self) -> Option<(u64, &str, Option<&str>)> {
+        self.notes
+            .editing
+            .as_ref()
+            .map(|(id, text)| (*id, text.as_str(), self.notes.edit_error.as_deref()))
+    }
+
+    /// Types `text` into the field of the note being changed in the Notes
+    /// tab (for tests and an agent showing the person around); `save`
+    /// sends it as Save does.
+    pub fn type_note_edit(&mut self, text: &str, save: bool) {
+        let Some(id) = self.notes.editing.as_ref().map(|(id, _)| *id) else {
+            return;
+        };
+        self.notes.editing = Some((id, text.to_string()));
+        if save {
+            self.save_note_edit(id, text.to_string());
+        }
+    }
+
     /// Whether the Notes tab is offered: the document has notes, or one is
     /// being written.
     pub(crate) fn notes_tab_offered(&self) -> bool {
@@ -191,17 +227,7 @@ impl Shell {
                 self.notes.edit_error = None;
             }
             Some(Asked::Typing(id, text)) => self.notes.editing = Some((id, text)),
-            Some(Asked::Save(id, text)) => {
-                // The field stays until the answer (`edit_sent`).
-                self.notes.editing = Some((id, text.clone()));
-                self.notes.edit_sent = true;
-                self.notes.edit_error = None;
-                self.side_queue(
-                    "note.edit",
-                    json!({"id": id, "text": text}),
-                    Some(NOTE_EDIT.to_string()),
-                );
-            }
+            Some(Asked::Save(id, text)) => self.save_note_edit(id, text),
             Some(Asked::Cancel) => {
                 self.notes.editing = None;
                 self.notes.edit_error = None;
