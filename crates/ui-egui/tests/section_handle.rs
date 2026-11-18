@@ -2130,3 +2130,57 @@ fn a_turned_cut_and_a_typed_distance_cut_something() {
     assert_eq!(shell.state.section.offset, 60.0);
     assert_eq!(shell.section_note(), Some("clamped to 0 – 60 mm"));
 }
+
+/// V2 on a phone: the word button after X, Y and Z is as wide as its
+/// widest label where the row has room (480 points), and at least a
+/// finger's (40 points) where it has not (390 points), the Offset slider
+/// keeping a rail a finger can drag; every part inside the window, none
+/// over another.
+#[test]
+fn on_a_phone_the_word_button_has_its_labels_width_where_there_is_room() {
+    for width in [480.0_f32, 390.0] {
+        let mut session = drilled();
+        let (shell, window) = window_on(&mut session, [width, 844.0], "yz", 20.0, "iso");
+        let hit = |name: &str| {
+            shell
+                .section_hits()
+                .iter()
+                .find(|(n, _)| *n == name)
+                .unwrap_or_else(|| panic!("{width}: no {name} in {:?}", shell.section_hits()))
+                .1
+        };
+        let face = hit("face");
+        assert!(face.width() >= 40.0 - 0.5, "{width}: {face:?}");
+        if width >= 480.0 {
+            let label = window.ctx.fonts_mut(|f| {
+                f.layout_no_wrap(
+                    "From selection".to_string(),
+                    egui::FontId::proportional(shell.tokens.control_font),
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x
+            });
+            assert!(face.width() >= label + 8.0, "{width}: {face:?} for {label}");
+        }
+        let (_, rail, _) = shell
+            .slider_hits()
+            .into_iter()
+            .find(|(n, _, _)| *n == "offset")
+            .expect("the Offset slider");
+        assert!(rail.width() >= 30.0, "{width}: the rail {rail:?}");
+        let parts: Vec<egui::Rect> = ["x", "y", "z", "face", "offset", "flip"]
+            .into_iter()
+            .map(hit)
+            .collect();
+        for (k, a) in parts.iter().enumerate() {
+            assert!(
+                a.left() >= -0.5 && a.right() <= width + 0.5,
+                "{width}: {a:?}"
+            );
+            for b in parts.iter().skip(k + 1) {
+                assert!(!a.shrink(0.5).intersects(*b), "{width}: {a:?} {b:?}");
+            }
+        }
+    }
+}

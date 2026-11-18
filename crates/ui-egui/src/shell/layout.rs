@@ -58,6 +58,9 @@ pub struct ControlWidths {
     pub projection: f32,
     /// One segment of X | Y | Z.
     pub axis: f32,
+    /// The section's word button after X, Y and Z: its widest label's
+    /// width, at least a control's height.
+    pub word: f32,
     /// The sliders (label, rail, value in one row).
     pub see_through: f32,
     pub offset: f32,
@@ -65,6 +68,10 @@ pub struct ControlWidths {
     /// which is which).
     pub see_through_compact: f32,
     pub offset_compact: f32,
+    /// The Offset slider at its least: its value and a rail a finger can
+    /// still drag (`touch_target`), the rest given up to the word button
+    /// on a phone.
+    pub offset_least: f32,
 }
 
 impl ControlWidths {
@@ -110,10 +117,13 @@ impl ControlWidths {
             flip: with_icon("Flip side"),
             projection: widest(&["Persp", "Ortho"], &plain),
             axis: widest(&["X", "Y", "Z"], &plain),
+            word: widest(&super::section_handle::WORD_LABELS, &plain),
             see_through: field("See-through", "90 %"),
             offset: field("Offset", "-000.00 mm"),
             see_through_compact: bare("90 %"),
             offset_compact: bare("-000.00 mm"),
+            offset_least: (6.0 + tokens.touch_target + 6.0 + text("-000.00 mm") + 4.0)
+                .max(tokens.nav_height),
         };
         if out.all_finite() {
             out
@@ -135,10 +145,12 @@ impl ControlWidths {
             self.flip,
             self.projection,
             self.axis,
+            self.word,
             self.see_through,
             self.offset,
             self.see_through_compact,
             self.offset_compact,
+            self.offset_least,
         ]
         .iter()
         .all(|w| w.is_finite() && *w >= 0.0)
@@ -161,10 +173,12 @@ impl ControlWidths {
             flip: icon + chars(9.0),
             projection: 2.0 * tokens.nav_inset + chars(5.0) + 4.0,
             axis: tokens.nav_height,
+            word: (2.0 * tokens.nav_inset + chars(14.0) + 4.0).max(tokens.nav_height),
             see_through: tokens.field_width * 1.4,
             offset: tokens.field_width * 1.4,
             see_through_compact: tokens.field_width * 0.9,
             offset_compact: tokens.field_width * 0.9,
+            offset_least: (chars(10.0) + 16.0 + tokens.touch_target).max(tokens.nav_height),
         }
     }
 }
@@ -429,8 +443,10 @@ impl Nav<'_> {
         let see = self.see_w();
         let off_w = pad + sketches + sp + datums + sp + edges + sp + see + gap + section + pad;
         let flip = self.chip(self.w.flip);
-        // X, Y, Z, and the plane from the selection sharing their room.
-        let axes = 3.0 * self.w.axis;
+        // X, Y, Z, and the word button at its widest label's width (the UX
+        // round of 2026-11-18, V2: so nothing moves as the selection
+        // changes).
+        let axes = 3.0 * self.w.axis + self.w.word;
         let extra = if self.wrap {
             0.0
         } else {
@@ -462,8 +478,18 @@ impl Nav<'_> {
         out.section_toggle = Some(self.at(x, y, section));
         x += section;
         if self.on && self.wrap {
-            // Above the bar, right-aligned with it.
-            let w = pad + axes + sp + self.offset_w() + sp + flip + pad;
+            // Above the bar, right-aligned with it. Where it has no room,
+            // the Offset slider gives way to the word button, down to its
+            // value and a finger's rail; then the word button, down to a
+            // control's height (its label drawn smaller).
+            let room = area.width() - (pad + 3.0 * self.w.axis + sp + sp + flip + pad);
+            let offset = self
+                .offset_w()
+                .min(room - self.w.word)
+                .max(self.w.offset_least);
+            let word = (room - offset).min(self.w.word).max(self.h());
+            let axes = 3.0 * self.w.axis + word;
+            let w = pad + axes + sp + offset + sp + flip + pad;
             let right = bar.right().max(area.left() + w).min(area.right());
             let plate = Rect::from_min_size(
                 pos2(right - w, bar.top() - gap - self.plate_h()),
@@ -474,8 +500,8 @@ impl Nav<'_> {
             let mut x = plate.left() + pad;
             out.axes = Some(self.at(x, y, axes));
             x += axes + sp;
-            out.offset = Some(self.at(x, y, self.offset_w()));
-            x += self.offset_w() + sp;
+            out.offset = Some(self.at(x, y, offset));
+            x += offset + sp;
             out.side = Some(self.at(x, y, flip));
         } else if self.on {
             out.dividers[2] = Some(self.vertical(x, y));
@@ -1051,7 +1077,7 @@ impl Shell {
         self.nav_look(ui, &layout, named, popover);
         self.nav_analysis(ui, &layout, named, popover);
         self.nav_show(ui, &layout, named);
-        self.nav_section(ui, &layout, named, scene);
+        self.nav_section(ui, &layout, named, scene, widths.axis);
         // An open popover has the corner: the cube moves down under it,
         // or out until it closes.
         let panel = [&self.look_hits, &self.analysis_hits]
@@ -1418,6 +1444,73 @@ impl Shell {
         self.set_show(ui, show);
     }
 
+    /// The section's word button on the phone's row, in `cell`: its label
+    /// (drawn smaller where the cell is narrower than it), lit (`on`) or
+    /// greyed as the handle's is, its hover what a click does or why it
+    /// cannot. True when it was clicked.
+    fn nav_word(
+        &mut self,
+        ui: &mut egui::Ui,
+        cell: Rect,
+        word: &super::section_handle::WordButton,
+        on: bool,
+    ) -> bool {
+        let tokens = self.tokens;
+        if !(cell.is_finite() && cell.width() > 0.0) {
+            return false;
+        }
+        let painter = ui.painter().clone();
+        painter.rect_filled(
+            cell,
+            egui::CornerRadius::same(tokens.nav_control_radius),
+            color_alpha(tokens.glass, tokens.control_opacity),
+        );
+        let response = ui
+            .interact(cell, ui.id().with("nav-section-word"), egui::Sense::click())
+            .on_hover_text(word.hover.as_str());
+        let inner = cell.shrink(tokens.nav_segment_inset);
+        let segment = egui::CornerRadius::same(tokens.nav_segment_radius);
+        if on {
+            painter.rect_filled(inner, segment, color(tokens.accent));
+        } else if response.hovered() && !word.greyed {
+            painter.rect_filled(
+                inner,
+                segment,
+                color_alpha(tokens.glass, tokens.control_opacity),
+            );
+        }
+        let ink = color(if on {
+            tokens.knob
+        } else if word.greyed {
+            tokens.plate_text_dim
+        } else {
+            tokens.plate_text
+        });
+        let room = (inner.width() - 4.0).max(1.0);
+        let lay = |size: f32| {
+            painter.layout_no_wrap(
+                word.label.to_string(),
+                egui::FontId::proportional(size),
+                ink,
+            )
+        };
+        let mut galley = lay(tokens.control_font);
+        if galley.size().x > room {
+            let size =
+                (tokens.control_font * room / galley.size().x).max(tokens.control_font * 0.7);
+            galley = lay(size);
+        }
+        painter.galley(
+            pos2(
+                cell.center().x - galley.size().x * 0.5,
+                cell.center().y - galley.size().y * 0.5 - 1.0,
+            ),
+            galley,
+            ink,
+        );
+        response.clicked()
+    }
+
     /// The Section toggle and, while the section is on, X | Y | Z, Offset
     /// and Flip.
     fn nav_section(
@@ -1426,6 +1519,7 @@ impl Shell {
         layout: &ControlsLayout,
         named: bool,
         scene: Option<&Scene>,
+        axis_width: f32,
     ) {
         let tokens = self.tokens;
         let Some(toggle_rect) = layout.section_toggle else {
@@ -1461,37 +1555,29 @@ impl Shell {
             let toward_eye = self.state.camera.toward_eye();
             let on_face = self.section_from_selection();
             let word = self.section_word();
-            let items = vec![(None, "X"), (None, "Y"), (None, "Z"), (None, word.label)];
+            // X, Y and Z at their width; after them the word button at
+            // its label's (the layout's room for it, V2).
+            let xyz_width = (3.0 * axis_width).min(axes.width());
+            let xyz = Rect::from_min_size(axes.min, vec2(xyz_width, axes.height()));
+            let word_cell = Rect::from_min_max(pos2(xyz.right(), axes.top()), axes.max);
+            let items = vec![(None, "X"), (None, "Y"), (None, "Z")];
             let chosen = if on_face || word.lit {
-                Some(super::section_handle::FACE_DOT)
+                None
             } else {
                 chosen_axis(&section)
             };
-            let (cells, clicked) = choice(
-                ui,
-                axes,
-                "axes",
-                &items,
-                chosen,
-                false,
-                &tokens,
-                Some((super::section_handle::FACE_DOT, word.hover.as_str())),
-            );
+            let (cells, axis_clicked) =
+                choice(ui, xyz, "axes", &items, chosen, false, &tokens, None);
             for ((name, _), cell) in SECTION_PLANES.iter().zip(&cells) {
                 hits.push((name, *cell));
             }
-            if let Some(cell) = cells.get(super::section_handle::FACE_DOT) {
-                hits.push(("face", *cell));
-                // A selection that gives no plane: the cell greyed (its
-                // hover says why).
-                if word.greyed && !on_face {
-                    ui.painter().rect_filled(
-                        cell.shrink(tokens.nav_segment_inset),
-                        egui::CornerRadius::same(tokens.nav_segment_radius),
-                        color_alpha(tokens.plate_fill, 150),
-                    );
-                }
-            }
+            hits.push(("face", word_cell));
+            let word_clicked = self.nav_word(ui, word_cell, &word, on_face || word.lit);
+            let clicked = if word_clicked {
+                Some(super::section_handle::FACE_DOT)
+            } else {
+                axis_clicked
+            };
             match clicked {
                 Some(super::section_handle::FACE_DOT) => {
                     if word.greyed {

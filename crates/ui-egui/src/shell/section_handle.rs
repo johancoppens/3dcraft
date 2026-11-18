@@ -127,6 +127,18 @@ pub const NO_PLANE: &str = "These two faces give no plane";
 /// so it does not move as the selection changes.
 pub const WIDEST_WORD: &str = "From selection";
 
+/// Every label the word button has: the phone's row is laid out for the
+/// widest of them.
+pub const WORD_LABELS: [&str; 7] = [
+    "From selection",
+    "On face",
+    "Midway",
+    "Bisect",
+    "Other bisector",
+    "Through axis",
+    "Turn 90°",
+];
+
 /// What the plate says under it once the plane lies on a face, and what
 /// the ring of the arrow seen end on and Flip say on hover.
 pub const ON_FACE_NOTE: &str = "On the face. Drag the arrow into the part to cut.";
