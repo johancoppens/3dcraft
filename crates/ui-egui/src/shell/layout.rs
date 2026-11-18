@@ -68,10 +68,6 @@ pub struct ControlWidths {
     /// which is which).
     pub see_through_compact: f32,
     pub offset_compact: f32,
-    /// The Offset slider at its least: its value and a rail a finger can
-    /// still drag (`touch_target`), the rest given up to the word button
-    /// on a phone.
-    pub offset_least: f32,
 }
 
 impl ControlWidths {
@@ -122,8 +118,6 @@ impl ControlWidths {
             offset: field("Offset", "-000.00 mm"),
             see_through_compact: bare("90 %"),
             offset_compact: bare("-000.00 mm"),
-            offset_least: (6.0 + tokens.touch_target + 6.0 + text("-000.00 mm") + 4.0)
-                .max(tokens.nav_height),
         };
         if out.all_finite() {
             out
@@ -150,7 +144,6 @@ impl ControlWidths {
             self.offset,
             self.see_through_compact,
             self.offset_compact,
-            self.offset_least,
         ]
         .iter()
         .all(|w| w.is_finite() && *w >= 0.0)
@@ -178,7 +171,6 @@ impl ControlWidths {
             offset: tokens.field_width * 1.4,
             see_through_compact: tokens.field_width * 0.9,
             offset_compact: tokens.field_width * 0.9,
-            offset_least: (chars(10.0) + 16.0 + tokens.touch_target).max(tokens.nav_height),
         }
     }
 }
@@ -480,15 +472,14 @@ impl Nav<'_> {
         out.section_toggle = Some(self.at(x, y, section));
         x += section;
         if self.on && self.wrap {
-            // Above the bar, right-aligned with it. Where it has no room,
-            // the Offset slider gives way to the word button, down to its
-            // value and a finger's rail; then the word button, down to a
-            // control's height (its label drawn smaller).
+            // Above the bar, right-aligned with it. The word button takes
+            // what X, Y, Z, the Offset slider and Flip leave, up to its
+            // widest label's width and a control's height at least (its
+            // label drawn smaller where it is narrower: on a phone 390
+            // points wide; the slider keeps its rail, a finger's only way
+            // to move the plane there).
             let room = area.width() - (pad + 3.0 * self.w.axis + sp + sp + flip + pad);
-            let offset = self
-                .offset_w()
-                .min(room - self.w.word)
-                .max(self.w.offset_least);
+            let offset = self.offset_w();
             let word = (room - offset).min(self.w.word).max(self.h());
             let axes = 3.0 * self.w.axis + word;
             let w = pad + axes + sp + offset + sp + flip + pad;
