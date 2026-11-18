@@ -172,6 +172,19 @@ fn asm_paths_review3_links_on_the_way_and_the_roots() {
     assert_eq!(followed["failed"], 0, "{followed}");
     assert_eq!(now, rod);
     assert_eq!(by_real, rod);
+    // The known limit, as on main (docs/design/assemblies.md, the finding
+    // of 2026-11-18): opened by the link's spelling, a folder deeper on
+    // disk than in text, its paths are joined with the text, climb one
+    // folder too far and are refused by the root, never read elsewhere.
+    assert!(
+        by_link.starts_with("Rod:failed") && by_link.contains("outside the read root"),
+        "{by_link}"
+    );
+    assert!(
+        by_relative_link.starts_with("Rod:failed")
+            && by_relative_link.contains("must stay beneath the read root"),
+        "{by_relative_link}"
+    );
     assert_eq!(by_relative_real, rod);
     assert_eq!(everywhere, rod);
 
