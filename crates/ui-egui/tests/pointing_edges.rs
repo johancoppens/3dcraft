@@ -1154,6 +1154,10 @@ fn a_highlighted_edge_is_the_same_on_the_gpus_direct_path_as_in_the_oracle() {
         "ui.select",
         json!({"mode": "clear"}),
     );
+    // The pointer leaves the view: resting on the edge it last clicked,
+    // it would outline what a click there selects (the UX round of
+    // 2026-11-18, V7), which the plain picture has not.
+    window.frame(&mut shell, &mut session, vec![Event::PointerGone]);
     window.frame(&mut shell, &mut session, Vec::new());
     let (_, _, cleared) = shell.direct_picture().unwrap().unwrap();
     assert_eq!(cleared, direct_plain);
