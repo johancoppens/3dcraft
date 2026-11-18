@@ -131,7 +131,14 @@ fn the_five_steps_of_the_report_keep_the_rod_found() {
     // 4: beneath the root, by its absolute path.
     let absolute = dir.join("work/abs/c.3dcraftasm");
     let saved = run(&mut s, "file.save", json!({ "path": text(&absolute) }));
-    assert_eq!(saved["path"], text(&absolute), "{saved}");
+    // Kept as given, or with its folder as the file system spells it where
+    // that differs (a link on the way).
+    let kept = craft3d_engine::canonical(Path::new(saved["path"].as_str().unwrap())).unwrap();
+    assert_eq!(
+        kept,
+        craft3d_engine::canonical(&absolute).unwrap(),
+        "{saved}"
+    );
     assert_eq!(stored(&absolute), want);
     placed(&mut s, want, "the absolute save");
     run(&mut s, "edit.undo", json!({}));

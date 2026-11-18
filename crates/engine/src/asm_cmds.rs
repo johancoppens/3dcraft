@@ -1862,7 +1862,7 @@ impl Relinker {
                 self.old_base, self.new_base
             )
         };
-        let Some(folder) = &self.new_folder else {
+        if self.new_folder.is_none() {
             // In memory: names in one store, as text.
             let new = crate::asm_paths::relink(&self.old_base, old, &self.new_base)?;
             let now = asm::join(&self.new_base, &new)?;
@@ -1871,33 +1871,100 @@ impl Relinker {
             } else {
                 Err(lost(&new, &now, &key))
             };
-        };
-        let file = self.file_of(&key)?;
-        let name = file.rsplit(['/', '\\']).next().unwrap_or(&file);
-        let new = crate::asm_paths::relink(&asm::dir_of(&file), name, folder)?;
+        }
+        let (file, new, now) = self.written(&key)?;
         // The last line of defence: from the folder the file is written
-        // into, the new path names the file the old one named, by the
-        // text of both written the same way. Only string work.
-        let now = asm::join(folder, &new)?;
+        // into, the new path names the file the old one named, both
+        // written the same way (folders as the file system spells them).
         if now != file {
             return Err(lost(&new, &now, &file));
         }
         // And this session never reads another file by it: a path kept
         // relative to the root is read beneath the read root, which may
         // not be the folder the file was written beneath (a read root that
-        // is not the write root). One that climbs out of the root is not
-        // read at all (the root refuses it; the bytes read stay).
-        let new_key = asm::join(&self.new_base, &new)?;
+        // is not the write root). One that climbs out of the root (its
+        // first part `..`) is not read at all: the root refuses it, the
+        // bytes read stay, and the save says so (`not_followed`).
+        let new_key = asm::join(&self.key_base(), &new)?;
         if !crate::asm_paths::is_absolute(&new_key)
-            && !new_key.starts_with("..")
+            && !climbs(&new_key)
             && let Some(root) = &self.read_root
-            && asm::join(root, &new_key).ok().as_deref() != Some(file.as_str())
+            && asm::join(root, &new_key).ok().map(|k| real_file(&k)) != Some(file.clone())
         {
             return Err(format!(
                 "it is `{file}`, and this session, which reads beneath the read root `{root}`, would read another file by `{new_key}` (the file is written beneath another folder than the read root); give the path in full"
             ));
         }
         Ok(new)
+    }
+
+    /// The file the session's path `key` names (its folder as the file
+    /// system spells it, [`real_file`]), the path written for it from the
+    /// folder written into (spelled so too), and that folder joined with
+    /// that path. Not in memory.
+    fn written(&self, key: &str) -> Result<(String, String, String), String> {
+        let folder = self
+            .new_folder
+            .as_ref()
+            .ok_or_else(|| "files in memory have no folder".to_string())?;
+        let file = real_file(&self.file_of(key)?);
+        let into = real_folder(folder);
+        let name = file.rsplit(['/', '\\']).next().unwrap_or(&file);
+        let new = crate::asm_paths::relink(&asm::dir_of(&file), name, &into)?;
+        let now = asm::join(&into, &new)?;
+        Ok((file, new, now))
+    }
+
+    /// The folder the open assembly joins its source paths with after the
+    /// save: its path's folder; an absolute one as the file system spells
+    /// it ([`Relinker::kept`]).
+    fn key_base(&self) -> String {
+        match &self.new_folder {
+            Some(folder) if crate::asm_paths::is_absolute(&self.new_base) => real_folder(folder),
+            _ => self.new_base.clone(),
+        }
+    }
+
+    /// The path the open assembly keeps for the file saved as `kept`: an
+    /// absolute one in the folder as the file system spells it, where that
+    /// differs (a folder reached through a link), so the paths it joins
+    /// with it lead where the file's own paths lead; as it is otherwise.
+    pub(crate) fn kept(&self, kept: &str) -> String {
+        let Some(folder) = &self.new_folder else {
+            return kept.to_string();
+        };
+        let real = real_folder(folder);
+        if !crate::asm_paths::is_absolute(&self.new_base)
+            || asm::join(folder, "").ok().as_deref() == Some(real.as_str())
+        {
+            return kept.to_string();
+        }
+        let name = kept.rsplit(['/', '\\']).next().unwrap_or(kept);
+        std::path::Path::new(&real)
+            .join(name)
+            .to_str()
+            .map_or_else(|| kept.to_string(), str::to_string)
+    }
+
+    /// The sources of `doc` (saved) the open assembly can no longer follow:
+    /// their path, joined with its folder, climbs out of the read root (a
+    /// read root that is not the write root), so the root refuses to read
+    /// them again; it shows the version read. Per instance: its name, its
+    /// source path, the path the session would read.
+    pub(crate) fn not_followed(&self, doc: &Document) -> Vec<(String, String, String)> {
+        let base = self.key_base();
+        doc.assembly
+            .iter()
+            .flat_map(|a| a.instances.iter())
+            .filter_map(|instance| {
+                let Source::File { path, .. } = &instance.source else {
+                    return None;
+                };
+                let key = asm::join(&base, path).ok()?;
+                (!crate::asm_paths::is_absolute(&key) && climbs(&key))
+                    .then(|| (instance.name.clone(), path.clone(), key))
+            })
+            .collect()
     }
 
     /// Whether the file is written into the folder the assembly's own
@@ -1919,14 +1986,11 @@ impl Relinker {
     /// the save: the same file, by the path the rewritten sources name it
     /// by. `None` where it cannot be told (it is read again).
     fn new_key(&self, key: &str) -> Option<String> {
-        let folder = self.new_folder.as_ref()?;
-        let file = self.file_of(key).ok()?;
-        if crate::asm_paths::is_absolute(&self.new_base) {
-            return Some(file);
+        let (file, new, now) = self.written(key).ok()?;
+        if now != file {
+            return None;
         }
-        let frame = self.write_frame.as_ref().unwrap_or(folder);
-        let name = file.rsplit(['/', '\\']).next().unwrap_or(&file);
-        crate::asm_paths::relink(&asm::dir_of(&file), name, frame).ok()
+        asm::join(&self.key_base(), &new).ok()
     }
 
     /// The source files the open assembly read, carried over to the paths
@@ -1980,6 +2044,35 @@ impl Relinker {
         };
         state.invalidate();
     }
+}
+
+/// `folder` as the file system spells it (`workspace::canonical`: its
+/// links followed), written as [`asm::join`] writes paths; as it is where
+/// the file system is not at hand (the browser) or the folder is not there.
+fn real_folder(folder: &str) -> String {
+    let spelled = crate::workspace::canonical(std::path::Path::new(folder))
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_string))
+        .unwrap_or_else(|| folder.to_string());
+    asm::join(&spelled, "").unwrap_or(spelled)
+}
+
+/// The file `path` with its folder as [`real_folder`] spells it and its
+/// own name as it is (a file that is a link is not followed, so what may
+/// be read is not widened), as `source_relative` spells a source.
+fn real_file(path: &str) -> String {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let folder = asm::dir_of(path);
+    if folder.is_empty() || name.is_empty() {
+        return asm::join(path, "").unwrap_or_else(|_| path.to_string());
+    }
+    asm::join(&real_folder(&folder), name).unwrap_or_else(|_| path.to_string())
+}
+
+/// Whether `path`'s first part is `..`, so that it climbs out of the
+/// folder it is relative to (a folder named `..x` does not).
+fn climbs(path: &str) -> bool {
+    path.split(['/', '\\']).next() == Some("..")
 }
 
 /// Whether an instance of `doc` refers to its source by a file's path.

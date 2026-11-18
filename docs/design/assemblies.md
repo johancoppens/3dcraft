@@ -635,11 +635,17 @@ two sources read beneath two folders (the agent given another folder between the
 read root that is not the write root a relative save leads to the files read. Each path is made by
 `asm_paths::relink`, which compares two folders only from the same start (the root, one Windows drive in either case,
 one share `\\server\share`) and refuses, never writes another path, where none leads to the file: two drives or
-shares, a source that climbs above the start of the file system, a path longer than a source may have. Then two
-checks, string work only: the last line of defence, that the folder written into joined with the new path is the file
-the old folder joined with the old path was (both written by `asm::join`; in memory, where every path is a name in one
-store, the two names), and that this session, reading a path kept relative beneath its read root, would not read
-another file by it (one that climbs out of the root is not read at all: the root refuses it, the bytes read stay). A
+shares, a source that climbs above the start of the file system, a path longer than a source may have. Folders are
+compared as the file system spells them (`workspace::canonical`, as `source_relative` does: links on the way followed,
+the source file itself as it is, so what may be read is not widened; as text in the browser and the memory store): a
+folder reached through a link, or a root spelled two ways, writes the path that leads there on disk, and an absolute
+path the open assembly keeps is written in its folder's real spelling where that differs, so its own paths lead where
+the file's do. Then two checks: the last line of defence, that the folder written into joined with the new path is
+the file the old folder joined with the old path was (both written by `asm::join`; in memory, where every path is a
+name in one store, the two names), and that this session, reading a path kept relative beneath its read root, would
+not read another file by it. A path whose first part is `..` (not one that starts with two dots, `..x`) climbs out of
+the root and is not read at all: the root refuses it, the bytes read stay, and the save's answer says so
+(`notFollowed`, and a warning the status bar counts). A
 refused source refuses the save, naming the instance and the ways out (another folder, `instance.edit` with a
 `source`, `assembly.pack`), with nothing written; a source that climbs above the start of the file system is kept as it
 is only in a save into the assembly's own folder. An assembly without a file whose sources were never read in this
@@ -918,7 +924,13 @@ alone at another leg scale (four parts' poses, two joints back at the values the
   (`craft3d-cli serve --read-root a --write-root b`, paths written as if the file were beneath the read root). Both
   lead to their files now (a folder per source; the folder written into on disk), and a last check by text before the
   write refuses any path that would not. After the second, the open assembly holds a path that climbs out of its
-  read root: it keeps showing the part, read before, but cannot follow it until opened again by its full path. Still
+  read root: it keeps showing the part, read before, but cannot follow it until opened again by its full path, and
+  the save says so (`notFollowed`). The second round of that review (`review_asm_save_2.rs`) found the check's text
+  comparison wrong in three places: a folder named `..x` taken for one that climbs out of the root (the session then
+  followed one part while the file named another), a save into a folder reached through a link (the path led there by
+  the link's spelling, not on disk), and a root spelled two ways (`alias` and its target: the agent's own session
+  refused the path written, and the reverse refused an honest save); folders are now compared as the file system
+  spells them, and a path climbs only when its first part is `..`. Still
   refused, where the folder is truly not known: an assembly without a file whose sources were never read in this
   session (opened from bytes, or recovered where they cannot be read) saved where there is no read root. A recovered
   assembly without a file reads its sources beneath the first read root of the session it is recovered in (the
