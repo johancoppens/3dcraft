@@ -32,6 +32,7 @@ mod dialogs;
 pub mod dimension;
 mod edit;
 pub mod help;
+pub mod hints;
 pub(crate) mod icons;
 mod joints;
 mod layout;
@@ -47,6 +48,7 @@ pub mod recent;
 mod report;
 pub mod section_handle;
 mod selection;
+pub mod shown;
 pub mod sidepanel;
 pub mod start;
 mod tabs;
@@ -1092,6 +1094,9 @@ pub struct Shell {
     /// Where the dimension of the two things selected was drawn
     /// (`dimension.rs`).
     dimension: Option<dimension::DimensionPlace>,
+    /// The status bar's hint: one given for a while, and what was shown
+    /// (`hints.rs`).
+    hints: hints::Hints,
     /// The box the camera was last fitted to automatically.
     framed: Bbox3,
     /// What the camera follows while it fits by itself: the opening
@@ -1237,6 +1242,9 @@ pub enum StatusSlot {
     Autosave,
     /// What is selected: "3 bodies, 2 faces selected".
     Selection,
+    /// What a click will do now, dim after the selection
+    /// (`shell/hints.rs`): "Shift-click another to measure between".
+    Hint,
     /// The last command's name, and what it answered.
     Command,
     Answer,
@@ -1250,15 +1258,18 @@ pub enum StatusSlot {
 
 /// The order in which the items give way: each is first elided to its
 /// least width in this order, then left out in this order. The units go
-/// last, the answer to the last command first.
-pub const STATUS_YIELD: [StatusSlot; 8] = [
+/// last, the answer to the last command first, then the command and the
+/// renderer's numbers; the selection's words are never elided, and go
+/// only before the units (the UX round of 2026-11-18, V6).
+pub const STATUS_YIELD: [StatusSlot; 9] = [
     StatusSlot::Answer,
     StatusSlot::Command,
+    StatusSlot::Render,
     StatusSlot::Autosave,
-    StatusSlot::Selection,
+    StatusSlot::Hint,
     StatusSlot::Path,
     StatusSlot::Work,
-    StatusSlot::Render,
+    StatusSlot::Selection,
     StatusSlot::Units,
 ];
 
@@ -1280,6 +1291,9 @@ struct StatusItem {
     elide: bool,
     /// As wide as this whatever the text (elided within), when set.
     width: Option<f32>,
+    /// What its hover says, whether it is elided or not: the document's
+    /// path under its name.
+    hover: Option<String>,
 }
 
 impl StatusItem {
@@ -1290,6 +1304,7 @@ impl StatusItem {
             tint,
             elide: false,
             width: None,
+            hover: None,
         }
     }
 
@@ -1300,6 +1315,7 @@ impl StatusItem {
             tint,
             elide: true,
             width: None,
+            hover: None,
         }
     }
 
@@ -1361,6 +1377,14 @@ pub fn fit_status(available: f32, gap: f32, items: &[StatusFit]) -> Vec<Option<f
         }
     }
     vec![None; items.len()]
+}
+
+/// The last part of a file's `path`, its name (`flange.3dcraft`); the
+/// path itself where it has none.
+pub fn file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(path)
 }
 
 fn status_text(state: FeatureState, is_sketch: bool, dof: Option<usize>) -> String {
@@ -1660,6 +1684,7 @@ impl Shell {
             section_handle: section_handle::HandleView::default(),
             notes: notes::NoteMemory::default(),
             dimension: None,
+            hints: hints::Hints::default(),
             framed: Bbox3::EMPTY,
             following: views::Following::Opening,
             themed: false,
@@ -4113,19 +4138,25 @@ impl Shell {
                     units,
                     color(tokens.chrome_text),
                 ));
-                // In the narrow layout the tab names the document.
+                // In the narrow layout the tab names the document. The
+                // file by its name, its path the hover (the UX round of
+                // 2026-11-18, V6: the path took the selection's room).
                 if !self.narrow {
                     let name = status
                         .path
                         .as_deref()
+                        .map(file_name)
                         .or(status.title.as_deref())
                         .unwrap_or("untitled");
                     let dirty = if status.dirty { " *" } else { "" };
-                    items.push(StatusItem::elided(
-                        StatusSlot::Path,
-                        format!("{name}{dirty}"),
-                        color(tokens.chrome_text),
-                    ));
+                    items.push(StatusItem {
+                        hover: status.path.clone(),
+                        ..StatusItem::elided(
+                            StatusSlot::Path,
+                            format!("{name}{dirty}"),
+                            color(tokens.chrome_text),
+                        )
+                    });
                 }
             }
             // The phone's start screen (board m1): the program and its
@@ -4141,13 +4172,27 @@ impl Shell {
                 dim,
             )),
         }
-        if let Some((text, gone)) = self.selection_status() {
-            let tint = if gone {
+        // The selection's words, never elided (they go only before the
+        // units), then dim what a click will do now (`hints.rs`); the
+        // hint not in a bar narrower than `hints::HINT_LEAST_BAR`.
+        let selection = self.selection_status();
+        if let Some((text, gone)) = &selection {
+            let tint = if *gone {
                 color(tokens.chrome_failed)
             } else {
                 color(tokens.chrome_text)
             };
-            items.push(StatusItem::elided(StatusSlot::Selection, text, tint));
+            items.push(StatusItem::fixed(StatusSlot::Selection, text.clone(), tint));
+        }
+        let (hint, hint_wait) = self.hint_now(now, ui.ctx().pointer_hover_pos());
+        soon(hint_wait);
+        if let Some(hint) = hint.filter(|_| ui.available_width() >= hints::HINT_LEAST_BAR) {
+            let text = if selection.is_some() {
+                format!("· {hint}")
+            } else {
+                hint
+            };
+            items.push(StatusItem::elided(StatusSlot::Hint, text, dim));
         }
         if let Some((text, problem)) =
             autosave_text(&self.recovery, status.map(|status| status.id), epoch_now())
@@ -4303,6 +4348,7 @@ impl Shell {
                         | StatusSlot::Path
                         | StatusSlot::Autosave
                         | StatusSlot::Selection
+                        | StatusSlot::Hint
                 )
             })
             .map(|i| (i.slot, i.text.clone()))
@@ -4380,6 +4426,7 @@ impl Shell {
             for (item, width) in items.iter().zip(&widths) {
                 let Some(width) = *width else { continue };
                 let after_command = before == Some(StatusSlot::Command);
+                let after_selection = before == Some(StatusSlot::Selection);
                 before = Some(item.slot);
                 if item.on_the_right() && !copy_shown {
                     copy_button(ui, &mut used);
@@ -4393,12 +4440,15 @@ impl Shell {
                     used += room;
                 } else if !first {
                     // A divider in the middle of the gap, except between a
-                    // command and its answer.
+                    // command and its answer, and the selection and its
+                    // hint.
                     let (gap, _) = ui.allocate_exact_size(
                         egui::vec2(tokens.status_gap, height),
                         egui::Sense::hover(),
                     );
-                    if !(item.slot == StatusSlot::Answer && after_command) {
+                    if !(item.slot == StatusSlot::Answer && after_command)
+                        && !(item.slot == StatusSlot::Hint && after_selection)
+                    {
                         let x = gap.center().x;
                         ui.painter().line_segment(
                             [
@@ -4435,7 +4485,9 @@ impl Shell {
                 }
                 let response = inside.add(label);
                 hits.push((item.slot, response.rect));
-                if width + 0.5 < measure(&item.text) {
+                if let Some(hover) = &item.hover {
+                    response.on_hover_text(hover);
+                } else if width + 0.5 < measure(&item.text) {
                     // The whole text, where the bar is too narrow for it.
                     response.on_hover_text(&item.text);
                 }
