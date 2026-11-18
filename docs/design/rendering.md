@@ -2286,3 +2286,11 @@ is down, a finger touches, the camera moves, the *select other* list is open, a 
 made for the last pick: no work grows with the zoom or a projected length. The control channel places the
 pointer without a click (`ui.pick {x, y, hover: true}`; `ui.get` › `hovered`), which stays until the mouse
 moves over the viewport, so pictures can show hover states.
+
+*Measured on the build server (2026-11-18,* `ui-egui/tests/hover.rs` › `hover_cost_on_thousands_of_faces`*):* 20 × 20
+drilled cubes, 2800 faces and 54 400 triangles, 121 places over the iso view twice. A pick costs 10.1 ms
+(median; 90 % 10.2, most 10.8) in the release build, 11.1 ms in the test profile; placing the pointer with its
+outline 10.7 ms; the direct path's 28 833 lines made again for a new outline 0.7 ms. Above the 4 ms of
+`HOVER_QUICK_MS` and under the round's 16 ms: on such a model the outline waits until the pointer rests
+80 ms; on a model whose picks cost less it follows the pointer, at most 30 times a second. The cost is the
+pick's own (the same a click pays), not the hover's.
