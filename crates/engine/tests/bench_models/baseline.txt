@@ -21,6 +21,8 @@ turbofan refusals 0
 turbofan regenerations 242
 turbofan sketch_solves 101
 turbofan triangles 244433
+turbofan turn_back_searches 0
+turbofan turn_back_spans 204
 engine-block blend_sections 28
 engine-block boolean_edge_candidates 28833
 engine-block boolean_face_candidates 547079
@@ -41,6 +43,8 @@ engine-block refusals 0
 engine-block regenerations 331
 engine-block sketch_solves 166
 engine-block triangles 222413
+engine-block turn_back_searches 0
+engine-block turn_back_spans 0
 impeller blend_sections 3564
 impeller boolean_edge_candidates 161
 impeller boolean_face_candidates 3921
@@ -61,6 +65,8 @@ impeller refusals 0
 impeller regenerations 82
 impeller sketch_solves 63
 impeller triangles 222504
+impeller turn_back_searches 0
+impeller turn_back_spans 2204
 rotor blend_sections 0
 rotor boolean_edge_candidates 0
 rotor boolean_face_candidates 1068
@@ -81,6 +87,8 @@ rotor refusals 0
 rotor regenerations 33
 rotor sketch_solves 28
 rotor triangles 6404
+rotor turn_back_searches 0
+rotor turn_back_spans 34
 holes blend_sections 0
 holes boolean_edge_candidates 2460
 holes boolean_face_candidates 211242
@@ -101,3 +109,5 @@ holes refusals 0
 holes regenerations 755
 holes sketch_solves 503
 holes triangles 60296
+holes turn_back_searches 0
+holes turn_back_spans 0
