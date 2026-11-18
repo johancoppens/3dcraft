@@ -62,6 +62,12 @@ pub enum LineKind {
     /// A curvature comb's spike or its line through the tips
     /// (`craft3d_engine::analysis::combs`).
     Comb,
+    /// The boundary of the face a click would select, under the pointer
+    /// ([`Marks::hover_lines`]).
+    Hover,
+    /// The edge a click would select, or as a dot the vertex
+    /// ([`Marks::hover_edges`], [`Marks::hover_points`]).
+    HoverEdge,
 }
 
 /// The surface analysis the viewport draws (`craft3d_render::analysis`),
@@ -389,6 +395,7 @@ impl LineKind {
             LineKind::MateHot => tokens.mate_hot,
             LineKind::Trace => tokens.trace,
             LineKind::Comb => tokens.comb,
+            LineKind::Hover | LineKind::HoverEdge => tokens.face_highlight,
         }
     }
 
@@ -407,6 +414,8 @@ impl LineKind {
             LineKind::MateHot => tokens.mate_hot_width,
             LineKind::Trace => tokens.trace_width,
             LineKind::Comb => tokens.comb_width,
+            LineKind::Hover => tokens.hover_width,
+            LineKind::HoverEdge => tokens.hover_edge_width,
         }
     }
 
@@ -425,6 +434,7 @@ impl LineKind {
     pub fn dot_radius(self, tokens: &Tokens) -> f32 {
         match self {
             LineKind::Highlight => tokens.highlight_radius,
+            LineKind::Hover | LineKind::HoverEdge => tokens.hover_radius,
             LineKind::Datum => tokens.datum_point_radius,
             _ => tokens.point_radius,
         }
@@ -526,13 +536,23 @@ pub struct Marks {
     /// pointed at or chosen, drawn over the others.
     pub mates: Vec<[Vec3; 2]>,
     pub mates_hot: Vec<[Vec3; 2]>,
+    /// What a click would select, under the pointer (`shell/hover.rs`):
+    /// the boundary of a face, an edge, a vertex. Drawn over the rest
+    /// where it is in sight, left out where a body is in front.
+    pub hover_lines: Vec<[Vec3; 2]>,
+    pub hover_edges: Vec<[Vec3; 2]>,
+    pub hover_points: Vec<Vec3>,
 }
 
 impl Marks {
     /// True when nothing is pointed at (a section and datums are not
     /// marks that point).
     pub fn is_empty(&self) -> bool {
-        self.lines.is_empty() && self.points.is_empty()
+        self.lines.is_empty()
+            && self.points.is_empty()
+            && self.hover_lines.is_empty()
+            && self.hover_edges.is_empty()
+            && self.hover_points.is_empty()
     }
 
     /// These with the selection's marks `chosen` added, leaving out the
@@ -576,6 +596,9 @@ impl Marks {
         self.combs.extend(other.combs);
         self.mates.extend(other.mates);
         self.mates_hot.extend(other.mates_hot);
+        self.hover_lines.extend(other.hover_lines);
+        self.hover_edges.extend(other.hover_edges);
+        self.hover_points.extend(other.hover_points);
         self
     }
 
@@ -1703,6 +1726,17 @@ fn build_overlay(
             line_of(a, b, LineKind::Highlight, true, true, None, 0.0);
         }
     }
+    // What a click would select, where it is in sight.
+    for (kind, lines) in [
+        (LineKind::Hover, marks.map(|marks| &marks.hover_lines)),
+        (LineKind::HoverEdge, marks.map(|marks| &marks.hover_edges)),
+    ] {
+        for &[a, b] in lines.into_iter().flatten() {
+            if let Some([a, b]) = kept(a, b) {
+                line_of(a, b, kind, true, false, None, 0.0);
+            }
+        }
+    }
     for sketch in shown_sketches(scene, marks) {
         let kind = if selected == Some(sketch.feature.as_str()) {
             LineKind::Selected
@@ -1748,6 +1782,18 @@ fn build_overlay(
                 at: [p.x, p.y],
                 kind: LineKind::Highlight,
                 hidden: map.is_some_and(|map| map.covers(p.x, p.y, p.depth)),
+            });
+        }
+    }
+    for point in marks.into_iter().flat_map(|marks| &marks.hover_points) {
+        if kept(*point, *point).is_some()
+            && let Some(p) = projector.project(*point)
+            && !map.is_some_and(|map| map.covers(p.x, p.y, p.depth))
+        {
+            out.points.push(OverlayPoint {
+                at: [p.x, p.y],
+                kind: LineKind::HoverEdge,
+                hidden: false,
             });
         }
     }

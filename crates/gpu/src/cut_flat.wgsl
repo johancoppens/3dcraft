@@ -22,7 +22,7 @@ fn fs_cap(in: CutOut) -> FragmentOut {
         discard;
     }
     var out: FragmentOut;
-    out.color = cap_color();
+    out.color = cap_color(in);
     out.data = cap_data(in);
     {{SET_DEPTH}}
     return out;
@@ -35,7 +35,7 @@ fn fs_cap_color(in: CutOut) -> ColorOut {
         discard;
     }
     var out: ColorOut;
-    out.color = cap_color();
+    out.color = cap_color(in);
     {{SET_DEPTH}}
     return out;
 }
@@ -107,7 +107,7 @@ fn fs_cap_behind(in: CutOut) -> ColorOut {
         discard;
     }
     var out: ColorOut;
-    out.color = cap_color();
+    out.color = cap_color(in);
     {{SET_DEPTH}}
     return out;
 }

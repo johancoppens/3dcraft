@@ -32,6 +32,15 @@ use devices::devices;
 use std::f64::consts::PI;
 
 const CAP: [u8; 3] = [214, 132, 74];
+/// The hatched cap of the window and of `view.render` (2026-11-18): its
+/// paper and its lines (`craft3d_engine::SECTION_PAPER`, `SECTION_HATCH`).
+const PAPER: [u8; 3] = [232, 228, 220];
+const HATCH: craft3d_render::Hatch = craft3d_render::Hatch {
+    ink: [88, 84, 78],
+    spacing_points: 9.0,
+    width_points: 1.0,
+    height_points: None,
+};
 
 struct Scene {
     name: String,
@@ -108,6 +117,7 @@ fn section(origin: Vec3, normal: Vec3) -> Section {
         normal,
         cap: true,
         color: CAP,
+        hatch: None,
     }
 }
 
@@ -296,8 +306,11 @@ fn check(group: &str, scenes: &[Scene]) -> usize {
                 write_evidence(&file, &cpu, &gpu, &band);
             }
             // The cap is not shaded: where both frames have it outside the
-            // band, the colour of an opaque picture is the cap's own.
-            if scene.params.opacity() >= 1.0 {
+            // band, the colour of an opaque picture is the cap's own. (A
+            // hatched cap's colour is worked out per pixel, in `f32` on the
+            // GPU: within the tolerances of any colour, checked below.)
+            let flat = scene.params.section.is_some_and(|s| s.hatch.is_none());
+            if scene.params.opacity() >= 1.0 && flat {
                 for (i, _) in band.iter().enumerate().filter(|&(_, &b)| !b) {
                     if cpu.ids[i] == SECTION_FACE && gpu.ids[i] == SECTION_FACE {
                         assert_eq!(
@@ -506,6 +519,65 @@ fn cut_open_models_match_the_cpu_renderer() {
     scenes_of("teapot_capped", &teapot, true, 3, &mut scenes);
     let compared = check("models", &scenes);
     assert_eq!(compared, 4 * 14 * offscreens().len());
+}
+
+/// `scenes` with the cap hatched: hatched paper, as the window and
+/// `view.render` draw it.
+fn hatched(scenes: Vec<Scene>) -> Vec<Scene> {
+    scenes
+        .into_iter()
+        .map(|mut scene| {
+            if let Some(section) = scene.params.section.as_mut() {
+                section.color = PAPER;
+                section.hatch = Some(HATCH);
+            }
+            scene.name = format!("hatched-{}", scene.name);
+            scene
+        })
+        .collect()
+}
+
+/// The cap hatched (the UX round of 2026-11-18, V1): the GPU's cap
+/// shaders compute the CPU renderer's hatching (`craft3d_render::Hatching`,
+/// a function of the point of the plane in model space) and match its
+/// pictures within the tolerances of `common/mod.rs`: every plane of the
+/// hollow block and the drilled plate, opaque and see-through, with one,
+/// two and three samples per pixel side, in perspective and orthographic.
+/// The lines are there: the CPU's opaque pictures have paper and ink.
+#[test]
+fn hatched_caps_match_the_cpu_renderer() {
+    let mut scenes = Vec::new();
+    scenes_of("hollow", &hollow_block(), true, 0, &mut scenes);
+    scenes_of("drilled", &drilled_plate(), true, 1, &mut scenes);
+    let scenes = hatched(scenes);
+    for scene in scenes.iter().filter(|s| s.params.opacity() >= 1.0) {
+        let cpu = craft3d_render::render(&scene.mesh, &scene.camera, &scene.params).unwrap();
+        let cap: Vec<&[u8]> = (0..cpu.ids.len())
+            .filter(|&i| cpu.ids[i] == SECTION_FACE)
+            .map(|i| &cpu.rgb[i * 3..i * 3 + 3])
+            .collect();
+        let paper = cap.iter().filter(|px| **px == PAPER).count();
+        let ink = cap.iter().filter(|px| px[0] < 160).count();
+        assert!(
+            cap.is_empty() || (paper > 0 && ink > 0),
+            "{}: {} cap pixels, {paper} paper, {ink} inked",
+            scene.name,
+            cap.len()
+        );
+    }
+    let compared = check("hatched", &scenes);
+    assert_eq!(compared, 2 * 14 * offscreens().len());
+}
+
+/// The same at a thousandth, a million times, and ten million units from
+/// the origin: the GPU takes the point's place in the plane relative to a
+/// whole number of spacings near the camera's target, so a model far from
+/// the origin hatches as one at it.
+#[test]
+fn hatched_caps_at_other_scales_match_the_cpu_renderer() {
+    let scenes = hatched(scales_scenes());
+    assert!(scenes.len() > 30);
+    check("hatched-scales", &scenes);
 }
 
 /// A camera inside a cut-open body, close to the cap, and one just outside

@@ -131,6 +131,7 @@ fn the_turbofan_cut_open_in_the_studio_look() {
         normal: Vec3::new(0.0, 0.0, 1.0),
         cap: true,
         color: [214, 88, 64],
+        hatch: None,
     };
     let toward = Vec3::new(0.55, -1.0, 0.45);
     picture(
@@ -253,6 +254,7 @@ fn a_see_through_housing_over_gears_in_the_studio_look() {
         normal: Vec3::new(0.0, 0.0, 1.0),
         cap: true,
         color: [214, 88, 64],
+        hatch: None,
     };
     picture(
         &mut session,

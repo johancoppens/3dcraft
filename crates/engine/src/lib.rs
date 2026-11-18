@@ -196,8 +196,9 @@ pub use scene::{
 };
 pub use scrub::{ScrubPosition, ScrubRegeneration, step_caption};
 pub use section::{
-    MAX_SECTION_EXTENT, MAX_SECTION_SNAPS, SECTION_CAP_COLOR, SectionPlane, SectionSnap,
-    SectionSpec, SnapKind,
+    MAX_SECTION_EXTENT, MAX_SECTION_SNAPS, SECTION_HATCH, SECTION_HATCH_SPACING,
+    SECTION_HATCH_WIDTH, SECTION_INK, SECTION_PAPER, SectionPlane, SectionSnap, SectionSpec,
+    SnapKind,
 };
 pub use selection::{
     MAX_SELECTION, SelectMode, SelectionItem, SelectionKind, SelectionView,

@@ -5246,7 +5246,10 @@ fn render_picture(
         background,
         section: section.map(|(plane, cap)| craft3d_render::Section {
             cap,
-            ..plane.section(crate::section::SECTION_CAP_COLOR)
+            ..plane.section(
+                crate::section::SECTION_PAPER,
+                Some(crate::section::SECTION_HATCH),
+            )
         }),
         ..RenderParams::default()
     };

@@ -3,6 +3,7 @@
 //! tolerance and the rule for what is cut away from here, so a cut-open
 //! model is the same model in both.
 
+use crate::{Camera, Projection};
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_tess::Mesh;
 
@@ -45,8 +46,180 @@ pub struct Section {
     /// crosses, which is right for closed bodies only: a mesh of open
     /// sheets is cut without a cap.
     pub cap: bool,
-    /// The colour of the cap, drawn as it is (not shaded).
+    /// The colour of the cap, drawn as it is (not shaded): its paper when
+    /// it is hatched.
     pub color: [u8; 3],
+    /// Lines of ink on the cap, fixed to the model ([`Hatch`]); `None`:
+    /// the cap is one flat colour.
+    pub hatch: Option<Hatch>,
+}
+
+/// How the cap of a section is hatched: lines of `ink` at 45° on the
+/// paper ([`Section::color`]), drawn as a function of the point of the
+/// plane in model space, so they move with the part and not with the
+/// screen (docs/design/rendering.md › *The cut's hatching*).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hatch {
+    /// The colour of the lines.
+    pub ink: [u8; 3],
+    /// The lines stand at most this many points apart at the camera's
+    /// target, and more than half as many: their spacing is the largest
+    /// power of two of the model unit within it ([`hatch_spacing`]).
+    pub spacing_points: f64,
+    /// How wide a line is, in points.
+    pub width_points: f64,
+    /// The height of the picture in points (the window's view); `None`
+    /// takes a pixel of the picture for a point (`view.render`). A picture
+    /// of another size of the same view keeps its lines on the same places
+    /// of the model.
+    pub height_points: Option<f64>,
+}
+
+/// The plane's frame for its unit normal `n`, in which the hatching is
+/// drawn: `U` the world axis most square to `n` (the least `|n·axis|`; of
+/// equals the first of X, Y, Z), made square to it, and `V = n × U`.
+/// `None` for a normal that is not a unit vector's direction.
+pub fn hatch_frame(n: Vec3) -> Option<(Vec3, Vec3)> {
+    let mut best = Vec3::X;
+    let mut least = f64::INFINITY;
+    for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+        let along = n.dot(axis).abs();
+        if along < least {
+            least = along;
+            best = axis;
+        }
+    }
+    let u = (best - n * best.dot(n)).normalized()?;
+    let v = n.cross(u).normalized()?;
+    (u.is_finite() && v.is_finite()).then_some((u, v))
+}
+
+/// The spacing of the lines for `span` model units (the most the spacing
+/// may be): the largest power of two not greater than it, `2^k` for any
+/// integer `k`. Exact: the number's exponent with its fraction cleared.
+/// `None` for a span that is not a positive normal number.
+pub fn hatch_spacing(span: f64) -> Option<f64> {
+    (span.is_finite() && span >= f64::MIN_POSITIVE)
+        .then(|| f64::from_bits(span.to_bits() & 0xfff0_0000_0000_0000))
+}
+
+/// The distance of a point from the nearest line, in model units: the
+/// lines lie at `w = k · spacing` for every integer `k`, `w` the point's
+/// coordinate across them, `(u + v) / √2`.
+pub fn hatch_distance(w: f64, spacing: f64) -> f64 {
+    (w - spacing * (w / spacing).round()).abs()
+}
+
+/// How much of a pixel a line covers, 0 to 1: `d` the distance of the
+/// pixel's point from the line and `half_width` half the line's width,
+/// both in pixels. Worked out, not sampled: `0.5 + half_width - d`,
+/// clamped, a ramp one pixel wide across the line's edge. A number that
+/// is not one covers nothing.
+pub fn hatch_coverage(d: f64, half_width: f64) -> f64 {
+    let c = 0.5 + half_width - d;
+    if c.is_nan() { 0.0 } else { c.clamp(0.0, 1.0) }
+}
+
+/// [`Hatch`] resolved for one picture: the plane's frame, the spacing for
+/// the camera, and the size of a pixel. Both renderers make it here, so
+/// they draw the same lines (`craft3d_gpu` hands its numbers to the cap's
+/// shaders).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hatching {
+    /// The plane's frame ([`hatch_frame`]).
+    pub u: Vec3,
+    pub v: Vec3,
+    /// How far apart the lines are, in model units: a power of two.
+    pub spacing: f64,
+    /// Half a line's width, in pixels of the picture.
+    pub half_width: f64,
+    /// The model units one pixel covers: at distance 1 along the view in
+    /// perspective (times a point's own distance), anywhere in an
+    /// orthographic view.
+    pub pixel: f64,
+    pub perspective: bool,
+    pub paper: [u8; 3],
+    pub ink: [u8; 3],
+}
+
+impl Hatching {
+    /// The hatching of a cap of `paper` with `hatch` on the plane of unit
+    /// normal `normal`, in a picture `height` pixels high seen with
+    /// `camera`. The spacing is the largest power of two of the model unit
+    /// within `hatch.spacing_points` points at the camera's target: the
+    /// model units a point covers there are the view's height there over
+    /// the picture's height in points. Orbit and pan keep it; zoom changes
+    /// it in steps of two, and every line at one spacing is a line at half
+    /// of it. `None` when there is nothing to hatch: a camera that looks
+    /// nowhere, sizes that are not numbers.
+    pub fn new(
+        normal: Vec3,
+        paper: [u8; 3],
+        hatch: &Hatch,
+        camera: &Camera,
+        height: u32,
+    ) -> Option<Hatching> {
+        let (u, v) = hatch_frame(normal)?;
+        let axes = camera.axes().ok()?;
+        let pixels = f64::from(height.max(1));
+        let points = hatch
+            .height_points
+            .filter(|p| p.is_finite() && *p > 0.0)
+            .unwrap_or(pixels);
+        let perspective = matches!(axes.projection, Projection::Perspective { .. });
+        let pixel = 2.0 * axes.half / pixels;
+        // How far the target lies along the view: the scale of the
+        // picture there.
+        let at_target = if perspective {
+            (camera.target - axes.eye).dot(axes.forward)
+        } else {
+            1.0
+        };
+        let per_point = pixel * at_target * pixels / points;
+        let spacing = hatch_spacing(hatch.spacing_points * per_point)?;
+        let half_width = 0.5 * hatch.width_points * pixels / points;
+        (pixel.is_finite() && pixel > 0.0 && half_width.is_finite()).then_some(Hatching {
+            u,
+            v,
+            spacing,
+            half_width,
+            pixel,
+            perspective,
+            paper,
+            ink: hatch.ink,
+        })
+    }
+
+    /// How much ink covers the pixel that shows the point `p` of the plane
+    /// at `distance` along the view, 0 to 1 ([`hatch_coverage`]).
+    pub fn coverage(&self, p: Vec3, distance: f64) -> f64 {
+        let w = (p.dot(self.u) + p.dot(self.v)) * std::f64::consts::FRAC_1_SQRT_2;
+        let d = hatch_distance(w, self.spacing);
+        let q = if self.perspective {
+            self.pixel * distance
+        } else {
+            self.pixel
+        };
+        if !(q.is_finite() && q > 0.0) {
+            return 0.0;
+        }
+        hatch_coverage(d / q, self.half_width)
+    }
+
+    /// The cap's colour at `p`: the paper mixed with the ink by
+    /// [`Self::coverage`], rounded per channel. Unshaded.
+    pub fn color(&self, p: Vec3, distance: f64) -> [u8; 3] {
+        let c = self.coverage(p, distance);
+        let mut out = self.paper;
+        for (channel, ink) in out.iter_mut().zip(self.ink) {
+            let paper = f64::from(*channel);
+            // Between two bytes: within 0..=255.
+            *channel = (paper + (f64::from(ink) - paper) * c)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+        }
+        out
+    }
 }
 
 /// A [`Section`] made ready for one mesh: the unit normal, the tolerance
@@ -451,6 +624,7 @@ mod tests {
                 normal,
                 cap: true,
                 color: [1, 2, 3],
+                hatch: None,
             },
             &bounds,
         )
@@ -465,6 +639,7 @@ mod tests {
             normal,
             cap: true,
             color: [0; 3],
+            hatch: None,
         };
         for (origin, normal) in [
             (Vec3::ZERO, Vec3::ZERO),
@@ -550,6 +725,7 @@ mod tests {
                     normal: Vec3::Z,
                     cap: true,
                     color: [0; 3],
+                    hatch: None,
                 },
                 &bounds,
             )
@@ -580,5 +756,164 @@ mod tests {
         // Above everything and below everything: nothing.
         assert!(at(2.0).outline(&mesh).is_empty());
         assert!(at(-2.0).outline(&mesh).is_empty());
+    }
+
+    const PAPER: [u8; 3] = [232, 228, 220];
+    const INK: [u8; 3] = [88, 84, 78];
+
+    fn hatch(height_points: Option<f64>) -> Hatch {
+        Hatch {
+            ink: INK,
+            spacing_points: 9.0,
+            width_points: 1.0,
+            height_points,
+        }
+    }
+
+    /// Looking down at the plane z = 0 from 100 above, `half_height`
+    /// units above and below the target.
+    fn from_above(half_height: f64) -> Camera {
+        Camera {
+            eye: Vec3::new(0.0, 0.0, 100.0),
+            target: Vec3::ZERO,
+            up: Vec3::Y,
+            projection: Projection::Orthographic { half_height },
+        }
+    }
+
+    #[test]
+    fn a_point_on_a_line_is_ink_and_half_a_spacing_off_is_paper() {
+        // 100 units over 400 pixels: a quarter of a unit per pixel, 2.25
+        // units in 9 points: the lines stand 2 apart.
+        let h = Hatching::new(Vec3::Z, PAPER, &hatch(None), &from_above(50.0), 400).unwrap();
+        assert_eq!(h.spacing, 2.0);
+        assert_eq!(h.half_width, 0.5);
+        // On the plane z = 0: U is X (X and Y are both square to the
+        // normal; X comes first), V is Z × X = Y.
+        assert_eq!((h.u, h.v), (Vec3::X, Vec3::Y));
+        // w = (x + y) / √2: the point (√2, √2) lies on the line w = 2.
+        let r = std::f64::consts::SQRT_2;
+        for k in [-3.0, -1.0, 0.0, 1.0, 5.0] {
+            let on = Vec3::new(k * r, k * r, 0.0);
+            assert_eq!(h.color(on, 100.0), INK, "{k}");
+            assert!((h.coverage(on, 100.0) - 1.0).abs() < 1e-9);
+            // Half a spacing off, w = 2k + 1: paper.
+            let off = Vec3::new((k + 0.5) * r, (k + 0.5) * r, 0.0);
+            assert_eq!(h.color(off, 100.0), PAPER, "{k}");
+            assert_eq!(h.coverage(off, 100.0), 0.0);
+        }
+        // Along a line (u up, v down by as much) nothing changes.
+        let along = Vec3::new(r + 7.25, r - 7.25, 0.0);
+        assert_eq!(h.color(along, 100.0), INK);
+        // A line one point wide: a ramp one pixel wide on either side of
+        // its edge, half a pixel from its middle. A quarter of a pixel off
+        // is three quarters ink, one pixel off a quarter.
+        let w_off = |pixels: f64| {
+            let w = 2.0 + pixels * 0.25;
+            Vec3::new(w / r, w / r, 0.0)
+        };
+        assert!((h.coverage(w_off(0.25), 100.0) - 0.75).abs() < 1e-9);
+        assert!((h.coverage(w_off(1.0), 100.0) - 0.0).abs() < 1e-9);
+        assert!((h.coverage(w_off(-0.5), 100.0) - 0.5).abs() < 1e-9);
+        // The paper and the ink mixed, rounded per channel.
+        assert_eq!(h.color(w_off(0.5), 100.0), [160, 156, 149]);
+    }
+
+    #[test]
+    fn the_spacing_is_the_largest_power_of_two_within_nine_points() {
+        for (span, spacing) in [
+            (1.0, 1.0),
+            (1.5, 1.0),
+            (0.75, 0.5),
+            (2.25, 2.0),
+            (1e6, 524_288.0),
+            (3e-7, 1.0 / 4_194_304.0),
+        ] {
+            assert_eq!(hatch_spacing(span), Some(spacing), "{span}");
+        }
+        for span in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e-310] {
+            assert_eq!(hatch_spacing(span), None, "{span}");
+        }
+        // Three zooms of the same view: a quarter, a half and a whole unit
+        // per point at the target give 2, 4 and 8; a view a thousand times
+        // smaller 2⁻⁹.
+        for (half_height, spacing) in [(50.0, 2.0), (100.0, 4.0), (200.0, 8.0), (0.05, 1.0 / 512.0)]
+        {
+            let h =
+                Hatching::new(Vec3::Z, PAPER, &hatch(None), &from_above(half_height), 400).unwrap();
+            assert_eq!(h.spacing, spacing, "{half_height}");
+        }
+        // In perspective, by the target's distance: 90° at 100 from the
+        // target over 400 pixels is half a unit per pixel there.
+        let camera = Camera {
+            projection: Projection::Perspective { fov_y_deg: 90.0 },
+            ..from_above(1.0)
+        };
+        let h = Hatching::new(Vec3::Z, PAPER, &hatch(None), &camera, 400).unwrap();
+        assert_eq!(h.spacing, 4.0);
+        assert!(h.perspective);
+        // A point twice as far covers twice as much per pixel: the same
+        // offset from a line is half as many pixels.
+        let r = std::f64::consts::SQRT_2;
+        let near = Vec3::new(2.0 * r + 0.1, 2.0 * r, 0.0);
+        let w = (near.x + near.y) * std::f64::consts::FRAC_1_SQRT_2;
+        let d = hatch_distance(w, 4.0);
+        assert!((h.coverage(near, 100.0) - hatch_coverage(d / 0.5, 0.5)).abs() < 1e-9);
+        assert!((h.coverage(near, 200.0) - hatch_coverage(d / 1.0, 0.5)).abs() < 1e-9);
+        // The picture's height in points, when it is not its pixels: 400
+        // pixels as 200 points is twice the units per point and a line
+        // two pixels wide.
+        let h = Hatching::new(Vec3::Z, PAPER, &hatch(Some(200.0)), &from_above(50.0), 400).unwrap();
+        assert_eq!(h.spacing, 4.0);
+        assert_eq!(h.half_width, 1.0);
+        // The same view in a picture of twice the pixels and the same
+        // points: the same lines.
+        let big =
+            Hatching::new(Vec3::Z, PAPER, &hatch(Some(200.0)), &from_above(50.0), 800).unwrap();
+        assert_eq!(big.spacing, 4.0);
+        assert_eq!(big.half_width, 2.0);
+    }
+
+    #[test]
+    fn every_line_at_twice_the_spacing_is_a_line_at_the_spacing() {
+        let spacing = 0.125;
+        for k in -40..=40 {
+            let w = f64::from(k) * 2.0 * spacing;
+            assert_eq!(hatch_distance(w, 2.0 * spacing), 0.0, "{k}");
+            assert_eq!(hatch_distance(w, spacing), 0.0, "{k}");
+            // Between two lines at twice the spacing lies one at the
+            // spacing, none at twice it.
+            let between = w + spacing;
+            assert_eq!(hatch_distance(between, spacing), 0.0, "{k}");
+            assert_eq!(hatch_distance(between, 2.0 * spacing), spacing, "{k}");
+        }
+    }
+
+    #[test]
+    fn the_planes_frame_is_square_and_starts_from_the_squarest_axis() {
+        assert_eq!(hatch_frame(Vec3::Z), Some((Vec3::X, Vec3::Y)));
+        // Square to X: Y and Z tie, Y comes first.
+        assert_eq!(hatch_frame(Vec3::X), Some((Vec3::Y, Vec3::Z)));
+        assert_eq!(hatch_frame(-Vec3::Z), Some((Vec3::X, -Vec3::Y)));
+        for n in [
+            Vec3::new(1.0, 1.0, 1.0),
+            Vec3::new(0.3, -1.0, 0.2),
+            Vec3::new(-0.9, 0.1, 0.4),
+        ] {
+            let n = n.normalized().unwrap();
+            let (u, v) = hatch_frame(n).unwrap();
+            assert!(u.dot(n).abs() < 1e-12 && v.dot(n).abs() < 1e-12 && u.dot(v).abs() < 1e-12);
+            assert!((u.length() - 1.0).abs() < 1e-12 && (v.length() - 1.0).abs() < 1e-12);
+            assert!((u.cross(v) - n).length() < 1e-12, "right-handed");
+        }
+        // No direction, no frame; nor a hatching.
+        assert_eq!(hatch_frame(Vec3::ZERO), None);
+        assert_eq!(
+            Hatching::new(Vec3::ZERO, PAPER, &hatch(None), &from_above(50.0), 400),
+            None
+        );
+        // Sizes that are not numbers cover nothing.
+        assert_eq!(hatch_coverage(f64::NAN, 0.5), 0.0);
+        assert_eq!(hatch_coverage(0.0, f64::NAN), 0.0);
     }
 }
