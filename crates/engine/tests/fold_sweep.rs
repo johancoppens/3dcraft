@@ -457,6 +457,71 @@ fn mesh_costs(name: &str, doc: &Document) {
     }
 }
 
+/// The faces the sweep found folds on, asked side by side: the offset by
+/// the tolerance out of the material (folds where the face bends towards
+/// its outside more tightly than the tolerance: concave, air between two
+/// layers) and into it (convex: an edge of material thinner than the
+/// tolerance).
+#[test]
+fn the_propeller_and_the_hull_by_side() {
+    for file in [
+        "docs/examples/published/ship-propeller.3dcraft",
+        "crates/engine/tests/fillet_fade/hull.3dcraft",
+    ] {
+        let Ok(bytes) = std::fs::read(root().join(file)) else {
+            println!("SIDE {file} | not read");
+            continue;
+        };
+        let Ok(doc) = craft3d_format::from_bytes(&bytes) else {
+            println!("SIDE {file} | unreadable");
+            continue;
+        };
+        let regen = craft3d_regen::regenerate(&doc);
+        for (_, body) in regen.bodies() {
+            let t = body.working_tolerance(doc.tolerance.linear);
+            for (index, face) in body.faces.iter().enumerate() {
+                let nurbs = match &face.surface {
+                    Surface::Nurbs(n) => n.clone(),
+                    Surface::Bezier(b) => NurbsSurface::from_bezier(b).unwrap(),
+                    _ => continue,
+                };
+                let Ok(spans) = nurbs.bezier_spans() else {
+                    continue;
+                };
+                let outward = if face.reversed { -t } else { t };
+                for (side, d) in [("concave", outward), ("convex", -outward)] {
+                    let mut folds = 0_usize;
+                    let mut first = String::new();
+                    for span in &spans {
+                        let Some(own) = span_surface(&span.patch) else {
+                            continue;
+                        };
+                        if let Err(OffsetError::Folds { at, radius }) = regular(&own, d) {
+                            folds += 1;
+                            if first.is_empty() {
+                                let p = nurbs.eval(
+                                    span.u.0 + (span.u.1 - span.u.0) * at.0,
+                                    span.v.0 + (span.v.1 - span.v.0) * at.1,
+                                );
+                                first = format!(
+                                    "({:.4}, {:.4}, {:.4}) radius {radius:.3e}",
+                                    p.x, p.y, p.z
+                                );
+                            }
+                        }
+                    }
+                    if folds > 0 {
+                        println!(
+                            "SIDE {file} | {} faces | face {index} | {side}: {folds} spans fold, first at {first} | t {t:e}",
+                            body.faces.len()
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn what_a_mesh_that_follows_curvature_costs() {
     let dir = common::workdir("fold-sweep", "costs");

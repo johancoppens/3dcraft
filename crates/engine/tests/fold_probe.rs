@@ -344,6 +344,62 @@ fn tolerance_regularity(surface: &Surface, tol: f64) -> String {
     )
 }
 
+/// [`tolerance_regularity`] side by side: the offset by the tolerance out
+/// of the material (the face's outward side: where it folds, the face
+/// bends towards the outside more tightly than the tolerance, a concave
+/// bend: two layers with air between them closer than the tolerance) and
+/// into it (a convex bend: an edge of material thinner than the
+/// tolerance), each asked of every span; the folds of each, and the first
+/// places.
+fn by_side(surface: &Surface, tol: f64, reversed: bool) -> String {
+    let nurbs = match surface {
+        Surface::Nurbs(n) => n.clone(),
+        Surface::Bezier(b) => NurbsSurface::from_bezier(b).unwrap(),
+        _ => return "analytic".to_string(),
+    };
+    let Ok(spans) = nurbs.bezier_spans() else {
+        return "no spans".to_string();
+    };
+    let outward = if reversed { -tol } else { tol };
+    let mut said = String::new();
+    for (side, d) in [
+        ("out of the material (concave)", outward),
+        ("into it (convex)", -outward),
+    ] {
+        let (mut folds, mut no_normal, mut unproven) = (0_usize, 0_usize, 0_usize);
+        let mut places: Vec<String> = Vec::new();
+        for span in &spans {
+            let Some(own) = span_surface(&span.patch) else {
+                continue;
+            };
+            match craft3d_geom::offset::regular(&own, d) {
+                Err(craft3d_geom::offset::OffsetError::Folds { at, radius }) => {
+                    folds += 1;
+                    let u = span.u.0 + (span.u.1 - span.u.0) * at.0;
+                    let v = span.v.0 + (span.v.1 - span.v.0) * at.1;
+                    let p = nurbs.eval(u, v);
+                    if places.len() < 3 {
+                        places.push(format!(
+                            "({:.4}, {:.4}, {:.4}) radius {radius:.3e}",
+                            p.x, p.y, p.z
+                        ));
+                    }
+                }
+                Err(craft3d_geom::offset::OffsetError::NoNormal { .. }) => no_normal += 1,
+                Err(craft3d_geom::offset::OffsetError::Unproven { .. }) => unproven += 1,
+                _ => {}
+            }
+        }
+        let _ = std::fmt::Write::write_fmt(
+            &mut said,
+            format_args!(
+                "{side}: folds {folds} {places:?} no normal {no_normal} unproven {unproven}; "
+            ),
+        );
+    }
+    said
+}
+
 /// The least radius of curvature over a 600 × 120 grid of the surface's
 /// domain, leaving out samples within four tolerances of a tip (a sample
 /// where the parameter directions are parallel to 1e-6 or one vanishes):
@@ -533,6 +589,10 @@ fn report(case: &str, body: &Body, tol: &Tolerance, faces: &[usize], finest: f64
             println!(
                 "FOLD {case} face {index} curvature: {}",
                 curvature_scan(&face.surface, tol.linear)
+            );
+            println!(
+                "FOLD {case} face {index} by side: {}",
+                by_side(&face.surface, tol.linear, face.reversed)
             );
         }
     }
