@@ -2346,7 +2346,9 @@ cut.**
 - *Limits, plainly.* (1) Two parts whose places differ by a multiple of 4 share a direction; where they touch,
   the cut's thicker outline (`Tokens::cut_outline_width`, the UX verdict's fix 6, which stays) is what tells
   them apart. Measured on the published examples (`engine/tests/hatch_classes.rs`, which prints it; pairs
-  whose boxes touch, an upper bound of the parts that do): see the dev log of 2026-11-18. (2) **An overlap**
+  whose boxes touch, an upper bound of the parts that do; Strix run 44414324938): the toggle clamp 5 of 29
+  pairs share a direction, the scissor jack 11 of 55, the walking machine 130 of 688, the radial engine 203
+  of 943, the hydraulic cylinder 12 of 56: 17 to 22 %, against 25 % for directions at random. (2) **An overlap**
   (an interference, a fault) of parts of different classes is cross-hatched (the lines of classes 0 and 1
   together, `Hatching::coverage_mask`), and the pick names no one body there; an overlap of two parts of the
   same class cancels in that class's count and shows as a hole, as every overlap did before. The same fault
@@ -2356,8 +2358,13 @@ cut.**
   that two bodies around a point give 2, not 0.
 - *Cost.* CPU: one range lookup per triangle and a byte instead of a bool per sample; GPU: the count 4 bytes a
   sample instead of 1 and the cap reading four channels; the hatching is still worked out once per sample.
-  Measured on the build server: see the dev log of 2026-11-18 (`render/tests/hatch_classes.rs` prints the
-  reference renderer with and without classes for 1, 2, 5, 162 and 10 000 bodies).
+  Measured on the build server (Strix run 44414324938): the reference renderer in release with classes and
+  without, 400 × 300 cut through 1, 2, 5, 162 and 10 000 blocks (12 to 120 000 triangles), 0.98 to 1.00
+  times the time (17.1 against 17.3 ms for 10 000): nothing measurable. The GPU, 162 balls of about 600
+  triangles cut through at 1280 × 800, a frame with its read back: RADV 14.1 ms cut without classes, 14.5
+  with; radeonsi 11.0 and 11.1; llvmpipe 85.1 and 85.1 (`gpu/tests/section.rs` ›
+  `what_the_classes_cost_a_frame`; both with the four-channel count: the one-channel count of before is not
+  in this build to compare).
 - *Unchanged:* a mesh without classes, and every body of class 0, is drawn byte for byte as before (pinned by
   `render/src/section.rs` › `class_zero_is_hatched_byte_for_byte_as_before_the_classes` against the old
   arithmetic, and `render/tests/hatch_classes.rs` › `without_classes_the_picture_is_byte_for_byte_as_before`);
