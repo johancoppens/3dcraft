@@ -314,7 +314,7 @@ fn face_folds(body: &Body, face: &Face, t: f64) -> Found {
             let ((u0, u1), (v0, v1)) = surface.domain();
             out.push((
                 surface.eval(0.5 * (u0 + u1), 0.5 * (v0 + v1)),
-                FoldKind::NotProven { why: *why },
+                FoldKind::NotProven { why },
             ));
             return out;
         }
