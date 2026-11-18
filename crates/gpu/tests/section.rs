@@ -589,10 +589,15 @@ fn hatched_caps_at_other_scales_match_the_cpu_renderer() {
     check("hatched-scales", &scenes);
 }
 
-/// Parts that touch and overlap, as an assembly's: blocks in a row, each
-/// touching the next, a pin through two of them and a block that sinks
-/// into its neighbour (an interference), one mesh with a run of face ids
-/// per part. Returns the mesh and the first face of each part.
+/// Parts side by side and overlapping, as an assembly's: blocks in a row,
+/// each a fiftieth of a unit short of the next (under a pixel: their caps
+/// meet on the picture; two faces that touch in one plane would be a tie
+/// behind a see-through front, which the renderers break each their own
+/// way, as `studio_cut.rs` says of the block on the plate; the CPU tests
+/// of `render/tests/hatch_classes.rs` have blocks that touch), a pin
+/// through two of them and a block that sinks into its neighbour (an
+/// interference), one mesh with a run of face ids per part. Returns the
+/// mesh and the first face of each part.
 fn parts_in_a_row(scale: f64, origin: Vec3) -> (Mesh, Vec<u32>) {
     let place = |x: f64, y: f64, z: f64| {
         let p = origin + Vec3::new(x, y, z) * scale;
@@ -603,7 +608,7 @@ fn parts_in_a_row(scale: f64, origin: Vec3) -> (Mesh, Vec<u32>) {
         bodies.push(
             primitives::block(
                 &place(f64::from(k) * 2.0, 0.0, 0.0),
-                2.0 * scale,
+                1.98 * scale,
                 3.0 * scale,
                 2.0 * scale,
             )

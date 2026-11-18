@@ -420,6 +420,16 @@ fn studio_cap_classes(in: VertexOut) -> u32 {
     return hatch_mask_of(textureLoad(parity_map, vec2<i32>(floor(in.clip.xy)), 0));
 }
 
+// `studio_cap_classes` for a fragment of the cap, 0 for any other: what
+// `studio_of` hatches the cap with. Only for the passes that have the
+// count (group 2).
+fn cap_classes_of(in: VertexOut) -> u32 {
+    if in.face == CAP_FACE {
+        return studio_cap_classes(in);
+    }
+    return 0u;
+}
+
 fn cut_drops(in: VertexOut) -> bool {
     if in.face == CAP_FACE {
         let p = scene.eye.xyz + in.rel;
@@ -1648,8 +1658,10 @@ fn through(in: VertexOut, shaded: Shaded) -> vec3<f32> {
     return shaded.light + shaded.transmit * absorbed * seen;
 }
 
-// The studio light of a fragment (`render_studio_frame`'s shading).
-fn studio_of(in: VertexOut) -> Shaded {
+// The studio light of a fragment (`render_studio_frame`'s shading);
+// `classes` the hatch classes cut under a fragment of the cap
+// (`cap_classes_of`), 0 for a whole picture, which has no cap.
+fn studio_of(in: VertexOut, classes: u32) -> Shaded {
     var base = scene.base.rgb;
     if (in.color >> 24u) != 0u {
         base = vec3<f32>(
@@ -1668,7 +1680,7 @@ fn studio_of(in: VertexOut) -> Shaded {
     if in.face == CAP_FACE {
         // The cap: its hatched paper (`section_hatch_color`), lit like a
         // face without a finish.
-        base = round(section_hatch_color(in.rel, studio_cap_classes(in)) * 255.0);
+        base = round(section_hatch_color(in.rel, classes) * 255.0);
         metallic = 0.0;
         roughness = DEFAULT_ROUGHNESS;
         slot = 0u;
@@ -1696,7 +1708,7 @@ fn studio_of(in: VertexOut) -> Shaded {
 fn fs_studio(in: VertexOut) -> FragmentOut {
     var out: FragmentOut;
     out.data = data_of(in);
-    out.color = vec4<f32>(display(studio_of(in).light), 1.0);
+    out.color = vec4<f32>(display(studio_of(in, 0u).light), 1.0);
     {{SET_DEPTH}}
     return out;
 }
@@ -1704,7 +1716,7 @@ fn fs_studio(in: VertexOut) -> FragmentOut {
 @fragment
 fn fs_studio_color(in: VertexOut) -> ColorOut {
     var out: ColorOut;
-    out.color = vec4<f32>(display(studio_of(in).light), 1.0);
+    out.color = vec4<f32>(display(studio_of(in, 0u).light), 1.0);
     {{SET_DEPTH}}
     return out;
 }
@@ -1733,7 +1745,7 @@ fn fs_studio_post(in: VertexOut) -> PostLightOut {
         discard;
     }
     var out: PostLightOut;
-    let shaded = studio_of(in);
+    let shaded = studio_of(in, cap_classes_of(in));
     var light = through(in, shaded);
     var weight = shaded.weight;
     if studio.see.z > 0.5 && !highlighted(in.face) {
@@ -1757,7 +1769,7 @@ fn fs_studio_peel(in: VertexOut) -> PostLightOut {
         discard;
     }
     var out: PostLightOut;
-    let shaded = studio_of(in);
+    let shaded = studio_of(in, cap_classes_of(in));
     out.light = bits3(shaded.light, 0.0);
     out.weight = bits3(shaded.weight, shaded.roughness);
     {{SET_DEPTH}}
@@ -1795,7 +1807,7 @@ fn fs_studio_behind(in: VertexOut) -> PostLightOut {
         discard;
     }
     var out: PostLightOut;
-    let shaded = studio_of(in);
+    let shaded = studio_of(in, cap_classes_of(in));
     out.light = bits3(shaded.light, 0.0);
     out.weight = bits3(shaded.weight, shaded.roughness);
     {{SET_DEPTH}}

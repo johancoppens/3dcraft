@@ -207,8 +207,11 @@ fn section_hatch_color(rel: vec3<f32>, mask: u32) -> vec3<f32> {
     }
     let m = mask & ((1u << HATCH_CLASSES) - 1u);
     var c = 0.0;
-    if countOneBits(m) == 1u {
-        c = hatch_class_coverage(rel, firstTrailingBit(m), spacing);
+    // One class: its own lines (no `countOneBits`, which OpenGL ES 3.0
+    // and so WebGL2 lack).
+    if m == 1u || m == 2u || m == 4u || m == 8u {
+        let one = select(select(select(3u, 2u, m == 4u), 1u, m == 2u), 0u, m == 1u);
+        c = hatch_class_coverage(rel, one, spacing);
     } else if m != 0u {
         c = max(hatch_class_coverage(rel, 0u, spacing), hatch_class_coverage(rel, 1u, spacing));
     }
