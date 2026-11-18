@@ -23,6 +23,7 @@ use craft3d_engine::{Access, Session, Workspace};
 use craft3d_gpu::ADAPTER_HINT;
 use craft3d_ui_egui::backend::RendererChoice;
 use craft3d_ui_egui::direct::headless_render_state;
+use craft3d_ui_egui::viewport::LineKind;
 use craft3d_ui_egui::{Shell, Tokens};
 use egui::{Pos2, vec2};
 use serde_json::{Value, json};
@@ -126,6 +127,35 @@ fn trace_segments(shape: &egui::Shape) -> usize {
         }
         _ => 0,
     }
+}
+
+/// How many lines of the trace in the overlay the window paints over the
+/// picture have a box (grown by the trace's stroke and a point) that
+/// meets the viewport, in the window's points.
+fn trace_lines_over_view(shell: &Shell) -> usize {
+    let viewport = shell.viewport_rect().unwrap();
+    let (overlay, [w, h]) = shell.overlay();
+    let (sx, sy) = (
+        f64::from(viewport.width()) / f64::from(w.max(1)),
+        f64::from(viewport.height()) / f64::from(h.max(1)),
+    );
+    let place = |p: [f64; 2]| {
+        egui::pos2(
+            viewport.left() + (p[0] * sx) as f32,
+            viewport.top() + (p[1] * sy) as f32,
+        )
+    };
+    let grown = Tokens::default().trace_width + 1.0;
+    overlay
+        .lines
+        .iter()
+        .filter(|line| line.kind == LineKind::Trace)
+        .filter(|line| {
+            viewport.intersects(
+                egui::Rect::from_two_pos(place(line.from), place(line.to)).expand(grown),
+            )
+        })
+        .count()
 }
 
 /// Pixels near `ink`.
@@ -235,20 +265,45 @@ fn a_parts_trace_is_in_the_picture_on_screen_on_both_window_paths() {
     assert!(studio > 300, "{studio} pixels of the trace, studio");
 
     // The window without the direct path: the renderer's image as a
-    // texture, its lines painted over it by egui (not into the texture):
-    // the trace is among the segments the frame paints: its 64 segments,
-    // each in one piece or more where the bodies hide part of it.
+    // texture, its lines painted over it by egui (not into the texture).
     let mut cpu = Shell::with_renderer(RendererChoice::Cpu);
     let mut window = Window::new();
     look_down(&mut cpu, &mut s);
     window.frames(&mut cpu, &mut s, 4);
     assert!(!cpu.draws_directly());
     assert!(window.uploaded(cpu.viewport_size()).is_some());
+    // Fit frames the bodies and sketches, not the trace (`frame_of`): the
+    // view is on the 4 mm crank, and most of the 15 mm circle lies off it
+    // (on the build server, 2026-11-18: a view of 740 × 627 points, 4 of
+    // the 64 segments' boxes meeting it, the others thousands of points
+    // away). The window paints exactly the trace's segments whose boxes
+    // (grown by the stroke and a point) meet the view, none of the rest:
+    // what egui's tessellator would leave out anyway (the review of the
+    // runaway: before, all 64 were painted, 60 of them unseen, and this
+    // test counted those).
+    let over = trace_lines_over_view(&cpu);
+    assert!((1..64).contains(&over), "{over} trace lines over the view");
+    assert_eq!(
+        window.trace_segments, over,
+        "the trace's segments painted, framed on the crank"
+    );
+    // With the whole circle in view (radius 15 mm about the axis, seen
+    // from 80 mm at 30 degrees: ±21 mm across the view's height), the
+    // trace is among the segments the frame paints: its 64 segments,
+    // each in one piece or more where the bodies hide part of it.
+    call(
+        &mut cpu,
+        &mut s,
+        "ui.set",
+        json!({"camera": {"target": [0.0, 0.0, 2.0], "distance": 80.0, "autoFit": false}}),
+    );
+    window.frames(&mut cpu, &mut s, 4);
     assert!(
         window.trace_segments >= 64,
         "{} segments of the trace painted",
         window.trace_segments
     );
+    assert_eq!(window.trace_segments, trace_lines_over_view(&cpu));
     // Cleared: gone from the window.
     run(&mut s, "view.trace", json!({"clear": true}));
     window.frames(&mut cpu, &mut s, 4);
