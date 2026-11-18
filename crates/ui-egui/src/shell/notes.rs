@@ -457,7 +457,7 @@ pub(crate) fn paint_head(
         PinKind::Done => {
             // A quiet tick in a small ring.
             let small = r * 0.75;
-            let stroke = egui::Stroke::new(1.2, faded(ink));
+            let stroke = egui::Stroke::new(1.5, faded(ink));
             painter.circle_filled(centre, small, faded(tokens.note_fill));
             painter.circle_stroke(centre, small, stroke);
             let knee = centre + egui::vec2(-0.1 * small, 0.35 * small);
@@ -470,7 +470,7 @@ pub(crate) fn paint_head(
         PinKind::Astray => {
             // A note whose place is gone: a grey ring with its number.
             painter.circle_filled(centre, r, faded(tokens.note_fill));
-            painter.circle_stroke(centre, r, egui::Stroke::new(1.5, faded(ink)));
+            painter.circle_stroke(centre, r, egui::Stroke::new(2.0, faded(ink)));
             painter.text(
                 centre,
                 egui::Align2::CENTER_CENTER,
@@ -496,8 +496,8 @@ pub(crate) fn paint_head(
 /// stroke included): its light edge lies just outside.
 pub(crate) fn head_outer(kind: PinKind, r: f32) -> f32 {
     match kind {
-        PinKind::Done => r * 0.75 + 0.6,
-        PinKind::Astray => r + 0.75,
+        PinKind::Done => r * 0.75 + 0.75,
+        PinKind::Astray => r + 1.0,
         PinKind::ForAgent | PinKind::ForYou => r,
     }
 }

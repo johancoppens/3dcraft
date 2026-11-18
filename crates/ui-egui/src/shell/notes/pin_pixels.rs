@@ -330,7 +330,7 @@ pub(super) fn draw_pins(rgb: &mut [u8], size: [u32; 2], pins: &[Pin], tokens: &T
         match pin.kind {
             PinKind::Done => {
                 let small = r * 0.75;
-                let stroke = 1.2 * scale;
+                let stroke = 1.5 * scale;
                 canvas.disc(head, small, tokens.note_fill, alpha);
                 canvas.ring(head, small, stroke, ink, alpha);
                 let knee = [head[0] - 0.1 * small, head[1] + 0.35 * small];
@@ -345,7 +345,7 @@ pub(super) fn draw_pins(rgb: &mut [u8], size: [u32; 2], pins: &[Pin], tokens: &T
             }
             PinKind::Astray => {
                 canvas.disc(head, r, tokens.note_fill, alpha);
-                canvas.ring(head, r, 1.5 * scale, ink, alpha);
+                canvas.ring(head, r, 2.0 * scale, ink, alpha);
                 canvas.text(
                     &pin.id.to_string(),
                     head,
