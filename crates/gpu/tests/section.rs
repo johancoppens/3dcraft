@@ -595,7 +595,7 @@ fn hatched_caps_at_other_scales_match_the_cpu_renderer() {
 /// which keeps only its top, leaves enough of the model in the picture to
 /// compare), one mesh with a run of face ids per part. With `apart`, each
 /// block is a fiftieth of a unit short of the next instead
-/// ([`SEE_THROUGH_TIE`]). Returns the mesh and the first face of each part.
+/// ([`stands_apart`]). Returns the mesh and the first face of each part.
 fn parts_in_a_row(scale: f64, origin: Vec3, apart: bool) -> (Mesh, Vec<u32>) {
     let width = if apart { 1.98 } else { 2.0 };
     let place = |x: f64, y: f64, z: f64| {
@@ -645,28 +645,30 @@ fn parts_in_a_row(scale: f64, origin: Vec3, apart: bool) -> (Mesh, Vec<u32>) {
     (mesh, firsts)
 }
 
-/// The two see-through framings in which the blocks of [`parts_in_a_row`]
-/// stand apart: with blocks that truly touch both renderers differ there,
-/// with classes and with every part of class 0 alike (Strix run
-/// 44423776124: the readback renderer 217 pixels on RADV and radeonsi, 222
-/// on llvmpipe, all in x 57..=93, y 125..=155 of the first; the viewport 88,
-/// 111 and 88 plain pixels over its tolerance in the second), because two
-/// faces that touch in one plane lie behind the see-through cap there and
-/// the renderers break that tie differently: a fault older than the
-/// classes (docs/design/rendering.md › *A direction per part*, the open
-/// finding). [`the_see_through_tie_of_touching_parts_with_and_without_classes`]
+/// Whether a scene of [`parts_in_a_row`] stands its blocks apart: every
+/// see-through framing of it. With blocks that truly touch the renderers
+/// differ there, with classes and with every part of class 0 alike (Strix
+/// run 44423776124: `round0-x1-seethrough-highlight` 217 pixels on RADV and
+/// radeonsi, 222 on llvmpipe, the same at class 0; the viewport's
+/// `z0-seethrough-highlight` 88, 111 and 88 pixels over its tolerance, the
+/// same at class 0; run 44424100573, the others then: `round0-y1-…` 215, the
+/// viewport's `oblique-…` 234), because two faces that touch in one plane
+/// lie behind the see-through front and the renderers break that tie
+/// differently: a fault older than the classes (docs/design/rendering.md ›
+/// *A direction per part*, the open finding).
+/// [`the_see_through_tie_of_touching_parts_with_and_without_classes`]
 /// shows it on blocks that truly touch.
-const SEE_THROUGH_TIE: [&str; 2] = [
-    "classes-round0-x1-seethrough-highlight",
-    "classes-z0-seethrough-highlight",
-];
+fn stands_apart(name: &str) -> bool {
+    name.contains("seethrough")
+}
 
 /// The scenes of [`parts_in_a_row`] with each part of the class of its
 /// place: every plane of it, opaque and see-through, one to three samples
 /// a pixel side, hatched, at three scales; and two zooms of one plane, the
 /// second across a step of the spacing and seen nearly edge on (the fade).
-/// The blocks truly touch but in the scenes named in `apart`.
-fn classed_scenes(apart: &[&str]) -> Vec<Scene> {
+/// With `apart`, the see-through framings stand their blocks apart
+/// ([`stands_apart`]); every other has blocks that truly touch.
+fn classed_scenes(apart: bool) -> Vec<Scene> {
     let mut scenes = Vec::new();
     for (round, (scale, origin)) in [
         (1.0, Vec3::ZERO),
@@ -692,7 +694,7 @@ fn classed_scenes(apart: &[&str]) -> Vec<Scene> {
         );
         for mut scene in hatched(of_row) {
             scene.colors = colors.clone();
-            if apart.iter().any(|name| scene.name.contains(name)) {
+            if apart && stands_apart(&scene.name) {
                 scene.mesh = spaced.clone();
             }
             scenes.push(scene);
@@ -756,7 +758,7 @@ fn off_pixels(
     (count, bounds)
 }
 
-/// The see-through tie of touching parts: the two see-through framings of
+/// The see-through tie of touching parts: the see-through framings of
 /// blocks that truly touch, with their hatch classes and with every part
 /// of class 0, compared CPU against GPU (the readback renderer and the
 /// viewport), printed as `TIE` lines: the pixels outside the band that
@@ -767,13 +769,13 @@ fn off_pixels(
 #[test]
 #[ignore = "an open finding older than the hatch classes: the see-through tie of faces that touch"]
 fn the_see_through_tie_of_touching_parts_with_and_without_classes() {
-    let readback: Vec<Scene> = classed_scenes(&[])
+    let readback: Vec<Scene> = classed_scenes(false)
         .into_iter()
-        .filter(|s| s.name.contains("classes-round0-x1-seethrough"))
+        .filter(|s| stands_apart(&s.name))
         .collect();
-    let viewport: Vec<Scene> = viewport_scenes(&[])
+    let viewport: Vec<Scene> = viewport_scenes(false)
         .into_iter()
-        .filter(|s| s.name.contains("classes-z0-seethrough"))
+        .filter(|s| s.name.contains("classes") && stands_apart(&s.name))
         .collect();
     assert!(!readback.is_empty() && !viewport.is_empty());
     let mut worst = 0;
@@ -922,7 +924,7 @@ fn what_the_classes_cost_a_frame() {
 /// spacing. The CPU pictures have all four directions and an overlap.
 #[test]
 fn hatch_classes_of_parts_match_the_cpu_renderer() {
-    let scenes = classed_scenes(&SEE_THROUGH_TIE);
+    let scenes = classed_scenes(true);
     let first = &scenes[0];
     let cpu =
         craft3d_render::render_colored(&first.mesh, &first.colors, &first.camera, &first.params)
@@ -1251,13 +1253,13 @@ fn name_of(adapter: &wgpu::Adapter) -> String {
 /// hollow block, the drilled plate and the teapot, opaque and see-through.
 #[test]
 fn the_viewports_cut_open_picture_matches_the_cpu_renderer_away_from_the_edges() {
-    let scenes = viewport_scenes(&SEE_THROUGH_TIE);
+    let scenes = viewport_scenes(true);
     viewport_check(&scenes);
 }
 
 /// The scenes of the viewport's comparison
 /// ([`the_viewports_cut_open_picture_matches_the_cpu_renderer_away_from_the_edges`]).
-fn viewport_scenes(apart: &[&str]) -> Vec<Scene> {
+fn viewport_scenes(apart: bool) -> Vec<Scene> {
     // And parts of four hatch classes, touching and overlapping, hatched:
     // the cap's colour of a pixel on the border of two classes is the
     // mean of its samples' (`cut_samples.wgsl`'s `cap_color_samples`).
@@ -1299,7 +1301,7 @@ fn viewport_scenes(apart: &[&str]) -> Vec<Scene> {
                     scenes.len(),
                     &params,
                 );
-                let mesh = if *name == "classes" && apart.iter().any(|n| scene.name.contains(n)) {
+                let mesh = if *name == "classes" && apart && stands_apart(&scene.name) {
                     spaced.clone()
                 } else {
                     scene.mesh.clone()
