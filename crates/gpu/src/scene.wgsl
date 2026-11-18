@@ -77,11 +77,78 @@ struct Scene {
     // y: half a line's width in pixels; z: the model units of a pixel
     // (at distance 1 in perspective); w: 1 in perspective.
     section_hatch: vec4<f32>,
-    // rgb: the ink, as bytes over 255.
+    // rgb: the ink, as bytes over 255. w: the ink of the lines at odd
+    // multiples of the spacing (`Hatching::odd_ink`).
     section_ink: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> scene: Scene;
+
+// `craft3d_render::hatch_coverage`: the ramp about a line, `d` its
+// distance in pixels and `half` half its width.
+fn hatch_ramp(d: f32, half: f32) -> f32 {
+    return clamp(0.5 + half - d, 0.0, 1.0);
+}
+
+// `craft3d_render::hatch_fade`: how much of the lines' own pattern is drawn
+// where they stand `across` pixels apart on screen.
+fn hatch_fade(across: f32) -> f32 {
+    return clamp(across - 2.0, 0.0, 1.0);
+}
+
+// The colour of the section's cap at the point `rel` (from the eye) of its
+// plane, in 0..1: `craft3d_render::Hatching::color`, the paper mixed with
+// the ink by `Hatching::coverage`. Without hatching (a spacing of 0) the
+// paper. `cut.wgsl`'s cap and the studio look's take it.
+fn section_hatch_color(rel: vec3<f32>) -> vec3<f32> {
+    let paper = scene.section_cap.rgb;
+    let spacing = scene.section_hatch.x;
+    if !(spacing > 0.0) {
+        return paper;
+    }
+    // The model units of a pixel at the point (`Hatching::pixel_at`) and
+    // the ray's direction there.
+    var q = scene.section_hatch.z;
+    var r = scene.forward.xyz;
+    if scene.section_hatch.w > 0.5 {
+        q = q * dot(rel, scene.forward.xyz);
+        r = rel;
+    }
+    let half = scene.section_hatch.y;
+    let odd_ink = scene.section_ink.w;
+    // `Hatching::mean`: the lines' share of the plane.
+    let a = 0.5 + half;
+    var line_area = a * a;
+    if a >= 1.0 {
+        line_area = 2.0 * half;
+    }
+    let mean = clamp(q * line_area * (1.0 + odd_ink) / (2.0 * spacing), 0.0, 1.0);
+    // `Hatching::footprint`: how far across the lines a pixel's step moves
+    // the point of the plane; none edge on.
+    let n = scene.section.xyz;
+    let t = (scene.section_u.xyz + scene.section_v.xyz) * 0.70710678118654752;
+    let nr = dot(n, r);
+    var c = mean;
+    if abs(nr) > 1e-6 * length(r) && q > 0.0 {
+        let ax = dot(t, scene.right.xyz) - dot(t, r) * dot(n, scene.right.xyz) / nr;
+        let ay = dot(t, scene.up.xyz) - dot(t, r) * dot(n, scene.up.xyz) / nr;
+        let f = q * sqrt(ax * ax + ay * ay);
+        if f > 0.0 {
+            let p = scene.eye.xyz + rel;
+            let u = dot(p, scene.section_u.xyz) + scene.section_u.w;
+            let v = dot(p, scene.section_v.xyz) + scene.section_v.w;
+            let w = (u + v) * 0.70710678118654752;
+            let two = 2.0 * spacing;
+            let d_even = abs(w - two * round(w / two));
+            let d_odd = abs(w - spacing - two * round((w - spacing) / two));
+            let line = max(hatch_ramp(d_even / q, half), odd_ink * hatch_ramp(d_odd / q, half));
+            let across = spacing / f;
+            let fade = hatch_fade(2.0 * across) + odd_ink * (hatch_fade(across) - hatch_fade(2.0 * across));
+            c = clamp(mean + fade * (line - mean), 0.0, 1.0);
+        }
+    }
+    return mix(paper, scene.section_ink.rgb, c);
+}
 
 struct VertexIn {
     @location(0) position: vec3<f32>,

@@ -223,7 +223,7 @@ fn the_cut_is_hatched_paper_and_never_the_selections_colour() {
     }
     assert!(cap > 2_000, "{cap} pixels of the cap");
     assert!(
-        paper > cap / 4 && inked > cap / 20,
+        paper > cap / 4 && inked > cap / 40,
         "{cap}: {paper} paper, {inked} inked"
     );
     assert!(lit > 2_000, "{lit} pixels of the flange lit");

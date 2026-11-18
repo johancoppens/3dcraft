@@ -132,33 +132,11 @@ fn in_cap_box(in: CutOut) -> bool {
 }
 
 // The cap's colour: drawn as it is, and seen through like a body's face.
-// Hatched paper (`craft3d_render::Hatching::color`): the paper mixed with
-// the ink by how much of the pixel a line covers, worked out from the
-// point of the plane under the fragment, so the lines are fixed to the
-// model. Without hatching (a spacing of 0) the paper alone.
+// Hatched paper (`scene.wgsl`'s `section_hatch_color`, the CPU's
+// `Hatching::color`), worked out from the point of the plane under the
+// fragment, so the lines are fixed to the model.
 fn cap_color(in: CutOut) -> vec4<f32> {
-    let paper = scene.section_cap.rgb;
-    let spacing = scene.section_hatch.x;
-    if !(spacing > 0.0) {
-        return vec4<f32>(paper, 1.0);
-    }
-    let p = scene.eye.xyz + in.rel;
-    let u = dot(p, scene.section_u.xyz) + scene.section_u.w;
-    let v = dot(p, scene.section_v.xyz) + scene.section_v.w;
-    // `hatch_distance`: from the nearest line, in model units.
-    let w = (u + v) * 0.70710678118654752;
-    let d = abs(w - spacing * round(w / spacing));
-    // The model units of a pixel at the point.
-    var q = scene.section_hatch.z;
-    if scene.section_hatch.w > 0.5 {
-        q = q * dot(in.rel, scene.forward.xyz);
-    }
-    // `hatch_coverage`.
-    var c = 0.0;
-    if q > 0.0 {
-        c = clamp(0.5 + scene.section_hatch.y - d / q, 0.0, 1.0);
-    }
-    return vec4<f32>(mix(paper, scene.section_ink.rgb, c), 1.0);
+    return vec4<f32>(section_hatch_color(in.rel), 1.0);
 }
 
 // The cap's id and the bits of its view distance: the distance of the

@@ -85,10 +85,11 @@ pub(crate) fn section_uniforms(mesh: &GpuMesh, cut: Option<&Cut>) -> [[f64; 4]; 
 /// (`section_u`, `section_v`, `section_hatch`, `section_ink`): the CPU
 /// renderer's [`Hatching`] for the same plane, camera and picture, with
 /// `u` and `v` taken relative to the mesh origin and a whole number of
-/// spacings near the camera's target taken off (`√2` spacings of `u` are
-/// one of `w`: no line moves), so that they are small numbers when they
-/// become `f32` and a model far from the origin hatches as one at it. All
-/// zero without hatching: the cap is then its paper alone.
+/// two spacings near the camera's target taken off (`2√2` spacings of `u`
+/// are two of `w`: no line moves, none changes its ink), so that they are
+/// small numbers when they become `f32` and a model far from the origin
+/// hatches as one at it. All zero without hatching: the cap is then its
+/// paper alone. The ink's fourth number is `Hatching::odd_ink`.
 pub(crate) fn hatch_uniforms(
     mesh: &GpuMesh,
     camera: &Camera,
@@ -102,7 +103,9 @@ pub(crate) fn hatch_uniforms(
     let Some(h) = Hatching::new(cut.normal, cut.color, &hatch, camera, params.height) else {
         return none;
     };
-    let step = h.spacing * std::f64::consts::SQRT_2;
+    // Two spacings of `w`: the lines at odd and at even multiples stay
+    // what they are.
+    let step = 2.0 * h.spacing * std::f64::consts::SQRT_2;
     let shift = |axis: Vec3| {
         let whole = step * (camera.target.dot(axis) / step).round();
         if whole.is_finite() { whole } else { 0.0 }
@@ -117,7 +120,7 @@ pub(crate) fn hatch_uniforms(
             h.pixel,
             if h.perspective { 1.0 } else { 0.0 },
         ],
-        [r, g, b, 0.0],
+        [r, g, b, h.odd_ink],
     ]
 }
 

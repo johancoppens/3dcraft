@@ -2250,7 +2250,7 @@ and `…_at_other_scales_…` hold every plane of two models, opaque and see-thr
 and the scales 1e-3, 1e6 and 1e7 from the origin, to it.
 
 **What follows as before:** the cap's outline in the edges' colour; the same in light and dark; see-through
-blends the hatched cap like any face; the studio look lights the cap as a face of its paper, not hatched yet;
+blends the hatched cap like any face; the studio look lights the cap as a face (hatched since the second pass, below);
 the id buffer and the pick of the cap are unchanged. **Not yet:** the part's own tint and a direction per part
 (the ground `paper` mixed 70 : 30 with the body's colour, the ink the body's colour mixed 50 : 50 with black,
 the lines of bodies of odd index the other way, `w = (u − v) / √2`): the GPU finds the cap by counting and
@@ -2264,6 +2264,46 @@ same colour, the function's, orthographic and in perspective; the cap without ha
 nothing else changes); `ui-egui/tests/hatch.rs` (the window hands the tokens on for the viewport's height in
 points; no pixel of the cut is within 40 of the selection's colour with the flange selected; `ui.screenshot`
 and `view.render` show paper and ink).
+
+*Second pass (2026-11-18), after the pictures of the window:*
+
+- *Seen nearly edge on* the lines' spacing on screen falls under a pixel and the picture showed moiré (arcs) in
+  both renderers. The coverage now knows how far apart the lines stand on screen across them: the footprint
+  `f` of a pixel across the lines (`Hatching::footprint`), from the plane's frame and the camera alone, as
+  both renderers have them: a step `δ` of one pixel along the camera's right or up moves the point of the
+  plane by `δ − r (n·δ) / (n·r)` (`r` the ray, `n` the normal), and `f` is the length of the change of `w`
+  over the two steps, times the pixel's size at the point. No screen derivatives: the CPU renderer has none.
+  With `s = L / f` the lines' distance in pixels, the pattern is blended into its mean tone (the lines' share
+  of the plane: a line's ink over the spacing, `Hatching::mean`) by `hatch_fade`: all of the pattern from
+  3 pixels, none at 2 and below, linearly between. Face on, at the target, `s` is the 4.5 to 9 points of the
+  spacing: nothing fades.
+- *A step of the spacing* doubled the lines at once. The lines at odd multiples of the spacing now have the
+  ink `Hatching::odd_ink`: all of it while the span is up to 1.5 spacings (`HATCH_FADE_FROM`), none as it
+  reaches 2, linearly between; the lines at even multiples keep all of theirs. Zooming out, every second line
+  fades away before the spacing doubles; at the step the picture is the same on both sides (the even lines
+  are the next spacing's lines, the faded odd ones are gone; the fade of the moiré takes `2s` where the odd
+  lines are faint). Zooming in, the new lines fade in after it halves. No line ever moves. The GPU's shift of
+  `u` and `v` is a whole number of *two* spacings, so a line keeps its parity.
+- *The studio look* hatches the cap too, both renderers (`studio/mod.rs`, the cap's base colour; `studio.wgsl`,
+  `studio_of`): lit paper with the lines. The GPU's function moved to `scene.wgsl`
+  (`section_hatch_color`), which every module begins with, for the plain cap and the studio's.
+- *A direction per body* (parts that touch read as one, the hatching running on across them): the CPU pick
+  knows the body by what was cut away in front of a sample (`render::cut_faces`, named by the engine); the
+  renderers find the cap by the parity of all fragments cut away. Per body it would take a parity per class
+  of bodies: on the GPU an `Rgba8Unorm` parity target instead of `R8Unorm` (the blend "one minus what was
+  there" toggles each channel on its own), the fragment's class (the body's index modulo 4) in the vertex
+  data (a spare bit field of the finish or optics word, given by the engine per face: the renderer has no
+  bodies today), every parity pass and every cap entry reading the class (`cut_flat`, `cut_samples`,
+  `cut_samples_persample`, the studio's own parity), and on the CPU four parities per sample. The cap's class
+  is then the channel that is odd (two odd channels: two bodies overlap there, no cap, as now), and the lines
+  run at one of four angles. More than half a day across the parity passes of three variants and the studio:
+  not started.
+- *A selected thing's hidden outline* is drawn dimmed across the cap, as across a body (the selection is
+  drawn so that an edge pointed at is found from the wrong side). Leaving it out behind the cap needs the
+  line test to know the cap is the occluder: on the GPU the distance texture the lines test against carries
+  no face (`distance.wgsl` could mark the cap's distance, `lines.wgsl` leave a hidden fragment out there); on
+  the CPU the stretches of a line are split by depth only and would have to be split by occluder. Not a
+  small mend: not done.
 
 ### What a click would select, under the pointer (2026-11-18)
 

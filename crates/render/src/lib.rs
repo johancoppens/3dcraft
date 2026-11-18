@@ -13,8 +13,9 @@ mod section;
 pub mod studio;
 
 pub use section::{
-    Cut, Hatch, Hatching, SECTION_FACE, SECTION_MARGIN, SECTION_SNAP, Section, Slabs,
-    hatch_coverage, hatch_distance, hatch_frame, hatch_spacing, section_bounds,
+    Cut, HATCH_FADE_FROM, Hatch, Hatching, SECTION_FACE, SECTION_MARGIN, SECTION_SNAP, Section,
+    Slabs, hatch_coverage, hatch_distance, hatch_fade, hatch_frame, hatch_odd_ink, hatch_spacing,
+    section_bounds,
 };
 
 use craft3d_math::{Bbox3, Vec3};
