@@ -245,6 +245,11 @@ impl Shell {
                     if carried && self.notes.reply.as_ref().is_some_and(|(at, _)| *at == id) {
                         self.notes.reply = Some((id, String::new()));
                     }
+                    // The row may have moved to another group: the panel
+                    // follows it.
+                    if self.state.notes.selected == Some(id) {
+                        self.notes.scroll_to = Some(id);
+                    }
                 }
                 Some(Err(why)) => {
                     self.notes.act = None;
@@ -368,8 +373,14 @@ impl Shell {
                         // under the first heading when that is the one.
                         let own_line = for_you.is_empty() || for_agent.is_empty();
                         if own_line {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                link(ui, &mut hits, &mut asked);
+                            // In a row of its own (a layout from the right
+                            // straight in the column would take all the
+                            // height there is).
+                            ui.horizontal(|ui| {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| link(ui, &mut hits, &mut asked),
+                                );
                             });
                         }
                         if unpinned > 0 {
@@ -692,8 +703,10 @@ fn note_row(
             crate::theme::color_alpha(s.selection, 40),
         );
     }
+    // Into view, as little as it takes (a click on its pin, an act that
+    // moved it to another group).
     if cx.scroll_to == Some(row.id) {
-        ui.scroll_to_rect(rect, Some(egui::Align::Center));
+        ui.scroll_to_rect(rect, None);
     }
     hits.push((format!("note:{}", row.id), rect));
     if shown.response.clicked() && editing.is_none() && asked.is_none() {
