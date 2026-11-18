@@ -489,7 +489,54 @@ fn the_propeller_and_the_hull_by_side() {
                     continue;
                 };
                 let outward = if face.reversed { -t } else { t };
-                for (side, d) in [("concave", outward), ("convex", -outward)] {
+                // The least concave and convex radii over a dense grid of
+                // the surface (signed by the face's outward side).
+                let ((u0, u1), (v0, v1)) = face.surface.domain();
+                let (mut concave, mut convex) =
+                    ((f64::INFINITY, Vec3::ZERO), (f64::INFINITY, Vec3::ZERO));
+                let n = 400;
+                for i in 0..=n {
+                    for j in 0..=n {
+                        let u = u0 + (u1 - u0) * i as f64 / n as f64;
+                        let v = v0 + (v1 - v0) * j as f64 / n as f64;
+                        let Some((k, h)) = craft3d_geom::curvature::curvatures(&face.surface, u, v)
+                        else {
+                            continue;
+                        };
+                        let root = (h * h - k).max(0.0).sqrt();
+                        let sign = if face.reversed { -1.0 } else { 1.0 };
+                        let (a, b) = (sign * (h + root), sign * (h - root));
+                        let towards = a.max(b);
+                        let away = (-a).max(-b);
+                        let p = face.surface.eval(u, v);
+                        if towards > 0.0 && 1.0 / towards < concave.0 {
+                            concave = (1.0 / towards, p);
+                        }
+                        if away > 0.0 && 1.0 / away < convex.0 {
+                            convex = (1.0 / away, p);
+                        }
+                    }
+                }
+                println!(
+                    "SIDE {file} | {} faces | face {index} | sampled least concave radius {:.3e} ({:.3} t) at ({:.4}, {:.4}, {:.4}), least convex {:.3e} ({:.3} t) at ({:.4}, {:.4}, {:.4})",
+                    body.faces.len(),
+                    concave.0,
+                    concave.0 / t,
+                    concave.1.x,
+                    concave.1.y,
+                    concave.1.z,
+                    convex.0,
+                    convex.0 / t,
+                    convex.1.x,
+                    convex.1.y,
+                    convex.1.z
+                );
+                for (side, d) in [
+                    ("concave", outward),
+                    ("convex", -outward),
+                    ("concave at half", 0.5 * outward),
+                    ("concave at a quarter", 0.25 * outward),
+                ] {
                     let mut folds = 0_usize;
                     let mut first = String::new();
                     for span in &spans {

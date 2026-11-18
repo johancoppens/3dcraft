@@ -365,6 +365,8 @@ fn by_side(surface: &Surface, tol: f64, reversed: bool) -> String {
     for (side, d) in [
         ("out of the material (concave)", outward),
         ("into it (convex)", -outward),
+        ("out by half the tolerance", 0.5 * outward),
+        ("out by a quarter", 0.25 * outward),
     ] {
         let (mut folds, mut no_normal, mut unproven) = (0_usize, 0_usize, 0_usize);
         let mut places: Vec<String> = Vec::new();
