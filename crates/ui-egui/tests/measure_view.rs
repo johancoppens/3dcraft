@@ -858,3 +858,48 @@ fn a_range_fits_the_card_at_the_panels_least_width() {
     let keep = target(&shell, "keep");
     assert!(keep.top() >= number.bottom(), "{keep:?} under {number:?}");
 }
+
+/// The notes' review of 2026-11-18: on the Features tab in a short window
+/// (1280 × 460, and a phone's 390 × 500 with the drawer open) the card of
+/// one face selected is drawn short, and keeps its actions: Fly to it,
+/// Measure and Copy name, each inside the window.
+#[test]
+fn in_a_short_window_the_card_of_one_face_keeps_fly_measure_and_copy_name() {
+    for (width, height, drawer) in [(1280.0, 460.0, false), (390.0, 500.0, true)] {
+        let mut session = part();
+        let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+        let mut window = Window::new(width, height);
+        window.frames(&mut shell, &mut session, 3);
+        if drawer {
+            call(
+                &mut shell,
+                &mut session,
+                "ui.set",
+                json!({"panels": {"drawer": true}}),
+            );
+        }
+        select(
+            &mut session,
+            "face",
+            json!({"in": "Bevel", "hole": true, "inside": [[0, 0, -10], [30, 40, 30]]}),
+            1,
+        );
+        window.frames(&mut shell, &mut session, 3);
+        let targets = shell.side_hits().targets.clone();
+        for name in ["fly", "measure", "copy name"] {
+            let rect = targets
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, r)| *r)
+                .unwrap_or_else(|| panic!("{width} × {height}: no {name}: {targets:?}"));
+            assert!(
+                rect.width() > 0.0
+                    && rect.left() >= 0.0
+                    && rect.right() <= width
+                    && rect.top() >= 0.0
+                    && rect.bottom() <= height,
+                "{width} × {height}: {name} at {rect:?}"
+            );
+        }
+    }
+}
