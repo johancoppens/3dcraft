@@ -167,7 +167,10 @@ impl Shell {
     }
 
     /// Runs one of the tab's acts on note `id`; `carried`: it carries the
-    /// reply field's text, emptied when it is taken.
+    /// reply field's text, emptied when it is taken. One at a time: while
+    /// an act waits for its answer (the engine busy with an agent's long
+    /// command), another Enter or click sends nothing more, so a reply is
+    /// never given twice (review-ux-notes, finding 3).
     fn note_act(
         &mut self,
         command: &'static str,
@@ -175,6 +178,9 @@ impl Shell {
         id: u64,
         carried: bool,
     ) {
+        if self.notes.act.is_some() {
+            return;
+        }
         self.notes.act_error = None;
         self.notes.act = Some((id, carried));
         self.side_queue(command, params, Some(NOTE_ACT.to_string()));

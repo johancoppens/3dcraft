@@ -615,14 +615,39 @@ pub struct NoteRow {
 }
 
 /// An agent in a few words: its name ("Claude Code"), "an agent" for one
-/// without a name. An agent that calls itself "you" never reads as the
-/// person: "you (agent)" (review-pins 2b).
+/// without a name. An agent whose name reads as "you" never reads as the
+/// person: "you (agent)" (review-pins 2b), compared as a person sees it,
+/// not by its bytes ([`reads_as_you`]).
 pub fn agent_words(name: Option<&str>) -> String {
     match name {
-        Some(name) if name.trim().eq_ignore_ascii_case("you") => format!("{name} (agent)"),
+        Some(name) if reads_as_you(name) => format!("{name} (agent)"),
         Some(name) => name.to_string(),
         None => "an agent".to_string(),
     }
+}
+
+/// Whether `name` reads as "you" to a person: any case, spaces and
+/// punctuation around it left out, and the letters that look like y, o
+/// and u in other scripts and forms taken for them (Cyrillic у ү о,
+/// Greek γ ο υ, fullwidth letters, accented ones, the digit 0). Names that
+/// only resemble it at a glance in some fonts are not caught; what a name
+/// hides is taken out before (`craft3d_doc::clean_note_author`).
+pub fn reads_as_you(name: &str) -> bool {
+    let folded: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .map(|c| match c {
+            'у' | 'У' | 'ү' | 'Ү' | 'ұ' | 'Ұ' | 'γ' | 'ʏ' | 'ｙ' | 'Ｙ' | 'ý' | 'ÿ' | 'Ý' => {
+                'y'
+            }
+            'о' | 'О' | 'ο' | 'Ο' | 'σ' | 'ｏ' | 'Ｏ' | '0' | 'ö' | 'ó' | 'ò' | 'ô' | 'õ' => {
+                'o'
+            }
+            'υ' | 'Υ' | 'ս' | 'ｕ' | 'Ｕ' | 'ü' | 'ú' | 'ù' | 'û' | 'μ' => 'u',
+            c => c.to_ascii_lowercase(),
+        })
+        .collect();
+    folded == "you"
 }
 
 /// Who by an author's word and agent's name, in a few words: "you" for
@@ -812,8 +837,13 @@ pub fn person_words(why: &str) -> String {
         return "The notes hold too much text together: shorten this one, or delete some that are done."
             .to_string();
     }
-    if why.contains("replies already") {
-        return "This note has 20 replies, as many as a note takes.".to_string();
+    if why.contains("replies, as many as a note takes") {
+        return if why.contains("opened again") {
+            "This note has 20 replies, as many as a note takes: opened again it would lose the reply it was closed with, so it stays done. Write a new note to go on."
+        } else {
+            "This note has 20 replies, as many as a note takes: close it with Done, or write a new note to go on."
+        }
+        .to_string();
     }
     if why.contains("this is a Jig") {
         return IN_JIG.to_string();
@@ -1447,9 +1477,10 @@ impl Shell {
         ))
     }
 
-    /// The marker drawn in the last frame whose head is within reach of
-    /// `at` (points), the nearest.
-    fn marker_at(&self, at: egui::Pos2) -> Option<u64> {
+    /// The note whose pin, as the last frame drew it, has its head within
+    /// reach of `at` (points), the nearest: the one place the pins' reach
+    /// is measured (`Tokens::note_reach`; the hover and the hint ask it).
+    pub(crate) fn note_pin_at(&self, at: egui::Pos2) -> Option<u64> {
         let reach = self.tokens.note_reach;
         self.notes
             .markers
@@ -1470,7 +1501,7 @@ impl Shell {
             self.open_note_row(id, true);
             return true;
         }
-        match self.marker_at(at) {
+        match self.note_pin_at(at) {
             Some(id) => {
                 self.choose_note(id, false);
                 self.open_note_row(id, false);
@@ -2010,6 +2041,31 @@ mod tests {
         assert_eq!(PinKind::of(&rows[3]), PinKind::Astray);
         assert_eq!(PinKind::of(&rows[0]), PinKind::ForAgent);
         assert!(rows_of(&json!({})).is_empty());
+    }
+
+    /// A name that reads as "you" never passes for the person, whatever
+    /// its letters' bytes (review-ux-notes: Cyrillic "уou").
+    #[test]
+    fn a_name_that_reads_as_you_is_marked_an_agent() {
+        for name in [
+            "you",
+            "You",
+            " YOU ",
+            "уou",
+            "yоu",
+            "уоu",
+            "ｙｏｕ",
+            "yου",
+            "y0u",
+            "you!",
+        ] {
+            assert!(reads_as_you(name), "{name:?}");
+            assert_eq!(agent_words(Some(name)), format!("{name} (agent)"));
+        }
+        for name in ["Claude Code", "your agent", "yo", "youth", "you two"] {
+            assert!(!reads_as_you(name), "{name:?}");
+            assert_eq!(agent_words(Some(name)), name);
+        }
     }
 
     /// A refusal in a person's words (N6): the two a person can meet in

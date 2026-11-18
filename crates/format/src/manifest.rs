@@ -143,10 +143,12 @@ pub struct Note {
     pub edited: Option<NoteStamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done: Option<NoteDone>,
-    /// The replies given after it was closed, kept when it was opened
-    /// again (format version 77; versions 75 and 76 of 2026-11-17 kept
-    /// them under `done`, moved here by `v76_to_v77`); written only when
-    /// there are any.
+    /// Its replies, in the order they were given, open or done
+    /// (`note.reply`, a reply after its closing, and the closing's reply
+    /// when it was opened again; format version 77, which kept the replies
+    /// after a closing here and so already held them on an open note;
+    /// versions 75 and 76 of 2026-11-17 kept them under `done`, moved here
+    /// by `v76_to_v77`); written only when there are any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub later: Vec<NoteReply>,
 }

@@ -1150,6 +1150,8 @@ fn note_reply_answers_on_a_note_and_says_whose_turn_it_is() {
         json!({"id": 1, "reply": "Made it 7 mm."}),
     );
     assert_eq!(note(&mut s, 1)["waitingFor"], Value::Null);
+    // A later clock reading for the reply after the closing.
+    std::thread::sleep(std::time::Duration::from_millis(3));
     let more = as_agent(
         &mut s,
         "note.reply",
@@ -1165,14 +1167,16 @@ fn note_reply_answers_on_a_note_and_says_whose_turn_it_is() {
         .iter()
         .map(|r| r["text"].as_str().unwrap())
         .collect();
+    // The closing's reply at its time: before the reply given after the
+    // closing (review-ux-notes, finding 1).
     assert_eq!(
         texts,
         [
             "From 5 mm to 7 mm, or 2 mm more where it is thinnest?",
             "To 7 mm.",
             "(a script)",
-            "The fillet followed.",
-            "Made it 7 mm."
+            "Made it 7 mm.",
+            "The fillet followed."
         ],
         "{reopened}"
     );

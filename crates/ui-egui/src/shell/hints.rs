@@ -211,13 +211,8 @@ impl Shell {
                 place.part_at(p) == Some(super::section_handle::HandlePart::Arrow)
             })
         });
-        let reach = self.tokens.note_radius + 3.0;
-        let on_pin = pointer.is_some_and(|p| {
-            self.notes
-                .markers
-                .iter()
-                .any(|(_, centre)| centre.distance(p) <= reach)
-        });
+        // By the pins' own reach (`notes.rs`), the one place it is measured.
+        let on_pin = pointer.is_some_and(|p| self.note_pin_at(p).is_some());
         HintState {
             bodies: self
                 .shown_scene

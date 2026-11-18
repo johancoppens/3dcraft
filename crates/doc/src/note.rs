@@ -218,13 +218,20 @@ impl Turn {
 }
 
 impl Note {
-    /// Who spoke last on it: the author of its last reply, unless its text
-    /// was changed after that reply (a later time), then who changed it;
+    /// Who spoke last on it: the author of its latest reply (by time; of
+    /// replies at one time the later in the list), unless its text was
+    /// changed after that reply (a later time), then who changed it;
     /// without replies who last changed its text, else who wrote it. A
     /// reply always comes after the note was written, whatever the clocks
     /// say (0 where there is none).
     pub fn last_word(&self) -> &NoteAuthor {
-        match (self.later.last(), &self.edited) {
+        let latest = self
+            .later
+            .iter()
+            .enumerate()
+            .max_by_key(|(k, reply)| (reply.time_ms, *k))
+            .map(|(_, reply)| reply);
+        match (latest, &self.edited) {
             (Some(reply), Some(edited)) if edited.time_ms > reply.time_ms => &edited.by,
             (Some(reply), _) => &reply.by,
             (None, Some(edited)) => &edited.by,
@@ -420,6 +427,22 @@ pub fn deceives(c: char) -> bool {
     )
 }
 
+/// Why note `id` takes no more replies ([`MAX_NOTE_REPLIES`]), and what to
+/// do instead.
+pub fn full_replies(id: u64) -> String {
+    format!(
+        "note {id} has {MAX_NOTE_REPLIES} replies, as many as a note takes: close it with a reply (note.resolve), or write a new note to go on"
+    )
+}
+
+/// Why note `id`, done and full of replies, is not opened again: the reply
+/// it was closed with would be one more, and it is never dropped.
+pub fn full_reopen(id: u64) -> String {
+    format!(
+        "note {id} has {MAX_NOTE_REPLIES} replies, as many as a note takes, and opened again it would take the reply it was closed with as one more: it stays done; write a new note to go on"
+    )
+}
+
 fn check_author(who: &NoteAuthor, what: &str) -> Result<(), String> {
     // An empty name is an agent that gave none.
     if let NoteAuthor::Agent(name) = who
@@ -598,9 +621,11 @@ impl Document {
     }
 
     /// Marks note `id` done by `by` with `reply`, or open again (`done`
-    /// false: who closed it goes; the closing's reply is kept as the
-    /// note's last reply, by who closed it and when, while it has room for
-    /// one ([`MAX_NOTE_REPLIES`]); its other replies stay).
+    /// false: who closed it goes; the closing's reply is kept among the
+    /// note's replies at its time, by who closed it; its other replies
+    /// stay; a note with no room for it any more, [`MAX_NOTE_REPLIES`]
+    /// replies already, is refused with [`full_reopen`] and stays done,
+    /// so no reply is ever dropped).
     pub fn resolve_note(
         &mut self,
         id: u64,
@@ -619,17 +644,30 @@ impl Document {
             .note(id)
             .cloned()
             .ok_or_else(|| DocError::Invalid(format!("there is no note {id}")))?;
-        // Opened again: the closing's reply stays in the thread.
+        // Opened again: the closing's reply stays in the thread, at its
+        // time (after the replies given before the closing, before those
+        // given after it); a note that has no room for it any more stays
+        // done rather than lose it.
         if !done
             && let Some(closed) = changed.done.take()
             && let Some(text) = closed.reply
-            && changed.later.len() < MAX_NOTE_REPLIES
         {
-            changed.later.push(NoteReply {
-                by: closed.by,
-                time_ms: closed.time_ms,
-                text,
-            });
+            if changed.later.len() >= MAX_NOTE_REPLIES {
+                return Err(DocError::Invalid(full_reopen(id)));
+            }
+            let at = changed
+                .later
+                .iter()
+                .position(|r| r.time_ms > closed.time_ms)
+                .unwrap_or(changed.later.len());
+            changed.later.insert(
+                at,
+                NoteReply {
+                    by: closed.by,
+                    time_ms: closed.time_ms,
+                    text,
+                },
+            );
         }
         changed.done = done.then_some(NoteDone { by, time_ms, reply });
         self.notes_fit(Some(id), &changed)?;
@@ -655,9 +693,7 @@ impl Document {
             .cloned()
             .ok_or_else(|| DocError::Invalid(format!("there is no note {id}")))?;
         if changed.later.len() >= MAX_NOTE_REPLIES {
-            return Err(DocError::Invalid(format!(
-                "note {id} has {MAX_NOTE_REPLIES} replies already, as many as a note takes"
-            )));
+            return Err(DocError::Invalid(full_replies(id)));
         }
         changed.later.push(NoteReply { by, time_ms, text });
         self.notes_fit(Some(id), &changed)?;
@@ -1024,8 +1060,15 @@ mod tests {
         doc.resolve_note(id, true, agent(), Some("again"), 9)
             .unwrap();
         assert_eq!(doc.note(id).unwrap().later.len(), MAX_NOTE_REPLIES);
+        // Full, it is not opened again: the closing's reply would be lost
+        // (review-ux-notes, finding 2).
+        let e = doc
+            .resolve_note(id, false, NoteAuthor::Person, None, 10)
+            .unwrap_err();
+        assert!(e.to_string().contains("stays done"), "{e}");
+        assert!(doc.note(id).unwrap().done.is_some());
         // A closing's reply stays in the thread when the note is opened
-        // again, by who closed it, while the note has room for it.
+        // again, by who closed it, at its time.
         let other = doc
             .add_note("thicker", None, [0.0; 3], NoteAuthor::Person, 10)
             .unwrap();
@@ -1045,6 +1088,29 @@ mod tests {
         );
         assert_eq!(reopened.waiting(), Some(Turn::Person));
         doc.validate().unwrap();
+        // A reply on the done note after its closing: opened again, the
+        // closing's reply goes before it, and the turn follows the latest
+        // word, the person's (review-ux-notes, finding 1).
+        let third = doc
+            .add_note("thicker", None, [0.0; 3], NoteAuthor::Person, 20)
+            .unwrap();
+        doc.resolve_note(third, true, agent(), Some("Made it 7 mm."), 21)
+            .unwrap();
+        doc.reply_to_note(third, NoteAuthor::Person, "The other flange too.", 22)
+            .unwrap();
+        doc.resolve_note(third, false, NoteAuthor::Person, None, 23)
+            .unwrap();
+        let note = doc.note(third).unwrap();
+        let said: Vec<(&str, u64)> = note
+            .later
+            .iter()
+            .map(|r| (r.text.as_str(), r.time_ms))
+            .collect();
+        assert_eq!(
+            said,
+            vec![("Made it 7 mm.", 21), ("The other flange too.", 22)]
+        );
+        assert_eq!(note.waiting(), Some(Turn::Agent));
     }
 
     /// The notes' text together stays within `MAX_NOTES_BYTES`, so a
