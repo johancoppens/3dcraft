@@ -6261,6 +6261,10 @@ fn chrome_frame(fill: crate::theme::Rgb) -> egui::Frame {
         .inner_margin(egui::Margin::symmetric(8, 2))
 }
 
+/// Longer than this many of the image's diagonals, an edge of the overlay
+/// is drawn only where it is over the image ([`paint_overlay`]).
+const LONG_LINE: f64 = 4.0;
+
 fn paint_overlay(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -6274,6 +6278,8 @@ fn paint_overlay(
         f64::from(rect.width()) / f64::from(w.max(1)),
         f64::from(rect.height()) / f64::from(h.max(1)),
     );
+    let (wf, hf) = (f64::from(w), f64::from(h));
+    let diagonal = wf.phypot(hf);
     let place = |p: [f64; 2]| {
         egui::pos2(
             rect.left() + (p[0] * sx) as f32,
@@ -6307,7 +6313,26 @@ fn paint_overlay(
         };
         let long = viewport::fade_short(edge.extent, tokens, pixels_per_point);
         let length = (line.to[0] - line.from[0]).phypot(line.to[1] - line.from[1]);
-        let pieces = (length / piece).ceil();
+        // Seen from close by, an edge reaches far past the image (it is
+        // cut only at the eye plane): past [`LONG_LINE`] of the image's
+        // diagonals only its part over the image is drawn, in as many
+        // pieces as a line across the image takes, not 4096 of each such
+        // edge (the review of the runaway of 2026-11-18). A shorter one
+        // whole, as always.
+        let (t_from, t_to) = if length > LONG_LINE * diagonal {
+            match viewport::clip_range(
+                line.from,
+                line.to,
+                [-piece, -piece],
+                [wf + piece, hf + piece],
+            ) {
+                Some(span) => span,
+                None => continue,
+            }
+        } else {
+            (0.0, 1.0)
+        };
+        let pieces = (length * (t_to - t_from) / piece).ceil();
         let pieces = if pieces.is_finite() {
             pieces.clamp(1.0, 4096.0) as usize
         } else {
@@ -6321,7 +6346,10 @@ fn paint_overlay(
         };
         let wide = f64::from(line.width(tokens)) * pixels_per_point;
         for k in 0..pieces {
-            let (t0, t1) = (k as f64 / pieces as f64, (k + 1) as f64 / pieces as f64);
+            let (t0, t1) = (
+                t_from + (t_to - t_from) * (k as f64 / pieces as f64),
+                t_from + (t_to - t_from) * ((k + 1) as f64 / pieces as f64),
+            );
             let middle = at(0.5 * (t0 + t1));
             let mut fade = viewport::edge_fade(long, density.at(middle[0], middle[1]), tokens);
             // Where the studio look's lens blurs it, as at the piece's middle.

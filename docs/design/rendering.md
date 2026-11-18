@@ -1837,6 +1837,29 @@ clear (sliding along the viewport's edge rather than hopping), tries round the c
 keeps `GAP` of air from the controls, and where no place is clear takes the one that covers them least; its
 plate has a hairline of the handle's light colour, so its edge shows on a dark body.
 
+*The runaway (2026-11-18).* The developer's window was ended by the kernel three times in one morning at
+13.4 to 13.7 GB of its own heap, each time with the section on while he turned and zoomed the view of an
+assembly; the coordinator reproduced it with that loop and the stacks of all threads (taken past 2 GB) showed
+the window's thread in epaint's `dashes_from_line`, under the outline's `Shape::dashed_line`. Seen from close
+by, a side of the outline is cut only at the eye plane (`Projector::segment`, a ten-thousandth of its depth)
+and its projection runs far past the view: up to 1.45e9 points in that loop. epaint dashes it in `f32`, and
+past 2^27 points a step of a dash or a gap (5 and 4 points) no longer moves on: the dashing never ended,
+pushing a dash a turn. The outline is now dashed where it shows (`dashed_sides`): each side, cut in space at
+the eye plane (`Projector::segment_cut`), is cut on the screen, in `f64`, to the viewport grown by 8 points,
+and dashed by our own loop (`outline_dashes`, at most `MAX_OUTLINE_DASHES` = 4096 dashes in all, whatever it
+is given). The pattern runs on round the outline from its first corner in front of the eye, as along the one
+path it was, so the dashes keep their place on a line however much of it is cut off; a side cut at the eye
+plane takes it from its corner in front. The window's other painting over the picture is bounded too: the
+dimension line and an angle's 25-point arc, the darts, the notes' pins (one each), the datums' names (one
+each, in view), the triad and the plates are fixed shapes; edges, sketches, grids, datum planes' lines, mate
+markers, the cap's outline and highlighted edges are 3D segments, drawn by the GPU on the window's path and,
+on the CPU's, cut into at most `MAX_DEPTH_STEPS` stretches each and painted in pieces (`paint_overlay`): an
+edge longer than four of the image's diagonals is now painted only where it is over the image, as many pieces
+as a line across it takes, not 4096 of each (shorter ones exactly as before).
+`crates/ui-egui/tests/section_close_by.rs` counts a frame's shapes (under 20 000) at the loop's worst camera,
+face on from a millimetre (hundreds of thousands of dashes before), from a millionth to a million times the
+fitted distance, with the eye in the plane and inside the body, and orthographic zoomed in to a billionth.
+
 ### Per-sample stages on Vulkan (2026-11-16)
 
 *Found.* The window of 0.1.1 and 0.1.2 died within seconds of its start on a Windows 11 laptop with a Core

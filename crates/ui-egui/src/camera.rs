@@ -392,8 +392,14 @@ impl Projector {
     /// The part of the segment `a`–`b` in front of the eye, projected. A
     /// segment that crosses the eye plane is cut there rather than dropped.
     pub fn segment(&self, a: Vec3, b: Vec3) -> Option<(Projected, Projected)> {
+        self.segment_cut(a, b).map(|(p, q, _)| (p, q))
+    }
+
+    /// [`Projector::segment`], with whether each end (`a`'s, then `b`'s)
+    /// was cut at the eye plane rather than being the end itself.
+    pub fn segment_cut(&self, a: Vec3, b: Vec3) -> Option<(Projected, Projected, [bool; 2])> {
         if !self.perspective {
-            return Some((self.project(a)?, self.project(b)?));
+            return Some((self.project(a)?, self.project(b)?, [false, false]));
         }
         // A little in front of the eye plane, relative to the segment's own
         // depth range, so the cut end projects to a finite pixel.
@@ -413,7 +419,7 @@ impl Projector {
             }
         };
         let (a2, b2) = (cut(a, da, b, db), cut(b, db, a, da));
-        Some((self.project(a2)?, self.project(b2)?))
+        Some((self.project(a2)?, self.project(b2)?, [da < near, db < near]))
     }
 }
 
