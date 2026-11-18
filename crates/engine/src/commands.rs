@@ -1107,13 +1107,7 @@ pub(crate) fn file_open(session: &mut Session, params: &Value) -> Run {
         });
     }
     let features = document.features.len();
-    let mut kept = crate::workspace::kept_path(&session.workspace.read, path, &resolved);
-    // An assembly's source paths lead from its file's folder on disk: an
-    // absolute path through a link is kept in the folder's real spelling,
-    // so the paths joined with it lead there too (2026-11-18).
-    if document.is_assembly() && !in_memory {
-        kept = crate::asm_cmds::real_kept(&kept);
-    }
+    let kept = crate::workspace::kept_path(&session.workspace.read, path, &resolved);
     let mut open = OpenDocument::new(document, Some(kept.clone()));
     open.disk = file_stamp(in_memory, &resolved);
     open.file = file_on_disk(in_memory, &resolved);
@@ -1269,7 +1263,7 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         save_to_disk(&resolved, &document, png.as_deref().map(Vec::as_slice)).map_err(cannot)?;
     }
     let open = session.document_mut()?;
-    let mut kept = crate::workspace::kept_path(&access, &path, &resolved);
+    let kept = crate::workspace::kept_path(&access, &path, &resolved);
     let mut not_followed = Vec::new();
     if let Some(relinker) = &rebase {
         // The state written was rewritten whole above. A state undo or
@@ -1280,9 +1274,6 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         // The files read stay the files read, under the paths the
         // rewritten sources name them by.
         relinker.carry(&mut open.asm);
-        if !in_memory {
-            kept = crate::asm_cmds::real_kept(&kept);
-        }
         not_followed = relinker.not_followed(&document);
     }
     open.mark_saved();

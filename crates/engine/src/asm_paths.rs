@@ -9,6 +9,27 @@
 //! the two folders only when they start at the same place, and says why
 //! when no source path leads from the new folder to the file.
 
+/// A path as the file system spells it (`workspace::canonical`, after
+/// `workspace::plain`), written as [`crate::asm::join`] writes paths, for
+/// comparing two folders, where it is a plain path: from `/` (Unix) or
+/// from a drive (`C:\`). `None` for a share (`\\server\share`, what a
+/// mapped network drive resolves to), a verbatim path (`\\?\…`, kept for
+/// one longer than 260 characters or with a part Windows reads as a
+/// device) and anything else: `join` would write those as another path,
+/// so such folders are compared as the texts given.
+pub(crate) fn plain_spelling(spelled: &str) -> Option<String> {
+    let mut chars = spelled.chars();
+    let drive = matches!(
+        (chars.next(), chars.next(), chars.next()),
+        (Some(letter), Some(':'), Some('\\' | '/')) if letter.is_ascii_alphabetic()
+    );
+    let unix = spelled.starts_with('/') && !spelled.starts_with("//");
+    if !(drive || unix) {
+        return None;
+    }
+    crate::asm::join(spelled, "").ok()
+}
+
 /// The longest source path, in bytes
 /// ([`craft3d_doc::assembly::check_source_path`]).
 const MOST_SOURCE_BYTES: usize = 4096;
@@ -672,6 +693,80 @@ mod review {
                 "review relink({old:?}, {source:?}, {new:?}) = {:?}",
                 relink(old, source, new)
             );
+        }
+    }
+}
+
+/// The reviewer's third round (review-asm-save, 2026-11-18): what the
+/// engine makes of the spellings `workspace::canonical` hands back on
+/// Windows (after `workspace::plain`), as text: a mapped network drive
+/// (`Z:\dir`, which the system resolves to its share), a folder longer
+/// than 260 characters and a part that is a device name (both kept
+/// verbatim by `plain`). Round three found them written through
+/// `asm::join` as `/server/share/dir` and `/?/C:/…` and kept as an
+/// assembly's path; since asm-save-path-2's second hand-in no resolved
+/// spelling is kept or written, and [`super::plain_spelling`], which the
+/// save's comparison of two folders reads them by, gives none for them
+/// (they are compared as the texts given): never a path that is not a
+/// Windows one. A plain drive path is compared as one.
+#[cfg(test)]
+mod review3 {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
+
+    #[test]
+    fn review3_what_a_canonical_windows_folder_becomes() {
+        let long = format!(r"\\?\C:\{}", "d".repeat(300));
+        let mut wrong = Vec::new();
+        for (canonical, given, what) in [
+            (
+                r"\\?\UNC\server\share\dir".to_string(),
+                r"Z:\dir".to_string(),
+                "a mapped network drive",
+            ),
+            (
+                long.clone(),
+                long.replace(r"\\?\", ""),
+                "a folder longer than 260 characters",
+            ),
+            (
+                r"\\?\C:\a\con".to_string(),
+                r"C:\a\con".to_string(),
+                "a part that is a device name",
+            ),
+        ] {
+            let plain = crate::workspace::plain(std::path::PathBuf::from(&canonical));
+            let spelled = plain.to_str().unwrap().to_string();
+            let compared = super::plain_spelling(&spelled);
+            let as_given = crate::asm::join(&given, "").unwrap();
+            println!(
+                "review3 {what}: canonical {spelled:.40} -> compared as {compared:?} (as given: {as_given:.40})"
+            );
+            if let Some(joined) = &compared {
+                let mut chars = joined.chars();
+                let drive = matches!((chars.next(), chars.next()), (Some(l), Some(':')) if l.is_ascii_alphabetic());
+                if !drive && !joined.starts_with(r"\\") {
+                    wrong.push(format!("{what}: {joined:.40}"));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "not a Windows path: {wrong:?}");
+        let plain = crate::workspace::plain(std::path::PathBuf::from(r"\\?\C:\a\b"));
+        assert_eq!(
+            super::plain_spelling(plain.to_str().unwrap()).as_deref(),
+            Some("C:/a/b")
+        );
+        assert_eq!(
+            super::plain_spelling("/home/w/x").as_deref(),
+            Some("/home/w/x")
+        );
+        for other in [
+            r"\\server\share\dir",
+            r"\\?\C:\a\con",
+            "//srv/share",
+            "x/y",
+            "",
+        ] {
+            assert_eq!(super::plain_spelling(other), None, "{other}");
         }
     }
 }
