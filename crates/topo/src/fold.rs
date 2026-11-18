@@ -538,8 +538,12 @@ fn least_concave(
         let n = 24_u32;
         for i in 0..=n {
             for j in 0..=n {
-                let u = (cu + hu * (2.0 * f64::from(i) / f64::from(n) - 1.0)).clamp(u0, u1);
-                let v = (cv + hv * (2.0 * f64::from(j) / f64::from(n) - 1.0)).clamp(v0, v1);
+                let u = (cu + hu * (2.0 * f64::from(i) / f64::from(n) - 1.0))
+                    .max(u0)
+                    .min(u1);
+                let v = (cv + hv * (2.0 * f64::from(j) / f64::from(n) - 1.0))
+                    .max(v0)
+                    .min(v1);
                 let Some(r) = concave(u, v) else {
                     continue;
                 };
@@ -579,9 +583,9 @@ fn no_normal(
     };
     let (_, reference) = size(0.5 * (u0 + u1), 0.5 * (v0 + v1));
     if !(reference > 0.0 && reference.is_finite()) {
-        return None;
+        return Vec::new();
     }
-    let mut at = (start.0.clamp(u0, u1), start.1.clamp(v0, v1));
+    let mut at = (start.0.max(u0).min(u1), start.1.max(v0).min(v1));
     let mut value = size(at.0, at.1).0;
     let (mut su, mut sv) = (0.25 * (u1 - u0), 0.25 * (v1 - v0));
     for _ in 0..400 {
@@ -600,8 +604,8 @@ fn no_normal(
             (-1.0, -1.0),
         ] {
             let next = (
-                (at.0 + du * su).clamp(u0, u1),
-                (at.1 + dv * sv).clamp(v0, v1),
+                (at.0 + du * su).max(u0).min(u1),
+                (at.1 + dv * sv).max(v0).min(v1),
             );
             let there = size(next.0, next.1).0;
             if there < value {
@@ -626,8 +630,8 @@ fn no_normal(
     }
     [
         at,
-        (start.0.clamp(u0, u1), at.1),
-        (at.0, start.1.clamp(v0, v1)),
+        (start.0.max(u0).min(u1), at.1),
+        (at.0, start.1.max(v0).min(v1)),
     ]
     .into_iter()
     .filter(|c| size(c.0, c.1).0 <= 1e-12 * reference)
@@ -851,8 +855,8 @@ fn layers(
         let steps = n as f64;
         for i in 0..=n {
             for j in 0..=n {
-                let u = (at.0 + hu * (2.0 * i as f64 / steps - 1.0)).clamp(u0, u1);
-                let v = (at.1 + hv * (2.0 * j as f64 / steps - 1.0)).clamp(v0, v1);
+                let u = (at.0 + hu * (2.0 * i as f64 / steps - 1.0)).max(u0).min(u1);
+                let v = (at.1 + hv * (2.0 * j as f64 / steps - 1.0)).max(v0).min(v1);
                 let (p, a, b) = surface.derivatives(u, v);
                 found.push(((u, v), p, a.cross(b).normalized().map(|m| m * outward)));
             }
