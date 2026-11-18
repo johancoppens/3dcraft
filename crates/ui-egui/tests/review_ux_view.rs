@@ -636,6 +636,51 @@ fn boxes(shell: &Shell) -> Vec<String> {
         .collect()
 }
 
+/// V4: *Wall thickness* is "not shown where it cannot run". A body of an
+/// instance in the posed four-bar: where the card offers it, a click
+/// answers with a wall (the crank is 2 thick), not a refusal.
+#[test]
+fn review_wall_thickness_is_offered_only_where_it_runs() {
+    let (mut s, _dir) = window_session("wall");
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    four_bar(&mut s);
+    window.frames(&mut shell, &mut s, 3);
+    let crank = shell
+        .assembly_outline()
+        .expect("an assembly")
+        .instances
+        .iter()
+        .find(|i| i.name == "Crank")
+        .expect("the crank")
+        .features[0]
+        .clone();
+    run(
+        &mut s,
+        "select.set",
+        json!({"items": [{"kind": "body", "feature": crank}]}),
+    );
+    window.frames(&mut shell, &mut s, 3);
+    let offered = shell
+        .side_hits()
+        .targets
+        .iter()
+        .find(|(n, _)| n == "measure")
+        .map(|(_, r)| r.center());
+    eprintln!("review: Wall thickness offered on an instance's body: {offered:?}");
+    if let Some(at) = offered {
+        window.click(&mut shell, &mut s, at);
+        window.frames(&mut shell, &mut s, 3);
+        let wall = shell.side_wall().cloned();
+        eprintln!("review: its answer: {wall:?}");
+        assert!(
+            wall.as_ref()
+                .is_some_and(|w| w.refused.is_none() && w.value.is_some()),
+            "offered where it cannot run: {wall:?}"
+        );
+    }
+}
+
 /// Fix 8 against the closed form: the crank (24 × 4 × 2) turned 60 and 37
 /// degrees about Z in the posed four-bar reads 24|cos| + 4|sin| ×
 /// 24|sin| + 4|cos| × 2, once; a block turned 30 degrees in a part reads
