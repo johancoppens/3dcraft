@@ -672,6 +672,43 @@ fn stem(body: &Body) -> (EdgeId, bool) {
     found.unwrap()
 }
 
+/// The review's seven folded fades written as STEP, printed as evidence
+/// lines (`EV fade-<radius>-<over>-<back> <i> <base64>`) to become fixtures
+/// once the fillet's switch is gone.
+#[test]
+fn export_the_seven_folds() {
+    probe_asks_turned_back(false);
+    let (body, tol) = hull();
+    let (edge, foot_at_start) = stem(&body);
+    for (radius, over, back) in [
+        (3.0, 6.0, 0.33),
+        (3.0, 6.0, 0.5),
+        (4.0, 8.0, 0.33),
+        (4.0, 8.0, 0.5),
+        (5.0, 10.0, 1.0),
+        (3.0, 3.0, 2.0),
+        (4.0, 8.0, 1.0),
+    ] {
+        let fade = Some(Fade::tip(over, back));
+        let law = RadiusLaw {
+            radius,
+            fades: if foot_at_start {
+                [fade, None]
+            } else {
+                [None, fade]
+            },
+        };
+        let made = fillet_by_law(&body, &[FilletLawEdge { edge, law }], &tol).unwrap();
+        let options = StepOptions {
+            tolerance: tol,
+            file_name: format!("fade-{radius}-{over}-{back}.step"),
+            ..StepOptions::default()
+        };
+        let (bytes, _) = export_step(&[StepBody::new("fold", &made.body)], &options).unwrap();
+        craft3d_testkit::evidence::print(&format!("fade-{radius}-{over}-{back}"), &bytes);
+    }
+}
+
 #[test]
 fn the_hulls_sides_at_the_forefoot() {
     // How the radius of curvature of the hull's lofted sides grows with
