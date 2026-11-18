@@ -11,6 +11,12 @@
 //! - a 500-step path through the plane and into the body and out, with the
 //!   plain and the studio look, perspective and orthographic: every frame
 //!   counted and timed.
+//!
+//! That whole review is `#[ignore]`d (16 minutes; its wall-clock bounds
+//! hold on a quiet runner, not beside a Gate's other binaries: Gate
+//! 44407458893, a frame of 4.3 s against a median of 208 ms with 672
+//! shapes). The Gate runs `frames_stay_bounded_whatever_the_camera`, about
+//! a minute, which holds what does not depend on the clock.
 
 #![allow(
     clippy::unwrap_used,
@@ -35,6 +41,9 @@ const MAIN_SAFE_DASHES: f64 = 6e5;
 /// Bounds held on the branch, every frame.
 const MOST_SHAPES: usize = 20_000;
 const MOST_VERTICES: usize = 1_000_000;
+/// The outline's sides cut to the view grown by 8 points: at most six
+/// sides of a diagonal and a bit, 9 points a dash and gap.
+const MOST_DASHES: usize = 1_000;
 const MOST_TIME: Duration = Duration::from_secs(30);
 /// Longest a variant of the path may run before it stops (and says so).
 const PATH_BUDGET: Duration = Duration::from_secs(240);
@@ -116,6 +125,9 @@ struct Shot {
     lines: u64,
     /// The line segments painted, with their alpha.
     segments: Vec<([Pos2; 2], u8)>,
+    /// The line segments in the accent painted over the viewport: the
+    /// section outline's dashes (and the odd control's line).
+    dashes: usize,
 }
 
 struct Window {
@@ -161,6 +173,11 @@ impl Window {
             .filter(|c| room.contains_rect(c.clip_rect))
             .cloned()
             .collect();
+        let accent = Tokens::default().accent;
+        let dashes = in_view
+            .iter()
+            .map(|c| accent_segments(&c.shape, accent))
+            .sum();
         let mut view = Hash::new();
         let (mut places, mut uvs) = (Hash::new(), Hash::new());
         for primitive in self.ctx.tessellate(in_view, ppp) {
@@ -230,7 +247,24 @@ impl Window {
             uvs: uvs.0,
             lines: lines.0,
             segments,
+            dashes,
         }
+    }
+}
+
+/// The line segments of `shape` in `accent`, at any opacity.
+fn accent_segments(shape: &Shape, accent: [u8; 3]) -> usize {
+    match shape {
+        Shape::Vec(shapes) => shapes.iter().map(|s| accent_segments(s, accent)).sum(),
+        Shape::LineSegment { stroke, .. } => {
+            let [r, g, b, a] = stroke.color.to_srgba_unmultiplied();
+            let near = [r, g, b]
+                .iter()
+                .zip(accent)
+                .all(|(x, y)| x.abs_diff(y) <= 3);
+            usize::from(a > 0 && near)
+        }
+        _ => 0,
     }
 }
 
@@ -291,6 +325,9 @@ struct Scene {
     fitted: CameraState,
     /// The section's plane at offset 0: its point and normal.
     plane: Option<(Vec3, Vec3)>,
+    /// In the Gate's test: every frame held to [`gate_bounds`] at once,
+    /// nothing on the clock.
+    gate: bool,
 }
 
 impl Scene {
@@ -313,6 +350,7 @@ impl Scene {
             window,
             fitted,
             plane: None,
+            gate: false,
         }
     }
 
@@ -400,7 +438,9 @@ impl Scene {
             shot.view,
             shot.textures
         );
-        if !ON_MAIN {
+        if self.gate {
+            gate_bounds(&shot, what);
+        } else if !ON_MAIN {
             hold(shot.shapes < MOST_SHAPES, || {
                 format!("{what}: {} shapes", shot.shapes)
             });
@@ -411,6 +451,23 @@ impl Scene {
         }
         Some(shot)
     }
+}
+
+/// The Gate's bounds on a frame, none of them on the clock: the shapes
+/// and vertices it paints, and the accent's segments over the viewport
+/// (the outline's dashes, cut to the view: some hundreds at most).
+fn gate_bounds(shot: &Shot, what: &str) {
+    assert!(
+        shot.shapes < MOST_SHAPES,
+        "{what}: {} shapes (main fd13129d painted 293 977 face on from 1 mm)",
+        shot.shapes
+    );
+    assert!(
+        shot.vertices < MOST_VERTICES,
+        "{what}: {} vertices",
+        shot.vertices
+    );
+    assert!(shot.dashes < MOST_DASHES, "{what}: {} dashes", shot.dashes);
 }
 
 fn machine() -> (Session, Bbox3) {
@@ -726,22 +783,25 @@ fn with_section(scene: &mut Scene, name: &str, middle: [f64; 3]) {
 /// The developer's use: the section on, the view turned twice round while
 /// it zooms from three times the fitted distance to a millionth of it and
 /// back, the target swinging through the plane and into the body, the
-/// plane moving; every frame bounded in shapes, vertices and time.
-fn path(scene: &mut Scene, name: &str, studio: bool, projection: ProjectionKind) {
+/// plane moving, in `steps` steps; every frame bounded in shapes and
+/// vertices, and outside the Gate in time (a variant stops after
+/// [`PATH_BUDGET`]); in the Gate ([`Scene::gate`]) every frame is drawn
+/// and its dashes counted too, and the times are printed only.
+fn path(scene: &mut Scene, name: &str, studio: bool, projection: ProjectionKind, steps: u32) {
     scene.set(json!({"look": {"mode": if studio { "studio" } else { "plain" }}}));
     if studio {
         scene.shell.prepare_look().unwrap();
     }
     let fitted = scene.fitted;
     let centre = fitted.target;
-    let steps = 500_u32;
+    let steps = steps.max(2);
     let started = Instant::now();
     let (mut done, mut skipped) = (0, 0);
     let (mut times, mut first): (Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new());
-    let (mut most_shapes, mut most_vertices) = (0, 0);
+    let (mut most_shapes, mut most_vertices, mut most_dashes) = (0, 0, 0);
     let mut worst_at = String::new();
     for n in 0..steps {
-        if started.elapsed() > PATH_BUDGET {
+        if !scene.gate && started.elapsed() > PATH_BUDGET {
             println!("{name}: stopped after {n} of {steps} steps, {PATH_BUDGET:?} spent");
             break;
         }
@@ -785,7 +845,10 @@ fn path(scene: &mut Scene, name: &str, studio: bool, projection: ProjectionKind)
             );
         }
         most_vertices = most_vertices.max(shot.vertices);
-        if !ON_MAIN {
+        most_dashes = most_dashes.max(shot.dashes);
+        if scene.gate {
+            gate_bounds(&shot, &format!("{name} step {n}"));
+        } else if !ON_MAIN {
             hold(shot.shapes < MOST_SHAPES, || {
                 format!("{name} step {n}: {} shapes", shot.shapes)
             });
@@ -808,14 +871,16 @@ fn path(scene: &mut Scene, name: &str, studio: bool, projection: ProjectionKind)
     println!(
         "PATH {name}: {done} frames ({skipped} skipped) in {:.1} s; ms per frame median {:.1}, \
          p95 {:.1}, max {:.1} (the first three {first:.1?}); most shapes {most_shapes} ({worst_at}), \
-         most vertices {most_vertices}; {}",
+         most vertices {most_vertices}, most dashes {most_dashes}; {}",
         started.elapsed().as_secs_f64(),
         at(0.5),
         at(0.95),
         at(1.0),
         rss()
     );
-    if !ON_MAIN {
+    if scene.gate {
+        assert_eq!(done, steps, "{name}: every frame drawn");
+    } else if !ON_MAIN {
         // No frame far slower than the rest.
         hold(at(1.0) < 10.0 * at(0.5) + 1000.0, || {
             format!(
@@ -827,7 +892,118 @@ fn path(scene: &mut Scene, name: &str, studio: bool, projection: ProjectionKind)
     }
 }
 
+/// The Gate's version, about a minute on a loaded runner: nothing on the
+/// clock (times printed only), every frame held at once to
+/// [`gate_bounds`] (shapes, vertices, the outline's dashes). On the block
+/// with the section on: first face on from a millimetre, where main
+/// fd13129d painted 293 977 shapes in a frame and finished (so main's code
+/// fails here, by its shape count, before a camera it never finishes);
+/// then the cameras that ran away (face on at a millionth to a tenth of
+/// the fitted distance, both projections; the coordinator's loop's worst
+/// camera); then the developer's path in a few steps: 48 plain and
+/// perspective, 32 orthographic, 4 in the studio look; then the 162-block
+/// grid seen close by without a section, where main painted 77 168 and
+/// 416 699 segments, nearly all off the view. Memory's high-water mark is
+/// printed, not held: the tests of a binary share their process.
 #[test]
+fn frames_stay_bounded_whatever_the_camera() {
+    let started = Instant::now();
+    let (session, bounds) = machine();
+    let mut scene = Scene::new(session, bounds, 1000.0, 700.0);
+    scene.gate = true;
+    scene.section(true);
+    let fitted = scene.fitted;
+    let middle = [0.0, 0.0, 226.0];
+    // The counter of dashes counts: the outline at the fitted view.
+    let shot = scene
+        .shot(&fitted, 0.0, "machine, section, fitted")
+        .unwrap();
+    assert!(
+        shot.dashes > 50,
+        "{} dashes at the fitted view",
+        shot.dashes
+    );
+    scene.shot(
+        &face_on(middle, 1.0, ProjectionKind::Perspective),
+        0.0,
+        "machine, section, face on from 1 mm",
+    );
+    let d = fitted.distance;
+    for k in [1e-6, 1e-3, 1e-1] {
+        for projection in [ProjectionKind::Perspective, ProjectionKind::Orthographic] {
+            scene.shot(
+                &face_on(middle, k * d, projection),
+                0.0,
+                &format!(
+                    "machine, section, face on at {k:e} of the fitted distance, {projection:?}"
+                ),
+            );
+        }
+    }
+    let (camera, offset, side) = runaway_camera(&scene);
+    assert!(side > 1e7, "the loop's worst side: {side:e} points");
+    scene.shot(
+        &camera,
+        offset,
+        &format!("machine, section, the loop's worst camera (a side of {side:.3e} points)"),
+    );
+    for (studio, projection, steps) in [
+        (false, ProjectionKind::Perspective, 48),
+        (false, ProjectionKind::Orthographic, 32),
+        (true, ProjectionKind::Perspective, 4),
+    ] {
+        let name = format!(
+            "machine, {} look, {projection:?}, {steps} steps",
+            if studio { "studio" } else { "plain" }
+        );
+        path(&mut scene, &name, studio, projection, steps);
+    }
+    drop(scene);
+    let (session, bounds) = grid();
+    let mut scene = Scene::new(session, bounds, 1000.0, 700.0);
+    scene.gate = true;
+    let close = [
+        (
+            "grid, 8 mm from a corner, yaw 70, pitch 55",
+            CameraState {
+                target: [355.0, 175.0, 30.0],
+                distance: 8.0,
+                yaw: 70.0,
+                pitch: 55.0,
+                projection: ProjectionKind::Perspective,
+                fov_y: 30.0,
+                auto_fit: false,
+            },
+        ),
+        (
+            "grid, orthographic face on at 1e-2 of the fitted distance",
+            face_on(
+                [0.0, 0.0, 15.0],
+                scene.fitted.distance * 1e-2,
+                ProjectionKind::Orthographic,
+            ),
+        ),
+    ];
+    for (what, camera) in close {
+        scene.shot(&camera, 0.0, what);
+    }
+    println!(
+        "the Gate's frames in {:.1} s; {}",
+        started.elapsed().as_secs_f64(),
+        rss()
+    );
+}
+
+/// The whole review, on demand (some 16 minutes on a quiet runner, more
+/// on a loaded one; its time bounds hold only on a quiet one): run it with
+/// `cargo test -p craft3d-ui-egui --test review_runaway_frames
+/// the_frames_of_the_review -- --ignored --nocapture` (on the build server:
+/// a Check with that line). The 500-step paths with both looks and both
+/// projections, the block and the 162-block grid, every frame timed; with
+/// `ON_MAIN` true it runs on main's code with the outline's dashing
+/// guarded, for numbers line by line.
+#[test]
+#[ignore = "16 minutes: run on demand, see its doc comment"]
 fn the_frames_of_the_review() {
     println!("ON_MAIN {ON_MAIN}");
     let (session, bounds) = machine();
@@ -847,7 +1023,7 @@ fn the_frames_of_the_review() {
             "machine, {} look, {projection:?}",
             if studio { "studio" } else { "plain" }
         );
-        path(&mut scene, &name, studio, projection);
+        path(&mut scene, &name, studio, projection, 500);
     }
     drop(scene);
 
@@ -867,6 +1043,7 @@ fn the_frames_of_the_review() {
         "grid, plain look, Perspective",
         false,
         ProjectionKind::Perspective,
+        500,
     );
     let broken = BROKEN
         .lock()
@@ -884,8 +1061,12 @@ fn the_frames_of_the_review() {
 /// vertex places, their texture places, the CPU picture), so main and the
 /// branch compare part by part and a hash that is not the same from one
 /// window to the next shows itself. Then close by the grid: how many of
-/// the segments painted could show at all.
+/// the segments painted could show at all. It prints and asserts nothing:
+/// run it on demand, on two trees, and compare their lines (`cargo test
+/// -p craft3d-ui-egui --test review_runaway_frames no_section_hashes --
+/// --ignored --nocapture`).
 #[test]
+#[ignore = "prints hashes to compare between trees: run on demand"]
 fn no_section_hashes() {
     for round in 0..2 {
         for (name, (session, bounds)) in [("machine", machine()), ("grid", grid())] {
