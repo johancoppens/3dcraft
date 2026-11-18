@@ -27,8 +27,16 @@ select.
 
 ## The status bar
 
-At the bottom is the **status bar**. It shows the document's units, its file, when it was autosaved, the
-last command and its answer, and which renderer drew the picture.
+At the bottom is the **status bar**. It shows the document's units, its file by its name (point at it for
+the whole path), when it was autosaved, what is selected, the last command and its answer, and which
+renderer drew the picture.
+
+After what is selected, dim, it says what a click will do now: *Click a face, an edge or a hole to see its
+size* with nothing selected; *Shift-click another to measure between · N writes a note* with one thing;
+*Esc clears* with two; with the pointer on the section's arrow how to drag it, on a note's pin that a click
+reads it. A key that cannot work says why there for a few seconds. What is selected is never cut short:
+when the bar is narrow the last command gives way first, then the renderer's numbers; narrower than a
+computer's window it shows what is selected alone.
 
 When 3DCraft works for more than a moment, a small spinner on the right says what it is doing: *Opening
 gridfinity-bin… 41/57* while a file's features are built, then *Checking 27 assertions… 5/27* while its
@@ -253,17 +261,31 @@ checks):
 - a body: its volume, mass, area and box.
 
 *Made by* links to the feature that made it, and *Name* is its persistent name, the name an agent uses.
-**Measure** measures a face's wall thickness; **Copy name** copies the name.
+**Wall thickness** (a face or a body) finds the thinnest wall behind the face, or of the part: its answer
+takes the card's number, *Thinnest wall behind this face*, and the view draws a line through the wall
+with the same number, until the selection or the model changes. **Copy name** copies the name and says
+*Copied*.
 
-The view shows the measure of **one thing selected** beside it, in a thin dimension line in the accent: a
-straight edge its length along a line beside it, a whole circle (a hole's rim) its diameter **Ø**, an arc
-its radius **R**, a curved edge its length by its middle, a hole's or a boss's wall its diameter across its
-rim where it opens (as two holes' line is drawn), part of a cylinder (a fillet's round) its radius. A flat face, a vertex and a body show nothing there: their facts are
-at the foot of the panel. Numbers are shown to the document's tolerance, without trailing zeros (`30 mm`,
-`0.006 mm`), in the view and in the facts at the foot of the panel alike; a number too long for the card is
-drawn smaller, down to half the size, and past that a range is broken after its dash. Click the number to copy it with its unit, as shown. While two things are being measured the
-card says *Measuring…*; the window goes on meanwhile. In a short window the Features tab shows the card as one
-line, with **Keep as a check**.
+The card opens with **the number the view shows**, and under it what it is: a straight edge its *Length*,
+a whole circle or a hole its *Diameter* (**Ø 8 mm**), an arc or part of a cylinder (a fillet's round) its
+*Radius* (**R 6 mm**), a curved edge its *Length along the curve*, any other face its *Area*, a vertex its
+*Position* (*X 35 · Y 0 · Z 13 mm*), a body its *Volume* (with its mass when it has a material). Its heading
+says what it is of: *Face of BoltHole*, *Edge of Bar*, *Body Base*. The view shows the measure of **one
+thing selected** beside it, in a thin dimension line in the accent: a straight edge its length along a line
+beside it, a whole circle (a hole's rim) its diameter **Ø**, an arc its radius **R**, a curved edge its
+length by its middle, a hole's or a boss's wall its diameter across its rim where it opens (as two holes'
+line is drawn), part of a cylinder (a fillet's round) its radius. A flat face, a vertex and a body show
+their number in the card only.
+
+Every number the section, the measuring and the card show is written one way: a length with at most three
+decimals in millimetres (four in inches), no trailing zeros, below a hundredth two significant digits
+(`30 mm`, `25.981 mm`, `0.0057 mm`); an angle with at most two decimals; an area or a volume to four
+significant digits (`1450 mm²`, `39.9 cm³`). Point at a number that was shortened for its whole value
+(*25.980762 mm*); a click copies it as shown, and its hover says *Copied* for a moment. A number too long for
+the card is drawn smaller, down to half the size, and past that a range is broken after its dash. While two
+things are being measured the card says *Measuring…*; the window goes on meanwhile. Three things or more
+give no number: the card says so. In a short window the Features tab shows the card as one line, with
+**Keep as a check**.
 
 **Two things selected** (Shift-click the second) are measured by themselves: the foot of the panel shows
 their relation as one large number, what it is in a few words and, for a distance, its parts along X, Y and
@@ -276,8 +298,10 @@ panel or on the line, to copy it with its unit. Another selection, or Escape, ta
 ![Two holes selected: their centre distance, 30 mm, on a line between the centres of their rims on the top, and at the foot of the panel with "Centre distance · axes parallel", its parts along X, Y and Z and Keep as a check](images/measure.png)
 
 **Keep as a check** keeps that relation as a check of the document: named after the two things (*Centre
-distance Left face – Right face*), its value now, within the document's tolerance. It shows under
-**Checks**, is measured again after every change, and is one step to undo. A least distance shown as a
+distance Left face – Right face*), its value now, within the document's tolerance. The **Checks** unfold
+with the new row tinted for a moment, and the status bar says *Kept as the check … · Ctrl+Z takes it back*
+until the next command; the number and the line stay as they are meanwhile. A check is measured again
+after every change, and is one step to undo; while there is nothing to keep, the button's hover says why. A least distance shown as a
 range (*0.098 – 0.1 mm*: the least found between real places, and no less than the first number, proven)
 or as *about* a number (found on samples of a freeform curve or face, or with no bound) is not proven within
 the tolerance; it is kept as what is proven, at most the number and no less than the bound, and fails when the
@@ -473,15 +497,18 @@ The **display bar** at the bottom of the view:
 - **Edges** shows or hides the dark lines along the bodies' edges. An edge you point at or select is still
   drawn.
 - **See-through** makes the bodies transparent (drag its slider), to look at pockets and cavities.
-- **Section** cuts the view open with a plane across X, Y or Z, through the middle of the model at first.
+- **Section** cuts the view open with a plane through the middle of the model: at first the one of X, Y
+  and Z that faces you most (Z from above, else of X and Y the one you look along more, the shorter side
+  of the model when you look along both alike), cutting away the half on your side.
 
 While the section is on, the view shows its plane: a dashed outline (faint until the pointer comes near),
 an arrow at the cut's edge pointing into the half that is cut away, and beside it one small dark group: the
-distance, **X**, **Y**, **Z** and **⇅** (keep the other half). The arrow is white with a dark edge, so it
-reads on the cut, on a dark part and on the background; under the pointer it turns amber. On a computer
-the display bar then shows only **Section**: the group has the rest. On a phone the group and the arrow
-are left out (a finger's drag in the middle of the model turns it), and the bar keeps **X**, **Y**, **Z**,
-an **Offset** slider and **Flip side**.
+distance, **X**, **Y**, **Z**, a button that says in a word what it will do with the selection, and **⇅**
+(keep the other half). The arrow is white with a dark edge, so it reads on the cut, on a dark part and on
+the background; under the pointer it turns amber. On a computer the display bar then shows only
+**Section**: the group has the rest. On a phone the group and the arrow are left out (a finger's drag in
+the middle of the model turns it), and the bar keeps **X**, **Y**, **Z**, the word button, the distance's
+slider and **Flip**.
 
 ![The flange cut open across X through the middle of a bolt hole: the plane's dashed outline, the slim arrow at the cut's edge, and the group with X 30.00 mm, X, Y, Z, the plane from the selection (greyed: nothing selected) and the flip button](images/section.png)
 
@@ -489,21 +516,26 @@ an **Offset** slider and **Flip side**.
 |---|---|
 | Drag the arrow | Move the plane. It snaps lightly to flat faces, to the middle of holes and to round distances (a small tick says so); hold **Alt** to move it freely |
 | Double-click the arrow | Keep the other half |
-| Click the number | Type a distance, such as `12.5` or `width / 2`; Enter sets it, Escape leaves it |
-| Click **X**, **Y** or **Z** | Turn the plane across that axis, through the middle of the model |
+| Click the number | Type a distance, such as `12.5` or `width / 2`; Enter sets it, Escape leaves it. A distance past the model is brought to its nearer end, and the group says so under it (*clamped to 0 – 60 mm*) |
+| Click **X**, **Y** or **Z** | Turn the plane across that axis, through the middle of the model, cutting away the half on your side |
 | Click **⇅** | Keep the other half |
-| Select a flat face, then click **∥** | Lay the plane on that face: along it, through it, the arrow pointing out of the body; drag the arrow in to cut |
-| Select two flat faces, then click **∥** | Two parallel faces (the two walls of a slot): the plane midway between them. Two faces at an angle: the plane that halves it, between them, through the line where they meet; click again for the other one, square to it, where that one cuts the model |
-| Select a hole's or a shaft's round face, then click **∥** | The plane through its axis, turned to face you: the half toward you is cut away, so you look into the hole; click again to turn it a quarter about the axis. Looking straight along the axis it says so: turn the view first |
+| Select a flat face, then click **On face** | Lay the plane on that face: along it, through it, the arrow pointing out of the body; the group says *Drag the arrow into the part to cut* |
+| Select two parallel flat faces, then click **Midway** | The plane midway between them (the two walls of a slot) |
+| Select two flat faces at an angle, then click **Bisect** | The plane that halves their angle, between them, through the line where they meet; the button then says **Other bisector**: click it for the other one, square to it, where that one cuts the model |
+| Select a hole's or a shaft's round face, then click **Through axis** | The plane through its axis, turned to face you: the half toward you is cut away, so you look into the hole; the button then says **Turn 90°**, to turn it a quarter about the axis |
 
-The number says what the plane is: **X**, **Y** or **Z**, **∥ face**, **mid**, **bisector** or **axis**. A plane
-made with **∥** stays when you select something else, and where it is when you change the model (it is then
-no longer called **mid**, **bisector** or **axis** once its faces have moved); anything but one or two flat faces
-or one round face greys **∥**, and it says so when you point at it. The number is a length as everywhere else:
-to the document's tolerance, without trailing zeros (`30 mm`, `12.5 mm`).
+The word button says what a click will do now. Lit, the plane is that already, and a click changes
+nothing. Greyed (**From selection**), the selection gives no plane: nothing selected, a face that is neither
+flat nor round, two faces that give none, a face of a hidden part, or looking straight along a hole's axis;
+pointing at it says why, and so does a click, under the group. Every plane a button makes or turns cuts away
+the half on your side, so the cut faces you. The number says what the plane is: **X**, **Y** or **Z**, or the
+word button's own word, **Face**, **Midway**, **Bisector** or **Axis**. A plane made from the selection stays
+when you select something else, and where it is when you change the model (it is then no longer called
+**Midway**, **Bisector** or **Axis** once its faces have moved); when its face is gone, the section goes off
+and the view and the status bar say so. The number is written as every number is (`30 mm`, `12.5 mm`).
 
-Seen straight along the arrow (a section across Z from the top), the arrow is a ring that cannot be dragged:
-type the distance into the group's number, or use its buttons.
+Seen straight along the arrow (a section across Z from the top), the arrow is a ring that cannot be dragged
+(pointing at it says so): type the distance into the group's number, or use its buttons.
 
 The pictures in this guide show a window 1400 points wide (the start screen's 960 high). In a smaller
 one, such as the 1280 × 800 that 3DCraft first opens with, Sketches, Datums and Edges show their icons
@@ -645,10 +677,16 @@ edge, else the face.
 | Click | Select a vertex, an edge or a face |
 | Shift+click | Add to or take from the selection |
 | Click again at the same place, or Alt+click | Select the next face behind |
-| Right click | List every face under the pointer, to choose one |
+| Right click | List what can be done here, and every face under the pointer, to choose one |
 | Double-click in the view | Select the whole body |
 | Ctrl+drag | Select what lies inside a box |
-| Click empty space, or Escape | Clear the selection (Escape first folds an open Studio or Analysis panel) |
+| Click empty space | Clear the selection |
+
+**Escape steps back once**, wherever the pointer is: first out of a field in the view (a note's field closes
+when it is empty; with text it lets go of the keys, and a second Escape closes it), then it closes an open
+list or popover (the right-click list, Studio, Analysis), lets go of a joint held by hand, un-chooses the
+chosen note, and last clears the selection. It never switches the section off. A field in the side panel
+that has the keys takes the Escape itself.
 
 **The agent sees your selection.** The selection belongs to the document, not to the window, so the agent
 reads it: each item with its name, the body, the feature that made it, its shape (a hole's radius and

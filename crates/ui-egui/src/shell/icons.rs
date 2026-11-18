@@ -28,8 +28,6 @@ pub enum Icon {
     Analysis,
     /// Section: a body cut by a plane, the half that is cut away hollow.
     Section,
-    /// The section's plane parallel to a face: two slanted strokes, ∥.
-    Parallel,
     /// Flip the kept side: an arrow up and one down.
     Flip,
     /// The history player's first step: a bar and two triangles to it.
@@ -189,10 +187,6 @@ pub fn paint(painter: &egui::Painter, icon: Icon, place: Rect, ink: Color32, tok
                 [p(0.0, -0.98), p(0.0, 0.98)],
                 Stroke::new(stroke.width * 1.4, ink),
             ),
-        ],
-        Icon::Parallel => vec![
-            line(vec![p(-0.55, 0.75), p(-0.05, -0.75)]),
-            line(vec![p(0.05, 0.75), p(0.55, -0.75)]),
         ],
         Icon::Flip => {
             let head = 0.35;

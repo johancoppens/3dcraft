@@ -17,7 +17,8 @@
 
 use craft3d_engine::{Session, SnapKind, Workspace};
 use craft3d_ui_egui::shell::section_handle::{
-    ALONG_AXIS, HandlePart, NUMBER_FIELD, Snapped, TAKES_FACES,
+    ALONG_AXIS, HIDDEN, HandlePart, NEITHER, NO_PLANE, NUMBER_FIELD, ON_FACE_NOTE, Snapped,
+    TAKES_FACES,
 };
 use craft3d_ui_egui::state::SectionMade;
 use craft3d_ui_egui::{RendererChoice, Shell};
@@ -1075,14 +1076,10 @@ fn two_faces_give_the_plane_midway_or_their_bisector_and_the_plate_says_which() 
         ],
     );
     window.frames(&mut shell, &mut session, 3);
+    // The word button's words (the UX round of 2026-11-18, V2): the two
+    // faces give no plane.
     let choice = shell.section_face_choice().cloned().unwrap();
-    assert!(
-        choice
-            .refused
-            .as_deref()
-            .is_some_and(|w| w.contains("Not a flat face")),
-        "{choice:?}"
-    );
+    assert_eq!(choice.refused.as_deref(), Some(NO_PLANE), "{choice:?}");
 
     // An agent: ui.set with point, normal and made, read back by ui.get;
     // `made` that does not fit the plane is refused (the review of
@@ -1568,7 +1565,7 @@ fn after_an_edit_the_plane_stays_and_its_name_goes_once_it_no_longer_holds() {
         && let Some(why) = choice.refused
     {
         assert!(
-            why == TAKES_FACES || why.contains("not in the view"),
+            why == TAKES_FACES || why == HIDDEN,
             "in the window's words: {why}"
         );
     }
@@ -1751,7 +1748,7 @@ fn a_hole_gives_the_plane_through_its_axis_facing_the_viewer() {
     let eye = shell.state.camera.toward_eye();
     assert_eq!(
         choice.words(&shell.state.section, eye),
-        "Through the axis, facing you"
+        "Cut through the middle of this hole, facing you"
     );
     let dot = shell.section_handle().unwrap().dots[3];
     window.click(&mut shell, &mut session, dot);
@@ -1780,7 +1777,7 @@ fn a_hole_gives_the_plane_through_its_axis_facing_the_viewer() {
     // A second click: a quarter about the axis.
     assert_eq!(
         choice.words(&shell.state.section, eye),
-        "Through the axis, turned a quarter"
+        "Turn the cut a quarter around the axis"
     );
     let dot = shell.section_handle().unwrap().dots[3];
     window.click(&mut shell, &mut session, dot);
@@ -1822,4 +1819,314 @@ fn a_hole_gives_the_plane_through_its_axis_facing_the_viewer() {
     );
     assert_eq!(shell.state.section.made, Some(SectionMade::Axis));
     let _ = TAKES_FACES;
+}
+
+/// The word button's label and hover as `ui.get` says them.
+fn word_of(shell: &mut Shell, session: &mut Session) -> (String, String, bool, bool) {
+    let got = call(shell, session, "ui.get", json!({}));
+    let word = &got["section"]["fromSelection"];
+    (
+        word["label"].as_str().unwrap_or_default().to_string(),
+        word["hover"].as_str().unwrap_or_default().to_string(),
+        word["lit"] == true,
+        word["greyed"] == true,
+    )
+}
+
+/// The UX round of 2026-11-18, V2: the plate's fourth button is a word
+/// that says what a click will do now, lit where the plane is that
+/// already (a click then changes nothing, not a dragged distance), greyed
+/// where the selection gives none (a click then says why under the plate
+/// and changes no field of the section).
+#[test]
+fn the_word_button_says_what_a_click_will_do() {
+    let mut session = chamfered();
+    let (mut shell, mut window) = window_on(&mut session, [1200.0, 800.0], "xy", 4.0, "iso");
+    run(&mut session, "select.set", json!({"mode": "clear"}));
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(
+        word_of(&mut shell, &mut session),
+        (
+            "From selection".to_string(),
+            TAKES_FACES.to_string(),
+            false,
+            true
+        )
+    );
+    // A click on it greyed: its words under the plate, nothing changed.
+    let before = shell.state.section.clone();
+    let dot = shell.section_handle().unwrap().dots[3];
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 2);
+    assert_eq!(shell.state.section, before);
+    assert_eq!(shell.section_note(), Some(TAKES_FACES));
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["section"]["note"], TAKES_FACES);
+    // One flat face: On face; a click lays the plane and says how to cut.
+    select_face(&mut session, json!({"normal": {"along": [0, 0, 1]}}));
+    window.frames(&mut shell, &mut session, 3);
+    let (label, hover, lit, greyed) = word_of(&mut shell, &mut session);
+    assert_eq!(
+        (label.as_str(), hover.as_str(), lit, greyed),
+        ("On face", "Lay the cut on this face", false, false)
+    );
+    let dot = shell.section_handle().unwrap().dots[3];
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 3);
+    let (label, hover, lit, _) = word_of(&mut shell, &mut session);
+    assert_eq!(
+        (label.as_str(), hover.as_str(), lit),
+        ("On face", "The cut lies on this face", true)
+    );
+    assert_eq!(shell.section_note(), Some(ON_FACE_NOTE));
+    // Lit: a click keeps a distance dragged since, and the side.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"section": {"offset": -3}}),
+    );
+    window.frames(&mut shell, &mut session, 2);
+    let before = shell.state.section.clone();
+    let dot = shell.section_handle().unwrap().dots[3];
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 2);
+    assert_eq!(shell.state.section, before);
+    // Two parallel faces: Midway, lit once laid.
+    select_faces(
+        &mut session,
+        &[
+            json!({"normal": {"along": [-1, 0, 0]}}),
+            json!({"normal": {"along": [1, 0, 0]}}),
+        ],
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let (label, hover, ..) = word_of(&mut shell, &mut session);
+    assert_eq!(
+        (label.as_str(), hover.as_str()),
+        ("Midway", "Lay the cut midway between the two faces")
+    );
+    let dot = shell.section_handle().unwrap().dots[3];
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 3);
+    let (label, hover, lit, _) = word_of(&mut shell, &mut session);
+    assert_eq!(
+        (label.as_str(), hover.as_str(), lit),
+        ("Midway", "The cut lies midway between the two faces", true)
+    );
+    // Two faces at an angle: Bisect; the only bisector that cuts, laid:
+    // lit.
+    select_faces(
+        &mut session,
+        &[
+            json!({"normal": {"along": [0, 0, 1]}}),
+            json!({"normal": {"along": [1, 0, 1]}}),
+        ],
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let (label, hover, ..) = word_of(&mut shell, &mut session);
+    assert_eq!(
+        (label.as_str(), hover.as_str()),
+        (
+            "Bisect",
+            "Lay the cut through their corner, halving the angle"
+        )
+    );
+    let dot = shell.section_handle().unwrap().dots[3];
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 3);
+    let (label, _, lit, _) = word_of(&mut shell, &mut session);
+    assert_eq!((label.as_str(), lit), ("Bisect", true));
+    // A hole: Through axis, then Turn 90°.
+    select_face(&mut session, json!({"hole": true, "radius": 3}));
+    window.frames(&mut shell, &mut session, 3);
+    let (label, hover, ..) = word_of(&mut shell, &mut session);
+    assert_eq!(
+        (label.as_str(), hover.as_str()),
+        (
+            "Through axis",
+            "Cut through the middle of this hole, facing you"
+        )
+    );
+    let dot = shell.section_handle().unwrap().dots[3];
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 3);
+    let (label, hover, ..) = word_of(&mut shell, &mut session);
+    assert_eq!(
+        (label.as_str(), hover.as_str()),
+        ("Turn 90°", "Turn the cut a quarter around the axis")
+    );
+    // Two faces of which one is a hole's wall: no plane.
+    select_faces(
+        &mut session,
+        &[
+            json!({"normal": {"along": [0, 0, 1]}}),
+            json!({"hole": true, "radius": 3}),
+        ],
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let (label, hover, _, greyed) = word_of(&mut shell, &mut session);
+    assert_eq!(
+        (label.as_str(), hover.as_str(), greyed),
+        ("From selection", NO_PLANE, true)
+    );
+    // The plate says what the plane is in the button's own word.
+    assert_eq!(craft3d_ui_egui::state::SectionMade::Mid.label(), "Midway");
+}
+
+/// V2: one face neither flat nor round (a ball): greyed, saying so.
+#[test]
+fn a_ball_gives_no_cut_and_the_word_button_says_why() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "feature.sphere",
+        json!({"name": "Ball", "radius": 10}),
+    );
+    let (mut shell, mut window) = window_on(&mut session, [1200.0, 800.0], "xy", 0.0, "iso");
+    select_face(&mut session, json!({"in": "Ball"}));
+    window.frames(&mut shell, &mut session, 3);
+    let (label, hover, _, greyed) = word_of(&mut shell, &mut session);
+    assert_eq!(
+        (label.as_str(), hover.as_str(), greyed),
+        ("From selection", NEITHER, true)
+    );
+}
+
+/// The UX round of 2026-11-18, V3: a cut faces you and cuts something.
+/// From the six standard views and the iso view, the first switch-on and
+/// each of X, Y and Z cut away the half on the eye's side (the normal
+/// into it points to the eye; a plane seen edge on keeps a side); the
+/// first plane is across the axis the eye looks along most, Z from above,
+/// and from the iso view the axis along which the model is shorter.
+#[test]
+fn a_cut_faces_the_eye_from_every_view() {
+    for view in ["front", "back", "right", "left", "top", "bottom", "iso"] {
+        let mut session = drilled();
+        let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+        let mut window = Window::new(1200.0, 800.0);
+        window.frames(&mut shell, &mut session, 3);
+        call(&mut shell, &mut session, "ui.fit", json!({"view": view}));
+        window.frames(&mut shell, &mut session, 3);
+        let toggle = shell
+            .section_hits()
+            .iter()
+            .find(|(n, _)| *n == "toggle")
+            .unwrap()
+            .1
+            .center();
+        window.click(&mut shell, &mut session, toggle);
+        window.frames(&mut shell, &mut session, 3);
+        let eye = shell.state.camera.toward_eye();
+        let (_, normal, _) = plane_of(&mut shell, &mut session);
+        let n = craft3d_math::Vec3::new(normal[0], normal[1], normal[2]);
+        assert!(n.dot(eye) > 0.5, "{view}: the first cut {n:?} {eye:?}");
+        match view {
+            "top" | "bottom" => assert_eq!(shell.state.section.plane.as_deref(), Some("xy")),
+            "front" | "back" => assert_eq!(shell.state.section.plane.as_deref(), Some("zx")),
+            "right" | "left" => assert_eq!(shell.state.section.plane.as_deref(), Some("yz")),
+            // 60 along X, 40 along Y: the shorter.
+            _ => assert_eq!(shell.state.section.plane.as_deref(), Some("zx")),
+        }
+        for k in 0..3 {
+            let Some(dot) = shell.section_handle().map(|h| h.dots[k]) else {
+                continue;
+            };
+            window.click(&mut shell, &mut session, dot);
+            window.frames(&mut shell, &mut session, 3);
+            let (_, normal, _) = plane_of(&mut shell, &mut session);
+            let n = craft3d_math::Vec3::new(normal[0], normal[1], normal[2]);
+            let d = n.dot(eye);
+            assert!(d > -0.02, "{view}, axis {k}: {n:?} {eye:?}");
+            if d.abs() > 0.02 {
+                assert!(d > 0.0, "{view}, axis {k}");
+            }
+        }
+    }
+    // A part longer along Y from the iso view: across X.
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({"size": [40, 60, 20], "name": "Long"}),
+    );
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1200.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    let toggle = shell
+        .section_hits()
+        .iter()
+        .find(|(n, _)| *n == "toggle")
+        .unwrap()
+        .1
+        .center();
+    window.click(&mut shell, &mut session, toggle);
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(shell.state.section.plane.as_deref(), Some("yz"));
+}
+
+/// V3: Turn 90° keeps the cut toward the eye: the eye lies on the side
+/// cut away (the plane turned a quarter about the axis holds the line of
+/// sight, so the eye's own place decides), and a typed distance outside
+/// where the plane meets the bodies is brought to the nearer end, and
+/// the plate says so.
+#[test]
+fn a_turned_cut_and_a_typed_distance_cut_something() {
+    let mut session = chamfered();
+    let (mut shell, mut window) = window_on(&mut session, [1200.0, 800.0], "xy", 4.0, "iso");
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"camera": {"projection": "perspective"}}),
+    );
+    select_face(&mut session, json!({"hole": true, "radius": 3}));
+    window.frames(&mut shell, &mut session, 3);
+    for _ in 0..2 {
+        let dot = shell.section_handle().unwrap().dots[3];
+        window.click(&mut shell, &mut session, dot);
+        window.frames(&mut shell, &mut session, 3);
+        let (point, normal, made) = plane_of(&mut shell, &mut session);
+        assert_eq!(made, "axis");
+        let eye = shell.state.camera.eye();
+        let n = craft3d_math::Vec3::new(normal[0], normal[1], normal[2]);
+        let p = craft3d_math::Vec3::new(point[0], point[1], point[2]);
+        assert!(
+            (eye - p).dot(n) > 0.0,
+            "the eye on the side cut away: {n:?}"
+        );
+    }
+    // The number typed: 500 on a block 60 long across X.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"section": {"plane": "yz", "offset": 30}}),
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let number = shell.section_handle().unwrap().number.center();
+    window.click(&mut shell, &mut session, number);
+    window.frames(&mut shell, &mut session, 1);
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::Text("500".to_string())],
+    );
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+    window.frames(&mut shell, &mut session, 2);
+    assert_eq!(shell.typing(), None);
+    assert_eq!(shell.state.section.offset, 60.0);
+    assert_eq!(shell.section_note(), Some("clamped to 0 – 60 mm"));
 }

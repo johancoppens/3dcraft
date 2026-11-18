@@ -898,7 +898,9 @@ fn content(
 }
 
 /// A choice: a segmented track, the chosen segment filled with the
-/// accent. Returns the segments and the one clicked.
+/// accent; `hover`: what one segment's hover says. Returns the segments
+/// and the one clicked.
+#[allow(clippy::too_many_arguments)]
 fn choice(
     ui: &mut egui::Ui,
     rect: Rect,
@@ -907,6 +909,7 @@ fn choice(
     active: Option<usize>,
     named: bool,
     tokens: &Tokens,
+    hover: Option<(usize, &str)>,
 ) -> (Vec<Rect>, Option<usize>) {
     let painter = ui.painter().clone();
     let radius = tokens.nav_control_radius;
@@ -962,6 +965,9 @@ fn choice(
                     ink,
                 );
             }
+        }
+        if let Some((_, words)) = hover.filter(|(at, _)| *at == k) {
+            response = response.on_hover_text(words);
         }
         if response.clicked() {
             clicked = Some(k);
@@ -1107,6 +1113,7 @@ impl Shell {
             Some(active),
             named,
             &tokens,
+            None,
         );
         let mut hits = vec![("fit", fit_rect), ("iso", iso_rect)];
         for (name, cell) in ["perspective", "orthographic"].into_iter().zip(cells) {
@@ -1442,41 +1449,42 @@ impl Shell {
         .on_hover_text("Cut the view open with a plane")
         .clicked()
         {
-            toggle_section(&mut section, scene);
+            toggle_section(&mut section, scene, &self.state.camera);
         }
         let on = self.state.section.on;
         if let (true, Some(axes), Some(offset), Some(side)) =
             (on, layout.axes, layout.offset, layout.side)
         {
-            // X, Y, Z, and a fourth: the plane from the selection (along
-            // one flat face, midway between two, or halving their angle).
+            // X, Y, Z, and a fourth: the word button, the plane from the
+            // selection, its label what a click will do now (V2).
             let face = self.section_face_choice().cloned();
             let toward_eye = self.state.camera.toward_eye();
             let on_face = self.section_from_selection();
-            let face_words = face.as_ref().map_or_else(
-                || super::section_handle::TAKES_FACES.to_string(),
-                |f| f.words(&section, toward_eye),
-            );
-            let items = vec![
-                (None, "X"),
-                (None, "Y"),
-                (None, "Z"),
-                (Some(Icon::Parallel), face_words.as_str()),
-            ];
-            let chosen = if on_face {
+            let word = self.section_word();
+            let items = vec![(None, "X"), (None, "Y"), (None, "Z"), (None, word.label)];
+            let chosen = if on_face || word.lit {
                 Some(super::section_handle::FACE_DOT)
             } else {
                 chosen_axis(&section)
             };
-            let (cells, clicked) = choice(ui, axes, "axes", &items, chosen, false, &tokens);
+            let (cells, clicked) = choice(
+                ui,
+                axes,
+                "axes",
+                &items,
+                chosen,
+                false,
+                &tokens,
+                Some((super::section_handle::FACE_DOT, word.hover.as_str())),
+            );
             for ((name, _), cell) in SECTION_PLANES.iter().zip(&cells) {
                 hits.push((name, *cell));
             }
             if let Some(cell) = cells.get(super::section_handle::FACE_DOT) {
                 hits.push(("face", *cell));
-                // A selection that gives no plane: the cell greyed, its
-                // words on hover say why.
-                if !on_face && face.as_ref().is_none_or(|f| f.refused.is_some()) {
+                // A selection that gives no plane: the cell greyed (its
+                // hover says why).
+                if word.greyed && !on_face {
                     ui.painter().rect_filled(
                         cell.shrink(tokens.nav_segment_inset),
                         egui::CornerRadius::same(tokens.nav_segment_radius),
@@ -1486,12 +1494,24 @@ impl Shell {
             }
             match clicked {
                 Some(super::section_handle::FACE_DOT) => {
-                    if let Some(face) = &face {
-                        super::section_handle::choose_plane(&mut section, face, toward_eye);
+                    if word.greyed {
+                        // A finger has no hover: a tap says why, in the
+                        // status bar (the phone has no plate), and changes
+                        // nothing.
+                        self.hint(word.hover.clone(), super::hints::HINT_SECONDS);
+                    } else if !word.lit
+                        && let Some(face) = &face
+                    {
+                        super::section_handle::choose_plane_seen(
+                            &mut section,
+                            face,
+                            toward_eye,
+                            Some(self.state.camera.eye()),
+                        );
                         self.remember_made(&section, face);
                     }
                 }
-                Some(axis) => choose_axis(&mut section, axis, scene),
+                Some(axis) => choose_axis(&mut section, axis, scene, &self.state.camera),
                 None => {}
             }
             let rail = self.offset_field(ui, offset, &mut section, on);
@@ -1503,13 +1523,13 @@ impl Shell {
                 Chip {
                     id: "flip",
                     icon: Icon::Flip,
-                    label: "Flip side",
+                    label: "Flip",
                     named: flip_named,
                 },
                 section.flip,
                 &tokens,
             )
-            .on_hover_text("Keep the other half of the cut")
+            .on_hover_text(super::section_handle::OTHER_HALF)
             .clicked()
             {
                 section.flip = !section.flip;

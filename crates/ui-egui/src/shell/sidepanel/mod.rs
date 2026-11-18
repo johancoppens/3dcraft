@@ -169,8 +169,16 @@ pub(crate) struct SideMemory {
     /// Why the last command the panel asked for failed, when no field
     /// holds it.
     pub(crate) problem: Option<String>,
-    /// The last measure's answer, in a line.
-    pub(crate) measured: Option<String>,
+    /// The wall measured for the card (*Wall thickness*): it heads the
+    /// card until the selection or the model changes.
+    pub(crate) wall: Option<props::Wall>,
+    /// A number of the card was copied: its hover says so for a moment;
+    /// and *Copy name* says *Copied*.
+    pub(crate) copied: Option<crate::shell::hints::Timed>,
+    pub(crate) name_copied: Option<crate::shell::hints::Timed>,
+    /// The check just kept: its row in the Checks is tinted for a moment
+    /// and scrolled into sight once (its name, the time, scrolled).
+    pub(crate) kept_tint: Option<(String, crate::shell::hints::Timed, bool)>,
     pub(crate) editing: Option<Editing>,
     /// The field just opened takes the keyboard in its first frame.
     pub(crate) focus_pending: bool,
@@ -298,6 +306,8 @@ impl Shell {
     /// anything; the caller syncs.
     pub(crate) fn apply_side_requests(&mut self, session: &mut Session) -> bool {
         let pending = std::mem::take(&mut self.side.pending);
+        let tolerance = session.linear_tolerance().unwrap_or(1e-6);
+        let wall_of_body = self.side.props.as_ref().is_some_and(|p| p.kind == "Body");
         for request in &pending {
             // The notes the window writes are the person's: typed here.
             let run = |session: &mut Session| session.execute(request.command, &request.params);
@@ -309,12 +319,10 @@ impl Shell {
             match done {
                 Ok(result) => {
                     self.side.problem = None;
-                    if request.command.starts_with("measure.") {
-                        self.side.measured = Some(props::measured_line(request.command, &result));
-                    }
-                    if request.command == "assert.add" {
-                        let name = result.get("name").and_then(Value::as_str).unwrap_or("");
-                        self.side.measured = Some(format!("Kept as the check {name}"));
+                    // Wall thickness: its answer heads the card.
+                    if request.command == "measure.thickness" {
+                        self.side.wall =
+                            Some(props::Wall::answered(Ok(&result), wall_of_body, tolerance));
                     }
                     // Clearing a body's face colours says on the status
                     // line how many it cleared (and what it kept).
@@ -328,6 +336,11 @@ impl Shell {
                 }
                 Err(e) => {
                     let why = e.message().to_string();
+                    if request.command == "measure.thickness" {
+                        self.side.wall =
+                            Some(props::Wall::answered(Err(why), wall_of_body, tolerance));
+                        continue;
+                    }
                     match &request.key {
                         Some(key) if self.side.errors.len() < MAX_ERRORS => {
                             self.side.errors.insert(key.clone(), why);
@@ -453,15 +466,50 @@ impl Shell {
         let serial = session.selection_serial();
         let props_key = (doc, revision, serial);
         if self.side.props_for != Some(props_key) {
+            // Another selection, not only another revision (a check kept
+            // changes the revision): the Checks opened by hand fold again,
+            // the check just kept is no longer tinted.
+            let selection_changed = self
+                .side
+                .props_for
+                .is_none_or(|(d, _, s)| (d, s) != (doc, serial));
             self.side.props_for = Some(props_key);
-            self.side.measured = None;
-            self.side.checks_asked = false;
+            self.side.wall = None;
+            if selection_changed {
+                self.side.checks_asked = false;
+                self.side.kept_tint = None;
+                self.side.copied = None;
+                self.side.name_copied = None;
+            }
+            // The relation of the same two things measured again (after a
+            // check was kept, an edit): the last answer stays shown while
+            // it is (V4: nothing blinks).
+            let before = self
+                .side
+                .props
+                .as_ref()
+                .and_then(|p| p.measurement.clone())
+                .filter(|m| !m.measuring);
             let mut wanted = None;
             self.side.props = if self.selection().items.is_empty() {
                 None
             } else {
                 props::read(session, scene, bodies_here, &mut wanted)
             };
+            if let (Some(before), Some(m)) = (
+                before,
+                self.side
+                    .props
+                    .as_mut()
+                    .and_then(|p| p.measurement.as_mut()),
+            ) && m.measuring
+                && m.items == before.items
+            {
+                *m = props::Measurement {
+                    measuring: true,
+                    ..before
+                };
+            }
             // One measure runs at a time: a newer one waits for it.
             self.side.waiting = None;
             if let Some(params) = wanted {

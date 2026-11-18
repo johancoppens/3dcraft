@@ -617,11 +617,19 @@ fn the_controls_beside_the_view_cube_set_the_section_and_are_not_the_viewport() 
     assert_eq!(shell.section_hits().len(), 1, "off: only the toggle");
     let camera = shell.state.camera;
 
-    // On: across z, through the middle of the model.
+    // On: across the plane that faces the eye most, through the middle
+    // of the model (the UX round of 2026-11-18, V3; was across z): seen
+    // from the iso view X and Y are faced alike, and the model is
+    // shorter along Y (40 against 60), so across Y, at 20, the half on
+    // the eye's side cut away.
     window.click(&mut shell, &mut session, toggle.center());
     assert!(shell.state.section.on);
-    assert_eq!(shell.state.section.plane.as_deref(), Some("xy"));
-    assert_eq!(shell.state.section.offset, 10.0);
+    assert_eq!(shell.state.section.plane.as_deref(), Some("zx"));
+    assert_eq!(shell.state.section.offset, 20.0);
+    let eye = shell.state.camera.toward_eye();
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    let normal_y = got["section"]["normal"][1].as_f64().unwrap();
+    assert!(normal_y * eye.y > 0.0, "{} {eye:?}", got["section"]);
     assert!(shell.section().is_some());
     let names: Vec<&str> = shell.section_hits().iter().map(|(name, _)| *name).collect();
     // The fourth, the plane from the selection, is always there, greyed

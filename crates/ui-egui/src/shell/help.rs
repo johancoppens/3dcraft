@@ -218,7 +218,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         keys(
             View,
             bare(CLEAR_KEY),
-            "Fold the Studio or Analysis options, else let go of a joint held by hand, else clear the selection",
+            "Step back once: leave a field in the view, close a list or popover, let go of a joint held by hand, un-choose the note, clear the selection",
         ),
         keys(View, help_shortcut(), "Show these shortcuts"),
         keys(
@@ -244,10 +244,14 @@ pub fn shortcuts() -> Vec<Shortcut> {
         mouse("Right or middle drag, Shift+drag", "Pan"),
         mouse("Wheel, pinch", "Zoom about the point under the pointer"),
         mouse("Click", "Select a vertex, an edge or a face"),
+        mouse("Select one thing", "Its size in the view"),
+        mouse("Shift+click a second", "The distance or angle between them"),
+        mouse("Click a number", "Copy it"),
         mouse("Shift+click", "Add to or take from the selection"),
         mouse("Click again, Alt+click", "Select the next face behind"),
         mouse("Double-click in the viewport", "Select the whole body"),
-        mouse("Right click", "List every face under the pointer"),
+        mouse("Right click", "What can be done here, and the faces behind"),
+        mouse("Press and hold (touch)", "The same list"),
         mouse("Ctrl+drag", "Select what lies inside a box"),
         mouse(
             "Double-click a feature",

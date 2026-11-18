@@ -1097,6 +1097,8 @@ pub struct Shell {
     /// The status bar's hint: one given for a while, and what was shown
     /// (`hints.rs`).
     hints: hints::Hints,
+    /// An Escape of this frame is another part's (`selection.rs`).
+    esc_elsewhere: bool,
     /// The box the camera was last fitted to automatically.
     framed: Bbox3,
     /// What the camera follows while it fits by itself: the opening
@@ -1685,6 +1687,7 @@ impl Shell {
             notes: notes::NoteMemory::default(),
             dimension: None,
             hints: hints::Hints::default(),
+            esc_elsewhere: false,
             framed: Bbox3::EMPTY,
             following: views::Following::Opening,
             themed: false,
@@ -2418,14 +2421,23 @@ impl Shell {
                 } else {
                     self.state.section.made
                 },
-                "fromSelection": self.section_handle.face.as_ref().map(|choice| serde_json::json!({
-                    "made": choice.made,
-                    "faces": choice.faces.iter().map(|(feature, face)| serde_json::json!({
-                        "feature": feature,
-                        "face": face,
-                    })).collect::<Vec<_>>(),
-                    "refused": choice.refused,
-                })),
+                "fromSelection": self.section_handle.face.as_ref().map(|choice| {
+                    // The word button: what a click does now (V2).
+                    let word = self.section_word();
+                    serde_json::json!({
+                        "made": choice.made,
+                        "faces": choice.faces.iter().map(|(feature, face)| serde_json::json!({
+                            "feature": feature,
+                            "face": face,
+                        })).collect::<Vec<_>>(),
+                        "refused": choice.refused,
+                        "label": word.label,
+                        "hover": word.hover,
+                        "lit": word.lit,
+                        "greyed": word.greyed,
+                    })
+                }),
+                "note": self.section_note(),
                 "snaps": section_handle::nearest_snaps(&cache.snaps, self.state.section.offset)
                     .iter()
                     .map(|snap| serde_json::json!({
@@ -3220,8 +3232,9 @@ impl Shell {
     /// popover, the narrow layout's drawer or a dialog is open (an egui
     /// popup, the Studio or Analysis popover, or any area drawn over the
     /// panels but those that stay, the shell's banner and `staying`); a
-    /// joint is held by hand; the pointer is over the view while something
-    /// is selected; the keys walk the feature list shown. A page that
+    /// joint is held by hand; a note is being written or is chosen;
+    /// something is selected (Escape steps back wherever the pointer is);
+    /// the keys walk the feature list shown. A page that
     /// embeds the web build lets an Escape leave the canvas only when
     /// nothing of this is so. Only what an Escape does close counts (what
     /// the state says open but is not drawn, such as a feature's menu
@@ -3240,14 +3253,14 @@ impl Shell {
             && self.state.side_panel.hover.is_some()
             && !self.side.hover_by_pointer
             && self.state.side_panel.menu.is_none();
-        let selected_under_pointer = !self.select.view.items.is_empty()
-            && ctx
-                .pointer_hover_pos()
-                .zip(self.rect)
-                .is_some_and(|(at, view)| view.contains(at));
+        // The grammar's steps (`Shell::escape_step`): a note field, a
+        // chosen note, a selection, wherever the pointer is.
+        let steps = self.notes.writing.is_some()
+            || self.state.notes.selected.is_some()
+            || !self.select.view.items.is_empty();
         if popover
             || walking
-            || selected_under_pointer
+            || steps
             || self.joints.driven.is_some()
             || self.select.menu.is_some()
             || (list_shown && self.state.side_panel.menu.is_some())
@@ -3265,6 +3278,9 @@ impl Shell {
     }
 
     fn ui_with(&mut self, ui: &mut egui::Ui, mut session: Option<&mut Session>) {
+        // Whether an Escape of this frame is another part's (a menu, a
+        // dialog, a list): asked before they close on it.
+        self.esc_elsewhere = self.escape_belongs_elsewhere(ui.ctx());
         // Worked out again where the viewport is drawn this frame; a frame
         // without it (the start screen) leaves no stale light look.
         self.interacting = false;
@@ -5328,17 +5344,16 @@ impl Shell {
             self.open_other_menu(scene, x, y, at, shift);
             ui.ctx().request_repaint();
         }
-        // Esc closes an open popover of the Studio or Analysis chip first,
-        // wherever the pointer is, then lets go of a joint held by hand;
-        // then it closes the "select other" list, wherever the pointer is,
-        // or clears the selection over the viewport.
-        if !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.key_pressed(help::CLEAR_KEY)) {
-            if self.close_popover() || self.let_go_of_drive() {
-                ui.ctx().request_repaint();
-            } else if self.select.menu.is_some() || response.contains_pointer() {
-                self.escape_selection();
-                ui.ctx().request_repaint();
-            }
+        // Esc steps back once, wherever the pointer is, in the grammar's
+        // order (`selection.rs`, `Shell::escape_step`): a field in the
+        // view, a list or popover, a joint held by hand, the chosen note,
+        // the selection; never the section. A field in a panel with the
+        // keys, and a menu, dialog or list of another part's, take it.
+        if !ui.ctx().egui_wants_keyboard_input()
+            && ui.input(|i| i.key_pressed(help::CLEAR_KEY))
+            && self.escape_step(self.esc_elsewhere).is_some()
+        {
+            ui.ctx().request_repaint();
         }
 
         // A quick preview whenever what is shown changes, and the sharp

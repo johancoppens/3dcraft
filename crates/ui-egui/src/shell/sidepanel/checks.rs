@@ -226,6 +226,30 @@ impl Shell {
         let max_height = self.checks_rows_height().min(self.checks_max_height(ui));
         let mut fly: Option<String> = None;
         let mut pending = false;
+        // The check just kept (V4): its row tinted for a moment from when
+        // it is first listed, and scrolled into sight once.
+        let now = ui.input(|i| i.time);
+        let kept = match &mut self.side.kept_tint {
+            Some((name, timed, scrolled)) if lines.iter().any(|l| l.name == *name) => {
+                let (live, left) = timed.live(now, None);
+                let first = !*scrolled;
+                *scrolled = true;
+                Some((live, left, name.clone(), first))
+            }
+            _ => None,
+        };
+        let mut tinted: Option<(String, bool)> = None;
+        match kept {
+            Some((true, left, name, first)) => {
+                if let Some(left) = left {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_secs_f64(left));
+                }
+                tinted = Some((name, first));
+            }
+            Some((false, ..)) => self.side.kept_tint = None,
+            None => {}
+        }
         egui::ScrollArea::vertical()
             .id_salt("craft3d-side-checks")
             .max_height(max_height)
@@ -252,8 +276,16 @@ impl Shell {
                             0.0,
                             kit.c(sk.failed),
                         );
+                    } else if tinted.as_ref().is_some_and(|(name, _)| *name == line.name) {
+                        painter.rect_filled(rect, kit.radius(), kit.c(sk.selection));
                     } else if response.hovered() {
                         painter.rect_filled(rect, kit.radius(), kit.c(sk.hover));
+                    }
+                    if tinted
+                        .as_ref()
+                        .is_some_and(|(name, scroll)| *scroll && *name == line.name)
+                    {
+                        ui.scroll_to_rect(rect, Some(egui::Align::Center));
                     }
                     let y = rect.top() + t.row_height * 0.5;
                     let r = t.nav_icon_size * 0.42;

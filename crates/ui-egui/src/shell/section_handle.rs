@@ -21,7 +21,12 @@
 //! - A click on the number types a value, as on the Offset slider: Enter
 //!   sets it, Escape leaves it.
 //! - X, Y or Z turns the plane across that axis through the middle of the
-//!   model; ∥ lays it on the selected flat face.
+//!   model; the word button after them lays it by the selection, and says
+//!   what a click will do now (`On face`, `Midway`, `Bisect`, `Other
+//!   bisector`, `Through axis`, `Turn 90°`; greyed `From selection` with
+//!   why under the plate: the UX round of 2026-11-18, V2).
+//! - Every plane a button makes or turns cuts away the half on the eye's
+//!   side (V3), so a cut faces you.
 //!
 //! The handle is a view of `state.section` and changes nothing else: the
 //! slider, the display bar and `ui.set` drive the same state, and an
@@ -38,6 +43,7 @@
 
 use super::Shell;
 use super::controls::{SECTION_PLANES, choose_axis, chosen_axis};
+use super::hints::Timed;
 use crate::camera::Projector;
 use crate::kit::Kit;
 use crate::kit::slider::{Typing, nice_step, places_of, shown_trimmed, snapped};
@@ -104,11 +110,89 @@ pub enum HandlePart {
 pub const FACE_DOT: usize = 3;
 
 /// What the fourth button says while the selection gives no plane.
-pub const TAKES_FACES: &str = "Takes one or two flat faces, or one round face: select them first";
+pub const TAKES_FACES: &str = "Select a flat face, two flat faces or a hole: the cut is laid there";
 
 /// What it says looking straight along the axis of the round face
 /// selected: no plane through the axis faces the viewer there.
-pub const ALONG_AXIS: &str = "Looking along the axis: turn the view to cut through it";
+pub const ALONG_AXIS: &str = "You look straight along the axis: turn the view a little";
+
+/// What it says of one face that is neither flat nor round (a cone, a
+/// ball, a spline face), of a face of a hidden part, and of two faces
+/// that make no plane.
+pub const NEITHER: &str = "A cut needs a flat face or a hole; this face is neither";
+pub const HIDDEN: &str = "That part is hidden: show it first";
+pub const NO_PLANE: &str = "These two faces give no plane";
+
+/// The word button's widest label: the plate is placed with its width,
+/// so it does not move as the selection changes.
+pub const WIDEST_WORD: &str = "From selection";
+
+/// What the plate says under it once the plane lies on a face, and what
+/// the ring of the arrow seen end on and Flip say on hover.
+pub const ON_FACE_NOTE: &str = "On the face. Drag the arrow into the part to cut.";
+pub const RING_WORDS: &str = "Seen straight on: type the distance, or turn the view to drag";
+pub const OTHER_HALF: &str = "Keep the other half";
+
+/// What the view and the status bar say when the plane was lost.
+pub const LOST_FACE: &str = "The face this cut lay on is gone: the section is off.";
+pub const LOST_PLANE: &str = "The plane this cut lay on is gone: the section is off.";
+
+/// How long a word under the plate stays, and the view's word when the
+/// plane was lost, in seconds.
+pub const NOTE_SECONDS: f32 = 4.0;
+pub const LOST_SECONDS: f32 = 6.0;
+
+/// Within this of square to the line of sight (the dot of the plane's
+/// normal and the unit direction to the eye), a plane a button makes
+/// keeps the side it had (V3).
+pub const SIDE_BAND: f64 = 0.02;
+
+/// The side of the section with a plane along `along` that cuts away the
+/// half on the eye's side, seen along `toward_eye` (the unit direction
+/// from the view's target to the eye): `flip` such that the normal into
+/// the half cut away points toward the eye. Within [`SIDE_BAND`] of
+/// square to the line of sight (a plane seen nearly edge on, such as one
+/// turned a quarter about a hole's axis from the one facing the eye) the
+/// side the eye itself is on decides, `from_eye` (how far the eye lies
+/// along `along` from the plane); where that is not known or nothing,
+/// `was`.
+pub fn eye_side(along: Vec3, toward_eye: Vec3, from_eye: Option<f64>, was: bool) -> bool {
+    let d = along.dot(toward_eye);
+    if d.is_finite() && d.abs() > SIDE_BAND {
+        return d < 0.0;
+    }
+    match from_eye {
+        Some(s) if s.is_finite() && s != 0.0 => s < 0.0,
+        _ => was,
+    }
+}
+
+/// What the word button says and does now ([`PlaneChoice::button`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WordButton {
+    /// What a click will do: `On face`, `Midway`, `Bisect`, `Other
+    /// bisector`, `Through axis`, `Turn 90°`, `From selection`.
+    pub label: &'static str,
+    /// Its hover: what it does, or why it cannot.
+    pub hover: String,
+    /// The plane is already what a click would make: lit, and a click
+    /// changes nothing.
+    pub lit: bool,
+    /// A click makes no plane: greyed, and a click shows `hover` under
+    /// the plate.
+    pub greyed: bool,
+}
+
+impl WordButton {
+    fn new(label: &'static str, hover: &str, lit: bool, greyed: bool) -> Self {
+        WordButton {
+            label,
+            hover: hover.to_string(),
+            lit,
+            greyed,
+        }
+    }
+}
 
 /// Looking within this angle of a round face's axis (2 degrees, as its
 /// sine) is looking along it: the plane through the axis facing the
@@ -198,34 +282,118 @@ impl PlaneChoice {
     }
 
     /// What a click on the fourth button does, for `section` as it is and
-    /// the view seen along `toward_eye`; or why it does nothing.
+    /// the view seen along `toward_eye`; or why it does nothing: the word
+    /// button's hover.
     pub fn words(&self, section: &SectionState, toward_eye: Vec3) -> String {
+        self.button(section, toward_eye).hover
+    }
+
+    /// Whether `section` lies on the plane `(point, normal)`.
+    fn lies_on(section: &SectionState, (point, normal): &([f64; 3], [f64; 3])) -> bool {
+        section.point == Some(*point) && section.normal == Some(*normal)
+    }
+
+    /// The word button for `section` as it is and the view seen along
+    /// `toward_eye` (the UX round of 2026-11-18, V2): its label says what
+    /// a click will do now, lit where the plane is that already, greyed
+    /// where the selection gives none.
+    pub fn button(&self, section: &SectionState, toward_eye: Vec3) -> WordButton {
         if let Some(why) = &self.refused {
-            return why.clone();
-        }
-        if self.made == Some(SectionMade::Axis) {
-            let on_axis = section.made == Some(SectionMade::Axis)
-                && self
-                    .planes
-                    .first()
-                    .is_some_and(|(point, _)| section.point == Some(*point));
-            return match self.axis_plane(section, toward_eye) {
-                None => ALONG_AXIS,
-                Some(_) if on_axis => "Through the axis, turned a quarter",
-                Some(_) => "Through the axis, facing you",
-            }
-            .to_string();
+            return WordButton::new("From selection", why, false, true);
         }
         match self.made {
-            Some(SectionMade::Face) => "Along the selected face, through it",
-            Some(SectionMade::Mid) => "Midway between the two parallel faces",
-            Some(SectionMade::Bisector) if self.next(section) == 1 => {
-                "The other bisector of the two faces, square to this one"
+            Some(SectionMade::Face) => {
+                let on = section.made == Some(SectionMade::Face)
+                    && self.faces.first().is_some_and(|(feature, face)| {
+                        section.plane.as_deref() == Some(face.as_str())
+                            && section
+                                .feature
+                                .as_deref()
+                                .is_none_or(|f| f == feature.as_str())
+                    });
+                if on {
+                    WordButton::new("On face", "The cut lies on this face", true, false)
+                } else {
+                    WordButton::new("On face", "Lay the cut on this face", false, false)
+                }
             }
-            Some(SectionMade::Bisector) => "Halving the angle of the two faces",
-            Some(SectionMade::Axis) | None => TAKES_FACES,
+            Some(SectionMade::Mid) => {
+                let on = section.made == Some(SectionMade::Mid)
+                    && self
+                        .planes
+                        .first()
+                        .is_some_and(|plane| Self::lies_on(section, plane));
+                if on {
+                    WordButton::new(
+                        "Midway",
+                        "The cut lies midway between the two faces",
+                        true,
+                        false,
+                    )
+                } else {
+                    WordButton::new(
+                        "Midway",
+                        "Lay the cut midway between the two faces",
+                        false,
+                        false,
+                    )
+                }
+            }
+            Some(SectionMade::Bisector) => {
+                let on = section.made == Some(SectionMade::Bisector)
+                    && self
+                        .planes
+                        .iter()
+                        .any(|plane| Self::lies_on(section, plane));
+                // The only bisector that cuts the model: lit, a click keeps
+                // it as it is.
+                if on && self.planes.len() == 1 {
+                    WordButton::new(
+                        "Bisect",
+                        "The cut halves the angle of the two faces",
+                        true,
+                        false,
+                    )
+                } else if on {
+                    WordButton::new(
+                        "Other bisector",
+                        "The other plane that halves the angle, square to this one",
+                        false,
+                        false,
+                    )
+                } else {
+                    WordButton::new(
+                        "Bisect",
+                        "Lay the cut through their corner, halving the angle",
+                        false,
+                        false,
+                    )
+                }
+            }
+            Some(SectionMade::Axis) => {
+                let on_axis = section.made == Some(SectionMade::Axis)
+                    && self
+                        .planes
+                        .first()
+                        .is_some_and(|(point, _)| section.point == Some(*point));
+                match self.axis_plane(section, toward_eye) {
+                    None => WordButton::new("Through axis", ALONG_AXIS, false, true),
+                    Some(_) if on_axis => WordButton::new(
+                        "Turn 90°",
+                        "Turn the cut a quarter around the axis",
+                        false,
+                        false,
+                    ),
+                    Some(_) => WordButton::new(
+                        "Through axis",
+                        "Cut through the middle of this hole, facing you",
+                        false,
+                        false,
+                    ),
+                }
+            }
+            None => WordButton::new("From selection", TAKES_FACES, false, true),
         }
-        .to_string()
     }
 }
 
@@ -240,10 +408,24 @@ impl PlaneChoice {
 /// offset; a choice that gives no plane, and looking along the axis,
 /// leave the section as it is.
 pub fn choose_plane(section: &mut SectionState, choice: &PlaneChoice, toward_eye: Vec3) {
+    choose_plane_seen(section, choice, toward_eye, None);
+}
+
+/// [`choose_plane`] with the eye where it is (`eye`), which decides the
+/// side of a plane seen edge on ([`eye_side`]).
+pub fn choose_plane_seen(
+    section: &mut SectionState,
+    choice: &PlaneChoice,
+    toward_eye: Vec3,
+    eye: Option<Vec3>,
+) {
     if choice.refused.is_some() {
         return;
     }
-    match choice.made {
+    // A point of the plane and its direction, where they are known here:
+    // what the side is chosen by (V3: the half on the eye's side is cut
+    // away).
+    let along = match choice.made {
         Some(SectionMade::Axis) => {
             let Some((point, normal)) = choice.axis_plane(section, toward_eye) else {
                 return;
@@ -253,6 +435,7 @@ pub fn choose_plane(section: &mut SectionState, choice: &PlaneChoice, toward_eye
             section.point = Some(point);
             section.normal = Some(normal);
             section.made = Some(SectionMade::Axis);
+            Some((point, normal))
         }
         Some(SectionMade::Face) => {
             let Some((feature, face)) = choice.faces.first() else {
@@ -268,6 +451,7 @@ pub fn choose_plane(section: &mut SectionState, choice: &PlaneChoice, toward_eye
             section.feature = Some(feature.clone());
             section.point = None;
             section.normal = None;
+            choice.planes.first().copied()
         }
         Some(made @ (SectionMade::Mid | SectionMade::Bisector)) => {
             let Some(&(point, normal)) = choice.planes.get(choice.next(section)) else {
@@ -285,11 +469,19 @@ pub fn choose_plane(section: &mut SectionState, choice: &PlaneChoice, toward_eye
             section.point = Some(point);
             section.normal = Some(normal);
             section.made = Some(made);
+            Some((point, normal))
         }
         None => return,
-    }
+    };
     section.offset = 0.0;
-    section.flip = false;
+    section.flip = match along {
+        Some(([px, py, pz], [x, y, z])) => {
+            let along = Vec3::new(x, y, z);
+            let from_eye = eye.map(|eye| (eye - Vec3::new(px, py, pz)).dot(along));
+            eye_side(along, toward_eye, from_eye, section.flip)
+        }
+        None => false,
+    };
 }
 
 /// The planes two flat faces give, each face by a point of its plane and
@@ -376,7 +568,7 @@ fn round_axis(
 /// of meshes and names (every way it says a face is not in the scene).
 pub fn in_window_words(why: String) -> String {
     if why.contains("not flat") {
-        "Not a flat face: the plane takes one or two flat faces, or one round face".to_string()
+        NEITHER.to_string()
     } else if [
         "no area",
         "no body has",
@@ -386,8 +578,7 @@ pub fn in_window_words(why: String) -> String {
     .iter()
     .any(|words| why.contains(words))
     {
-        "Its body is not in the view (hidden, or rolled back): show it to lay the plane on its face"
-            .to_string()
+        HIDDEN.to_string()
     } else {
         why
     }
@@ -503,11 +694,13 @@ pub struct HandlePlace {
     /// The group's plate, and in it the number.
     pub group: Rect,
     pub number: Rect,
-    /// The middles of the buttons X, Y and Z (and the face's, while there
-    /// is one: [`FACE_DOT`]), and of Flip side; half their side.
+    /// The middles of the buttons X, Y and Z (and the word button's:
+    /// [`FACE_DOT`]), and of Flip side; half their side.
     pub dots: Vec<Pos2>,
     pub flip: Pos2,
     pub dot_radius: f32,
+    /// The word button, as wide as its label.
+    pub word: Rect,
     /// How near the arrow a press takes it.
     pub hit: f32,
 }
@@ -521,7 +714,15 @@ impl HandlePlace {
         }
         let cell =
             |c: Pos2| Rect::from_center_size(c, egui::Vec2::splat(self.dot_radius * 2.0 + 2.0));
-        if let Some(k) = self.dots.iter().position(|&d| cell(d).contains(p)) {
+        if self.word.expand(1.0).contains(p) {
+            return Some(HandlePart::Dot(FACE_DOT));
+        }
+        if let Some(k) = self
+            .dots
+            .iter()
+            .enumerate()
+            .position(|(k, &d)| k != FACE_DOT && cell(d).contains(p))
+        {
             return Some(HandlePart::Dot(k));
         }
         if cell(self.flip).contains(p) {
@@ -1337,6 +1538,16 @@ pub(crate) struct HandleView {
     /// The faces a plane midway or a bisector was made from, per open
     /// document (each tab has its own section; [`Shell::remember_made`]).
     made_from: std::collections::BTreeMap<u64, MadeFrom>,
+    /// Words under the plate for a while: why the word button cannot,
+    /// that the plane lies on the face (then the outline is drawn at full
+    /// strength), that a typed distance was clamped.
+    note: Option<Timed>,
+    note_on_face: bool,
+    /// Why the section was switched off, as last seen, and the view's
+    /// words for it while they last; where the plate was last drawn.
+    lost_seen: Option<String>,
+    lost: Option<Timed>,
+    last_group: Option<Rect>,
 }
 
 impl Shell {
@@ -1345,6 +1556,27 @@ impl Shell {
     /// document without bodies).
     pub fn section_handle(&self) -> Option<&HandlePlace> {
         self.section_handle.place.as_ref()
+    }
+
+    /// The words under the section's plate now, if any (`ui.get` ›
+    /// `section.note`): why the word button cannot, that the plane lies
+    /// on the face, that a typed distance was clamped.
+    pub fn section_note(&self) -> Option<&str> {
+        self.section_handle.note.as_ref().map(|n| n.text.as_str())
+    }
+
+    /// Says `text` under the section's plate for [`NOTE_SECONDS`].
+    pub(super) fn section_say(&mut self, text: impl Into<String>) {
+        self.section_handle.note = Some(Timed::seconds(text, NOTE_SECONDS));
+        self.section_handle.note_on_face = false;
+    }
+
+    /// The word button for the section as it is, seen as the view is now.
+    pub fn section_word(&self) -> WordButton {
+        match &self.section_handle.face {
+            Some(choice) => choice.button(&self.state.section, self.state.camera.toward_eye()),
+            None => WordButton::new("From selection", TAKES_FACES, false, true),
+        }
     }
 
     /// The plane the fourth button (the handle's, and the display bar's
@@ -1425,8 +1657,14 @@ impl Shell {
                 Ok(plane) => planes.push((plane.base, plane.along)),
                 Err(why) => {
                     // In the window's words: the engine's speak of meshes
-                    // and names.
+                    // and names; two faces of which one is not flat give
+                    // no plane.
                     let why = in_window_words(why);
+                    let why = if faces.len() == 2 && why == NEITHER {
+                        NO_PLANE.to_string()
+                    } else {
+                        why
+                    };
                     self.section_handle.face = Some(PlaneChoice::refused(faces, &why));
                     return;
                 }
@@ -1443,10 +1681,12 @@ impl Shell {
             _ => None,
         };
         let choice = match planes.as_slice() {
-            [_] => PlaneChoice {
+            // The face's own plane kept: the side a click cuts is chosen
+            // by its normal.
+            [(base, along)] => PlaneChoice {
                 made: Some(SectionMade::Face),
                 faces,
-                planes: Vec::new(),
+                planes: vec![([base.x, base.y, base.z], [along.x, along.y, along.z])],
                 refused: None,
             },
             [_, _] => match two {
@@ -1459,7 +1699,7 @@ impl Shell {
                         .collect(),
                     refused: None,
                 },
-                None => PlaneChoice::refused(faces, "The two faces give no plane"),
+                None => PlaneChoice::refused(faces, NO_PLANE),
             },
             _ => PlaneChoice::refused(faces, TAKES_FACES),
         };
@@ -1756,12 +1996,29 @@ impl Shell {
                 self.section_handle.fresh = true;
             }
             HandlePart::Dot(FACE_DOT) => {
-                if let Some(choice) = self.section_handle.face.clone() {
-                    choose_plane(&mut section, &choice, self.state.camera.toward_eye());
+                let word = self.section_word();
+                if word.greyed {
+                    // Touch has no hover: a click says why, under the
+                    // plate, and changes nothing.
+                    self.section_say(word.hover);
+                } else if !word.lit
+                    && let Some(choice) = self.section_handle.face.clone()
+                {
+                    let camera = &self.state.camera;
+                    choose_plane_seen(
+                        &mut section,
+                        &choice,
+                        camera.toward_eye(),
+                        Some(camera.eye()),
+                    );
                     self.remember_made(&section, &choice);
+                    if section.made == Some(SectionMade::Face) && section != self.state.section {
+                        self.section_say(ON_FACE_NOTE);
+                        self.section_handle.note_on_face = true;
+                    }
                 }
             }
-            HandlePart::Dot(axis) => choose_axis(&mut section, axis, scene),
+            HandlePart::Dot(axis) => choose_axis(&mut section, axis, scene, &self.state.camera),
             HandlePart::Flip => section.flip = !section.flip,
         }
         self.commit_section(ui, section);
@@ -1793,6 +2050,8 @@ impl Shell {
         } else {
             None
         };
+        let now = ui.input(|i| i.time);
+        self.notice_lost_plane(ui, rect, now);
         let Some(frame) = frame else {
             self.section_handle.place = None;
             self.section_handle.drag = None;
@@ -1813,8 +2072,25 @@ impl Shell {
             .as_ref()
             .is_some_and(|t| t.field == NUMBER_FIELD);
         let pointer = ui.input(|i| i.pointer.hover_pos());
-        // The axis's letter (or what the plane is: along a face, midway,
-        // a bisector) and the offset in the document's unit.
+        // The words under the plate, while they last.
+        let note = match self.section_handle.note.as_mut().map(|n| n.live(now, None)) {
+            Some((true, left)) => {
+                if let Some(left) = left {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_secs_f64(left));
+                }
+                self.section_handle.note.as_ref().map(|n| n.text.clone())
+            }
+            _ => {
+                self.section_handle.note = None;
+                self.section_handle.note_on_face = false;
+                None
+            }
+        };
+        // What the plane is (the axis's letter, or the word button's own
+        // word: Face, Midway, Bisector, Axis; none for a datum or a free
+        // plane) and the offset in the document's unit, written by the
+        // one rule (`shell/shown.rs`).
         let letter = chosen_axis(&self.state.section)
             .and_then(|k| SECTION_PLANES.get(k))
             .map(|(name, _)| name.to_uppercase())
@@ -1826,12 +2102,10 @@ impl Shell {
                 };
                 made.map(|made| made.label().to_string())
             });
-        let number = shown_trimmed(
+        let number = super::shown::length_text(
             self.state.section.offset,
-            1.0,
-            places_of(self.length_tolerance),
+            self.length_tolerance,
             self.length_unit,
-            true,
         );
         let font = kit.font();
         let letter_galley = letter.map(|l| {
@@ -1848,20 +2122,44 @@ impl Shell {
         if typing {
             text_width = text_width.max(96.0);
         }
-        // The group: the number, then the buttons X, Y, Z and ∥, then
-        // Flip side, on one plate as high as the controls on the bar.
+        // The group: the number, then X, Y, Z, the word button and Flip
+        // side, on one plate as high as the controls on the bar. The word
+        // button is as wide as its label; the plate is placed as wide as
+        // the widest label makes it, so it does not jump as the selection
+        // changes.
         let height = tokens.nav_height;
         let inset = 2.0;
         let side = height - 2.0 * inset;
-        let buttons = 5;
+        let word = self.section_word();
+        let letters = egui::FontId::proportional(tokens.control_font);
+        let label_width = |text: &str| {
+            ui.painter()
+                .layout_no_wrap(text.to_string(), letters.clone(), color(tokens.plate_text))
+                .size()
+                .x
+                + 2.0 * PAD.x
+        };
+        let word_width = label_width(word.label).max(side);
+        let widest = label_width(WIDEST_WORD).max(word_width);
         let number_width = text_width + PAD.x * 2.0;
-        let size = vec2(
-            number_width + buttons as f32 * (side + inset) + inset,
-            height,
+        let width_with = |word: f32| number_width + 4.0 * (side + inset) + word + inset;
+        let size = vec2(width_with(word_width), height);
+        let (placed, way) = group_place(
+            &frame,
+            rect,
+            &keep_out,
+            vec2(width_with(widest), height),
+            self.section_handle.group_way,
         );
-        let (group, way) =
-            group_place(&frame, rect, &keep_out, size, self.section_handle.group_way);
         self.section_handle.group_way = Some(way);
+        // Against the side of the place nearest the arrow, so that a
+        // shorter label leaves its room on the far side.
+        let group = if frame.at.x < placed.center().x {
+            Rect::from_min_size(placed.min, size)
+        } else {
+            Rect::from_min_size(pos2(placed.right() - size.x, placed.top()), size)
+        };
+        self.section_handle.last_group = Some(group);
         let number_rect = Rect::from_min_size(group.min, vec2(number_width, height));
         let centre_of = |k: usize| {
             pos2(
@@ -1869,21 +2167,39 @@ impl Shell {
                 group.center().y,
             )
         };
+        let word_rect = Rect::from_min_size(
+            pos2(
+                group.left() + number_width + inset + 3.0 * (side + inset),
+                group.center().y - side * 0.5,
+            ),
+            vec2(word_width, side),
+        );
+        let flip_centre = pos2(word_rect.right() + inset + side * 0.5, group.center().y);
+        let mut dots: Vec<Pos2> = (0..FACE_DOT).map(centre_of).collect();
+        dots.push(word_rect.center());
         let place = HandlePlace {
             frame,
             group,
             number: number_rect,
-            dots: (0..buttons - 1).map(centre_of).collect(),
-            flip: centre_of(buttons - 1),
+            dots,
+            flip: flip_centre,
             dot_radius: side * 0.5,
             hit: tokens.section_hit,
+            word: word_rect,
         };
         let dragging = self.section_handle.drag.as_ref().is_some_and(|d| !d.spent);
         let under = pointer
             .filter(|p| rect.contains(*p))
             .and_then(|p| place.part_at(p));
+        // The ring of the arrow seen end on: no handle to drag, and its
+        // hover says so.
+        let on_ring = place.frame.arrow.is_none()
+            && pointer.is_some_and(|p| {
+                rect.contains(p) && p.distance(place.frame.at) <= tokens.section_head * 0.6 + 2.0
+            });
         let near = dragging
             || typing
+            || (note.is_some() && self.section_handle.note_on_face)
             || pointer.is_some_and(|p| rect.contains(p) && place.near(p, tokens.section_near));
         let painter = ui.painter_at(rect);
         // The outline, dashed, in the accent alone, faint until the pointer
@@ -1991,31 +2307,40 @@ impl Shell {
             }
             painter.galley(pos2(x, y), number_galley, color(tokens.plate_text));
         }
-        // The buttons: the axis the plane is across (or ∥ while the plane
-        // is the selection's), and Flip side while it is flipped, filled
-        // with the accent; ∥ greyed while the selection gives no plane.
+        // The buttons: the axis the plane is across (or the word button
+        // while the plane is the selection's), and Flip side while it is
+        // flipped, filled with the accent; the word button greyed while a
+        // click makes no plane.
         let chosen = if self.section_from_selection() {
             Some(FACE_DOT)
         } else {
             chosen_axis(&self.state.section)
         };
-        let choice = self.section_handle.face.clone();
-        let refused = match &choice {
-            Some(choice) => choice.refused.clone(),
-            None => Some(TAKES_FACES.to_string()),
-        };
         let segment = egui::CornerRadius::same(tokens.nav_segment_radius);
-        let letters = egui::FontId::proportional(tokens.control_font);
-        let mut cells: Vec<(HandlePart, Pos2, bool)> = place
+        let mut cells: Vec<(HandlePart, Rect, bool)> = place
             .dots
             .iter()
             .enumerate()
-            .map(|(k, &c)| (HandlePart::Dot(k), c, chosen == Some(k)))
+            .map(|(k, &c)| {
+                let cell = if k == FACE_DOT {
+                    place.word
+                } else {
+                    Rect::from_center_size(c, egui::Vec2::splat(side))
+                };
+                (
+                    HandlePart::Dot(k),
+                    cell,
+                    chosen == Some(k) || (k == FACE_DOT && word.lit),
+                )
+            })
             .collect();
-        cells.push((HandlePart::Flip, place.flip, self.state.section.flip));
-        for (part, middle, on) in cells {
-            let cell = Rect::from_center_size(middle, egui::Vec2::splat(side));
-            let greyed = part == HandlePart::Dot(FACE_DOT) && !on && refused.is_some();
+        cells.push((
+            HandlePart::Flip,
+            Rect::from_center_size(place.flip, egui::Vec2::splat(side)),
+            self.state.section.flip,
+        ));
+        for (part, cell, on) in cells {
+            let greyed = part == HandlePart::Dot(FACE_DOT) && !on && word.greyed;
             if on {
                 painter.rect_filled(cell, segment, color(tokens.accent));
             } else if under == Some(part) && !greyed {
@@ -2036,7 +2361,7 @@ impl Shell {
                 HandlePart::Dot(k) if k < SECTION_PLANES.len() => {
                     if let Some((name, _)) = SECTION_PLANES.get(k) {
                         painter.text(
-                            middle - vec2(0.0, 1.0),
+                            cell.center() - vec2(0.0, 1.0),
                             egui::Align2::CENTER_CENTER,
                             name.to_uppercase(),
                             letters.clone(),
@@ -2045,12 +2370,12 @@ impl Shell {
                     }
                 }
                 HandlePart::Dot(_) => {
-                    super::icons::paint(
-                        &painter,
-                        super::icons::Icon::Parallel,
-                        cell.shrink(side * 0.22),
+                    painter.text(
+                        cell.center() - vec2(0.0, 1.0),
+                        egui::Align2::CENTER_CENTER,
+                        word.label,
+                        letters.clone(),
                         ink,
-                        &tokens,
                     );
                 }
                 _ => {
@@ -2064,49 +2389,122 @@ impl Shell {
                 }
             }
         }
-        // What the pointer would take, and what a button does.
+        // What the pointer would take, and what a button does: the
+        // pointing hand on what a click acts on, grab on the arrow, text on
+        // the number, the default on a greyed or lit button and the ring.
+        let mut hover: Option<String> = None;
         if !dragging && let Some(part) = under {
+            let word_idle = word.greyed || word.lit;
             ui.ctx().set_cursor_icon(match part {
                 HandlePart::Arrow => egui::CursorIcon::Grab,
                 HandlePart::Number => egui::CursorIcon::Text,
-                HandlePart::Dot(FACE_DOT) if refused.is_some() && chosen != Some(FACE_DOT) => {
-                    egui::CursorIcon::NotAllowed
-                }
+                HandlePart::Dot(FACE_DOT) if word_idle => egui::CursorIcon::Default,
                 HandlePart::Dot(_) | HandlePart::Flip => egui::CursorIcon::PointingHand,
             });
-            let words = match part {
-                HandlePart::Dot(FACE_DOT) => Some(match &choice {
-                    Some(choice) => {
-                        choice.words(&self.state.section, self.state.camera.toward_eye())
-                    }
-                    None => TAKES_FACES.to_string(),
-                }),
-                HandlePart::Flip => Some("Keep the other half".to_string()),
+            hover = match part {
+                HandlePart::Dot(FACE_DOT) => Some(word.hover.clone()),
+                HandlePart::Flip => Some(OTHER_HALF.to_string()),
                 _ => None,
             };
-            if let Some(words) = words {
-                let galley =
-                    painter.layout_no_wrap(words, kit.small_font(), color(tokens.notice_text));
-                let below = place.group.bottom() + 6.0;
-                let at = if below + galley.size().y + 6.0 < rect.bottom() {
-                    pos2(place.group.left(), below)
-                } else {
-                    pos2(
-                        place.group.left(),
-                        place.group.top() - 6.0 - galley.size().y,
-                    )
-                };
-                let back = Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 3.0));
-                painter.rect_filled(
-                    back,
-                    radius,
-                    color_alpha(tokens.notice_fill, tokens.notice_opacity),
-                );
-                painter.galley(at, galley, color(tokens.notice_text));
-            }
+        } else if !dragging && on_ring {
+            hover = Some(RING_WORDS.to_string());
+        }
+        // Under the plate: what is pointed at, else what was said there
+        // last for a while.
+        if let Some(words) = hover.or(note) {
+            paint_under(&painter, &tokens, &kit, rect, place.group, &words);
         }
         self.section_handle.place = Some(place);
     }
+
+    /// The section switched off because its plane was lost (its face is
+    /// gone): the view says so for [`LOST_SECONDS`] where the plate was,
+    /// and the status bar until the next command.
+    fn notice_lost_plane(&mut self, ui: &egui::Ui, rect: Rect, now: f64) {
+        let lost = self.section_lost().map(str::to_string);
+        if lost != self.section_handle.lost_seen {
+            if lost.is_some() {
+                // A face's persistent name holds a colon; a base plane's or
+                // a datum's does not.
+                let face = self.state.section.made == Some(SectionMade::Face)
+                    || self
+                        .state
+                        .section
+                        .plane
+                        .as_deref()
+                        .is_some_and(|p| p.contains(':'));
+                let words = if face { LOST_FACE } else { LOST_PLANE };
+                self.section_handle.lost = Some(Timed::seconds(words, LOST_SECONDS));
+                self.hint_until_command(words, None);
+            } else {
+                self.section_handle.lost = None;
+            }
+            self.section_handle.lost_seen = lost;
+        }
+        let shown = match self.section_handle.lost.as_mut().map(|l| l.live(now, None)) {
+            Some((true, left)) => {
+                if let Some(left) = left {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_secs_f64(left));
+                }
+                self.section_handle.lost.as_ref().map(|l| l.text.clone())
+            }
+            _ => {
+                self.section_handle.lost = None;
+                None
+            }
+        };
+        if let Some(words) = shown {
+            let tokens = self.tokens;
+            let kit = Kit::plate(&tokens);
+            let at = self
+                .section_handle
+                .last_group
+                .filter(|g| rect.contains_rect(*g))
+                .unwrap_or_else(|| {
+                    Rect::from_center_size(
+                        pos2(rect.center().x, rect.top() + tokens.nav_height * 2.0),
+                        vec2(1.0, tokens.nav_height),
+                    )
+                });
+            paint_under(&ui.painter_at(rect), &tokens, &kit, rect, at, &words);
+        }
+    }
+}
+
+/// `words` on a dark plate under `group` (over it where there is no room
+/// below), within the viewport `rect`: the hint under the section's plate.
+fn paint_under(
+    painter: &egui::Painter,
+    tokens: &Tokens,
+    kit: &Kit,
+    rect: Rect,
+    group: Rect,
+    words: &str,
+) {
+    let galley = painter.layout_no_wrap(
+        words.to_string(),
+        kit.small_font(),
+        color(tokens.plate_text),
+    );
+    let below = group.bottom() + 6.0;
+    let y = if below + galley.size().y + 6.0 < rect.bottom() {
+        below
+    } else {
+        group.top() - 6.0 - galley.size().y
+    };
+    let x = group
+        .left()
+        .min(rect.right() - galley.size().x - 6.0)
+        .max(rect.left() + 6.0);
+    let at = pos2(x, y);
+    let back = Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 3.0));
+    painter.rect_filled(
+        back,
+        egui::CornerRadius::same(tokens.radius),
+        color_alpha(tokens.plate_fill, tokens.plate_opacity),
+    );
+    painter.galley(at, galley, color(tokens.plate_text));
 }
 
 #[cfg(test)]
@@ -2706,7 +3104,11 @@ mod tests {
             ..SectionState::default()
         };
         let eye = Vec3::new(0.6, -0.6, 0.53).normalized().unwrap();
-        assert_eq!(round.words(&section, eye), "Through the axis, facing you");
+        assert_eq!(
+            round.words(&section, eye),
+            "Cut through the middle of this hole, facing you"
+        );
+        assert_eq!(round.button(&section, eye).label, "Through axis");
         choose_plane(&mut section, &round, eye);
         assert_eq!(section.made, Some(SectionMade::Axis));
         assert_eq!((section.plane.clone(), section.point), (None, Some(axis.0)));
@@ -2721,8 +3123,9 @@ mod tests {
         // A second click: a quarter about the axis.
         assert_eq!(
             round.words(&section, eye),
-            "Through the axis, turned a quarter"
+            "Turn the cut a quarter around the axis"
         );
+        assert_eq!(round.button(&section, eye).label, "Turn 90°");
         choose_plane(&mut section, &round, eye);
         let [mx, my, mz] = section.normal.unwrap();
         let m = Vec3::new(mx, my, mz);
@@ -2744,6 +3147,7 @@ mod tests {
             ..SectionState::default()
         };
         assert_eq!(round.words(&elsewhere, along), ALONG_AXIS);
+        assert!(round.button(&elsewhere, along).greyed);
         let kept = elsewhere.clone();
         choose_plane(&mut elsewhere, &round, along);
         assert_eq!(elsewhere, kept);
@@ -2758,7 +3162,7 @@ mod tests {
         named.point = None;
         named.normal = None;
         assert_eq!(named.validated().unwrap().made, None);
-        assert_eq!(SectionMade::Axis.label(), "axis");
+        assert_eq!(SectionMade::Axis.label(), "Axis");
     }
 
     #[test]
@@ -2804,14 +3208,16 @@ mod tests {
         let bisectors = face(SectionMade::Bisector, vec![through, other]);
         assert_eq!(
             bisectors.words(&section, eye),
-            "Halving the angle of the two faces"
+            "Lay the cut through their corner, halving the angle"
         );
+        assert_eq!(bisectors.button(&section, eye).label, "Bisect");
         choose_plane(&mut section, &bisectors, eye);
         assert_eq!(section.normal, Some(through.1));
         assert_eq!(
             bisectors.words(&section, eye),
-            "The other bisector of the two faces, square to this one"
+            "The other plane that halves the angle, square to this one"
         );
+        assert_eq!(bisectors.button(&section, eye).label, "Other bisector");
         choose_plane(&mut section, &bisectors, eye);
         assert_eq!(section.normal, Some(other.1));
         assert_eq!(section.made, Some(SectionMade::Bisector));
@@ -2847,16 +3253,13 @@ mod tests {
             "face F1:face(1) has no area in the picture's mesh, so it gives no plane",
         ] {
             let said = in_window_words(engine.to_string());
-            assert!(
-                said.starts_with("Its body is not in the view"),
-                "{engine}: {said}"
-            );
+            assert_eq!(said, HIDDEN, "{engine}");
         }
-        assert!(
+        assert_eq!(
             in_window_words(
                 "face F1:face(6) is not flat; a section lies on a base plane".to_string()
-            )
-            .starts_with("Not a flat face")
+            ),
+            NEITHER
         );
         assert_eq!(in_window_words("odd".to_string()), "odd");
     }

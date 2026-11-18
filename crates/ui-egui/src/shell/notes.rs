@@ -1132,7 +1132,13 @@ impl Shell {
                         } else if field.lost_focus() && writing.text.trim().is_empty() {
                             leave = true;
                         }
-                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        // Escape, the grammar's first step: an empty field
+                        // closes; one with text gives up the keys and stays,
+                        // and the next Escape closes it
+                        // (`Shell::escape_step`).
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape))
+                            && writing.text.trim().is_empty()
+                        {
                             leave = true;
                         }
                     });

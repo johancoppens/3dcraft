@@ -361,14 +361,67 @@ fn model_middle(scene: Option<&Scene>, axis: usize) -> f64 {
         })
 }
 
+/// The unit direction of the axis `axis` (0 X, 1 Y, 2 Z): the normal of
+/// the base plane across it, as the engine takes it (`yz` along +X).
+fn axis_direction(axis: usize) -> craft3d_math::Vec3 {
+    match axis {
+        0 => craft3d_math::Vec3::X,
+        1 => craft3d_math::Vec3::Y,
+        _ => craft3d_math::Vec3::Z,
+    }
+}
+
+/// Seen from above or below within this (the cosine of 30 degrees), the
+/// first plane is across Z.
+const FIRST_Z: f64 = 0.87;
+/// X and Y faced alike within this: the axis along which the model is
+/// shorter.
+const FIRST_ALIKE: f64 = 0.17;
+
+/// Which base plane faces the eye most for the first cut of a tab (the UX
+/// round of 2026-11-18, V3), seen along `toward_eye`: Z from above or
+/// below, else of X and Y the one faced more, and where they are faced
+/// alike the axis along which the model's box is shorter (X on a tie).
+pub fn first_axis(toward_eye: craft3d_math::Vec3, scene: Option<&Scene>) -> usize {
+    if toward_eye.z.abs() > FIRST_Z {
+        return 2;
+    }
+    let (x, y) = (toward_eye.x.abs(), toward_eye.y.abs());
+    if (x - y).abs() < FIRST_ALIKE {
+        let shorter_y = scene
+            .and_then(|scene| scene.bbox.corners())
+            .is_some_and(|(lo, hi)| hi.y - lo.y < hi.x - lo.x);
+        return usize::from(shorter_y);
+    }
+    if x >= y { 0 } else { 1 }
+}
+
 /// The section switched on or off; switched on with no plane at all, it
-/// is across Z through the model's middle.
-pub(super) fn toggle_section(section: &mut crate::state::SectionState, scene: Option<&Scene>) {
+/// is across the base plane that faces the eye most ([`first_axis`],
+/// seen by `camera`) through the model's middle, cutting away the half
+/// on the eye's side.
+pub(super) fn toggle_section(
+    section: &mut crate::state::SectionState,
+    scene: Option<&Scene>,
+    camera: &crate::state::CameraState,
+) {
     section.on = !section.on;
     if section.on && section.plane.is_none() && section.normal.is_none() {
-        section.plane = Some("xy".to_string());
-        section.offset = model_middle(scene, 2);
+        let axis = first_axis(camera.toward_eye(), scene);
+        if let Some((_, plane)) = SECTION_PLANES.get(axis) {
+            section.plane = Some((*plane).to_string());
+            section.offset = model_middle(scene, axis);
+            section.flip = side_across(axis, section.offset, camera, section.flip);
+        }
     }
+}
+
+/// The side of the plane across `axis` at `offset` that cuts away the
+/// half on the eye's side (`section_handle::eye_side`).
+fn side_across(axis: usize, offset: f64, camera: &crate::state::CameraState, was: bool) -> bool {
+    let along = axis_direction(axis);
+    let from_eye = camera.eye().dot(along) - offset;
+    super::section_handle::eye_side(along, camera.toward_eye(), Some(from_eye), was)
 }
 
 /// Which of X, Y and Z the section is across, if it is across a base
@@ -380,11 +433,14 @@ pub(super) fn chosen_axis(section: &crate::state::SectionState) -> Option<usize>
 }
 
 /// The section across axis `axis` (0 X, 1 Y, 2 Z) through the model's
-/// middle, unless it is across that axis already.
+/// middle, cutting away the half on the eye's side seen by `camera` (V3:
+/// X, Y and Z do not keep the old side), unless it is across that axis
+/// already (a lit button changes nothing).
 pub(super) fn choose_axis(
     section: &mut crate::state::SectionState,
     axis: usize,
     scene: Option<&Scene>,
+    camera: &crate::state::CameraState,
 ) {
     if Some(axis) == chosen_axis(section) {
         return;
@@ -396,6 +452,7 @@ pub(super) fn choose_axis(
         section.normal = None;
         section.made = None;
         section.offset = model_middle(scene, axis);
+        section.flip = side_across(axis, section.offset, camera, section.flip);
     }
 }
 
@@ -542,6 +599,8 @@ impl Shell {
         if let Some(rail) = shown.rail {
             self.slider_rails.push(("offset", rail, shown.field));
         }
+        // On a phone it has no name on the bar: its hover says it.
+        shown.response.clone().on_hover_text("Distance");
         if shown.changed && value.is_finite() {
             section.offset = value;
         }
@@ -592,6 +651,26 @@ impl Shell {
             }
             _ => session.evaluate_typed(&text, craft3d_engine::TypedKind::Length),
         };
+        // A typed distance outside where the plane meets the bodies is
+        // brought to the nearer end, and that is said (V3): under the
+        // plate for its number, in the status bar for the bar's slider.
+        let range = self
+            .section_cache
+            .as_ref()
+            .and_then(|cache| cache.range)
+            .filter(|[lo, hi]| lo <= hi && lo.is_finite() && hi.is_finite());
+        let mut clamped: Option<String> = None;
+        let result = result.map(|value| match (typing.field, range) {
+            ("see-through", _) | (_, None) => value,
+            (_, Some([lo, hi])) if value < lo || value > hi => {
+                let words =
+                    super::shown::length_range(lo, hi, self.length_tolerance, self.length_unit);
+                clamped = Some(format!("clamped to {}", words.text));
+                value.clamp(lo, hi)
+            }
+            (_, Some(_)) => value,
+        });
+        let field = typing.field;
         match result {
             Ok(value) => {
                 match typing.field {
@@ -612,6 +691,13 @@ impl Shell {
                     }
                 }
                 self.typing = None;
+                if let Some(words) = clamped {
+                    if field == super::section_handle::NUMBER_FIELD {
+                        self.section_say(words);
+                    } else {
+                        self.hint(words, super::hints::HINT_SECONDS);
+                    }
+                }
             }
             Err(error) => {
                 typing.error = Some(error.message().to_string());

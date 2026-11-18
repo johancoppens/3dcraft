@@ -40,6 +40,22 @@ pub const MAX_OTHER: usize = 24;
 /// Most selection requests waiting for the session.
 const MAX_PENDING: usize = 64;
 
+/// What one Escape did ([`Shell::escape_step`]): the grammar's steps, in
+/// their order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EscStep {
+    /// A field in the view: a note field closed, typing given up.
+    Field,
+    /// An open list or popover closed.
+    List,
+    /// A joint held by hand let go.
+    Joint,
+    /// The chosen note un-chosen.
+    Note,
+    /// The selection cleared.
+    Selection,
+}
+
 /// The window's side of the selection.
 #[derive(Default)]
 pub(crate) struct Selecting {
@@ -644,16 +660,78 @@ impl Shell {
         }
     }
 
-    /// Esc over the viewport: closes the list, or clears the selection.
-    pub(crate) fn escape_selection(&mut self) {
+    /// Whether an Escape pressed now is another part's to take: an egui
+    /// popup (a menu of the bar), a dialog, a list or a popover drawn over
+    /// the panels in the last frame (but the "select other" list, the note
+    /// field and the drawer, whose steps are the view's), the feature
+    /// list walked by keys. Asked at the start of a frame, before those
+    /// parts close themselves on it.
+    pub(crate) fn escape_belongs_elsewhere(&self, ctx: &egui::Context) -> bool {
+        if egui::Popup::is_any_open(ctx) {
+            return true;
+        }
+        let walking = self.features_drawn
+            && self.state.side_panel.hover.is_some()
+            && !self.side.hover_by_pointer
+            && self.state.side_panel.menu.is_none();
+        if walking {
+            return true;
+        }
+        let ours = [
+            egui::Id::new(super::params::TROUBLE_ID),
+            egui::Id::new("craft3d-select-other"),
+            egui::Id::new("craft3d-note-field"),
+            egui::Id::new("craft3d-drawer"),
+        ];
+        ctx.memory(|m| {
+            m.areas()
+                .visible_layer_ids()
+                .into_iter()
+                .any(|layer| layer.order == egui::Order::Foreground && !ours.contains(&layer.id))
+        })
+    }
+
+    /// One Escape: one step back, in one order wherever the pointer is
+    /// (the UX round of 2026-11-18, the grammar's Esc): (1) a field in the
+    /// view (a note field: closed; the section's number or a bar's
+    /// number: typing given up); (2) an open list or popover (the drawer,
+    /// Analysis, Studio, the "select other" list); (3) a joint held by
+    /// hand; (4) the chosen note; (5) the selection. Never the section.
+    /// `None` when there was nothing to step back from here (or the
+    /// Escape was another part's: `elsewhere`).
+    pub(crate) fn escape_step(&mut self, elsewhere: bool) -> Option<EscStep> {
+        if self.notes.writing.take().is_some() {
+            return Some(EscStep::Field);
+        }
+        if self.typing.take().is_some() {
+            self.fields.focus = None;
+            return Some(EscStep::Field);
+        }
+        if self.close_popover() {
+            return Some(EscStep::List);
+        }
         if self.select.menu.take().is_some() {
             self.select.hover = None;
-        } else if !self.select.view.items.is_empty() {
+            self.select.drawn = self.select.drawn.wrapping_add(1);
+            return Some(EscStep::List);
+        }
+        if elsewhere {
+            return None;
+        }
+        if self.let_go_of_drive() {
+            return Some(EscStep::Joint);
+        }
+        if self.state.notes.selected.take().is_some() {
+            return Some(EscStep::Note);
+        }
+        if !self.select.view.items.is_empty() {
             self.queue_select(json!({"mode": "clear"}));
             if self.select.lit {
                 self.clear_click_light();
             }
+            return Some(EscStep::Selection);
         }
+        None
     }
 
     /// Draws the box being dragged and the "select other" list.

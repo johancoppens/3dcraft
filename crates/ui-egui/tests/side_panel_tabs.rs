@@ -593,8 +593,11 @@ fn bodies_totals_and_the_consumed_filter() {
 }
 
 /// What is selected, measured: a block's top face (a plane, 40 × 30, its
-/// normal +Z), a cylinder's side (R 5, 2π·5·10) and its rim (a circle,
-/// 2π·5 long, at 90° to the cap).
+/// normal +Z), a cylinder's side (Ø 10, 2π·5·10) and its rim (a circle,
+/// 2π·5 long, at 90° to the cap). The type says the number the card and
+/// the view open with (Ø for a whole cylinder or circle), every number
+/// written by the one rule (`shell/shown.rs`: at most three decimals,
+/// areas to four digits; the UX round of 2026-11-18, V4 and V5).
 #[test]
 fn the_properties_of_a_face_and_an_edge() {
     let mut s = Session::new(Workspace::none());
@@ -639,9 +642,9 @@ fn the_properties_of_a_face_and_an_edge() {
         json!({"kind": "face", "where": {"in": "Pin", "surface": "cylinder"}, "then": "replace"}),
     );
     window.frames(&mut shell, &mut s, 2);
-    assert_eq!(prop(&shell, "Type"), "Cylinder  R 5 mm");
+    assert_eq!(prop(&shell, "Type"), "Cylinder  Ø 10 mm");
     // 2π · 5 · 10 = 314.16.
-    assert_eq!(prop(&shell, "Area"), "314 mm²");
+    assert_eq!(prop(&shell, "Area"), "314.2 mm²");
     assert!(
         prop(&shell, "Axis").starts_with("Z  through (100, 0, 0)"),
         "{}",
@@ -654,19 +657,17 @@ fn the_properties_of_a_face_and_an_edge() {
     );
     window.frames(&mut shell, &mut s, 2);
     assert_eq!(shell.side_props().unwrap().kind, "Edge");
-    assert_eq!(prop(&shell, "Type"), "Circle  R 5 mm");
-    // 2π · 5 = 31.4159265…, printed as every length is, to the
-    // document's tolerance of 1e-6 without trailing zeros (2026-11-17:
-    // the card printed two decimals where the view printed the number).
-    assert_eq!(prop(&shell, "Length"), "31.415927 mm");
+    assert_eq!(prop(&shell, "Type"), "Circle  Ø 10 mm");
+    // 2π · 5 = 31.4159265…, printed as every length is (2026-11-17: the
+    // card printed two decimals where the view printed the number), to
+    // three decimals at most (V5).
+    assert_eq!(prop(&shell, "Length"), "31.416 mm");
     assert_eq!(prop(&shell, "Angle"), "90°");
-    assert!(
-        shell
-            .side_hits()
-            .targets
-            .iter()
-            .any(|(t, _)| t == "measure")
-    );
+    // Wall thickness is not shown where it cannot run (an edge, V4);
+    // Copy name is.
+    let targets = &shell.side_hits().targets;
+    assert!(!targets.iter().any(|(t, _)| t == "measure"), "{targets:?}");
+    assert!(targets.iter().any(|(t, _)| t == "copy name"), "{targets:?}");
     // The checks are not there: nothing to fold.
 }
 

@@ -340,8 +340,22 @@ fn one_thing_shows_its_measure_in_the_view_and_its_card_under_every_tab() {
         assert!(shell.dimension_place().is_none(), "{tab}");
         assert!(target(&shell, "copy name").width() > 0.0, "{tab}");
     }
+    // The card opens with its area all the same, and ui.get says it (the
+    // UX round of 2026-11-18, V4: one thing has a number too).
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
-    assert_eq!(got["measurement"], Value::Null);
+    assert_eq!(
+        got["measurement"]["measure"], "area",
+        "{}",
+        got["measurement"]
+    );
+    assert_eq!(got["measurement"]["words"], "Area");
+    assert!(
+        got["measurement"]["text"]
+            .as_str()
+            .is_some_and(|t| t.ends_with(" mm²")),
+        "{}",
+        got["measurement"]
+    );
     // Escape over the view: the selection, the card and the line go.
     run(
         &mut session,
@@ -986,4 +1000,204 @@ fn a_frame_whose_picture_changed_the_numbers_asks_for_one_more() {
     }
     assert!(caught_up, "the bar never said the block's triangles");
     let _ = asked;
+}
+
+/// The UX round of 2026-11-18, V4: the card opens with the number the
+/// view shows, for one thing too, in the same text; `ui.get` says it
+/// with what it is. A straight edge its length, a whole circle and a
+/// hole their diameter, a flat face its area, a vertex its position, a
+/// body its volume; three things no number, and why.
+#[test]
+fn the_card_opens_with_the_number_the_view_shows() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    call(&mut shell, &mut session, "ui.fit", json!({"view": "iso"}));
+    let in_view = [
+        (
+            "edge",
+            json!({"in": "Bevel", "length": 60}),
+            "length",
+            "Length",
+        ),
+        (
+            "edge",
+            json!({"in": "Bevel", "radius": 3}),
+            "diameter",
+            "Diameter",
+        ),
+        (
+            "face",
+            json!({"in": "Bevel", "hole": true, "inside": [[0, 0, -10], [30, 40, 30]]}),
+            "diameter",
+            "Diameter",
+        ),
+    ];
+    for (kind, filter, measure, words) in in_view {
+        run(
+            &mut session,
+            "select.query",
+            json!({"kind": kind, "where": filter, "limit": 1, "then": "replace"}),
+        );
+        window.frames(&mut shell, &mut session, 3);
+        let got = call(&mut shell, &mut session, "ui.get", json!({}));
+        let m = &got["measurement"];
+        assert_eq!(m["measure"], measure, "{m}");
+        assert_eq!(m["words"], words, "{m}");
+        let place = shell.dimension_place().cloned().expect("drawn in the view");
+        assert_eq!(m["text"], place.text.as_str(), "{m}");
+        let head = shell
+            .side_props()
+            .and_then(|p| p.head.clone())
+            .expect("the card's number");
+        assert_eq!(head.text, place.text);
+    }
+    let own = [
+        (
+            "face",
+            json!({"in": "Bevel", "normal": {"along": "-z"}}),
+            "area",
+            "Area",
+            " mm²",
+        ),
+        (
+            "vertex",
+            json!({"in": "Bevel"}),
+            "position",
+            "Position",
+            " mm",
+        ),
+        ("body", json!({"in": "Bevel"}), "volume", "Volume", " cm³"),
+    ];
+    for (kind, filter, measure, words, unit) in own {
+        run(
+            &mut session,
+            "select.query",
+            json!({"kind": kind, "where": filter, "limit": 1, "then": "replace"}),
+        );
+        window.frames(&mut shell, &mut session, 3);
+        let got = call(&mut shell, &mut session, "ui.get", json!({}));
+        let m = &got["measurement"];
+        assert_eq!(m["measure"], measure, "{m}");
+        assert_eq!(m["words"], words, "{m}");
+        assert!(m["text"].as_str().is_some_and(|t| t.ends_with(unit)), "{m}");
+    }
+    let props = shell.side_props().cloned().expect("the body's card");
+    assert!(props.heading.starts_with("Body "), "{}", props.heading);
+    run(
+        &mut session,
+        "select.query",
+        json!({"kind": "face", "where": {"in": "Bevel"}, "limit": 3, "then": "replace"}),
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(
+        got["measurement"]["words"],
+        "Two things give a measure: Shift-click takes one away"
+    );
+    assert_eq!(got["measurement"]["text"], Value::Null);
+}
+
+/// V4: Keep as a check is quiet, and what it did shows: the Checks
+/// unfold with the new row in them, the status bar names the check, and
+/// the number never blinks: while the same two things are measured again
+/// after the check changed the document, the last answer stays.
+#[test]
+fn keep_as_a_check_shows_where_it_went_and_nothing_blinks() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    select(
+        &mut session,
+        "face",
+        json!({"in": "Bevel", "hole": true}),
+        2,
+    );
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(shell.measurement().map(|m| m.text.as_str()), Some("30 mm"));
+    let keep = target(&shell, "keep").center();
+    let mut events = vec![vec![Event::PointerMoved(keep)]];
+    for pressed in [true, false] {
+        events.push(vec![Event::PointerButton {
+            pos: keep,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+    }
+    events.extend((0..60).map(|_| Vec::new()));
+    for frame in events {
+        window.frame(&mut shell, &mut session, frame);
+        let text = shell.measurement().map(|m| m.text.clone());
+        assert_eq!(text.as_deref(), Some("30 mm"), "the number blinked");
+        assert!(shell.dimension_place().is_some(), "the line blinked");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    window.frames(&mut shell, &mut session, 3);
+    let listed = run(&mut session, "assert.list", json!({}));
+    assert_eq!(listed["assertions"].as_array().map(Vec::len), Some(1));
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(
+        got["state"]["sidePanel"]["checksOpen"], true,
+        "{}",
+        got["state"]
+    );
+    assert!(
+        shell
+            .side_hits()
+            .checks
+            .iter()
+            .any(|(name, _)| name.starts_with("Centre distance")),
+        "{:?}",
+        shell.side_hits().checks
+    );
+    assert!(
+        shell
+            .status_hint()
+            .is_some_and(|h| h.starts_with("Kept as the check Centre distance")
+                && h.ends_with("Ctrl+Z takes it back")),
+        "{:?}",
+        shell.status_hint()
+    );
+    assert!(got["hint"].as_str().is_some_and(|h| h.starts_with("Kept")));
+}
+
+/// V4: Wall thickness answers in the card's head, and the view draws the
+/// wall's line with the same text; ui.get says it.
+#[test]
+fn wall_thickness_heads_the_card_and_draws_the_wall() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    call(&mut shell, &mut session, "ui.fit", json!({"view": "iso"}));
+    select(
+        &mut session,
+        "face",
+        json!({"in": "Bevel", "normal": {"along": "z"}}),
+        1,
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let measure = target(&shell, "measure").center();
+    window.click(&mut shell, &mut session, measure);
+    window.frames(&mut shell, &mut session, 3);
+    let wall = shell.side_wall().cloned().expect("the wall measured");
+    assert!(!wall.measuring && wall.value.is_some(), "{wall:?}");
+    assert_eq!(wall.words, "Thinnest wall behind this face");
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["measurement"]["measure"], "thickness");
+    assert_eq!(got["measurement"]["text"], wall.text.as_str());
+    let place = shell.dimension_place().cloned().expect("the wall's line");
+    assert_eq!(place.text, wall.text);
+    // Another selection: the wall goes.
+    select(
+        &mut session,
+        "face",
+        json!({"in": "Bevel", "normal": {"along": "-z"}}),
+        1,
+    );
+    window.frames(&mut shell, &mut session, 3);
+    assert!(shell.side_wall().is_none());
 }

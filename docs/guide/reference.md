@@ -139,7 +139,7 @@ except in Ctrl+Tab and Ctrl+Shift+Tab, which stay as they are.
 | Ctrl+Shift+Z, Ctrl+Y | Redo the change last undone |
 | F | Fly to the selection, or frame everything |
 | N | Write a note on what is selected |
-| Escape | Fold the Studio or Analysis options, else let go of a joint held by hand, else clear the selection |
+| Escape | Step back once: leave a field in the view, close a list or popover, let go of a joint held by hand, un-choose the note, clear the selection |
 | F1 | Show the shortcuts |
 | Ctrl+B | Show or put away the side panel |
 | F11 | Full screen (the desktop app) |
@@ -156,11 +156,15 @@ The history keys work while the pointer is over the view or the feature list.
 | Right or middle drag, Shift+drag | Pan |
 | Wheel, pinch | Zoom about the point under the pointer |
 | Click | Select a vertex, an edge or a face |
+| Select one thing | Its size in the view |
+| Shift+click a second | The distance or angle between them |
+| Click a number | Copy it |
 | Shift+click | Add to or take from the selection; two things selected are measured ([Between two things](measure.md#between-two-things)) |
 | Click a measurement's number | Copy it with its unit |
 | Click again, Alt+click | Select the next face behind |
 | Double-click in the viewport | Select the whole body |
-| Right click | List every face under the pointer |
+| Right click | What can be done here, and the faces behind |
+| Press and hold (touch) | The same list |
 | Ctrl+drag | Select what lies inside a box |
 | Double-click a feature, or its ⌖ | Select the feature and fly to what it made |
 | Click the view cube | Turn to that view |

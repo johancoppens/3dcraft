@@ -11,12 +11,18 @@
 //!   scene's);
 //!
 //! then the feature that made it (a link that selects it) and its
-//! persistent name (the name an agent uses), with *Measure* (a face's
-//! thickness, or the distance between the first two items) and *Copy
-//! name*.
+//! persistent name (the name an agent uses), with *Wall thickness* (the
+//! thinnest wall behind a face, or of a body) and *Copy name*.
+//!
+//! The card opens with the number the view shows (the UX round of
+//! 2026-11-18, V4): for one thing its length, diameter, radius, area,
+//! position or volume ([`Head`]), for two their relation; every number
+//! written by `shell/shown.rs`, so the view and the card say one text.
 
 use super::{Shell, grouped};
 use crate::kit::{Button, Glyph, Kit, ValueStyle};
+use crate::shell::hints::Timed;
+use crate::shell::shown;
 use crate::shell::views::FlyTo;
 use craft3d_engine::history_view::number;
 use craft3d_engine::{Scene, SelectionKind, Session};
@@ -47,6 +53,12 @@ pub enum PropStyle {
 pub struct Props {
     /// `Face`, `Edge`, `Vertex`, `Body`.
     pub kind: &'static str,
+    /// The card's heading: `Face of BoltHole`, `Edge of Bar`, `Body
+    /// Base[2]`.
+    pub heading: String,
+    /// The number at the head of the card for one thing, and the words
+    /// under it; for three things or more only the words.
+    pub head: Option<Head>,
     /// Where it came from, short: `Sleeve · face(0)`.
     pub subtitle: String,
     pub rows: Vec<PropRow>,
@@ -68,6 +80,156 @@ pub struct Props {
     pub measurement: Option<Measurement>,
     /// With one thing selected, the measure the view shows beside it.
     pub single: Option<Single>,
+}
+
+/// The number that heads the card of one thing (V4): what the view shows
+/// beside it where it shows one (a length, a diameter, a radius), else
+/// its area, its position, its volume or its box; and the words under
+/// it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Head {
+    /// `length`, `diameter`, `radius`, `area`, `position`, `volume`,
+    /// `box`; `none` where three things or more give no number.
+    pub measure: &'static str,
+    /// In the document's unit (squared, cubed), where it is one number.
+    pub value: Option<f64>,
+    /// As shown and copied (`Ø 8 mm`); empty for none.
+    pub text: String,
+    /// The value whole, for the hover where `text` shortened it.
+    pub whole: String,
+    /// What it is: `Diameter`, `Area`, `Volume · 108 g`.
+    pub words: String,
+    /// Written smaller than a number (a position, a box: three numbers).
+    pub small: bool,
+}
+
+impl Head {
+    fn of(measure: &'static str, value: Option<f64>, text: String, words: &str) -> Self {
+        Head {
+            measure,
+            value,
+            whole: text.clone(),
+            text,
+            words: words.to_string(),
+            small: false,
+        }
+    }
+
+    /// What `ui.get` says under `measurement` for one thing.
+    pub fn json(&self) -> Value {
+        json!({
+            "relation": null,
+            "measure": self.measure,
+            "value": self.value,
+            "text": if self.text.is_empty() { Value::Null } else { self.text.clone().into() },
+            "words": self.words,
+        })
+    }
+}
+
+/// The thinnest wall behind the face selected, or of the body
+/// (`measure.thickness`, *Wall thickness*): it takes the card's head and
+/// the view draws it, until the selection or the model changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Wall {
+    pub measuring: bool,
+    pub value: Option<f64>,
+    /// `2 mm`, `…` while it is measured, `—` where none was found.
+    pub text: String,
+    pub whole: String,
+    pub words: String,
+    /// Why none was found: the command's own words, for the hover.
+    pub refused: Option<String>,
+    /// Where the wall is measured from and to.
+    pub from: Option<[f64; 3]>,
+    pub to: Option<[f64; 3]>,
+}
+
+impl Wall {
+    /// Being measured.
+    pub fn measuring() -> Self {
+        Wall {
+            measuring: true,
+            value: None,
+            text: "…".to_string(),
+            whole: "…".to_string(),
+            words: "Measuring the wall…".to_string(),
+            refused: None,
+            from: None,
+            to: None,
+        }
+    }
+
+    /// The answer of `measure.thickness`, for a face (`body` false) or a
+    /// body, in the document's `tolerance`.
+    pub fn answered(result: Result<&Value, String>, body: bool, tolerance: f64) -> Self {
+        let place = |v: &Value, key: &str| triple(v.get(key)?.get("point")?);
+        match result {
+            Ok(result) => {
+                let Some(value) = result
+                    .get("thickness")
+                    .and_then(Value::as_f64)
+                    .filter(|v| v.is_finite())
+                else {
+                    return Self::answered(Err("no single value".to_string()), body, tolerance);
+                };
+                let unit = result
+                    .get("lengthUnit")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let shown = shown::length(value, tolerance, unit);
+                Wall {
+                    measuring: false,
+                    value: Some(value),
+                    text: shown.text,
+                    whole: shown.whole,
+                    words: if body {
+                        "Thinnest wall of this part"
+                    } else {
+                        "Thinnest wall behind this face"
+                    }
+                    .to_string(),
+                    refused: None,
+                    from: place(result, "at"),
+                    to: place(result, "to"),
+                }
+            }
+            Err(why) => Wall {
+                measuring: false,
+                value: None,
+                text: "—".to_string(),
+                whole: "—".to_string(),
+                words: if body {
+                    "No wall found in this part"
+                } else {
+                    "No wall found behind this face"
+                }
+                .to_string(),
+                refused: Some(
+                    why.strip_prefix("measure.thickness: ")
+                        .unwrap_or(&why)
+                        .to_string(),
+                ),
+                from: None,
+                to: None,
+            },
+        }
+    }
+
+    /// What `ui.get` says under `measurement` while it heads the card.
+    pub fn json(&self) -> Value {
+        json!({
+            "relation": null,
+            "measure": "thickness",
+            "measuring": self.measuring,
+            "value": self.value,
+            "text": self.text,
+            "words": self.words,
+            "refused": self.refused,
+            "from": self.from,
+            "to": self.to,
+        })
+    }
 }
 
 /// The measure of the one thing selected that the view shows beside it
@@ -125,7 +287,7 @@ fn single_of(
     unit: &str,
     tolerance: f64,
 ) -> Option<Single> {
-    let with_unit = |v: f64| length_text(v, tolerance, unit);
+    let with_unit = |v: f64| shown::length_text(v, tolerance, unit);
     let positive = |v: Option<f64>| v.filter(|v| v.is_finite() && *v > 0.0);
     match first.kind {
         SelectionKind::Edge => {
@@ -329,8 +491,11 @@ pub struct Measurement {
     pub relation: String,
     /// In the document's length unit, an angle in degrees.
     pub value: Option<f64>,
-    /// The number as shown and copied: `48.00 mm`, `135.00°`.
+    /// The number as shown and copied: `48 mm`, `135°`, `25.981 mm`.
     pub text: String,
+    /// The number whole, to the tolerance: what its hover says where
+    /// `text` shortened it (`25.980762 mm`).
+    pub whole: String,
     /// What it is: `Centre distance · axes parallel`.
     pub words: String,
     /// Its parts along X, Y and Z: `X 48.00 · Y 0.00 · Z 0.00 mm`.
@@ -372,6 +537,7 @@ impl Measurement {
             relation: String::new(),
             value: None,
             text: "…".to_string(),
+            whole: "…".to_string(),
             words: "Measuring…".to_string(),
             parts: None,
             from: [0.0; 3],
@@ -419,8 +585,18 @@ impl Measurement {
             Err(why) => {
                 let mut m = self.clone();
                 m.measuring = false;
+                // Nothing of an answer shown before (the same two things
+                // measured again) stays.
+                m.relation = String::new();
+                m.value = None;
+                m.parts = None;
+                m.at_least = None;
+                m.answer = Value::Null;
                 m.text = "—".to_string();
-                m.words = "Not measured".to_string();
+                m.whole = "—".to_string();
+                // For people; the command's own sentence is the hover
+                // (`refused`).
+                m.words = "These two cannot be measured against each other".to_string();
                 m.refused = Some(
                     why.strip_prefix("measure.between: ")
                         .unwrap_or(&why)
@@ -441,6 +617,7 @@ impl Measurement {
             "relation": if self.relation.is_empty() { Value::Null } else { self.relation.clone().into() },
             "value": self.value,
             "text": self.text,
+            "whole": self.whole,
             "words": self.words,
             "title": self.title,
             "parts": self.parts,
@@ -587,16 +764,6 @@ pub fn number_to(v: f64, tolerance: f64) -> String {
     if text == "-0" { "0".to_string() } else { text }
 }
 
-/// A length to `tolerance`, with the document's `unit`.
-pub fn length_text(v: f64, tolerance: f64, unit: &str) -> String {
-    let n = number_to(v, tolerance);
-    if unit.is_empty() {
-        n
-    } else {
-        format!("{n} {unit}")
-    }
-}
-
 /// The engine's answer as the window shows it.
 pub fn measurement_of(answer: &Value, items: [Value; 2], unit: &str) -> Measurement {
     let point = |key: &str| -> Option<[f64; 3]> {
@@ -625,27 +792,27 @@ pub fn measurement_of(answer: &Value, items: [Value; 2], unit: &str) -> Measurem
     let at_least = answer.get("atLeast").and_then(Value::as_f64);
     let sampled = answer.get("sampled").and_then(Value::as_bool) == Some(true);
     let unproven = !least_proven(&relation, value, at_least, sampled, tolerance);
-    let text = match value {
-        Some(v) if angle => format!("{}°", number_to(v, tolerance.to_degrees())),
+    // Written as every number is (`shell/shown.rs`), the whole value kept
+    // for the hover.
+    let plain = |text: &str| shown::Shown {
+        text: text.to_string(),
+        whole: text.to_string(),
+    };
+    let about = |s: shown::Shown| shown::Shown {
+        text: format!("about {}", s.text),
+        whole: format!("about {}", s.whole),
+    };
+    let number = match value {
+        Some(v) if angle => shown::angle(v, tolerance.to_degrees()),
         // Not proven within the tolerance: "about" where it rests on
         // samples or has no bound, else the range it is proven in.
         Some(v) if unproven => match at_least.filter(|_| !sampled) {
-            Some(l) => length_text(v, tolerance, unit).replacen(
-                &number_to(v, tolerance),
-                &format!(
-                    "{} – {}",
-                    number_to(l.max(0.0), tolerance),
-                    number_to(v, tolerance)
-                ),
-                1,
-            ),
-            None => format!("about {}", length_text(v, tolerance, unit)),
+            Some(l) => shown::length_range(l.max(0.0), v, tolerance, unit),
+            None => about(shown::length(v, tolerance, unit)),
         },
-        Some(v) => length_text(v, tolerance, unit),
-        None if answer.get("overlap").and_then(Value::as_bool) == Some(true) => {
-            "Overlap".to_string()
-        }
-        None => "—".to_string(),
+        Some(v) => shown::length(v, tolerance, unit),
+        None if answer.get("overlap").and_then(Value::as_bool) == Some(true) => plain("Overlap"),
+        None => plain("—"),
     };
     let mut words = answer
         .get("words")
@@ -661,16 +828,12 @@ pub fn measurement_of(answer: &Value, items: [Value; 2], unit: &str) -> Measurem
     )
     .then(|| point("parts"))
     .flatten()
-    .map(|[x, y, z]| {
-        let [x, y, z] = [x, y, z].map(|c| number_to(c, tolerance));
-        format!("X {x} · Y {y} · Z {z} {unit}")
-            .trim_end()
-            .to_string()
-    });
+    .map(|parts| shown::length_parts(parts, tolerance, unit).text);
     Measurement {
         relation,
         value,
-        text,
+        text: number.text,
+        whole: number.whole,
         words,
         parts,
         from: point("from").unwrap_or([0.0; 3]),
@@ -746,7 +909,8 @@ pub(crate) fn read(
 ) -> Option<Props> {
     let view = session.selection();
     let first = view.items.first()?.clone();
-    let more = view.items.len().saturating_sub(1);
+    let count = view.items.len();
+    let more = count.saturating_sub(1);
     let second = view.items.get(1).cloned();
     let unit = session
         .document_status()
@@ -764,12 +928,24 @@ pub(crate) fn read(
         SelectionKind::Body => "Body",
         _ => return None,
     };
+    // Lengths in the facts as everywhere else (`shell/shown.rs`), to the
+    // document's tolerance at most.
+    let tolerance = session.linear_tolerance().unwrap_or(1e-6);
+    let angular = session.angular_tolerance().map_or(0.0, f64::to_degrees);
+    // Three things or more give no number: the words say why.
+    let many = (count > 2).then(|| Head {
+        measure: "none",
+        value: None,
+        text: String::new(),
+        whole: String::new(),
+        words: "Two things give a measure: Shift-click takes one away".to_string(),
+        small: false,
+    });
     let mut rows = Vec::new();
     let mut made_by = None;
-    let mut subtitle = String::new();
-    // Two things: their relation, by itself (the Measure button stays
-    // for one face's wall thickness).
-    let measurement = match (&second, view.items.len()) {
+    // Two things: their relation, by itself (Wall thickness stays for one
+    // face's or one body's wall).
+    let measurement = match (&second, count) {
         (Some(other), 2) if bodies_here => {
             let things = [thing_words(&first, scene), thing_words(other, scene)];
             relation(&first, other, &unit, things, wanted).map(|mut m| {
@@ -781,39 +957,62 @@ pub(crate) fn read(
     };
     if first.kind == SelectionKind::Body {
         let id = first.feature.clone();
-        subtitle = name_of(&id);
+        let name = name_of(&id);
+        let mut head = None;
         if bodies_here
             && let Ok(m) = session.execute(
                 "document.measure",
                 &json!({"feature": id, "inertia": false}),
             )
         {
+            let mass = m.get("mass").and_then(Value::as_f64).map(mass_text);
             if let Some(v) = m.get("volume").and_then(Value::as_f64) {
-                rows.push(plain("Volume", volume_text(v, &unit)));
+                let text = shown::volume(v, &unit);
+                rows.push(plain("Volume", text.clone()));
+                let words = match &mass {
+                    Some(mass) => format!("Volume · {mass}"),
+                    None => "Volume".to_string(),
+                };
+                head = Some(Head::of("volume", Some(v), text, &words));
             }
-            if let Some(kg) = m.get("mass").and_then(Value::as_f64) {
-                rows.push(plain("Mass", mass_text(kg)));
+            if let Some(mass) = mass {
+                rows.push(plain("Mass", mass));
             }
             if let Some(a) = m.get("area").and_then(Value::as_f64) {
-                rows.push(plain("Area", format!("{} {unit}²", grouped(a, 0))));
+                rows.push(plain("Area", shown::area(a, &unit)));
             }
         }
         if let Some((lo, hi)) = scene.and_then(|s| s.feature_box(&id).corners()) {
             let d = hi - lo;
-            rows.push(plain(
-                "Box",
-                format!("{} × {} × {} {unit}", number(d.x), number(d.y), number(d.z)),
-            ));
+            let [x, y, z] = [d.x, d.y, d.z].map(|v| shown::length_number(v, tolerance, &unit));
+            let text = if unit.is_empty() {
+                format!("{x} × {y} × {z}")
+            } else {
+                format!("{x} × {y} × {z} {unit}")
+            };
+            rows.push(plain("Box", text.clone()));
+            // Its volume not known here (an assembly's part, the bodies
+            // built elsewhere): its box.
+            if head.is_none() {
+                head = Some(Head {
+                    small: true,
+                    ..Head::of("box", None, text, "Size of its box")
+                });
+            }
         }
         made_by = Some(id.clone());
+        // Wall thickness of the part, where the bodies are here.
+        let measure = (bodies_here && count == 1).then(|| ("measure.thickness", json!({"of": id})));
         return Some(Props {
             kind,
-            subtitle,
+            heading: format!("Body {name}"),
+            head: many.or(head.filter(|_| count == 1)),
+            subtitle: name,
             rows,
             name: first.name.clone(),
             made_by,
             more,
-            measure: None,
+            measure,
             shape: None,
             measurement,
             single: None,
@@ -828,35 +1027,50 @@ pub(crate) fn read(
         None
     };
     // One thing: the measure the view shows beside it.
-    let single = match (&described, view.items.len()) {
-        (Some(item), 1) => single_of(
-            item,
-            &first,
-            scene,
-            &unit,
-            session.linear_tolerance().unwrap_or(1e-6),
-        ),
+    let single = match (&described, count) {
+        (Some(item), 1) => single_of(item, &first, scene, &unit, tolerance),
         _ => None,
     };
     let local = local_name(&first.name);
-    // Lengths in the facts as everywhere else: to the document's
-    // tolerance, without trailing zeros (the review of 2026-11-17: the
-    // card said 60.00 mm where the view said 60 mm).
-    let tolerance = session.linear_tolerance().unwrap_or(1e-6);
+    let mut of = name_of(&first.feature);
+    let mut head = single.as_ref().map(|single| {
+        let words = match (single.measure, single.round.is_some(), single.points.len()) {
+            ("diameter", ..) => "Diameter",
+            ("radius", ..) => "Radius",
+            (_, false, 2) => "Length",
+            _ => "Length along the curve",
+        };
+        Head {
+            whole: shown::length(single.value, tolerance, &unit).whole,
+            ..Head::of(
+                single.measure,
+                Some(single.value),
+                single.text.clone(),
+                words,
+            )
+        }
+    });
     if let Some(item) = &described {
         if let Some(origin) = item.get("origin") {
             let id = origin.get("feature").and_then(Value::as_str).unwrap_or("");
             let name = origin.get("name").and_then(Value::as_str).unwrap_or(id);
             if !id.is_empty() {
                 made_by = Some(id.to_string());
-                subtitle = format!("{name} · {local}");
+                name.clone_into(&mut of);
             }
         }
         if let Some(surface) = item.get("surface") {
-            rows.push(plain("Type", surface_text(surface, &unit, tolerance)));
+            rows.push(plain(
+                "Type",
+                surface_text(surface, &unit, tolerance, single.as_ref()),
+            ));
         }
         if let Some(area) = item.get("area").and_then(Value::as_f64) {
-            rows.push(plain("Area", area_text(area, &unit)));
+            let text = shown::area(area, &unit);
+            rows.push(plain("Area", text.clone()));
+            if head.is_none() && first.kind == SelectionKind::Face {
+                head = Some(Head::of("area", Some(area), text, "Area"));
+            }
         }
         if let Some(surface) = item.get("surface") {
             if let Some(n) = surface.get("normal") {
@@ -864,7 +1078,7 @@ pub(crate) fn read(
             } else if let Some(axis) = surface.get("axis") {
                 let through = surface
                     .get("center")
-                    .map(|c| point_text(c, tolerance))
+                    .map(|c| point_text(c, tolerance, &unit))
                     .unwrap_or_default();
                 rows.push(plain(
                     "Axis",
@@ -873,17 +1087,31 @@ pub(crate) fn read(
             }
         }
         if let Some(curve) = item.get("curve") {
-            rows.push(plain("Type", curve_text(curve, &unit, tolerance)));
+            rows.push(plain(
+                "Type",
+                curve_text(curve, &unit, tolerance, single.as_ref()),
+            ));
             if let Some(length) = curve.get("length").and_then(Value::as_f64) {
-                rows.push(plain("Length", length_text(length, tolerance, &unit)));
+                rows.push(plain(
+                    "Length",
+                    shown::length_text(length, tolerance, &unit),
+                ));
             }
         }
         if let Some(point) = item.get("point") {
-            rows.push(plain("Point", point_text(point, tolerance)));
+            rows.push(plain("Point", point_text(point, tolerance, &unit)));
+            if head.is_none()
+                && first.kind == SelectionKind::Vertex
+                && let Some(p) = triple(point)
+            {
+                let parts = shown::length_parts(p, tolerance, &unit);
+                head = Some(Head {
+                    whole: parts.whole,
+                    small: true,
+                    ..Head::of("position", None, parts.text, "Position")
+                });
+            }
         }
-    }
-    if subtitle.is_empty() {
-        subtitle = format!("{} · {local}", name_of(&first.feature));
     }
     if first.kind == SelectionKind::Edge {
         let faces = between(&first.name, scene, &first.feature);
@@ -895,7 +1123,10 @@ pub(crate) fn read(
         }
         if bodies_here && let Some(angle) = edge_angle(session, &first.name, &first.feature, &faces)
         {
-            rows.push(plain("Angle", format!("{}°", number(angle.to_degrees()))));
+            rows.push(plain(
+                "Angle",
+                shown::angle(angle.to_degrees(), angular).text,
+            ));
         }
     }
     if let Some(id) = &made_by {
@@ -910,9 +1141,9 @@ pub(crate) fn read(
         value: first.name.clone(),
         style: PropStyle::Name,
     });
-    // Measure runs here: not while the bodies are built elsewhere (a
-    // command there would answer later, deferred).
-    let measure = (first.kind == SelectionKind::Face && second.is_none())
+    // Wall thickness runs here: not while the bodies are built elsewhere
+    // (a command there would answer later, deferred), and for one face.
+    let measure = (first.kind == SelectionKind::Face && count == 1)
         .then(|| {
             (
                 "measure.thickness",
@@ -929,7 +1160,9 @@ pub(crate) fn read(
     });
     Some(Props {
         kind,
-        subtitle,
+        heading: format!("{kind} of {of}"),
+        head: many.or(head.filter(|_| count == 1)),
+        subtitle: format!("{of} · {local}"),
         rows,
         name: first.name.clone(),
         made_by,
@@ -1010,31 +1243,6 @@ fn plain(label: &'static str, value: String) -> PropRow {
         value,
         style: PropStyle::Plain,
     }
-}
-
-/// A face's area in the unit squared, with digits for its size: none
-/// after the point from 100 up, three significant ones below, in powers of
-/// ten under a ten-thousandth (the review of 2026-11-18: a tiny face read
-/// `0 mm²`).
-pub fn area_text(area: f64, unit: &str) -> String {
-    if !area.is_finite() {
-        return format!("? {unit}²");
-    }
-    if area != 0.0 && area.abs() < 1e-4 {
-        return format!("{area:.2e} {unit}²");
-    }
-    let decimals = if area == 0.0 || area.abs() >= 100.0 {
-        0
-    } else {
-        (2.0 - area.abs().plog10().floor()).clamp(0.0, 6.0) as usize
-    };
-    let text = grouped(area, decimals);
-    let text = if text.contains('.') {
-        text.trim_end_matches('0').trim_end_matches('.').to_string()
-    } else {
-        text
-    };
-    format!("{text} {unit}²")
 }
 
 /// A volume: cm³ in a millimetre document, else the unit cubed.
@@ -1120,14 +1328,17 @@ fn face_words(name: &str, scene: Option<&Scene>) -> String {
     format!("{feature} {local}")
 }
 
-fn surface_text(surface: &Value, unit: &str, tolerance: f64) -> String {
-    // Radii are lengths: to the tolerance; a cone's half angle is not.
+/// A face's surface in words, its measure as the card's number says it
+/// (`single`, the one the view shows): `Cylinder  Ø 8 mm` for a whole
+/// cylinder, `Cylinder  R 6 mm` for part of one.
+fn surface_text(surface: &Value, unit: &str, tolerance: f64, single: Option<&Single>) -> String {
+    // Radii are lengths; a cone's half angle is an angle.
     let r = |key: &str| {
         let v = surface.get(key).and_then(Value::as_f64)?;
         Some(if key == "halfAngle" {
-            number(v)
+            shown::angle(v, 0.0).text
         } else {
-            number_to(v, tolerance)
+            shown::length_number(v, tolerance, unit)
         })
     };
     // A measure that is missing leaves the surface's word alone, not
@@ -1135,16 +1346,32 @@ fn surface_text(surface: &Value, unit: &str, tolerance: f64) -> String {
     let with = |word: &str, text: Option<String>| {
         text.map_or_else(|| word.to_string(), |t| format!("{word}  {t}"))
     };
+    let length = |v: f64| shown::length_text(v, tolerance, unit);
     match surface.get("type").and_then(Value::as_str).unwrap_or("") {
         "plane" => "Plane".to_string(),
-        "cylinder" => with("Cylinder", r("radius").map(|v| format!("R {v} {unit}"))),
+        "cylinder" => match single {
+            Some(s) if s.measure == "diameter" => format!("Cylinder  Ø {}", length(s.value)),
+            _ => with(
+                "Cylinder",
+                surface
+                    .get("radius")
+                    .and_then(Value::as_f64)
+                    .map(|v| format!("R {}", length(v))),
+            ),
+        },
         "cone" => with(
             "Cone",
             r("radius")
                 .zip(r("halfAngle"))
-                .map(|(rad, a)| format!("R {rad} {unit} · {a}°")),
+                .map(|(rad, a)| format!("R {rad} {unit} · {a}")),
         ),
-        "sphere" => with("Sphere", r("radius").map(|v| format!("R {v} {unit}"))),
+        "sphere" => with(
+            "Sphere",
+            surface
+                .get("radius")
+                .and_then(Value::as_f64)
+                .map(|v| format!("R {}", length(v))),
+        ),
         "torus" => with(
             "Torus",
             r("major")
@@ -1162,12 +1389,17 @@ fn surface_text(surface: &Value, unit: &str, tolerance: f64) -> String {
     }
 }
 
-fn curve_text(curve: &Value, unit: &str, tolerance: f64) -> String {
+/// An edge's curve in words, its measure as the card's number says it:
+/// `Circle  Ø 8 mm` for a whole circle, `Arc  R 6 mm` for part of one.
+fn curve_text(curve: &Value, unit: &str, tolerance: f64, single: Option<&Single>) -> String {
+    let length = |v: f64| shown::length_text(v, tolerance, unit);
     match curve.get("type").and_then(Value::as_str).unwrap_or("") {
         "line" => "Line".to_string(),
-        "circle" => match curve.get("radius").and_then(Value::as_f64) {
-            Some(r) => format!("Circle  R {} {unit}", number_to(r, tolerance)),
-            None => "Circle".to_string(),
+        "circle" => match (single, curve.get("radius").and_then(Value::as_f64)) {
+            (Some(s), _) if s.measure == "diameter" => format!("Circle  Ø {}", length(s.value)),
+            (Some(s), _) if s.measure == "radius" => format!("Arc  R {}", length(s.value)),
+            (_, Some(r)) => format!("Circle  R {}", length(r)),
+            (_, None) => "Circle".to_string(),
         },
         "ellipse" => "Ellipse".to_string(),
         _ => "Spline".to_string(),
@@ -1195,37 +1427,31 @@ fn direction_text(d: &Value) -> String {
     format!("({}, {}, {})", number(*x), number(*y), number(*z))
 }
 
-fn point_text(p: &Value, tolerance: f64) -> String {
+fn point_text(p: &Value, tolerance: f64, unit: &str) -> String {
     let v: Vec<String> = p
         .as_array()
         .map(|a| {
             a.iter()
                 .filter_map(Value::as_f64)
-                .map(|x| number_to(x, tolerance))
+                .map(|x| shown::length_number(x, tolerance, unit))
                 .collect()
         })
         .unwrap_or_default();
     format!("({})", v.join(", "))
 }
 
-/// The answer of a measure in one line: `Thickness 7 mm`.
-pub(crate) fn measured_line(command: &str, result: &Value) -> String {
-    let unit = result
-        .get("lengthUnit")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    for (key, word) in [
-        ("distance", "Distance"),
-        ("thickness", "Thickness"),
-        ("clearance", "Clearance"),
-    ] {
-        if let Some(v) = result.get(key).and_then(Value::as_f64) {
-            return format!("{word} {} {unit}", number(v))
-                .trim_end()
-                .to_string();
-        }
-    }
-    format!("{command}: no single value")
+/// How long a click on a number says *Copied* in its hover, in seconds.
+pub const COPIED_SECONDS: f32 = 1.5;
+/// How long the check just kept is tinted in the Checks, in seconds.
+pub const KEPT_TINT_SECONDS: f32 = 2.0;
+
+/// What heads the card now: the relation of two things, else a wall
+/// measured, else the one thing's own number.
+enum Headline<'a> {
+    Relation(&'a Measurement),
+    Wall(&'a Wall),
+    Thing(&'a Head),
+    None,
 }
 
 impl Shell {
@@ -1234,56 +1460,65 @@ impl Shell {
         self.side.props.as_ref()
     }
 
-    /// How high the card is drawn: the rule, its heading, a row per
-    /// property, the measure's answer, the buttons.
+    /// The wall measured for the card, while it heads it.
+    pub fn side_wall(&self) -> Option<&Wall> {
+        self.side.wall.as_ref()
+    }
+
+    /// The headline of `props`, with the wall measured for it.
+    fn headline<'a>(&'a self, props: &'a Props) -> Headline<'a> {
+        match (&props.measurement, &self.side.wall, &props.head) {
+            (Some(m), _, _) => Headline::Relation(m),
+            (None, Some(wall), _) => Headline::Wall(wall),
+            (None, None, Some(head)) => Headline::Thing(head),
+            (None, None, None) => Headline::None,
+        }
+    }
+
+    /// How high the card is drawn: the rule, its heading, its number and
+    /// the words under it, a row per property, the buttons.
     pub(super) fn props_height(&self) -> f32 {
         let Some(props) = &self.side.props else {
             return 0.0;
         };
         let kit = Kit::panel(&self.tokens);
         let t = kit.t;
-        let measured = if self.side.measured.is_some() {
-            1.0
-        } else {
-            0.0
-        };
-        // Two things: one large number and a line or two of what it is
-        // in place of the rows.
-        let body = match &props.measurement {
-            Some(m) => {
-                let lines = 1.0
-                    + f32::from(u8::from(m.parts.is_some()))
-                    + f32::from(u8::from(m.refused.is_some()));
-                t.measure_font * 1.5 + lines * t.label_row_height
+        let number = |size: f32| size * 1.5 + t.label_row_height;
+        let head = match self.headline(props) {
+            // Two things: one large number and a line or two of what it
+            // is, in place of the rows.
+            Headline::Relation(m) => {
+                return t.nav_gap
+                    + 1.0
+                    + kit.hit(t.control_height)
+                    + number(t.measure_font)
+                    + f32::from(u8::from(m.parts.is_some())) * t.label_row_height
+                    + 4.0 * t.nav_spacing
+                    + kit.hit(t.control_height);
             }
-            None => props.rows.len() as f32 * t.label_row_height,
+            Headline::Wall(_) => number(t.measure_font),
+            Headline::Thing(head) if head.text.is_empty() => t.label_row_height,
+            Headline::Thing(head) if head.small => number(t.measure_font * 2.0 / 3.0),
+            Headline::Thing(_) => number(t.measure_font),
+            Headline::None => 0.0,
         };
         t.nav_gap
             + 1.0
             + kit.hit(t.control_height)
-            + body
-            + measured * t.label_row_height
+            + head
+            + props.rows.len() as f32 * t.label_row_height
             + 4.0 * t.nav_spacing
             + kit.hit(t.control_height)
     }
 
-    /// The relation of two things at the foot of the panel: one large
-    /// number (a click copies it with its unit), what it is in a few
-    /// words, its parts along the axes, why it was not measured; and
-    /// "Keep as a check".
-    fn measurement_ui(&mut self, ui: &mut egui::Ui, m: &Measurement) -> bool {
-        if m.measuring {
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(30));
-        }
+    /// A number at the head of the card, `size` points high, fitted to
+    /// the room (down to half the size; a range broken after its dash):
+    /// a click copies it as shown, and its hover says it whole where it
+    /// was shortened, then *Copied …* for a moment (the UX round of
+    /// 2026-11-18: one grammar for every number).
+    fn number_ui(&mut self, ui: &mut egui::Ui, text: &str, whole: &str, size: f32, copies: bool) {
         let kit = Kit::panel(&self.tokens);
-        let t = kit.t;
         let sk = kit.skin;
-        // The number fits the card at the panel's least width (the review
-        // of 2026-11-17: a range was cut at its edge): smaller where there
-        // is no room, down to half the size; past that a range is broken
-        // after its dash, two lines of half the size, within the height
-        // the card keeps for it (`props_height`), so Keep stays in reach.
         let room = ui.available_width().max(1.0);
         let lay = |text: &str, size: f32| {
             kit.galley(
@@ -1293,18 +1528,17 @@ impl Shell {
                 sk.text,
             )
         };
-        let mut big = lay(&m.text, t.measure_font);
+        let mut big = lay(text, size);
         if big.size().x > room {
-            let size = (t.measure_font * room / big.size().x).max(t.measure_font * 0.5);
-            big = lay(&m.text, size);
-            if big.size().x > room && m.text.contains(" – ") {
-                big = lay(&m.text.replacen(" – ", " –\n", 1), size);
+            let smaller = (size * room / big.size().x).max(size * 0.5);
+            big = lay(text, smaller);
+            if big.size().x > room && text.contains(" – ") {
+                big = lay(&text.replacen(" – ", " –\n", 1), smaller);
             }
         }
-        let (rect, number) =
-            ui.allocate_exact_size(vec2(room, t.measure_font * 1.5), Sense::click());
+        let (rect, number) = ui.allocate_exact_size(vec2(room, size * 1.5), Sense::click());
         let at = pos2(rect.left(), rect.center().y - big.size().y * 0.5);
-        let ink = if number.hovered() && m.value.is_some() {
+        let ink = if number.hovered() && copies {
             sk.info_ink
         } else {
             sk.text
@@ -1315,44 +1549,86 @@ impl Shell {
             .hits
             .targets
             .push(("copy value".to_string(), shown));
-        if m.value.is_some() {
-            if number.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            if number.clone().on_hover_text("Copy").clicked() {
-                ui.ctx().copy_text(m.text.clone());
-                self.side.measured = Some(format!("Copied {}", m.text));
-            }
+        if !copies {
+            return;
         }
-        let small = |ui: &mut egui::Ui, text: &str| {
-            let room = ui.available_width();
-            let mut job = egui::text::LayoutJob::simple_singleline(
-                text.to_string(),
-                kit.font(),
-                kit.c(sk.text_dim),
-            );
-            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
-            let g = ui.painter().layout_job(job);
-            let cut = g.elided;
-            let (rect, line) =
-                ui.allocate_exact_size(vec2(room, t.label_row_height), Sense::hover());
-            ui.painter().galley(
-                pos2(rect.left(), rect.center().y - g.size().y * 0.5),
-                g,
-                kit.c(sk.text_dim),
-            );
-            if cut {
+        if number.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let now = ui.input(|i| i.time);
+        let copied = match self.side.copied.as_mut().map(|c| (c.live(now, None), c)) {
+            Some(((true, left), c)) => {
+                if let Some(left) = left {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_secs_f64(left));
+                }
+                Some(c.text.clone())
+            }
+            _ => None,
+        };
+        if copied.is_none() {
+            self.side.copied = None;
+        }
+        let hover = copied.unwrap_or_else(|| {
+            if whole == text {
+                "Copy".to_string()
+            } else {
+                format!("{whole} · a click copies {text}")
+            }
+        });
+        if number.on_hover_text(hover).clicked() {
+            ui.ctx().copy_text(text.to_string());
+            self.side.copied = Some(Timed::seconds(format!("Copied {text}"), COPIED_SECONDS));
+        }
+    }
+
+    /// A line of small dim words under the number, cut to the panel; its
+    /// hover says `hover`, or the whole line where it was cut.
+    fn words_ui(&self, ui: &mut egui::Ui, text: &str, hover: Option<&str>) {
+        let kit = Kit::panel(&self.tokens);
+        let t = kit.t;
+        let sk = kit.skin;
+        let room = ui.available_width();
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            text.to_string(),
+            kit.font(),
+            kit.c(sk.text_dim),
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+        let g = ui.painter().layout_job(job);
+        let cut = g.elided;
+        let (rect, line) = ui.allocate_exact_size(vec2(room, t.label_row_height), Sense::hover());
+        ui.painter().galley(
+            pos2(rect.left(), rect.center().y - g.size().y * 0.5),
+            g,
+            kit.c(sk.text_dim),
+        );
+        match hover {
+            Some(hover) => {
+                line.on_hover_text(hover);
+            }
+            None if cut => {
                 line.on_hover_text(text);
             }
-        };
-        small(ui, &m.words);
+            None => {}
+        }
+    }
+
+    /// The relation of two things at the foot of the panel: one large
+    /// number (a click copies it with its unit), what it is in a few
+    /// words (the command's own sentence as their hover where it was
+    /// refused), its parts along the axes.
+    fn measurement_ui(&mut self, ui: &mut egui::Ui, m: &Measurement) {
+        if m.measuring {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(30));
+        }
+        let size = self.tokens.measure_font;
+        self.number_ui(ui, &m.text, &m.whole, size, m.value.is_some());
+        self.words_ui(ui, &m.words, m.refused.as_deref());
         if let Some(parts) = &m.parts {
-            small(ui, parts);
+            self.words_ui(ui, parts, None);
         }
-        if let Some(why) = &m.refused {
-            small(ui, why);
-        }
-        m.check("").is_some()
     }
 
     /// Whether the relation of the two things selected is kept as a check
@@ -1366,13 +1642,16 @@ impl Shell {
         })
     }
 
-    /// "Keep as a check" (or that it is kept); true when it was clicked.
-    fn keep_button(&mut self, ui: &mut egui::Ui, keepable: bool) -> bool {
+    /// "Keep as a check" (or that it is kept), quiet: keeping is the rare
+    /// act; while it cannot keep, its hover says why. True when it was
+    /// clicked.
+    fn keep_button(&mut self, ui: &mut egui::Ui, m: &Measurement) -> bool {
         let kit = Kit::panel(&self.tokens);
         let kept = self.kept_now();
+        let keepable = m.check("").is_some();
         let k = kit.button(
             ui,
-            Button::primary(if kept {
+            Button::secondary(if kept {
                 "Kept as a check"
             } else {
                 "Keep as a check"
@@ -1380,16 +1659,91 @@ impl Shell {
             .enabled(keepable && !kept),
         );
         self.side.hits.targets.push(("keep".to_string(), k.rect));
+        let why = if m.measuring {
+            Some("Still measuring")
+        } else if kept {
+            Some("Kept: Ctrl+Z takes it back")
+        } else if m.answer.get("overlap").and_then(Value::as_bool) == Some(true) {
+            Some("Nothing to keep: the two overlap")
+        } else if !keepable {
+            Some("Nothing to keep: not measured")
+        } else {
+            None
+        };
+        let k = match why {
+            Some(why) => k.on_hover_text(why),
+            None => k.on_hover_text("Keep this measure as a check of the document"),
+        };
         k.clicked()
     }
 
     /// Keeps the relation `m` as a check of the document, under a name of
-    /// its own.
+    /// its own: the Checks unfold with its row tinted, and the status bar
+    /// says it until the next command.
     fn keep(&mut self, m: &Measurement) {
         let name = self.free_check_name(&m.check_name);
         if let (Some(params), Some(key)) = (m.check(&name), self.side.kept_key()) {
             self.side_queue("assert.add", params, None);
-            self.side.kept = Some((key, name));
+            self.side.kept = Some((key, name.clone()));
+            self.state.side_panel.checks_open = true;
+            self.side.checks_asked = true;
+            self.side.kept_tint =
+                Some((name.clone(), Timed::seconds("", KEPT_TINT_SECONDS), false));
+            self.hint_until_command(
+                format!("Kept as the check {name} · Ctrl+Z takes it back"),
+                None,
+            );
+        }
+    }
+
+    /// *Wall thickness* (quiet), where it can run, and *Copy name*.
+    fn thing_buttons(&mut self, ui: &mut egui::Ui, props: &Props) -> (bool, bool) {
+        let kit = Kit::panel(&self.tokens);
+        let mut measure = false;
+        if props.measure.is_some() {
+            let m = kit
+                .button(ui, Button::secondary("Wall thickness"))
+                .on_hover_text(if props.kind == "Body" {
+                    "The thinnest wall of this part"
+                } else {
+                    "The thinnest wall behind this face"
+                });
+            self.side.hits.targets.push(("measure".to_string(), m.rect));
+            measure = m.clicked();
+        }
+        let copied = self.side.name_copied.as_mut().is_some_and(|c| {
+            let now = ui.input(|i| i.time);
+            let (live, left) = c.live(now, None);
+            if let Some(left) = left {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs_f64(left));
+            }
+            live
+        });
+        if !copied {
+            self.side.name_copied = None;
+        }
+        let c = kit.button(
+            ui,
+            Button::secondary(if copied { "Copied" } else { "Copy name" }),
+        );
+        self.side
+            .hits
+            .targets
+            .push(("copy name".to_string(), c.rect));
+        let copy = c.on_hover_text("The lasting name an agent uses").clicked();
+        (measure, copy)
+    }
+
+    /// What a click on *Wall thickness* or *Copy name* does.
+    fn thing_actions(&mut self, ui: &egui::Ui, props: &Props, measure: bool, copy: bool) {
+        if measure && let Some((command, params)) = props.measure.clone() {
+            self.side.wall = Some(Wall::measuring());
+            self.side_queue(command, params, None);
+        }
+        if copy {
+            ui.ctx().copy_text(props.name.clone());
+            self.side.name_copied = Some(Timed::seconds("Copied", COPIED_SECONDS));
         }
     }
 
@@ -1397,23 +1751,27 @@ impl Shell {
     /// window: the review of 2026-11-17 found the relation and Keep out of
     /// reach there): what is selected and its number on one line with the
     /// target that flies to it, and Keep as a check for two things; for one
-    /// thing Measure and Copy name on a second line.
+    /// thing Wall thickness and Copy name on a second line.
     pub(super) fn props_compact_ui(&mut self, ui: &mut egui::Ui) {
         let Some(props) = self.side.props.clone() else {
             return;
         };
         let kit = Kit::panel(&self.tokens);
         let t = kit.t;
-        let (text, keepable) = match (&props.measurement, &props.single) {
-            (Some(m), _) => (format!("{} {}", m.words, m.text), m.check("").is_some()),
-            (None, Some(single)) => (format!("{} {}", props.kind, single.text), false),
-            (None, None) => (format!("{} · {}", props.kind, props.subtitle), false),
+        let text = match self.headline(&props) {
+            Headline::Relation(m) => format!("{} {}", m.words, m.text),
+            Headline::Wall(wall) => format!("{} · {} {}", props.heading, wall.words, wall.text),
+            Headline::Thing(head) if !head.text.is_empty() => {
+                format!("{} · {}", props.heading, head.text)
+            }
+            Headline::Thing(head) => head.words.clone(),
+            Headline::None => props.heading.clone(),
         };
         if props.measurement.as_ref().is_some_and(|m| m.measuring) {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(30));
         }
-        let (mut keep, mut fly, mut measure, mut copy) = (false, false, false, false);
+        let (mut keep, mut fly) = (false, false);
         // The line, and against its right edge Keep (for two things) and
         // the target that flies to it, laid from the right so that the
         // line is cut to what is left and nothing passes the panel's edge
@@ -1423,8 +1781,8 @@ impl Shell {
             vec2(width, kit.hit(t.control_height)),
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
-                if props.measurement.is_some() {
-                    keep = self.keep_button(ui, keepable);
+                if let Some(m) = &props.measurement {
+                    keep = self.keep_button(ui, m);
                 }
                 let target = kit.icon_button(
                     ui,
@@ -1454,39 +1812,24 @@ impl Shell {
         // One thing: its buttons on a second line, as the whole card has
         // them (the notes' review of 2026-11-18: in a short window Fly,
         // Measure and Copy name were not drawn at all).
+        let (mut measure, mut copy) = (false, false);
         if props.measurement.is_none() {
             ui.horizontal(|ui| {
-                let m = kit.button(
-                    ui,
-                    Button::primary("Measure").enabled(props.measure.is_some()),
-                );
-                self.side.hits.targets.push(("measure".to_string(), m.rect));
-                measure = m.clicked();
-                let c = kit.button(ui, Button::secondary("Copy name"));
-                self.side
-                    .hits
-                    .targets
-                    .push(("copy name".to_string(), c.rect));
-                copy = c.clicked();
+                (measure, copy) = self.thing_buttons(ui, &props);
             });
         }
         if keep && let Some(m) = &props.measurement {
             self.keep(m);
         }
-        if measure && let Some((command, params)) = props.measure.clone() {
-            self.side_queue(command, params, None);
-        }
-        if copy {
-            ui.ctx().copy_text(props.name.clone());
-        }
+        self.thing_actions(ui, &props, measure, copy);
         if fly {
             self.request_fly(FlyTo::Selection);
         }
     }
 
     /// How high the short card is: one line for two things (their
-    /// relation and Keep), two for one (its line, then Measure and Copy
-    /// name).
+    /// relation and Keep), two for one (its line, then Wall thickness and
+    /// Copy name).
     pub(super) fn props_compact_height(&self) -> f32 {
         let kit = Kit::panel(&self.tokens);
         let lines = if self
@@ -1502,7 +1845,8 @@ impl Shell {
         lines * kit.hit(kit.t.control_height) + 2.0 * kit.t.nav_spacing
     }
 
-    /// The card of what is selected.
+    /// The card of what is selected: its heading, the number the view
+    /// shows and what it is, its facts, its buttons.
     pub(super) fn props_ui(&mut self, ui: &mut egui::Ui) {
         let Some(props) = self.side.props.clone() else {
             return;
@@ -1511,8 +1855,8 @@ impl Shell {
         let t = kit.t;
         let sk = kit.skin;
         kit.divider(ui);
-        // The heading: the kind in the selection's copper, where it came
-        // from, and the target that flies to it.
+        // The heading: the kind in the selection's copper, of what it is,
+        // and the target that flies to it.
         let mut fly = false;
         ui.horizontal(|ui| {
             let side = t.nav_icon_size;
@@ -1528,17 +1872,8 @@ impl Shell {
             let title = props
                 .measurement
                 .as_ref()
-                .map_or_else(|| props.kind.to_string(), |m| m.title.clone());
-            let title = kit.galley(ui, title, kit.medium_font(ui), sk.text);
-            let (rect, _) = ui.allocate_exact_size(title.size(), Sense::hover());
-            ui.painter().galley(rect.min, title, kit.c(sk.text));
-            let mut subtitle = props.subtitle.clone();
-            if props.measurement.is_some() {
-                subtitle.clear();
-            } else if props.more > 0 {
-                subtitle = format!("{subtitle} · +{}", props.more);
-            }
-            // The target against the right edge first, the subtitle cut
+                .map_or_else(|| props.heading.clone(), |m| m.title.clone());
+            // The target against the right edge first, the heading cut
             // to what is left.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let target = kit.icon_button(
@@ -1552,32 +1887,71 @@ impl Shell {
                     .targets
                     .push(("fly".to_string(), target.rect));
                 fly = target.clicked();
-                let room = ui.available_width().max(0.0);
-                let mut job = egui::text::LayoutJob::simple_singleline(
-                    subtitle.clone(),
-                    kit.font(),
-                    kit.c(sk.text_dim),
-                );
-                job.wrap = egui::text::TextWrapping::truncate_at_width(room);
-                let g = ui.painter().layout_job(job);
-                let cut = g.elided;
-                let (rect, line) = ui.allocate_exact_size(vec2(room, g.size().y), Sense::hover());
-                ui.painter().galley(
-                    pos2(rect.left(), rect.center().y - g.size().y * 0.5),
-                    g,
-                    kit.c(sk.text_dim),
-                );
-                if cut {
-                    line.on_hover_text(subtitle);
+                if props.measurement.is_none() && props.more > 0 {
+                    let more = kit.galley(ui, format!("+{}", props.more), kit.font(), sk.text_dim);
+                    let (rect, _) = ui.allocate_exact_size(more.size(), Sense::hover());
+                    ui.painter().galley(rect.min, more, kit.c(sk.text_dim));
                 }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let room = ui.available_width().max(0.0);
+                    let mut job = egui::text::LayoutJob::simple_singleline(
+                        title.clone(),
+                        kit.medium_font(ui),
+                        kit.c(sk.text),
+                    );
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+                    let g = ui.painter().layout_job(job);
+                    let cut = g.elided;
+                    let (rect, line) =
+                        ui.allocate_exact_size(vec2(room, g.size().y), Sense::hover());
+                    ui.painter().galley(
+                        pos2(rect.left(), rect.center().y - g.size().y * 0.5),
+                        g,
+                        kit.c(sk.text),
+                    );
+                    if cut {
+                        line.on_hover_text(title);
+                    }
+                });
             });
         });
         let label_width = (ui.available_width() * 0.32).clamp(56.0, 110.0);
         let mut follow: Option<String> = None;
-        let keepable = match &props.measurement {
-            Some(m) => self.measurement_ui(ui, m),
-            None => false,
-        };
+        // The number the view shows, and what it is.
+        match self.headline(&props) {
+            Headline::Relation(m) => {
+                let m = m.clone();
+                self.measurement_ui(ui, &m);
+            }
+            Headline::Wall(wall) => {
+                let wall = wall.clone();
+                if wall.measuring {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(30));
+                }
+                self.number_ui(
+                    ui,
+                    &wall.text,
+                    &wall.whole,
+                    t.measure_font,
+                    wall.value.is_some(),
+                );
+                self.words_ui(ui, &wall.words, wall.refused.as_deref());
+            }
+            Headline::Thing(head) => {
+                let head = head.clone();
+                if !head.text.is_empty() {
+                    let size = if head.small {
+                        t.measure_font * 2.0 / 3.0
+                    } else {
+                        t.measure_font
+                    };
+                    self.number_ui(ui, &head.text, &head.whole, size, true);
+                }
+                self.words_ui(ui, &head.words, None);
+            }
+            Headline::None => {}
+        }
         let rows: &[PropRow] = if props.measurement.is_some() {
             &[]
         } else {
@@ -1628,50 +2002,20 @@ impl Shell {
                 }
             }
         }
-        if let Some(line) = &self.side.measured {
-            let g = kit.galley(ui, line.clone(), kit.font(), sk.info_ink);
-            let (rect, _) = ui.allocate_exact_size(
-                vec2(ui.available_width(), t.label_row_height),
-                Sense::hover(),
-            );
-            ui.painter().galley(
-                pos2(rect.left(), rect.center().y - g.size().y * 0.5),
-                g,
-                kit.c(sk.info_ink),
-            );
-        }
         ui.add_space(t.nav_spacing * 2.0);
-        let mut measure = false;
-        let mut copy = false;
-        let mut keep = false;
+        let (mut measure, mut copy, mut keep) = (false, false, false);
         ui.horizontal(|ui| {
-            if props.measurement.is_some() {
-                keep = self.keep_button(ui, keepable);
+            if let Some(m) = &props.measurement {
+                keep = self.keep_button(ui, m);
                 return;
             }
-            let m = kit.button(
-                ui,
-                Button::primary("Measure").enabled(props.measure.is_some()),
-            );
-            self.side.hits.targets.push(("measure".to_string(), m.rect));
-            measure = m.clicked();
-            let c = kit.button(ui, Button::secondary("Copy name"));
-            self.side
-                .hits
-                .targets
-                .push(("copy name".to_string(), c.rect));
-            copy = c.clicked();
+            (measure, copy) = self.thing_buttons(ui, &props);
         });
         if keep && let Some(m) = &props.measurement {
             self.keep(m);
         }
         ui.add_space(t.nav_spacing * 2.0);
-        if measure && let Some((command, params)) = props.measure.clone() {
-            self.side_queue(command, params, None);
-        }
-        if copy {
-            ui.ctx().copy_text(props.name.clone());
-        }
+        self.thing_actions(ui, &props, measure, copy);
         if fly {
             self.request_fly(FlyTo::Selection);
         }
@@ -1701,10 +2045,11 @@ impl Shell {
     /// it, or the measure the view shows of the one selected; `null`
     /// without either.
     pub fn measurement_json(&self) -> Value {
-        match (self.measurement(), self.single_measure()) {
-            (Some(m), _) => m.json(),
-            (None, Some(single)) => single.json(),
-            (None, None) => Value::Null,
+        match self.side.props.as_ref().map(|props| self.headline(props)) {
+            Some(Headline::Relation(m)) => m.json(),
+            Some(Headline::Wall(wall)) => wall.json(),
+            Some(Headline::Thing(head)) => head.json(),
+            Some(Headline::None) | None => Value::Null,
         }
     }
 
@@ -1779,21 +2124,29 @@ mod tests {
             ]
         );
         assert_eq!(volume_text(112_123.08, "mm"), "112.12 cm³");
-        // The review of 2026-11-18: a tiny face's area is not 0.
-        assert_eq!(area_text(1200.0, "mm"), "1200 mm²");
-        assert_eq!(area_text(314.159_265, "mm"), "314 mm²");
-        assert_eq!(area_text(12.345, "mm"), "12.3 mm²");
-        assert_eq!(area_text(0.000_4, "mm"), "0.0004 mm²");
-        assert_eq!(area_text(0.012_34, "mm"), "0.0123 mm²");
-        assert_eq!(area_text(2.5e-9, "mm"), "2.50e-9 mm²");
-        assert_eq!(area_text(0.0, "mm"), "0 mm²");
+        // The review of 2026-11-18: a tiny face's area is not 0. Areas
+        // to four significant digits (`shell/shown.rs`, V5).
+        assert_eq!(shown::area(1200.0, "mm"), "1200 mm²");
+        assert_eq!(shown::area(314.159_265, "mm"), "314.2 mm²");
+        assert_eq!(shown::area(0.000_4, "mm"), "0.0004 mm²");
+        assert_eq!(shown::area(0.012_34, "mm"), "0.01234 mm²");
+        assert_eq!(shown::area(2.5e-9, "mm"), "0.0000000025 mm²");
+        assert_eq!(shown::area(0.0, "mm"), "0 mm²");
         assert_eq!(mass_text(0.3027), "302.7 g");
+        // Wall thickness: its answer in the card's head, its line's ends.
+        let wall = Wall::answered(
+            Ok(&json!({"thickness": 7.0, "lengthUnit": "mm",
+                "at": {"point": [0, 0, 0]}, "to": {"point": [7, 0, 0]}})),
+            false,
+            1e-6,
+        );
+        assert_eq!(wall.text, "7 mm");
+        assert_eq!(wall.words, "Thinnest wall behind this face");
+        assert_eq!(wall.to, Some([7.0, 0.0, 0.0]));
+        let none = Wall::answered(Err("measure.thickness: no point".to_string()), false, 1e-6);
         assert_eq!(
-            measured_line(
-                "measure.thickness",
-                &json!({"thickness": 7.0, "lengthUnit": "mm"})
-            ),
-            "Thickness 7 mm"
+            (none.text.as_str(), none.refused.as_deref()),
+            ("—", Some("no point"))
         );
     }
 

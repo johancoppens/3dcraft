@@ -868,13 +868,14 @@ pub enum SectionMade {
 }
 
 impl SectionMade {
-    /// The words the handle's number shows in place of an axis.
+    /// The word the handle's number shows in place of an axis: the word
+    /// button's own (the UX round of 2026-11-18, V2: no `∥`).
     pub fn label(self) -> &'static str {
         match self {
-            Self::Face => "\u{2225} face",
-            Self::Mid => "mid",
-            Self::Bisector => "bisector",
-            Self::Axis => "axis",
+            Self::Face => "Face",
+            Self::Mid => "Midway",
+            Self::Bisector => "Bisector",
+            Self::Axis => "Axis",
         }
     }
 }

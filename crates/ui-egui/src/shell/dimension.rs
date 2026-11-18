@@ -6,7 +6,8 @@
 //! it: a straight edge's length along a line beside it, a whole circle's
 //! diameter and a whole cylinder's across it (Ø), an arc's and a part
 //! cylinder's radius from its centre (R), a curved edge's length by its
-//! middle. One thin line in the
+//! middle. The thinnest wall, once *Wall thickness* measured it, as a
+//! line through the wall. One thin line in the
 //! accent, drawn as the section's arrow is (a core with a dark edge each
 //! side, the same dart for a head: one family), one number on a small
 //! plate; gone with the selection, and with Escape, which clears it. A
@@ -124,7 +125,10 @@ impl Shell {
         }
         let text = place.text.clone();
         ui.ctx().copy_text(text.clone());
-        self.side.measured = Some(format!("Copied {text}"));
+        self.side.copied = Some(super::hints::Timed::seconds(
+            format!("Copied {text}"),
+            super::sidepanel::props::COPIED_SECONDS,
+        ));
         true
     }
 
@@ -145,15 +149,44 @@ impl Shell {
             return;
         };
         let painter = ui.painter_at(rect);
-        let drawn = if let Some(m) = self.measurement().cloned() {
+        let wall = self
+            .side_wall()
+            .filter(|_| self.measurement().is_none())
+            .cloned();
+        let (drawn, whole) = if let Some(m) = self.measurement().cloned() {
             if m.value.is_none() || m.relation.is_empty() {
                 return;
             }
-            self.paint_relation(&painter, &projector, rect, &m)
+            (
+                self.paint_relation(&painter, &projector, rect, &m),
+                m.whole.clone(),
+            )
+        } else if let Some(wall) = wall {
+            // The thinnest wall: a line through it, from where it was
+            // measured to where the line leaves the material.
+            let (Some(from), Some(to), Some(_)) = (wall.from, wall.to, wall.value) else {
+                return;
+            };
+            let ink = Ink::of(&self.tokens);
+            let drawn = on_screen(&projector, rect, from)
+                .zip(on_screen(&projector, rect, to))
+                .map(|(a, b)| {
+                    ink.line(&painter, &self.tokens, a, b, true);
+                    let out = upward_across(unit(b - a));
+                    (a, b, None, a.lerp(b, 0.5), out, wall.text.clone())
+                });
+            (drawn, wall.whole.clone())
         } else if let Some(single) = self.single_measure().cloned() {
-            self.paint_single(&painter, &projector, rect, &single)
+            let whole = self
+                .side_props()
+                .and_then(|p| p.head.as_ref())
+                .map_or_else(|| single.text.clone(), |h| h.whole.clone());
+            (
+                self.paint_single(&painter, &projector, rect, &single),
+                whole,
+            )
         } else {
-            None
+            (None, String::new())
         };
         let Some((from, to, at, middle, outward, text)) = drawn else {
             return;
@@ -164,6 +197,25 @@ impl Shell {
             .is_some_and(|p| number.contains(p))
         {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            // What a click does, or did: on a plate under the number (the
+            // grammar's hover of a number), the value whole where it was
+            // shortened.
+            let now = ui.input(|i| i.time);
+            let copied = self
+                .side
+                .copied
+                .as_mut()
+                .and_then(|c| c.live(now, None).0.then(|| c.text.clone()));
+            let words = copied.unwrap_or_else(|| {
+                if whole == text || whole.is_empty() {
+                    format!("Copy {text}")
+                } else {
+                    format!("{whole} · a click copies {text}")
+                }
+            });
+            self.paint_number_hover(&painter, rect, number, &words);
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(250));
         }
         self.dimension = Some(DimensionPlace {
             from,
@@ -209,6 +261,32 @@ impl Shell {
         );
         painter.galley(number.min + PAD, galley, accent);
         number
+    }
+
+    /// `words` on a small plate under the number's plate `number` (over
+    /// it where there is no room below), within the viewport `rect`.
+    fn paint_number_hover(&self, painter: &Painter, rect: Rect, number: Rect, words: &str) {
+        let tokens = self.tokens;
+        let galley = painter.layout_no_wrap(
+            words.to_string(),
+            egui::FontId::proportional(tokens.control_font * 0.85),
+            color(tokens.plate_text),
+        );
+        let size = galley.size() + PAD * 2.0;
+        let below = number.bottom() + 4.0;
+        let top = if below + size.y <= rect.bottom() {
+            below
+        } else {
+            number.top() - 4.0 - size.y
+        };
+        let left = number.left().min(rect.right() - size.x).max(rect.left());
+        let plate = Rect::from_min_size(pos2(left, top), size);
+        painter.rect_filled(
+            plate,
+            egui::CornerRadius::same(tokens.radius),
+            color_alpha(tokens.plate_fill, tokens.plate_opacity),
+        );
+        painter.galley(plate.min + PAD, galley, color(tokens.plate_text));
     }
 
     /// The relation of two things: a line between them, or an arc about
