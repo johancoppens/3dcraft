@@ -905,3 +905,57 @@ fn in_a_short_window_the_card_of_one_face_keeps_fly_measure_and_copy_name() {
         }
     }
 }
+
+/// 2026-11-18: the status bar is laid out before the viewport draws, so a
+/// frame that draws a new picture leaves the bar saying the numbers of the
+/// one before; a window that painted one frame after a pause kept the
+/// empty document's "0 triangles" beside the model. Such a frame now asks
+/// for one more, which says them.
+#[test]
+fn a_frame_whose_picture_changed_the_numbers_asks_for_one_more() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    run(
+        &mut session,
+        "feature.block",
+        json!({"size": [60, 40, 20], "name": "Block"}),
+    );
+    let mut asked = false;
+    let mut caught_up = false;
+    for _ in 0..400 {
+        window.time += 1.0 / 60.0;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, window.size)),
+            time: Some(window.time),
+            ..Default::default()
+        };
+        let output = window.ctx.run_ui(input, |ui| shell.ui(ui, &mut session));
+        let delay = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map_or(std::time::Duration::MAX, |v| v.repaint_delay);
+        let got = call(&mut shell, &mut session, "ui.get", json!({}));
+        let drawn = got["render"]["triangles"].as_u64();
+        let said = shell
+            .status_shown(craft3d_ui_egui::StatusSlot::Render)
+            .map(str::to_string);
+        let says_drawn = match (drawn, &said) {
+            (Some(n), Some(text)) => text.contains(&format!("{n} triangles")),
+            _ => true,
+        };
+        if !says_drawn {
+            // The bar is a picture behind: this frame asks for the next.
+            assert_eq!(delay, std::time::Duration::ZERO, "{said:?} for {drawn:?}");
+            asked = true;
+        } else if drawn.is_some_and(|n| n > 0) {
+            caught_up = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(caught_up, "the bar never said the block's triangles");
+    let _ = asked;
+}

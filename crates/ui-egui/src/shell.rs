@@ -3484,12 +3484,20 @@ impl Shell {
         // frame-exact recording the frame says those of its own picture
         // (the quick first picture and the sharp one differ in their
         // triangles): the pass is laid out again with them.
-        if self.frame_exact
-            && let Some(said) = self.status_render
+        // Otherwise one more frame says them: without it a window that
+        // painted one frame after a pause (hidden, an agent's commands,
+        // a picture of it) kept the numbers of the picture before, the
+        // empty document's "0 triangles" beside the model (2026-11-18).
+        // A picture of the window is laid out again, as a recording.
+        if let Some(said) = self.status_render
             && self.stats.as_ref().map(RenderStats::key) != said
         {
-            ui.ctx()
-                .request_discard("the status bar says the numbers of this frame's picture");
+            if self.frame_exact || self.capturing {
+                ui.ctx()
+                    .request_discard("the status bar says the numbers of this frame's picture");
+            } else {
+                ui.ctx().request_repaint();
+            }
         }
         // The side panel's split, over the viewport's edge: interacted
         // after it, so a drag there resizes the panel and does not orbit.
