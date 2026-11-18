@@ -594,6 +594,8 @@ struct FrameKey {
     highlight_vertex: Option<VertexRef>,
     /// What is drawn for the selection ([`Shell::selection_drawn`]).
     selection: u64,
+    /// What is drawn for what lies under the pointer (`hover.rs`).
+    hover: u64,
     /// How opaque the bodies are.
     opacity: f64,
     /// The plane the picture is cut open with.
@@ -2329,6 +2331,7 @@ impl Shell {
             ..viewport::Marks::default()
         })
         .with(self.comb_marks())
+        .with(self.hover_marks())
     }
 
     /// What the viewport draws over the picture of `key`: the marks of
@@ -2352,6 +2355,7 @@ impl Shell {
         })
         .with(self.comb_marks())
         .with(key.mates.clone())
+        .with(self.hover_marks())
     }
 
     /// The plane the viewport's picture is cut open with, as the
@@ -5240,6 +5244,9 @@ impl Shell {
             }
             ui.ctx().request_repaint();
         }
+        // What a click would select lights up under the resting pointer
+        // (`hover.rs`).
+        self.hover_frame(ui, &response, rect, scene, moving);
         // A right click lists every face under it; so does a press and
         // hold of a finger (with *Note here…*, `notes.rs`).
         if (response.secondary_clicked() || response.long_touched())
@@ -5277,6 +5284,7 @@ impl Shell {
             highlight_edge: self.state.highlight_edge.clone(),
             highlight_vertex: self.state.highlight_vertex.clone(),
             selection: self.selection_drawn(),
+            hover: self.hover_drawn(),
             opacity: self.opacity(),
             section: self.section(),
             datums: self.state.show.datums,

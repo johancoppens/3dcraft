@@ -231,6 +231,14 @@ pub struct Tokens {
     pub highlight_width: f32,
     /// Radius of a highlighted vertex's dot, in points.
     pub highlight_radius: f32,
+    /// What a click would select, under the pointer (`shell/hover.rs`):
+    /// outlined in the selection's colour (`face_highlight`), never
+    /// filled. A face by its boundary `hover_width` wide, an edge
+    /// `hover_edge_width` wide, a vertex as a dot of radius
+    /// `hover_radius`; in points.
+    pub hover_width: f32,
+    pub hover_edge_width: f32,
+    pub hover_radius: f32,
     /// The box dragged to select (Ctrl and a drag): its fill, the
     /// selection's colour (`face_highlight`) at this opacity (0 to 255),
     /// and its outline's width in points.
@@ -1025,6 +1033,9 @@ impl Tokens {
             point_radius: 2.25,
             highlight_width: 3.0,
             highlight_radius: 4.0,
+            hover_width: 1.5,
+            hover_edge_width: 2.0,
+            hover_radius: 2.0,
             select_box_opacity: 31,
             select_box_width: 1.5,
             pick_radius: 4.0,

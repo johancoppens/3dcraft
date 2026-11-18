@@ -341,6 +341,17 @@ pub fn segments_marked(
             line(a, b, LineKind::Highlight, true, true, false, 0.0);
         }
     }
+    // What a click would select, where it is in sight.
+    for (kind, lines) in [
+        (LineKind::Hover, &marks.hover_lines),
+        (LineKind::HoverEdge, &marks.hover_edges),
+    ] {
+        for &[a, b] in lines {
+            if let Some([a, b]) = marks.kept(a, b) {
+                line(a, b, kind, true, false, false, 0.0);
+            }
+        }
+    }
     for sketch in scene
         .into_iter()
         .flat_map(|scene| &scene.sketches)
@@ -399,6 +410,24 @@ pub fn segments_marked(
             width: LineKind::Highlight.dot_radius(tokens) * 2.0 * scale,
             tested: true,
             dimmed: true,
+            axis: false,
+            hidden_opacity: None,
+            edge: None,
+            lift: 0.0,
+        });
+    }
+    for point in marks
+        .hover_points
+        .iter()
+        .filter(|point| marks.kept(**point, **point).is_some())
+    {
+        out.push(Segment {
+            from: *point,
+            to: *point,
+            color: LineKind::HoverEdge.color(tokens),
+            width: LineKind::HoverEdge.dot_radius(tokens) * 2.0 * scale,
+            tested: true,
+            dimmed: false,
             axis: false,
             hidden_opacity: None,
             edge: None,
