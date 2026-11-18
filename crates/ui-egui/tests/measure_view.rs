@@ -932,7 +932,8 @@ fn a_frame_whose_picture_changed_the_numbers_asks_for_one_more() {
             time: Some(window.time),
             ..Default::default()
         };
-        let output = window.ctx.run_ui(input, |ui| shell.ui(ui, &mut session));
+        let mut output = window.ctx.run_ui(input, |ui| shell.ui(ui, &mut session));
+        output.textures_delta.clear();
         let delay = output
             .viewport_output
             .get(&egui::ViewportId::ROOT)
