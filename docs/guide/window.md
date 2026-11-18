@@ -490,11 +490,13 @@ an **Offset** slider and **Flip side**.
 | Click **⇅** | Keep the other half |
 | Select a flat face, then click **∥** | Lay the plane on that face: along it, through it, the arrow pointing out of the body; drag the arrow in to cut |
 | Select two flat faces, then click **∥** | Two parallel faces (the two walls of a slot): the plane midway between them. Two faces at an angle: the plane that halves it, between them, through the line where they meet; click again for the other one, square to it, where that one cuts the model |
+| Select a hole's or a shaft's round face, then click **∥** | The plane through its axis, turned to face you: the half toward you is cut away, so you look into the hole; click again to turn it a quarter about the axis. Looking straight along the axis it says so: turn the view first |
 
-The number says what the plane is: **X**, **Y** or **Z**, **∥ face**, **mid** or **bisector**. A plane made
-with **∥** stays when you select something else, and where it is when you change the model (it is then no
-longer called **mid** or **bisector** once its faces have moved); anything but one or two flat faces greys **∥**, and it says
-so when you point at it.
+The number says what the plane is: **X**, **Y** or **Z**, **∥ face**, **mid**, **bisector** or **axis**. A plane
+made with **∥** stays when you select something else, and where it is when you change the model (it is then
+no longer called **mid**, **bisector** or **axis** once its faces have moved); anything but one or two flat faces
+or one round face greys **∥**, and it says so when you point at it. The number is a length as everywhere else:
+to the document's tolerance, without trailing zeros (`30 mm`, `12.5 mm`).
 
 Seen straight along the arrow (a section across Z from the top), the arrow is a ring that cannot be dragged:
 type the distance into the group's number, or use its buttons.

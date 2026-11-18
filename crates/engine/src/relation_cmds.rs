@@ -592,6 +592,13 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
         } => Some(*direction),
         _ => circle_axis(t),
     };
+    // Parallel as a person sees it, for a circle's centre with an axis or
+    // another circle: within half a degree (as `select.query`'s `normal`
+    // and `axis` filters take by default), or the document's angular
+    // tolerance where that is looser. The document's own is the kernel's
+    // (1e-9 radians by default): a bore tilted by a millionth of a degree
+    // still has a pitch to measure (the review of 2026-11-18).
+    let seen = angular.max(PARALLEL_SEEN);
     let rim_axes = match (circle_axis(a), circle_axis(b)) {
         (Some(n), _) => axis_of(b, &sb).map(|m| (n, m)),
         (None, Some(m)) => axis_of(a, &sa).map(|n| (n, m)),
@@ -627,7 +634,7 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
             parallel_planes,
             parallel_axis_plane,
             edges,
-            rim_axes.is_none_or(|(n, m)| along(n, m, angular)),
+            rim_axes.is_none_or(|(n, m)| along(n, m, seen)),
         )
     });
     match relation {
@@ -913,7 +920,7 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
                 ) => (
                     *at,
                     foot(*middle, *direction, *at),
-                    rim_axes.map(|(n, m)| along(n, m, angular)),
+                    rim_axes.map(|(n, m)| along(n, m, seen)),
                 ),
                 (
                     Line {
@@ -923,10 +930,10 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
                 ) => (
                     foot(*middle, *direction, *at),
                     *at,
-                    rim_axes.map(|(n, m)| along(n, m, angular)),
+                    rim_axes.map(|(n, m)| along(n, m, seen)),
                 ),
                 (Point { at: p, .. }, Point { at: q, .. }) => {
-                    (*p, *q, rim_axes.map(|(n, m)| along(n, m, angular)))
+                    (*p, *q, rim_axes.map(|(n, m)| along(n, m, seen)))
                 }
                 _ => {
                     return Err(refused(
@@ -1126,6 +1133,10 @@ pub(crate) fn opening_of(
         .filter(|p| p.is_finite())
         .max_by(|p, q| upper_order(*p, *q, tol))
 }
+
+/// Half a degree, in radians: axes this close are parallel to a person
+/// choosing between a centre distance and a least distance.
+const PARALLEL_SEEN: f64 = 0.008_726_646_259_971_648;
 
 /// The unit axis of a circular edge (its circle's normal); `None` for
 /// anything else.

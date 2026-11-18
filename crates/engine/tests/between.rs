@@ -1101,3 +1101,37 @@ fn a_rim_at_an_angle_to_an_axis_gives_the_least_distance() {
         );
     }
 }
+
+/// The review of 2026-11-18: parallel, for a circle's centre with an axis,
+/// as a person sees it: within half a degree a pitch (the centre
+/// distance, `parallel: true`), not only within the kernel's 1e-9 radians;
+/// at 5 degrees the least distance as the things are.
+#[test]
+fn a_rim_and_an_axis_a_tenth_of_a_degree_apart_are_parallel() {
+    for (degrees, relation) in [(0.1, "centerDistance"), (5.0, "leastDistance")] {
+        let t = f64::to_radians(degrees);
+        let mut s = session();
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 10, "height": 2, "name": "Disk"}),
+        );
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 1, "height": 5, "position": [30, 0, 0], "axis": [t.psin(), 0, t.pcos()], "name": "Post"}),
+        );
+        let rim = item(
+            &mut s,
+            "edge",
+            json!({"in": "Disk", "radius": 10, "above": {"z": 1}}),
+        );
+        let post = item(&mut s, "face", json!({"in": "Post", "surface": "cylinder"}));
+        let got = between(&mut s, &rim, &post);
+        assert_eq!(got["relation"], relation, "{degrees} degrees: {got}");
+        if relation == "centerDistance" {
+            assert_eq!(got["parallel"], true, "{got}");
+        }
+    }
+}

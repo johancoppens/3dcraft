@@ -862,6 +862,9 @@ pub enum SectionMade {
     /// Through the line where the planes of two flat faces meet, halving
     /// their angle.
     Bisector,
+    /// Through the axis of a cylindrical face (a hole, a shaft), turned to
+    /// face the viewer (the developer, 2026-11-18).
+    Axis,
 }
 
 impl SectionMade {
@@ -871,6 +874,7 @@ impl SectionMade {
             Self::Face => "\u{2225} face",
             Self::Mid => "mid",
             Self::Bisector => "bisector",
+            Self::Axis => "axis",
         }
     }
 }
@@ -910,7 +914,7 @@ impl SectionState {
             .is_some_and(|p| ["xy", "yz", "zx"].contains(&p.trim()));
         self.made = self.made.filter(|made| match made {
             SectionMade::Face => named && !base,
-            SectionMade::Mid | SectionMade::Bisector => !named && given,
+            SectionMade::Mid | SectionMade::Bisector | SectionMade::Axis => !named && given,
         });
         Ok(self)
     }

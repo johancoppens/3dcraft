@@ -856,7 +856,7 @@ pub(crate) fn read(
             rows.push(plain("Type", surface_text(surface, &unit, tolerance)));
         }
         if let Some(area) = item.get("area").and_then(Value::as_f64) {
-            rows.push(plain("Area", format!("{} {unit}²", grouped(area, 0))));
+            rows.push(plain("Area", area_text(area, &unit)));
         }
         if let Some(surface) = item.get("surface") {
             if let Some(n) = surface.get("normal") {
@@ -1010,6 +1010,31 @@ fn plain(label: &'static str, value: String) -> PropRow {
         value,
         style: PropStyle::Plain,
     }
+}
+
+/// A face's area in the unit squared, with digits for its size: none
+/// after the point from 100 up, three significant ones below, in powers of
+/// ten under a ten-thousandth (the review of 2026-11-18: a tiny face read
+/// `0 mm²`).
+pub fn area_text(area: f64, unit: &str) -> String {
+    if !area.is_finite() {
+        return format!("? {unit}²");
+    }
+    if area != 0.0 && area.abs() < 1e-4 {
+        return format!("{area:.2e} {unit}²");
+    }
+    let decimals = if area == 0.0 || area.abs() >= 100.0 {
+        0
+    } else {
+        (2.0 - area.abs().plog10().floor()).clamp(0.0, 6.0) as usize
+    };
+    let text = grouped(area, decimals);
+    let text = if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        text
+    };
+    format!("{text} {unit}²")
 }
 
 /// A volume: cm³ in a millimetre document, else the unit cubed.
@@ -1698,6 +1723,14 @@ mod tests {
             ]
         );
         assert_eq!(volume_text(112_123.08, "mm"), "112.12 cm³");
+        // The review of 2026-11-18: a tiny face's area is not 0.
+        assert_eq!(area_text(1200.0, "mm"), "1200 mm²");
+        assert_eq!(area_text(314.159_265, "mm"), "314 mm²");
+        assert_eq!(area_text(12.345, "mm"), "12.3 mm²");
+        assert_eq!(area_text(0.000_4, "mm"), "0.0004 mm²");
+        assert_eq!(area_text(0.012_34, "mm"), "0.0123 mm²");
+        assert_eq!(area_text(2.5e-9, "mm"), "2.50e-9 mm²");
+        assert_eq!(area_text(0.0, "mm"), "0 mm²");
         assert_eq!(mass_text(0.3027), "302.7 g");
         assert_eq!(
             measured_line(

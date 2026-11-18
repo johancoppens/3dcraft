@@ -993,6 +993,10 @@ pub struct Shell {
     typing: Option<number_field::Typing>,
     /// The active document's length unit, for the Offset field.
     length_unit: &'static str,
+    /// The active document's linear tolerance: the Offset field and the
+    /// handle's number print a length by the one rule, to its places
+    /// without trailing zeros (the review of 2026-11-18).
+    length_tolerance: f64,
     /// Where the section's controls were drawn: `toggle` and, while the
     /// section is on, `x`, `y`, `z`, `offset`, `front` and `back`.
     section_hits: Vec<(&'static str, egui::Rect)>,
@@ -1615,6 +1619,7 @@ impl Shell {
             fields: number_field::FieldMemory::default(),
             typing: None,
             length_unit: "",
+            length_tolerance: 1e-6,
             section_hits: Vec::new(),
             show_hits: Vec::new(),
             look_hits: Vec::new(),
@@ -3290,6 +3295,7 @@ impl Shell {
         let (scene, status) = match session.as_deref_mut() {
             Some(session) => {
                 self.length_unit = session.length_unit().unwrap_or("");
+                self.length_tolerance = session.linear_tolerance().unwrap_or(1e-6);
                 (self.sync(session), session.document_status())
             }
             None => (self.shown_scene.clone(), self.shown_status.clone()),

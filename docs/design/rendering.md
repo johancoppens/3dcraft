@@ -1810,6 +1810,18 @@ when the selection changes. Anything else greys the button with why on hover. In
 four cells (X, Y, Z, ∥) share the room three had, as they did while a face was selected (open: whether a
 phone wants them a finger's width each, which makes the bar wider).
 
+*The plane through an axis* (2026-11-18, the developer: "Ja, na de spelden"). One cylindrical face selected (a
+hole, a shaft: `select.query` with context gives its axis, a point and a direction) makes the fourth button
+lay the plane through that axis, turned to face the viewer: its normal is the camera's direction toward the
+eye less its part along the axis (`CameraState::toward_eye` at the click), so the half toward the viewer is
+cut away and one looks into the hole. A second click, on that plane already, turns it a quarter about the
+axis (the axis crossed with the normal). Looking within 2 degrees of the axis (`ALONG`, its sine) no plane
+through it faces the viewer steadily: the button says *Looking along the axis: turn the view to cut through
+it* and does nothing. `made` is `axis` (with a point and a normal, as midway and a bisector are); the number
+says *axis*; after an edit it stays where it was and stops being called *axis* once the face's axis no
+longer holds its point or lies in it. The handle's number and the Offset field print the offset by the one
+rule for lengths since then (the document's tolerance, no trailing zeros), not two fixed decimals.
+
 *The review of the plane and the group* (2026-11-17, `review-view-section`). (1) Faces a hair off parallel
 (1.5e-9 to 1.7e-5 rad, the same way) gave a "bisector" through a line 3.4e6 to 6.9e10 away, which cut
 everything or nothing. A first fix counted two faces parallel when their planes met farther from the

@@ -180,6 +180,36 @@ pub fn fixed(v: f64, decimals: usize) -> String {
     }
 }
 
+/// The places a length takes at `tolerance`: as many as it holds (a
+/// tolerance of 1e-6: 6), at most 9.
+pub fn places_of(tolerance: f64) -> usize {
+    if tolerance.is_finite() && tolerance > 0.0 {
+        (-tolerance.plog10()).ceil().clamp(0.0, 9.0) as usize
+    } else {
+        6
+    }
+}
+
+/// [`shown`] without trailing zeros where `trim`: a length by the one rule
+/// (the document's tolerance's places, `30 mm`, `12.5 mm`).
+pub fn shown_trimmed(value: f64, scale: f64, decimals: usize, unit: &str, trim: bool) -> String {
+    if !trim {
+        return shown(value, scale, decimals, unit);
+    }
+    let v = fixed(value * scale, decimals);
+    let v = if v.contains('.') {
+        v.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        v
+    };
+    let v = if v == "-0" { "0".to_string() } else { v };
+    if unit.is_empty() {
+        v
+    } else {
+        format!("{v} {unit}")
+    }
+}
+
 /// How a field shows its value: `decimals` places and the unit.
 pub fn shown(value: f64, scale: f64, decimals: usize, unit: &str) -> String {
     let v = fixed(value * scale, decimals);
@@ -328,6 +358,8 @@ pub struct Slider<'a> {
     pub unit: &'a str,
     pub scale: f64,
     pub decimals: usize,
+    /// Shown without trailing zeros (a length by the one rule).
+    pub trim: bool,
     /// A click on the value types into it.
     pub typable: bool,
     /// Said under it: a note in the dim ink, an error in the failure's
@@ -360,6 +392,7 @@ impl<'a> Slider<'a> {
             unit: "",
             scale: 1.0,
             decimals: 2,
+            trim: false,
             typable: true,
             note: None,
             error: None,
@@ -413,6 +446,12 @@ impl<'a> Slider<'a> {
         self.reset_asked = asked;
         self
     }
+    /// Shown without trailing zeros (a length by the one rule).
+    #[must_use]
+    pub fn trimmed(mut self, trim: bool) -> Self {
+        self.trim = trim;
+        self
+    }
     /// Shown as `value * scale` with `decimals` places and `unit`.
     #[must_use]
     pub fn shown_as(mut self, scale: f64, decimals: usize, unit: &'a str) -> Self {
@@ -463,7 +502,7 @@ impl<'a> Slider<'a> {
     fn written(&self, value: f64) -> String {
         match &self.text {
             Some(text) => text.clone(),
-            None => shown(value, self.scale, self.decimals, self.unit),
+            None => shown_trimmed(value, self.scale, self.decimals, self.unit, self.trim),
         }
     }
 }
@@ -982,7 +1021,7 @@ impl Kit {
             if slider.typable && (enter_over || value_clicked || drag_clicked) {
                 *typing = Some(Typing {
                     field,
-                    text: shown(value_now, slider.scale, slider.decimals, ""),
+                    text: shown_trimmed(value_now, slider.scale, slider.decimals, "", slider.trim),
                     error: None,
                     entered: false,
                     focused: false,
@@ -1153,7 +1192,13 @@ impl Kit {
         // The value without its unit, the unit dim at the right.
         let (number, unit) = match (slider.text.as_ref(), slider.unit) {
             (None, unit) if !unit.is_empty() => (
-                shown(*slider.value, slider.scale, slider.decimals, ""),
+                shown_trimmed(
+                    *slider.value,
+                    slider.scale,
+                    slider.decimals,
+                    "",
+                    slider.trim,
+                ),
                 unit.to_string(),
             ),
             _ => (text.to_string(), String::new()),
