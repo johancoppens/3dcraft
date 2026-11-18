@@ -513,7 +513,9 @@ The **display bar** at the bottom of the view:
 - **Section** cuts the view open with a plane through the middle of the model: at first the one of X, Y
   and Z that faces you most (Z from above, else of X and Y the one you look along more, the shorter side
   of the model when you look along both alike), cutting away the half on your side. The cut shows as paper
-  with thin lines at 45° that stay on the part as you turn it.
+  with thin lines that stay on the part as you turn it: at 45° on a single body, and at its own angle for
+  each body (each part of an assembly), so parts that touch read apart. Where two parts overlap, the cut is
+  cross-hatched.
 
 While the section is on, the view shows its plane: a dashed outline (faint until the pointer comes near),
 an arrow at the cut's edge pointing into the half that is cut away, and beside it one small dark group: the
