@@ -1395,9 +1395,9 @@ impl Shell {
 
     /// The card short, where the Features tab has no room for it (a short
     /// window: the review of 2026-11-17 found the relation and Keep out of
-    /// reach there): what is selected and its number on one line with the
-    /// target that flies to it, and Keep as a check for two things; for one
-    /// thing Measure and Copy name on a second line.
+    /// reach there): one line of what is selected and its number, the
+    /// target that flies to it, and Keep as a check for two things or
+    /// Measure and Copy for one.
     pub(super) fn props_compact_ui(&mut self, ui: &mut egui::Ui) {
         let Some(props) = self.side.props.clone() else {
             return;
@@ -1414,10 +1414,13 @@ impl Shell {
                 .request_repaint_after(std::time::Duration::from_millis(30));
         }
         let (mut keep, mut fly, mut measure, mut copy) = (false, false, false, false);
-        // The line, and against its right edge Keep (for two things) and
-        // the target that flies to it, laid from the right so that the
-        // line is cut to what is left and nothing passes the panel's edge
-        // (the review of 2026-11-18: Keep reached 8 points past it).
+        // One line, as high as it was before its buttons came (a taller
+        // foot moved the list under a selected row: views.rs): against its
+        // right edge Keep for two things, or Copy and Measure for one (the
+        // notes' review of 2026-11-18: they were not drawn at all), and the
+        // target that flies to it, laid from the right so that the line is
+        // cut to what is left and nothing passes the panel's edge (the
+        // review of 2026-11-18: Keep reached 8 points past it).
         let width = ui.available_width();
         ui.allocate_ui_with_layout(
             vec2(width, kit.hit(t.control_height)),
@@ -1425,6 +1428,19 @@ impl Shell {
             |ui| {
                 if props.measurement.is_some() {
                     keep = self.keep_button(ui, keepable);
+                } else {
+                    let c = kit.button(ui, Button::secondary("Copy"));
+                    self.side
+                        .hits
+                        .targets
+                        .push(("copy name".to_string(), c.rect));
+                    copy = c.clicked();
+                    let m = kit.button(
+                        ui,
+                        Button::primary("Measure").enabled(props.measure.is_some()),
+                    );
+                    self.side.hits.targets.push(("measure".to_string(), m.rect));
+                    measure = m.clicked();
                 }
                 let target = kit.icon_button(
                     ui,
@@ -1451,25 +1467,6 @@ impl Shell {
                 line.on_hover_text(text.clone());
             },
         );
-        // One thing: its buttons on a second line, as the whole card has
-        // them (the notes' review of 2026-11-18: in a short window Fly,
-        // Measure and Copy name were not drawn at all).
-        if props.measurement.is_none() {
-            ui.horizontal(|ui| {
-                let m = kit.button(
-                    ui,
-                    Button::primary("Measure").enabled(props.measure.is_some()),
-                );
-                self.side.hits.targets.push(("measure".to_string(), m.rect));
-                measure = m.clicked();
-                let c = kit.button(ui, Button::secondary("Copy name"));
-                self.side
-                    .hits
-                    .targets
-                    .push(("copy name".to_string(), c.rect));
-                copy = c.clicked();
-            });
-        }
         if keep && let Some(m) = &props.measurement {
             self.keep(m);
         }
@@ -1484,22 +1481,10 @@ impl Shell {
         }
     }
 
-    /// How high the short card is: one line for two things (their
-    /// relation and Keep), two for one (its line, then Measure and Copy
-    /// name).
+    /// How high the short card is: one line.
     pub(super) fn props_compact_height(&self) -> f32 {
         let kit = Kit::panel(&self.tokens);
-        let lines = if self
-            .side
-            .props
-            .as_ref()
-            .is_some_and(|p| p.measurement.is_some())
-        {
-            1.0
-        } else {
-            2.0
-        };
-        lines * kit.hit(kit.t.control_height) + 2.0 * kit.t.nav_spacing
+        kit.hit(kit.t.control_height) + 2.0 * kit.t.nav_spacing
     }
 
     /// The card of what is selected.
