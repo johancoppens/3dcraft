@@ -948,8 +948,12 @@ fn a_frame_whose_picture_changed_the_numbers_asks_for_one_more() {
             _ => true,
         };
         if !says_drawn {
-            // The bar is a picture behind: this frame asks for the next.
-            assert_eq!(delay, std::time::Duration::ZERO, "{said:?} for {drawn:?}");
+            // The bar is a picture behind: this frame asks for the next
+            // (egui says so as a frame's time at most, not as zero).
+            assert!(
+                delay <= std::time::Duration::from_millis(20),
+                "{said:?} for {drawn:?}: next frame in {delay:?}"
+            );
             asked = true;
         } else if drawn.is_some_and(|n| n > 0) {
             caught_up = true;
