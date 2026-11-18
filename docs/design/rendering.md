@@ -2368,6 +2368,20 @@ cut.**
   `what_the_classes_cost_a_frame`; both with the four-channel count, so this is the classes' shading, not
   the count's wider target). Against the tree before the classes (the review of 2026-11-19, runs
   44419485412 and 44420265283, 400 parts cut): llvmpipe +10 %, RADV +6 %, radeonsi +3 % a frame.
+- *Open finding, older than the classes: the see-through tie of faces that touch.* Where two parts touch in a
+  plane (a face of each lying in it) and that plane lies behind a see-through front (the cap, or a face), the
+  surface behind the front is a tie of two faces, and the CPU renderer and the GPU break it differently: the
+  pixel takes the other face's colour (a highlighted face against a plain one, or the two faces' different
+  light). Measured on blocks that truly touch (Strix run 44423776124, `gpu/tests/section.rs` ›
+  `the_see_through_tie_of_touching_parts_with_and_without_classes`, `#[ignore]`d: the reproducer): the
+  readback renderer 217 pixels apart on RADV and radeonsi, 222 on llvmpipe, in one box; the viewport 88, 111
+  and 88 pixels over its tolerance; **the same with every part of class 0**, so it is not the classes'. The
+  review of 2026-11-19 found the same on the published models' see-through cuts (up to 843 interior pixels on
+  the toggle clamp across y). Not mended here; the two see-through framings of `hatch_classes_of_parts_…` and
+  of the viewport's comparison stand their blocks a fiftieth apart (`SEE_THROUGH_TIE`), every other framing
+  has blocks that touch. A mend would make the tie the same in both: the first face in the mesh's order
+  behind the front, which the GPU's peel pass would have to keep by its own test where two depths are equal
+  to rounding.
 - *Unchanged:* a mesh without classes, and every body of class 0, is drawn byte for byte as before (pinned by
   `render/src/section.rs` › `class_zero_is_hatched_byte_for_byte_as_before_the_classes` against the old
   arithmetic, and `render/tests/hatch_classes.rs` › `without_classes_the_picture_is_byte_for_byte_as_before`);
