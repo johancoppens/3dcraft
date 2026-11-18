@@ -226,7 +226,7 @@ fn segment_cut_is_segment_bit_for_bit_and_says_which_end_it_cut() {
                 }
             };
             let a = point(&mut rng);
-            let b = if rng.next() % 10 == 0 {
+            let b = if rng.next().is_multiple_of(10) {
                 a
             } else {
                 point(&mut rng)
