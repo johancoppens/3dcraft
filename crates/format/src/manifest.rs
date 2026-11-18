@@ -143,6 +143,12 @@ pub struct Note {
     pub edited: Option<NoteStamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done: Option<NoteDone>,
+    /// The replies given after it was closed, kept when it was opened
+    /// again (format version 77; versions 75 and 76 of 2026-11-17 kept
+    /// them under `done`, moved here by `v76_to_v77`); written only when
+    /// there are any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub later: Vec<NoteReply>,
 }
 
 /// How a note, its text or its closing came in: `"person"`, `{"agent":
@@ -186,9 +192,7 @@ pub enum NoteKind {
     Vertex,
 }
 
-/// Who closed a note, when, and the reply; the replies given after it was
-/// closed, when there are any (written only then: a file without them is
-/// as before).
+/// Who closed a note, when, and the reply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NoteDone {
@@ -197,8 +201,6 @@ pub struct NoteDone {
     pub time_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub later: Vec<NoteReply>,
 }
 
 /// A reply given to a note after it was closed.

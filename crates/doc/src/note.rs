@@ -37,8 +37,20 @@ pub const MAX_NOTE_CHARS: usize = 2000;
 /// Longest name of an agent that wrote, changed or closed a note, in
 /// Unicode code points.
 pub const MAX_NOTE_AUTHOR_CHARS: usize = 200;
-/// Most replies a done note takes after it was closed.
+/// Most replies a note takes after it was closed.
 pub const MAX_NOTE_REPLIES: usize = 20;
+/// Most bytes of text the notes of a document hold together, in UTF-8:
+/// their texts, replies and the names of those who wrote, changed, closed
+/// and replied ([`Note::bytes`]). A document at this cap always saves:
+/// JSON at most doubles a note's text (a quote, a backslash or a line
+/// break is written as two bytes; nothing else is escaped, and other
+/// characters are written as their UTF-8), so the notes' strings take at
+/// most 4 MiB of the manifest's 64 MiB, and what the manifest writes
+/// around them (keys, numbers, points, names) less than 1 KiB a note and
+/// 200 bytes a reply: under 10 MiB for 1000 notes of 20 replies each. Each
+/// change to the notes is an undo step that keeps a copy of them all: at
+/// the cap about 2 MiB a step.
+pub const MAX_NOTES_BYTES: usize = 2 * 1024 * 1024;
 
 /// What a note is pinned to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -133,18 +145,13 @@ pub struct NoteStamp {
     pub time_ms: u64,
 }
 
-/// Who closed a note, when, and what they answered; and the replies given
-/// to it after it was closed (an agent's account of what it did, when the
-/// person closed the note first), in the order they came.
+/// Who closed a note, when, and what they answered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteDone {
     pub by: NoteAuthor,
     /// Milliseconds since the Unix epoch (0 where there is no clock).
     pub time_ms: u64,
     pub reply: Option<String>,
-    /// At most [`MAX_NOTE_REPLIES`].
-    #[serde(default)]
-    pub later: Vec<NoteReply>,
 }
 
 /// A reply given to a note after it was closed: who, when, what.
@@ -176,6 +183,36 @@ pub struct Note {
     pub edited: Option<NoteStamp>,
     /// `None` while it is open.
     pub done: Option<NoteDone>,
+    /// The replies given to it after it was closed (an agent's account of
+    /// what it did when the person closed the note first), in the order
+    /// they came; kept when the note is opened again. At most
+    /// [`MAX_NOTE_REPLIES`].
+    #[serde(default)]
+    pub later: Vec<NoteReply>,
+}
+
+impl Note {
+    /// The bytes of text it holds, in UTF-8: its text, its reply and the
+    /// replies after its closing, and the names of the agents that wrote,
+    /// changed, closed it or replied.
+    pub fn bytes(&self) -> usize {
+        let name = |by: &NoteAuthor| by.agent().map_or(0, str::len);
+        let mut sum = self.text.len().saturating_add(name(&self.by));
+        if let Some(edited) = &self.edited {
+            sum = sum.saturating_add(name(&edited.by));
+        }
+        if let Some(done) = &self.done {
+            sum = sum
+                .saturating_add(name(&done.by))
+                .saturating_add(done.reply.as_ref().map_or(0, String::len));
+        }
+        for reply in &self.later {
+            sum = sum
+                .saturating_add(name(&reply.by))
+                .saturating_add(reply.text.len());
+        }
+        sum
+    }
 }
 
 /// The notes of a document, in the order they were written.
@@ -203,6 +240,13 @@ impl Notes {
             .iter()
             .filter(|n| n.done.is_none() && matches!(n.by, NoteAuthor::Agent(_)))
             .count()
+    }
+
+    /// The bytes of text they hold together ([`Note::bytes`]).
+    pub fn bytes(&self) -> usize {
+        self.items
+            .iter()
+            .fold(0usize, |sum, n| sum.saturating_add(n.bytes()))
     }
 }
 
@@ -411,7 +455,7 @@ impl Document {
         let next = id
             .checked_add(1)
             .ok_or_else(|| DocError::Invalid("no note id is left to give out".to_string()))?;
-        self.notes.items.push(Note {
+        let note = Note {
             id,
             text,
             on,
@@ -420,9 +464,26 @@ impl Document {
             time_ms,
             edited: None,
             done: None,
-        });
+            later: Vec::new(),
+        };
+        self.notes_fit(None, &note)?;
+        self.notes.items.push(note);
         self.notes.next_id = next;
         Ok(id)
+    }
+
+    /// Whether the notes still fit in [`MAX_NOTES_BYTES`] with `changed` in
+    /// place of note `id` (`None`: added); refused with what to do.
+    fn notes_fit(&self, id: Option<u64>, changed: &Note) -> Result<(), DocError> {
+        let now = self.notes.bytes();
+        let was = id.and_then(|id| self.note(id)).map_or(0, Note::bytes);
+        let after = now.saturating_sub(was).saturating_add(changed.bytes());
+        if after > MAX_NOTES_BYTES && after > now {
+            return Err(DocError::Invalid(format!(
+                "the notes of a document hold at most {MAX_NOTES_BYTES} bytes of text together (so it always saves), and this would make them {after} ({now} now): shorten it, or delete notes that are done (note.delete with state: done)"
+            )));
+        }
+        Ok(())
     }
 
     fn note_slot(&mut self, id: u64) -> Result<&mut Note, DocError> {
@@ -444,11 +505,17 @@ impl Document {
     ) -> Result<(), DocError> {
         let text = clean_note_text(text).map_err(DocError::Invalid)?;
         check_author(&by, "who changed it").map_err(DocError::Invalid)?;
-        let note = self.note_slot(id)?;
-        if note.text != text {
-            note.text = text;
-            note.edited = Some(NoteStamp { by, time_ms });
+        let mut changed = self
+            .note(id)
+            .cloned()
+            .ok_or_else(|| DocError::Invalid(format!("there is no note {id}")))?;
+        if changed.text == text {
+            return Ok(());
         }
+        changed.text = text;
+        changed.edited = Some(NoteStamp { by, time_ms });
+        self.notes_fit(Some(id), &changed)?;
+        *self.note_slot(id)? = changed;
         Ok(())
     }
 
@@ -471,7 +538,8 @@ impl Document {
     }
 
     /// Marks note `id` done by `by` with `reply`, or open again (`done`
-    /// false: who closed it and the reply are taken away).
+    /// false: who closed it and the reply are taken away; the replies given
+    /// after its closing stay).
     pub fn resolve_note(
         &mut self,
         id: u64,
@@ -486,22 +554,19 @@ impl Document {
             })
             .transpose()?;
         check_author(&by, "who closed it").map_err(DocError::Invalid)?;
-        let note = self.note_slot(id)?;
-        if done {
-            note.done = Some(NoteDone {
-                by,
-                time_ms,
-                reply,
-                later: Vec::new(),
-            });
-        } else {
-            note.done = None;
-        }
+        let mut changed = self
+            .note(id)
+            .cloned()
+            .ok_or_else(|| DocError::Invalid(format!("there is no note {id}")))?;
+        changed.done = done.then_some(NoteDone { by, time_ms, reply });
+        self.notes_fit(Some(id), &changed)?;
+        *self.note_slot(id)? = changed;
         Ok(())
     }
 
     /// Adds `reply` to note `id`, which is done, as given by `by` at
-    /// `time_ms`: kept under its closing, the closing as it was.
+    /// `time_ms`: kept with the note after its closing, the closing as it
+    /// was.
     pub fn reply_to_note(
         &mut self,
         id: u64,
@@ -512,18 +577,23 @@ impl Document {
         let text = clean_note_text(reply)
             .map_err(|e| DocError::Invalid(e.replace("note's text", "reply")))?;
         check_author(&by, "who replied").map_err(DocError::Invalid)?;
-        let note = self.note_slot(id)?;
-        let Some(done) = &mut note.done else {
+        let mut changed = self
+            .note(id)
+            .cloned()
+            .ok_or_else(|| DocError::Invalid(format!("there is no note {id}")))?;
+        if changed.done.is_none() {
             return Err(DocError::Invalid(format!(
                 "note {id} is open: a reply closes it (note.resolve)"
             )));
-        };
-        if done.later.len() >= MAX_NOTE_REPLIES {
+        }
+        if changed.later.len() >= MAX_NOTE_REPLIES {
             return Err(DocError::Invalid(format!(
                 "note {id} has {MAX_NOTE_REPLIES} replies after its closing already"
             )));
         }
-        done.later.push(NoteReply { by, time_ms, text });
+        changed.later.push(NoteReply { by, time_ms, text });
+        self.notes_fit(Some(id), &changed)?;
+        *self.note_slot(id)? = changed;
         Ok(())
     }
 
@@ -587,16 +657,22 @@ impl Document {
                 if let Some(reply) = &done.reply {
                     check_text(reply, "its reply").map_err(bad)?;
                 }
-                if done.later.len() > MAX_NOTE_REPLIES {
-                    return Err(bad(format!(
-                        "it has more than {MAX_NOTE_REPLIES} replies after its closing"
-                    )));
-                }
-                for later in &done.later {
-                    check_author(&later.by, "who replied").map_err(bad)?;
-                    check_text(&later.text, "a reply").map_err(bad)?;
-                }
             }
+            if note.later.len() > MAX_NOTE_REPLIES {
+                return Err(bad(format!(
+                    "it has more than {MAX_NOTE_REPLIES} replies after its closing"
+                )));
+            }
+            for later in &note.later {
+                check_author(&later.by, "who replied").map_err(bad)?;
+                check_text(&later.text, "a reply").map_err(bad)?;
+            }
+        }
+        let bytes = self.notes.bytes();
+        if bytes > MAX_NOTES_BYTES {
+            return Err(DocError::Invalid(format!(
+                "the notes hold {bytes} bytes of text together; at most {MAX_NOTES_BYTES} are read"
+            )));
         }
         Ok(())
     }
@@ -803,12 +879,12 @@ mod tests {
                     by: NoteAuthor::Person,
                     time_ms: 0,
                     reply: None,
-                    later: vec![NoteReply {
-                        by: NoteAuthor::Person,
-                        time_ms: 0,
-                        text: " x".into(),
-                    }],
-                })
+                });
+                d.notes.items[0].later = vec![NoteReply {
+                    by: NoteAuthor::Person,
+                    time_ms: 0,
+                    text: " x".into(),
+                }];
             },
         ];
         for (k, broken) in breaks.iter().enumerate() {
@@ -842,9 +918,80 @@ mod tests {
         }
         assert!(doc.reply_to_note(id, agent(), "one more", 5).is_err());
         assert!(doc.reply_to_note(99, agent(), "y", 5).is_err());
-        let done = doc.note(id).unwrap().done.clone().unwrap();
-        assert_eq!(done.by, NoteAuthor::Person, "the closing kept");
-        assert_eq!(done.later.len(), MAX_NOTE_REPLIES);
+        let note = doc.note(id).unwrap().clone();
+        assert_eq!(
+            note.done.unwrap().by,
+            NoteAuthor::Person,
+            "the closing kept"
+        );
+        assert_eq!(note.later.len(), MAX_NOTE_REPLIES);
         doc.validate().unwrap();
+        // Opened again, the replies stay (review-pins 2b); closed again,
+        // they are still there.
+        doc.resolve_note(id, false, NoteAuthor::Person, None, 6)
+            .unwrap();
+        assert!(doc.note(id).unwrap().done.is_none());
+        assert_eq!(doc.note(id).unwrap().later.len(), MAX_NOTE_REPLIES);
+        doc.resolve_note(id, true, agent(), Some("again"), 7)
+            .unwrap();
+        assert_eq!(doc.note(id).unwrap().later.len(), MAX_NOTE_REPLIES);
+    }
+
+    /// The notes' text together stays within `MAX_NOTES_BYTES`, so a
+    /// document full of them still saves (review-pins 2b: 400 notes of 20
+    /// replies of 2000 four-byte characters made a 71.9 MB manifest):
+    /// adding, changing, closing and replying past it is refused with
+    /// what to do, a file past it is refused, and what shrinks the notes
+    /// is taken at the cap.
+    #[test]
+    fn the_notes_text_together_is_capped() {
+        let mut doc = document();
+        let full = "\u{1F600}".repeat(MAX_NOTE_CHARS);
+        let mut last = None;
+        let refused = loop {
+            match doc.add_note(&full, None, [0.0; 3], agent(), 0) {
+                Ok(id) => last = Some(id),
+                Err(e) => break e.to_string(),
+            }
+        };
+        assert!(
+            refused.contains("note.delete with state: done"),
+            "{refused}"
+        );
+        let id = last.unwrap();
+        let bytes = doc.notes.bytes();
+        assert!(bytes <= MAX_NOTES_BYTES, "{bytes}");
+        assert!(MAX_NOTES_BYTES - bytes < full.len() + 64, "{bytes}");
+        doc.validate().unwrap();
+        // Closing with a reply, replying, a longer text: refused.
+        assert!(doc.resolve_note(id, true, agent(), Some(&full), 1).is_err());
+        doc.resolve_note(id, true, NoteAuthor::Person, None, 1)
+            .unwrap();
+        assert!(doc.reply_to_note(id, agent(), &full, 2).is_err());
+        // A shorter text is taken; so is deleting.
+        doc.edit_note_text(id, "short", NoteAuthor::Person, 3)
+            .unwrap();
+        doc.remove_notes(&[id]).unwrap();
+        // A file past the cap is refused.
+        let mut bad = doc.clone();
+        let first = bad.notes.items[0].clone();
+        let mut next = bad.notes.next_id;
+        for _ in 0..3 {
+            let mut copy = first.clone();
+            copy.id = next;
+            next += 1;
+            bad.notes.items.push(copy);
+        }
+        bad.notes.next_id = next;
+        assert!(bad.validate().is_err());
+        // At the cap the whole document copies, as an undo step keeps it,
+        // in about this long.
+        let started = std::time::Instant::now();
+        let copy = doc.clone();
+        println!(
+            "the notes at {} bytes of text: one copy of the document {:?}",
+            copy.notes.bytes(),
+            started.elapsed()
+        );
     }
 }

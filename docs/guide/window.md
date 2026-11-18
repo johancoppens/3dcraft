@@ -332,11 +332,14 @@ The field stops at 2000 characters and counts them near the end. When the note c
 stays open with your text and says why. The note sits where you clicked on that face (the face's middle
 when you chose it in a list).
 
+![The Notes tab beside a plate with its pins: an agent's question with ?, an open note, a detached one in grey, one held by place, and a done note unfolded with its reply after the closing; the done note chosen, its text beside its pin](images/notes.png)
+
 Once a document has notes, the side panel has a **Notes** tab, its open notes counted on the tab. It lists
 them with their number, their text, where each is (*face of Rib*; *by place: near an edge of Bookend* for
 an edge or face whose name may move to another: held near what the feature that made it makes there now,
 which the row names, not what the note was pinned to; *place gone* when that feature no longer makes anything there,
-a note that needs a look; *detached* for one whose face is gone), who wrote it and when. An agent's
+a note that needs a look; *detached* for one whose face is gone), who wrote it (*you*, or an agent by its
+name followed by *(agent)*, whatever it calls itself) and when. An agent's
 questions come first, marked with **?**; the done notes fold away under the open ones, each with its reply,
 and the replies given after it was closed (an agent's account of what it did when you closed the note
 first). A click on a row flies to the note and selects what it is on; the chosen row offers **Edit**,
@@ -348,8 +351,9 @@ In the view each note is a small numbered pin in the accent colour; an agent's q
 it was put. The pins keep their colours in the dark appearance, as the model does. A pin behind the model
 is drawn faint and cannot be clicked. A click on a pin chooses its note and shows its text beside it. Notes
 close together on the model share one pin, which says how many more it stands for; which notes have a pin
-does not change as you turn the view, only as you zoom. At most 400 pins are drawn; when notes in view are
-left without one, the Notes tab says how many, and zooming in shows them.
+does not change as you turn the view, only as you zoom. At most 400 pins are drawn, and none under the
+view's own controls (the toolbar, the view cube, the axes); when notes in view are left without one, the
+Notes tab says how many, and zooming in or turning the view shows them.
 
 When an agent has left open questions, the agent pill in the status bar says how many; a click on it opens
 the Notes tab. A document without notes shows nothing of them. On a phone the tab is in the drawer, and

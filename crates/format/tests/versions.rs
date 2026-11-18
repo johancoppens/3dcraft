@@ -143,6 +143,10 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // a point at its top over a variable, one at both ends, a point short
     // of its top.
     (76, 3077, 0x375c_0fa5_7663_6f05),
+    // 77: written by craft3d-cli of e6aceb7f (debug, on the developer's
+    // laptop): a plate 40 x 20 x 5 mm and two notes with replies after
+    // their closing, kept with the note (one opened again).
+    (77, 2528, 0x851e_f10e_8852_f2e5),
 ];
 
 fn dir() -> PathBuf {

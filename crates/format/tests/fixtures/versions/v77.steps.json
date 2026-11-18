@@ -1,0 +1,10 @@
+[
+ ["feature.block", {"name": "Plate", "size": ["40 mm", "20 mm", "5 mm"]}],
+ ["note.add", {"text": "2 mm thicker here", "on": "Plate:face(1)"}],
+ {"command": "note.add", "params": {"text": "Should this edge stay sharp?", "on": "Plate:face(2)"}, "agent": "Claude Code"},
+ ["note.resolve", {"id": 1}],
+ {"command": "note.resolve", "params": {"id": 1, "reply": "Made it 7 mm."}, "agent": "Claude Code"},
+ ["note.resolve", {"id": 1, "done": false}],
+ ["note.resolve", {"id": 2, "reply": "Yes, keep it sharp."}],
+ {"command": "note.resolve", "params": {"id": 2, "reply": "Left it sharp."}, "agent": "Claude Code"}
+]

@@ -1050,7 +1050,7 @@ fn a_reply_to_a_done_note_is_kept_and_an_unnamed_connection_is_an_agent() {
         "closed as it was: {replied}"
     );
     assert!(replied["done"]["reply"].is_null(), "{replied}");
-    let later = &replied["done"]["later"][0];
+    let later = &replied["later"][0];
     assert_eq!(later["author"], "agent", "{replied}");
     assert_eq!(later["agent"], "Claude Code");
     assert_eq!(later["reply"], "Made it 7 mm.");
@@ -1058,7 +1058,7 @@ fn a_reply_to_a_done_note_is_kept_and_an_unnamed_connection_is_an_agent() {
     run(&mut s, "edit.undo", json!({}));
     let back = note(&mut s, 1);
     assert_eq!(back["state"], "done");
-    assert!(back["done"].get("later").is_none(), "{back}");
+    assert!(back.get("later").is_none(), "{back}");
     // Without a reply, a done note is still an error that says what to do.
     let e = error(&mut s, "note.resolve", json!({"id": 1}));
     assert!(e.contains("give a reply to add one"), "{e}");
@@ -1068,8 +1068,12 @@ fn a_reply_to_a_done_note_is_kept_and_an_unnamed_connection_is_an_agent() {
     })
     .unwrap();
     let again = note(&mut s, 1);
-    assert_eq!(again["done"]["later"][0]["author"], "agent", "{again}");
-    assert!(again["done"]["later"][0]["agent"].is_null(), "{again}");
+    assert_eq!(again["later"][0]["author"], "agent", "{again}");
+    assert!(again["later"][0]["agent"].is_null(), "{again}");
+    // Opened again, its replies stay (review-pins 2b).
+    let reopened = run(&mut s, "note.resolve", json!({"id": 1, "done": false}));
+    assert_eq!(reopened["state"], "open");
+    assert_eq!(reopened["later"][0]["reply"], "checked", "{reopened}");
 }
 
 /// Review-pins 1c (minor): the hole of a trimmed sheet is not on the
