@@ -594,11 +594,13 @@ fn hover_cost_on_thousands_of_faces() {
 }
 
 /// On a note's pin a click is the pin's: nothing of the model is outlined
-/// there, with the mouse on it or the pointer an agent placed on it.
+/// there, with the mouse on it or the pointer an agent placed on it, and
+/// `hovered` names the note (the verdict's fix 10; the pin's ring, which
+/// reads `Shell::hover_point`, is the notes' to test).
 #[test]
 fn on_a_notes_pin_nothing_of_the_model_is_outlined() {
     let (mut session, mut shell, mut window) = plate_in_a_window();
-    run(
+    let note = run(
         &mut session,
         "note.add",
         json!({"text": "2 mm thicker here", "on": "Plate", "point": [30, 20, 8]}),
@@ -610,7 +612,8 @@ fn on_a_notes_pin_nothing_of_the_model_is_outlined() {
         f64::from(pin.x - rect.left()),
         f64::from(pin.y - rect.top()),
     );
-    // Under the pin lies the plate's top: placed there, nothing.
+    // Under the pin lies the plate's top: placed there, the note.
+    let named = |hovered: &Value| hovered["kind"] == "note" && hovered["id"] == note["id"];
     let picked = call(&mut shell, &mut session, "ui.pick", json!({"x": x, "y": y}));
     assert_eq!(picked["hit"], true, "{picked}");
     let placed = call(
@@ -619,12 +622,13 @@ fn on_a_notes_pin_nothing_of_the_model_is_outlined() {
         "ui.pick",
         json!({"x": x, "y": y, "hover": true}),
     );
-    assert_eq!(placed["hovered"], Value::Null, "{placed}");
+    assert!(named(&placed["hovered"]), "{placed}");
     window.frames(&mut shell, &mut session, 3);
     let hovered = |shell: &mut Shell, session: &mut Session| {
         call(shell, session, "ui.get", json!({}))["hovered"].clone()
     };
-    assert_eq!(hovered(&mut shell, &mut session), Value::Null);
+    assert!(named(&hovered(&mut shell, &mut session)));
+    assert_eq!(shell.state.hovered, None, "nothing of the model");
     assert!(
         !shell
             .overlay()
@@ -633,10 +637,11 @@ fn on_a_notes_pin_nothing_of_the_model_is_outlined() {
             .iter()
             .any(|l| l.kind == LineKind::Hover)
     );
-    // The mouse on it: nothing either; beside it, the plate's top.
+    // The mouse on it: the note too; beside it, the plate's top.
     window.frame(&mut shell, &mut session, vec![Event::PointerMoved(pin)]);
     window.frames(&mut shell, &mut session, 4);
-    assert_eq!(hovered(&mut shell, &mut session), Value::Null);
+    assert!(named(&hovered(&mut shell, &mut session)));
+    assert_eq!(shell.state.hovered, None, "nothing of the model");
     let beside = egui::pos2(pin.x + 40.0, pin.y + 40.0);
     window.frame(&mut shell, &mut session, vec![Event::PointerMoved(beside)]);
     window.frames(&mut shell, &mut session, 4);
