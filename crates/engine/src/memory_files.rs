@@ -157,13 +157,19 @@ impl Session {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let size = std::fs::metadata(resolved)
-                .map_err(|e| format!("cannot read `{path}`: {e}"))?
-                .len();
+            // In words (`there is no such file`), as file.open says it,
+            // not the system's `No such file or directory (os error 2)`.
+            let cannot = |e: std::io::Error| {
+                format!(
+                    "cannot read `{path}`: {}",
+                    crate::workspace::io_reason(&e, crate::workspace::IoAccess::Read)
+                )
+            };
+            let size = std::fs::metadata(resolved).map_err(cannot)?.len();
             if size > limit {
                 return Err(too_large(size));
             }
-            std::fs::read(resolved).map_err(|e| format!("cannot read `{path}`: {e}"))
+            std::fs::read(resolved).map_err(cannot)
         }
         #[cfg(target_arch = "wasm32")]
         {

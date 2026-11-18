@@ -155,6 +155,81 @@ impl Session {
         String::new()
     }
 
+    /// The folder the active assembly's sources are relative to now
+    /// ([`Session::asm_base`]) and the folder of `kept`, the path a save
+    /// keeps for it (written at `resolved`), of one kind for [`rebased`].
+    /// Both absolute or both relative: as they are. Otherwise the relative
+    /// one is written as the folder on disk it stands for (2026-11-18: an
+    /// assembly whose sources were relative to the read root, saved under
+    /// an absolute path, had them written as if the root were the file
+    /// system's): the current one as the folder of the file the assembly
+    /// was opened from or last saved to, or, without a file, beneath the
+    /// first read root, where its sources were read; the new one as the
+    /// folder the file is written into. An error, in words, where that
+    /// folder is not known (no file, no read root, no file system).
+    pub(crate) fn save_bases(
+        &self,
+        kept: &str,
+        resolved: &std::path::Path,
+    ) -> Result<(String, String), String> {
+        let old = self.asm_base().map_err(|e| e.message().to_string())?;
+        let new = asm::dir_of(kept);
+        let absolute = crate::asm_paths::is_absolute;
+        match (absolute(&old), absolute(&new)) {
+            (false, true) => Ok((self.base_on_disk(&old, &new)?, new)),
+            (true, false) => {
+                let file = std::path::absolute(resolved)
+                    .ok()
+                    .and_then(|p| p.to_str().map(str::to_string))
+                    .filter(|p| absolute(p))
+                    .ok_or_else(|| {
+                        format!(
+                            "the sources of this assembly are relative to `{old}`, and the folder `{new}` cannot be found on disk to write them relative to it; give the path absolute"
+                        )
+                    })?;
+                Ok((old, asm::dir_of(&file)))
+            }
+            _ => Ok((old, new)),
+        }
+    }
+
+    /// The folder on disk the active assembly's relative folder `old`
+    /// stands for ([`Session::save_bases`]); for one without a file, its
+    /// root spelled as `other` (an absolute folder) spells it where that
+    /// lies beneath it.
+    fn base_on_disk(&self, old: &str, other: &str) -> Result<String, String> {
+        if let Some(file) = self.document().ok().and_then(|o| o.file.as_deref()) {
+            return Ok(asm::dir_of(file));
+        }
+        let root = match &self.workspace.read {
+            crate::Access::Unrestricted => Some(std::path::PathBuf::from(".")),
+            access => access.roots().first().map(|root| root.to_path_buf()),
+        };
+        let spelled = root.and_then(|root| {
+            let spellings: Vec<std::path::PathBuf> = std::path::absolute(&root)
+                .into_iter()
+                .chain([crate::workspace::spelled_root(&root)])
+                .filter(|p| p.to_str().is_some_and(crate::asm_paths::is_absolute))
+                .collect();
+            spellings
+                .iter()
+                .find(|p| std::path::Path::new(other).starts_with(p))
+                .or(spellings.first())
+                .and_then(|p| p.to_str())
+                .map(str::to_string)
+        });
+        let Some(root) = spelled else {
+            return Err(format!(
+                "this assembly has no file yet and its sources are relative to the read root, which this session does not have, so they cannot be written relative to `{other}`; save it first under a path relative to the folder its sources were added from, then under this one"
+            ));
+        };
+        Ok(if old.is_empty() {
+            root
+        } else {
+            format!("{root}/{old}")
+        })
+    }
+
     /// A source path as the request gave it, written as [`asm::join`]
     /// writes paths: absolute with unrestricted access, beneath the root
     /// otherwise.
@@ -564,7 +639,7 @@ fn source_relative(
     base: &str,
     full: &str,
 ) -> Result<String, CommandError> {
-    let absolute = |p: &str| p.starts_with('/') || p.starts_with('\\') || p.get(1..2) == Some(":");
+    let absolute = crate::asm_paths::is_absolute;
     if !absolute(full) && !absolute(base) {
         return Ok(asm::relative_to(base, full));
     }
@@ -1673,13 +1748,33 @@ fn file_exists(session: &Session, resolved: &std::path::Path) -> bool {
     }
 }
 
-/// Rewrites the active assembly's source paths for a save into the
-/// folder `new_base` (as [`asm::join`] writes it), so they stay relative
-/// to its file. Not an undo step of its own: part of the save.
-pub(crate) fn rebased(doc: &Document, old_base: &str, new_base: &str) -> Option<Document> {
-    let assembly = doc.assembly.as_ref()?;
+/// Whether an instance of `doc` refers to its source by a file's path.
+pub(crate) fn has_file_sources(doc: &Document) -> bool {
+    doc.assembly.as_ref().is_some_and(|a| {
+        a.instances
+            .iter()
+            .any(|i| matches!(i.source, Source::File { .. }))
+    })
+}
+
+/// Rewrites the active assembly's source paths for a save from the
+/// folder `old_base` they are relative to into the folder `new_base`
+/// (the two of one kind, [`Session::save_bases`]), so each still leads to
+/// the file it led to ([`crate::asm_paths::relink`]). Not an undo step of
+/// its own: part of the save. An error naming the instance where a
+/// source cannot be written so (2026-11-18: before, such a source kept
+/// its path, which then led elsewhere from the new folder): the save is
+/// refused rather than write a path that leads to another file.
+pub(crate) fn rebased(
+    doc: &Document,
+    old_base: &str,
+    new_base: &str,
+) -> Result<Option<Document>, String> {
+    let Some(assembly) = doc.assembly.as_ref() else {
+        return Ok(None);
+    };
     if old_base == new_base {
-        return None;
+        return Ok(None);
     }
     let mut doc = doc.clone();
     let mut changed = false;
@@ -1687,15 +1782,19 @@ pub(crate) fn rebased(doc: &Document, old_base: &str, new_base: &str) -> Option<
         for (instance, before) in a.instances.iter_mut().zip(&assembly.instances) {
             if let (Source::File { path, .. }, Source::File { path: old, .. }) =
                 (&mut instance.source, &before.source)
-                && let Ok(full) = asm::join(old_base, old)
             {
-                let new = asm::relative_to(new_base, &full);
-                if new != *path && craft3d_doc::assembly::check_source_path(&new).is_ok() {
+                let new = crate::asm_paths::relink(old_base, old, new_base).map_err(|why| {
+                    format!(
+                        "the source `{old}` of instance `{}` cannot be written relative to the folder `{new_base}`: {why}",
+                        before.name
+                    )
+                })?;
+                if new != *path {
                     *path = new;
                     changed = true;
                 }
             }
         }
     }
-    changed.then_some(doc)
+    Ok(changed.then_some(doc))
 }

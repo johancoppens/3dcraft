@@ -1192,11 +1192,21 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     // An assembly's source paths stay relative to its file: saved into
     // another folder, they are rewritten for it. The rewritten document is
     // what is written; the open one takes it (with every undo state) only
-    // once the file is written, together with its new path.
+    // once the file is written, together with its new path. The two
+    // folders are compared as folders of one kind (`save_bases`).
     let rebase = if is_assembly {
-        let old_base = session.asm_base()?;
-        let new_base = crate::asm::dir_of(&crate::workspace::kept_path(&access, &path, &resolved));
-        Some((old_base, new_base))
+        let kept = crate::workspace::kept_path(&access, &path, &resolved);
+        match session.save_bases(&kept, &resolved) {
+            Ok(bases) => Some(bases),
+            // Only a source in a file needs its folder: an assembly whose
+            // sources are all packed (an example) is saved anywhere.
+            Err(why)
+                if crate::asm_cmds::has_file_sources(session.document()?.history.current()) =>
+            {
+                return fail(format!("file.save: cannot save `{path}`: {why}"));
+            }
+            Err(_) => None,
+        }
     } else {
         None
     };
@@ -1230,10 +1240,16 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     };
     let open = session.document_mut()?;
     let mut document = std::sync::Arc::clone(open.history.current());
-    if let Some((old_base, new_base)) = &rebase
-        && let Some(rebased) = crate::asm_cmds::rebased(&document, old_base, new_base)
-    {
-        document = std::sync::Arc::new(rebased);
+    if let Some((old_base, new_base)) = &rebase {
+        match crate::asm_cmds::rebased(&document, old_base, new_base) {
+            Ok(Some(rebased)) => document = std::sync::Arc::new(rebased),
+            Ok(None) => {}
+            Err(why) => {
+                return fail(format!(
+                    "file.save: cannot save `{path}`: {why}; nothing was written. Save it into a folder from which its sources can be reached, point the instance at its file again (instance.edit with a `source`), or pack the sources into the assembly (assembly.pack)"
+                ));
+            }
+        }
     }
     if in_memory {
         let bytes =
@@ -1247,8 +1263,14 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     }
     let open = session.document_mut()?;
     if let Some((old_base, new_base)) = &rebase {
-        open.history
-            .rewrite_all(|doc| crate::asm_cmds::rebased(doc, old_base, new_base));
+        // The state written was rewritten whole above. A state undo or
+        // redo reaches whose sources cannot be (an instance deleted since,
+        // whose source is on another drive) keeps its paths.
+        open.history.rewrite_all(|doc| {
+            crate::asm_cmds::rebased(doc, old_base, new_base)
+                .ok()
+                .flatten()
+        });
     }
     open.mark_saved();
     let kept = crate::workspace::kept_path(&access, &path, &resolved);

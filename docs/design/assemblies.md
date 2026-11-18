@@ -622,7 +622,17 @@ refuses to overwrite unless asked, and refers to the files again with the same h
 folder rewrites its source paths so they stay relative to its file: the document written is rewritten, and the open
 one takes the rewrite only once the file is written, for its current state and every state undo and redo reach
 (`History::rewrite_all`, no undo step of its own), together with its new path. A failed write changes nothing; an
-undo after Save As keeps paths relative to the new folder.
+undo after Save As keeps paths relative to the new folder. The old folder and the new one are compared as folders of
+one kind (`Session::save_bases`): both absolute or both relative to the root as they are; otherwise the relative one
+as the folder on disk it stands for, the old one as the folder of the file the assembly was opened from or last saved
+to (one without a file: beneath the first read root, where its sources were read), the new one as the folder the file
+is written into. Each path is rewritten by `asm_paths::relink`, which compares the two folders only from the same
+start (the root, one Windows drive in either case, one share `\\server\share`) and refuses, never writes another
+path, where none leads to the file: the folders on two drives or shares, a source that climbs above the start of the
+file system, or a path longer than a source may have. A refused source refuses the save, naming the instance and the
+ways out (another folder, `instance.edit` with a `source`, `assembly.pack`), with nothing written; so does an
+assembly without a file whose folder this save cannot place (no read root, as in the window's Save As for the person)
+when it has a source in a file. A state undo or redo reaches whose sources cannot be rewritten keeps its paths.
 
 ### Export (`crates/engine/src/asm_export.rs`, `crates/io/src/step_assembly.rs`)
 
@@ -715,6 +725,9 @@ undo after Save As; couplings that fail by name; a pin through a file change, a 
 rename; a mate on a hidden body; the shown scenes after the workspace narrows. `regen_elsewhere.rs` has the assembly
 built here by a host that regenerates elsewhere, `recovery.rs` the unsaved assembly that asks, is autosaved and comes
 back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an assembly (`cargo xtask freecad`).
+`crates/engine/tests/assembly_save_paths.rs` saves between folders relative to the root and absolute ones (the report of
+2026-11-18), in memory, under hostile paths, the refusals, and the way back for a file saved wrongly;
+`crates/engine/src/asm_paths.rs` has the rewritten paths of Unix and Windows (drives, shares) as text.
 `crates/engine/tests/panic_hunt.rs` runs every command with adversarial parameters. `crates/doc/src/assembly.rs` and
 `crates/engine/src/asm.rs` have the unit tests of the rules and the paths, `crates/engine/src/asm_solve.rs` the memo of
 rest solves. The format: `crates/format/tests/versions.rs` (the fixture) and `crates/engine/tests/format_versions.rs`
@@ -860,6 +873,25 @@ alone at another leg scale (four parts' poses, two joints back at the values the
 
 ### Findings and history (track A)
 
+- 2026-11-18 (asm-save-path): an assembly whose sources were relative to the working folder (the window's read root),
+  saved under an absolute path, got source paths that climbed to the file system's root and then named the path from
+  the working folder (`../../../../../../../../../model/v2/rod.3dcraft` from `/home/…/work/abs`), and `file.save`
+  answered ok; the open assembly then said its source `/model/v2/rod.3dcraft` was outside the read root, and the file
+  opened with every instance failing. In 0.1.0 to 0.1.3. Cause: the rebase joined the old folder with each source and
+  took the path from the new folder by comparing parts as text (`asm::relative_to`, which drops the empty part an
+  absolute path starts with), so a folder relative to the root and one from the file system's root were compared as
+  if both started at one place; and a path it could not write (another drive) silently kept the old one. Principle
+  broken: a save must never write a source path that no longer leads to the file it led to. Rule: the two folders are
+  brought to one kind first, and a path that cannot be written refuses the save (*Pack and unpack*). The command line
+  did it right because with access to every file every path is kept absolute (`workspace::kept_path`), so both
+  folders were of one kind. What a file saved wrongly holds is a path that names the file from the working folder,
+  which the file does not record: no repair on opening is sound (a path that climbs to the root can be meant), so
+  such a file is mended by pointing each instance at its file again (`instance.edit {"name", "source"}`) and saving.
+  A source that is not there beneath the root now says "there is no such file" (as `file.open` does), not the
+  system's text; "outside the read root" stays for a path that leaves it. Still open: a Save As at the window, for
+  the person, of an assembly an agent made and never saved is refused (the person's save has no read root, and the
+  assembly's sources are relative to the agents' folder); an agent saves it first, or the save could carry the
+  automation's read roots. Tests: `crates/engine/tests/assembly_save_paths.rs`, `crates/engine/src/asm_paths.rs`.
 - 2026-11-14 (assembly-trust, A-016 and A-036, for 0.2):
   - A-016: the rest solve was one Newton solve from the placement at the document's drives. A mechanism put together
     at one drive value and solved at another could converge to the mirrored loop, the solve ok with no degree of

@@ -30,6 +30,7 @@ mod asm_export;
 mod asm_follow;
 mod asm_measure;
 mod asm_outline;
+mod asm_paths;
 mod asm_solve;
 mod assert_check;
 mod assert_cmds;
