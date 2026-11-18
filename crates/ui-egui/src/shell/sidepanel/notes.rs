@@ -168,7 +168,13 @@ impl Shell {
 
     /// Runs one of the tab's acts on note `id`; `carried`: it carries the
     /// reply field's text, emptied when it is taken.
-    fn note_act(&mut self, command: &'static str, params: serde_json::Value, id: u64, carried: bool) {
+    fn note_act(
+        &mut self,
+        command: &'static str,
+        params: serde_json::Value,
+        id: u64,
+        carried: bool,
+    ) {
         self.notes.act_error = None;
         self.notes.act = Some((id, carried));
         self.side_queue(command, params, Some(NOTE_ACT.to_string()));
@@ -265,8 +271,7 @@ impl Shell {
         let for_agent: Vec<&NoteRow> = rows.iter().filter(|r| !r.done && !r.for_you()).collect();
         let done: Vec<&NoteRow> = rows.iter().filter(|r| r.done).collect();
         let refusal = self.note_refusal();
-        let connected =
-            self.agents.status.connected > 0 || !self.agents.status.clients.is_empty();
+        let connected = self.agents.status.connected > 0 || !self.agents.status.clients.is_empty();
         let copied = self
             .notes
             .copied
@@ -607,7 +612,9 @@ fn note_row(
             let shown_lines = if chosen {
                 thread.as_slice()
             } else {
-                thread.get(thread.len().saturating_sub(1)..).unwrap_or_default()
+                thread
+                    .get(thread.len().saturating_sub(1)..)
+                    .unwrap_or_default()
             };
             for (who, text, time, _) in shown_lines {
                 let mut said = format!("“{text}” · {who}");
@@ -621,7 +628,11 @@ fn note_row(
                         .color(color(s.text_dim)),
                 )
                 .selectable(false);
-                ui.add(if chosen { label.wrap() } else { label.truncate() });
+                ui.add(if chosen {
+                    label.wrap()
+                } else {
+                    label.truncate()
+                });
             }
             if chosen && editing.is_none() {
                 reply_field(ui, kit, row, reply_focus, reply, asked, hits);

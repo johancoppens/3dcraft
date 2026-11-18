@@ -1057,7 +1057,12 @@ impl Shell {
         {
             self.state.notes.selected = None;
         }
-        if self.notes.editing.as_ref().is_some_and(|(id, _)| !known(*id)) {
+        if self
+            .notes
+            .editing
+            .as_ref()
+            .is_some_and(|(id, _)| !known(*id))
+        {
             self.notes.editing = None;
         }
         if self.notes.reply.as_ref().is_some_and(|(id, _)| !known(*id)) {
@@ -1574,7 +1579,8 @@ impl Shell {
         }
         // The chosen note's text beside its pin, on a plate.
         if let Some((row, head)) = bubble {
-            self.notes.reply_link = paint_bubble(&painter, &tokens, row, head, rect, self.agents_now());
+            self.notes.reply_link =
+                paint_bubble(&painter, &tokens, row, head, rect, self.agents_now());
             if let Some(link) = self.notes.reply_link
                 && pointer.is_some_and(|p| link.contains(p))
             {
@@ -1705,10 +1711,7 @@ impl Shell {
 /// room, else on its left; within `view`.
 fn beside(head: egui::Pos2, r: f32, size: egui::Vec2, view: egui::Rect) -> egui::Rect {
     let pad = 6.0;
-    let right = egui::Rect::from_min_size(
-        head + egui::vec2(r + 6.0 + pad, -size.y * 0.5),
-        size,
-    );
+    let right = egui::Rect::from_min_size(head + egui::vec2(r + 6.0 + pad, -size.y * 0.5), size);
     let at = if right.right() + pad > view.right() {
         egui::Rect::from_min_size(
             head + egui::vec2(-(r + 6.0 + pad) - size.x, -size.y * 0.5),
@@ -1766,7 +1769,10 @@ fn paint_bubble(
         width,
         BUBBLE_LINES,
     );
-    let last = row.thread().last().map(|(who, text, _, _)| format!("“{text}” · {who}"));
+    let last = row
+        .thread()
+        .last()
+        .map(|(who, text, _, _)| format!("“{text}” · {who}"));
     let reply = last.map(|said| {
         lines(
             painter,
@@ -1779,7 +1785,10 @@ fn paint_bubble(
     });
     let mut meta = row.who();
     if row.time_ms > 0 {
-        meta.push_str(&format!(" · {}", super::sidepanel::agent::ago(row.time_ms, now)));
+        meta.push_str(&format!(
+            " · {}",
+            super::sidepanel::agent::ago(row.time_ms, now)
+        ));
     }
     let meta = lines(painter, &meta, 11.0, color(tokens.plate_text_dim), width, 1);
     let link = row.for_you().then(|| {
@@ -1793,13 +1802,15 @@ fn paint_bubble(
         )
     });
     let gap = 3.0;
-    let galleys: Vec<&Arc<egui::Galley>> = [Some(&text), reply.as_ref(), Some(&meta), link.as_ref()]
-        .into_iter()
-        .flatten()
-        .collect();
+    let galleys: Vec<&Arc<egui::Galley>> =
+        [Some(&text), reply.as_ref(), Some(&meta), link.as_ref()]
+            .into_iter()
+            .flatten()
+            .collect();
     let inner = egui::vec2(
         galleys.iter().map(|g| g.size().x).fold(0.0, f32::max),
-        galleys.iter().map(|g| g.size().y).sum::<f32>() + gap * (galleys.len().saturating_sub(1)) as f32,
+        galleys.iter().map(|g| g.size().y).sum::<f32>()
+            + gap * (galleys.len().saturating_sub(1)) as f32,
     );
     let plate = beside(head, tokens.note_radius, inner, view);
     painter.rect_filled(
@@ -1811,7 +1822,11 @@ fn paint_bubble(
     let mut link_rect = None;
     for galley in [Some(text), reply, Some(meta)].into_iter().flatten() {
         let h = galley.size().y;
-        painter.galley(egui::pos2(plate.left(), y), galley, color(tokens.plate_text));
+        painter.galley(
+            egui::pos2(plate.left(), y),
+            galley,
+            color(tokens.plate_text),
+        );
         y += h + gap;
     }
     if let Some(galley) = link {
@@ -1903,7 +1918,10 @@ mod tests {
             "{:?}",
             rows[1].place_hover
         );
-        assert_eq!(rows[3].place, "its place is gone · was near a vertex of Round");
+        assert_eq!(
+            rows[3].place,
+            "its place is gone · was near a vertex of Round"
+        );
         assert_eq!(rows[3].marker, Some([4.0, 5.0, 6.0]), "at its own point");
         assert!(rows[3].astray() && rows[2].astray() && !rows[1].astray());
         assert_eq!(rows[3].entity, None);
@@ -1918,7 +1936,10 @@ mod tests {
         assert_eq!(rows[1].who(), "Claude Code");
         assert_eq!(rows[1].entity, None, "never an entity it cannot prove");
         assert_eq!(rows[2].place, "its face is gone");
-        assert_eq!(rows[2].place_hover.as_deref(), Some("the body of `Lug` is gone"));
+        assert_eq!(
+            rows[2].place_hover.as_deref(),
+            Some("the body of `Lug` is gone")
+        );
         assert_eq!(rows[2].marker, Some([9.0, 9.0, 9.0]));
         assert_eq!(rows[2].who(), "someone");
         // Closed by the person with a reply, replied to by agents before
@@ -2075,12 +2096,15 @@ mod tests {
             ..crate::state::CameraState::default()
         };
         static LEFT: [egui::Rect; 1] = [egui::Rect {
-            min: egui::pos2(0.0, 0.0),
-            max: egui::pos2(640.0, 800.0),
+            min: egui::Pos2 { x: 0.0, y: 0.0 },
+            max: egui::Pos2 { x: 640.0, y: 800.0 },
         }];
         static ALL: [egui::Rect; 1] = [egui::Rect {
-            min: egui::pos2(0.0, 0.0),
-            max: egui::pos2(1280.0, 800.0),
+            min: egui::Pos2 { x: 0.0, y: 0.0 },
+            max: egui::Pos2 {
+                x: 1280.0,
+                y: 800.0,
+            },
         }];
         let under = |covered: &'static [egui::Rect]| {
             lay_out_pins(

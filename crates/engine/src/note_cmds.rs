@@ -1230,7 +1230,12 @@ fn note_reply(session: &mut Session, params: &Value) -> Run {
     edit(session, ID, &format!("Reply to note {id}"), |doc| {
         doc.reply_to_note(id, by, &text, time)
     })?;
-    kept(session, ID, id, format!("Note {id}: reply added: {}", cut(&text)))
+    kept(
+        session,
+        ID,
+        id,
+        format!("Note {id}: reply added: {}", cut(&text)),
+    )
 }
 
 /// The `id` parameter: a note's id.

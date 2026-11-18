@@ -338,7 +338,14 @@ pub(super) fn draw_pins(rgb: &mut [u8], size: [u32; 2], pins: &[Pin], tokens: &T
             PinKind::Astray => {
                 canvas.disc(head, r, tokens.note_fill, alpha);
                 canvas.ring(head, r, 1.5 * scale, ink, alpha);
-                canvas.text(&pin.id.to_string(), head, number(pin.id, r), false, ink, alpha);
+                canvas.text(
+                    &pin.id.to_string(),
+                    head,
+                    number(pin.id, r),
+                    false,
+                    ink,
+                    alpha,
+                );
             }
             PinKind::ForAgent | PinKind::ForYou => {
                 canvas.disc(head, r, ink, alpha);

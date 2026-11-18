@@ -106,6 +106,8 @@ pub(crate) struct OtherMenu {
     pub(crate) hits: Vec<ScenePick>,
     /// Opened with Shift held: a click toggles rather than replaces.
     pub(crate) shift: bool,
+    /// What the pointer was on, which *Note here…* writes on (N5).
+    pub(crate) note: Option<super::notes::NoteTarget>,
 }
 
 /// A box being dragged, in points.
@@ -414,6 +416,10 @@ impl Shell {
     ) {
         self.select.menu = None;
         self.select.hover = None;
+        // A click on empty space un-chooses the chosen note (N4).
+        if found.kind().is_none() && !shift {
+            self.state.notes.selected = None;
+        }
         if self.refused_while_scrubbed() {
             return;
         }
@@ -526,8 +532,19 @@ impl Shell {
         };
         let mut hits = self.hits_at(scene, x, y);
         hits.truncate(MAX_OTHER);
+        // What the pointer is on (a vertex, else an edge, else the face),
+        // which *Note here…* writes on whatever is selected (N5).
+        let note = self
+            .pick(Some(scene), x, y, None, None, false)
+            .ok()
+            .and_then(|found| super::notes::NoteTarget::pointed(&found));
         self.select.hover = None;
-        self.select.menu = (!hits.is_empty()).then_some(OtherMenu { at, hits, shift });
+        self.select.menu = (!hits.is_empty()).then_some(OtherMenu {
+            at,
+            hits,
+            shift,
+            note,
+        });
     }
 
     /// The faces of the open "select other" list, front to back, as
@@ -681,9 +698,11 @@ impl Shell {
         let mut hovered = None;
         let mut chosen = None;
         let mut mate = None;
-        // A note on the one thing selected (`notes.rs`), at the front face
-        // under the click when it is on that thing.
-        let note_here = self.note_here_offered();
+        // A note on the thing pointed at (`notes.rs`, N5), at the point
+        // under the pointer; greyed with the reason in an assembly or a
+        // Jig in use (N6).
+        let note_here = menu.note.clone();
+        let note_refused = self.note_place_refusal();
         let mut write_note = false;
         let mut note_hit = None;
         let shift = menu.shift;
@@ -716,11 +735,28 @@ impl Shell {
                         }
                         plate.menu_separator(ui);
                     }
-                    if note_here {
-                        let entry = plate.menu_item(ui, crate::kit::MenuItem::new("Note here…"));
+                    if note_here.is_some() {
+                        let entry = plate.menu_item(
+                            ui,
+                            crate::kit::MenuItem::new("Note here…").enabled(note_refused.is_none()),
+                        );
                         note_hit = Some(entry.rect);
-                        if entry.clicked() {
+                        if entry.clicked() && note_refused.is_none() {
                             write_note = true;
+                        }
+                        if let Some(why) = note_refused {
+                            ui.horizontal(|ui| {
+                                ui.add_space(plate.t.field_text_pad + 2.0 - plate.t.nav_padding);
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(why)
+                                            .font(plate.small_font())
+                                            .color(plate.c(plate.skin.text_dim)),
+                                    )
+                                    .wrap()
+                                    .selectable(false),
+                                );
+                            });
                         }
                         plate.menu_separator(ui);
                     }
@@ -741,17 +777,11 @@ impl Shell {
             .response;
         self.joints.mate_hits = mate_hits;
         self.notes.here_hit = note_hit;
-        if write_note {
-            let front = self
-                .select
-                .menu
-                .as_ref()
-                .and_then(|menu| menu.hits.first())
-                .map(|hit| (hit.feature.clone(), hit.face.clone(), hit.point));
+        if write_note && let Some(target) = note_here {
             self.select.menu = None;
             self.select.hover = None;
             self.select.drawn = self.select.drawn.wrapping_add(1);
-            self.start_note(front);
+            self.note_here(target);
             ui.ctx().request_repaint();
             return;
         }

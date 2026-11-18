@@ -231,13 +231,11 @@ fn notes_show_in_the_tab_and_the_view_and_a_marker_chooses_its_note() {
             .place
             .clone()
     };
-    assert_eq!(place(4), "detached");
+    // The words of place (N3, 2026-11-18: "detached" and "by place: near
+    // a face of …" before).
+    assert_eq!(place(4), "its face is gone");
     // Held by place: what lies there now, never the name it was pinned by.
-    assert!(
-        place(5).starts_with("by place: near a face of "),
-        "{}",
-        place(5)
-    );
+    assert!(place(5).starts_with("near a face of "), "{}", place(5));
     let (markers, stood_for) = shell.note_markers();
     assert!(
         !markers.is_empty() && stood_for >= markers.len(),
@@ -545,8 +543,13 @@ fn the_tab_closes_a_note_and_the_pill_counts_an_agents_questions() {
     let mut session = noted();
     let mut w = Window::new(1280.0, 800.0);
     let mut shell = open(&mut w, &mut session);
+    // The count first, so a short bar cuts the name and not the count
+    // (N1, 2026-11-18: "… · 1 question" at the end before).
     assert!(
-        shell.agents_pill_view().label.ends_with("1 question"),
+        shell
+            .agents_pill_view()
+            .label
+            .starts_with("1 note for you · "),
         "{}",
         shell.agents_pill_view().label
     );
@@ -556,7 +559,7 @@ fn the_tab_closes_a_note_and_the_pill_counts_an_agents_questions() {
         json!({"panels": {"sideTab": "notes"}}),
     );
     w.frames(&mut shell, &mut session, 3);
-    // The question comes first among the open notes.
+    // The note that waits for the person comes first (For you).
     let rows: Vec<String> = shell
         .side_hits()
         .targets
@@ -589,7 +592,402 @@ fn the_tab_closes_a_note_and_the_pill_counts_an_agents_questions() {
             .any(|n| n["id"] == 2 && n["done"]["author"] == "person"),
         "{listed}"
     );
-    assert_eq!(shell.notes_questions(), 0);
+    assert_eq!(shell.notes_for_you(), 0);
+}
+
+/// N1 (the UX round of 2026-11-18): a person answers an agent in the
+/// window. The tab's groups follow `waitingFor` (note 2, the agent's
+/// question, under For you, above the line for the agent; the others
+/// under For the agent); the chosen row's field sends `note.reply` as the
+/// person, after which the note waits for the agent, stays chosen and
+/// the pill counts nothing; Done with text in the field closes it with
+/// that text as its reply. `ui.get` › `notes` counts both groups (N2).
+#[test]
+fn a_reply_in_the_tab_answers_the_agent() {
+    let mut session = noted();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    set(
+        &mut shell,
+        &mut session,
+        json!({"panels": {"sideTab": "notes"}, "notes": {"selected": 2}}),
+    );
+    w.frames(&mut shell, &mut session, 3);
+    let state = get(&mut shell, &mut session);
+    assert_eq!(
+        state["notes"],
+        json!({"forYou": 1, "forAgent": 3}),
+        "{state}"
+    );
+    let at =
+        |shell: &Shell, key: &str| side_target(shell, key).unwrap_or_else(|| panic!("no {key}"));
+    let line = at(&shell, "notes copy");
+    assert!(
+        at(&shell, "note:2").bottom() <= line.top() + 1.0,
+        "For you first"
+    );
+    assert!(
+        at(&shell, "note:1").top() >= line.bottom() - 1.0,
+        "For the agent"
+    );
+    assert!(side_target(&shell, "note reply field:2").is_some());
+    assert!(
+        side_target(&shell, "note reply field:1").is_none(),
+        "the chosen row's only"
+    );
+    // Edit is offered only on a note the person wrote.
+    assert!(side_target(&shell, "note edit:2").is_none());
+    shell.type_note_reply("No draft: it is a printed part.", true);
+    w.frames(&mut shell, &mut session, 3);
+    let listed = run(&mut session, "note.list", json!({}));
+    let two = listed["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == 2)
+        .unwrap()
+        .clone();
+    assert_eq!(two["state"], "open", "{two}");
+    assert_eq!(two["replies"][0]["author"], "person", "{two}");
+    assert_eq!(two["replies"][0]["text"], "No draft: it is a printed part.");
+    assert_eq!(two["waitingFor"], "agent", "{two}");
+    assert_eq!(shell.notes_for_you(), 0);
+    assert_eq!(shell.state.notes.selected, Some(2), "stays chosen");
+    assert_eq!(
+        shell
+            .note_reply_field()
+            .map(|(id, text)| (id, text.to_string())),
+        Some((2, String::new())),
+        "the field emptied"
+    );
+    assert!(
+        !shell.agents_pill_view().label.contains("for you"),
+        "{}",
+        shell.agents_pill_view().label
+    );
+    let line = at(&shell, "notes copy");
+    assert!(
+        at(&shell, "note:2").top() >= line.bottom() - 1.0,
+        "moved to For the agent"
+    );
+    // Done with text in the field: the closing's reply.
+    shell.type_note_reply("Closing: kept as it is.", false);
+    w.frames(&mut shell, &mut session, 2);
+    let done = at(&shell, "note resolve:2");
+    w.click(&mut shell, &mut session, done.center());
+    w.frames(&mut shell, &mut session, 2);
+    let listed = run(&mut session, "note.list", json!({"state": "done"}));
+    let two = listed["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == 2)
+        .unwrap_or_else(|| panic!("{listed}"))
+        .clone();
+    assert_eq!(two["done"]["author"], "person", "{two}");
+    assert_eq!(two["done"]["reply"], "Closing: kept as it is.", "{two}");
+}
+
+/// N1: while a note waits for the person the Notes tab is never behind
+/// ⋯: at 260 points it is among the tabs the bar shows.
+#[test]
+fn with_a_note_for_you_the_notes_tab_is_shown_at_260_points() {
+    let mut session = noted();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    set(
+        &mut shell,
+        &mut session,
+        json!({"panels": {"treeWidth": 260}}),
+    );
+    w.frames(&mut shell, &mut session, 3);
+    assert!(shell.notes_for_you() > 0);
+    let shown = tabs(&shell);
+    assert_eq!(shown.get(1), Some(&SideTab::Notes), "{shown:?}");
+}
+
+/// N2: the sentence that sets an agent to work names the document, and
+/// its copy button stands under For the agent.
+#[test]
+fn the_sentence_for_the_agent_names_the_document() {
+    let mut session = noted();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    let name = shell
+        .tabs()
+        .iter()
+        .find(|t| t.active)
+        .map(|t| t.name.clone())
+        .unwrap();
+    let text = shell.notes_handover();
+    assert_eq!(
+        text,
+        format!(
+            "Work through the open notes of {name}: change the model where each says, and reply on each."
+        )
+    );
+    set(
+        &mut shell,
+        &mut session,
+        json!({"panels": {"sideTab": "notes"}}),
+    );
+    w.frames(&mut shell, &mut session, 3);
+    let copy = side_target(&shell, "notes copy").expect("the copy button");
+    w.click(&mut shell, &mut session, copy.center());
+    assert!(side_target(&shell, "notes copy").is_some());
+}
+
+/// N4: a click on a pin chooses its note and opens the Notes tab on its
+/// row (the side panel in sight); the pin under the pointer is known; a
+/// click on empty space un-chooses.
+#[test]
+fn a_click_on_a_pin_opens_its_row_and_one_on_empty_space_unchooses() {
+    let mut session = noted();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    assert_eq!(shell.state.panels.side_tab, SideTab::Features);
+    let (id, at) = shell.note_markers().0[0];
+    w.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
+    w.frames(&mut shell, &mut session, 2);
+    assert_eq!(shell.note_hovered(), Some(id), "the pin under the pointer");
+    w.click(&mut shell, &mut session, at);
+    assert_eq!(shell.state.notes.selected, Some(id));
+    assert_eq!(shell.state.panels.side_tab, SideTab::Notes);
+    w.frames(&mut shell, &mut session, 2);
+    assert!(side_target(&shell, &format!("note:{id}")).is_some());
+    let panel = shell.side_hits().panel.unwrap();
+    w.click(
+        &mut shell,
+        &mut session,
+        Pos2::new(panel.right() + 24.0, 300.0),
+    );
+    assert_eq!(shell.state.notes.selected, None, "a click on empty space");
+}
+
+/// N5: *Note here…* writes on the thing pointed at, at the point under
+/// the pointer, whatever was selected, and selects it.
+#[test]
+fn note_here_writes_on_the_face_pointed_at_not_the_one_selected() {
+    let mut session = plate();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    // The bottom selected; the right click on the top.
+    run(
+        &mut session,
+        "select.set",
+        json!({"names": ["F2:copy(0)/F1:face(0)"]}),
+    );
+    w.frames(&mut shell, &mut session, 2);
+    let panel = shell.side_hits().panel.unwrap();
+    let at = Pos2::new((panel.right() + 1280.0) / 2.0, 400.0);
+    w.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
+    for pressed in [true, false] {
+        w.frame(
+            &mut shell,
+            &mut session,
+            vec![Event::PointerButton {
+                pos: at,
+                button: PointerButton::Secondary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+    }
+    w.frames(&mut shell, &mut session, 2);
+    let entry = shell.note_here_entry().expect("Note here… offered");
+    w.click(&mut shell, &mut session, entry.center());
+    let writing = shell.note_writing().expect("the field opened").clone();
+    assert!(writing.on.ends_with("F1:face(1)"), "{:?}", writing.on);
+    let point = writing.point.expect("the point under the pointer");
+    assert!((point[2] - 10.0).abs() < 1e-6, "on the top: {point:?}");
+    let selected: Vec<String> = shell
+        .selection()
+        .items
+        .iter()
+        .map(|i| i.name.clone())
+        .collect();
+    assert_eq!(selected, vec![writing.on.clone()], "selected");
+    shell.type_note("a boss here", true);
+    w.frames(&mut shell, &mut session, 3);
+    let listed = run(&mut session, "note.list", json!({}));
+    assert_eq!(listed["notes"][0]["on"]["kind"], "face", "{listed}");
+    assert!(
+        listed["notes"][0]["on"]["name"]
+            .as_str()
+            .unwrap()
+            .ends_with("F1:face(1)"),
+        "{listed}"
+    );
+}
+
+/// N5: **N** says why it writes nothing: nothing selected, or more than
+/// one thing.
+#[test]
+fn n_says_why_it_cannot_write() {
+    use craft3d_ui_egui::shell::notes::{SELECT_FIRST, SELECT_ONE};
+    let mut session = plate();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    w.key(&mut shell, &mut session, Key::N);
+    w.frames(&mut shell, &mut session, 1);
+    assert!(shell.note_writing().is_none());
+    assert_eq!(shell.status_hint(), Some(SELECT_FIRST));
+    run(
+        &mut session,
+        "select.set",
+        json!({"names": ["F2:copy(0)/F1:face(0)", "F2:copy(0)/F1:face(1)"]}),
+    );
+    w.frames(&mut shell, &mut session, 2);
+    w.key(&mut shell, &mut session, Key::N);
+    w.frames(&mut shell, &mut session, 1);
+    assert!(shell.note_writing().is_none());
+    assert_eq!(shell.status_hint(), Some(SELECT_ONE));
+}
+
+/// N6: in a Jig in use **N** says where its notes are written and opens
+/// no field; a refused Delete shows its reason under its row, in a
+/// person's words, the command's own as the hover.
+#[test]
+fn in_a_jig_in_use_n_says_why_and_a_refused_delete_shows_in_the_tab() {
+    use craft3d_ui_egui::shell::notes::IN_JIG;
+    let bytes = noted().document_bytes().expect("the noted document");
+    let mut session = Session::new(Workspace::none());
+    session
+        .open_bytes("plate.3dcraftjig", &bytes)
+        .expect("opened as a Jig in use");
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    assert!(shell.jig_in_use());
+    run(
+        &mut session,
+        "select.set",
+        json!({"names": ["F2:copy(0)/F1:face(1)"]}),
+    );
+    w.frames(&mut shell, &mut session, 2);
+    w.key(&mut shell, &mut session, Key::N);
+    w.frames(&mut shell, &mut session, 1);
+    assert!(shell.note_writing().is_none(), "no field");
+    assert_eq!(shell.status_hint(), Some(IN_JIG));
+    set(
+        &mut shell,
+        &mut session,
+        json!({"panels": {"sideTab": "notes"}, "notes": {"selected": 1}}),
+    );
+    w.frames(&mut shell, &mut session, 3);
+    let delete = side_target(&shell, "note delete:1").expect("Delete on the chosen row");
+    w.click(&mut shell, &mut session, delete.center());
+    w.frames(&mut shell, &mut session, 2);
+    let (id, words, why) = shell
+        .note_act_error()
+        .map(|(id, words, why)| (id, words.to_string(), why.to_string()))
+        .expect("the refusal kept");
+    assert_eq!(id, 1);
+    assert_eq!(words, IN_JIG);
+    assert!(why.starts_with("note.delete"), "{why}");
+    assert!(
+        side_target(&shell, "note refused:1").is_some(),
+        "under its row"
+    );
+    assert_eq!(run(&mut session, "note.list", json!({}))["count"], 5);
+}
+
+/// N6: in an assembly **N** says notes are written in a part and opens no
+/// field; *Note here…* is in the right-click list, greyed, and opens
+/// none.
+#[test]
+fn in_an_assembly_n_says_why_and_note_here_is_greyed() {
+    use craft3d_engine::Access;
+    use craft3d_ui_egui::shell::notes::IN_ASSEMBLY;
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("ui-notes-assembly");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut session = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    });
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({"name": "Plate", "size": [60, 40, 10]}),
+    );
+    run(&mut session, "file.save", json!({"path": "plate.3dcraft"}));
+    run(&mut session, "assembly.new", json!({}));
+    run(
+        &mut session,
+        "instance.add",
+        json!({"source": "plate.3dcraft", "name": "P", "body": "Plate"}),
+    );
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    w.key(&mut shell, &mut session, Key::N);
+    w.frames(&mut shell, &mut session, 1);
+    assert!(shell.note_writing().is_none());
+    assert_eq!(shell.status_hint(), Some(IN_ASSEMBLY));
+    let panel = shell.side_hits().panel.unwrap();
+    let at = Pos2::new((panel.right() + 1280.0) / 2.0, 400.0);
+    w.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
+    for pressed in [true, false] {
+        w.frame(
+            &mut shell,
+            &mut session,
+            vec![Event::PointerButton {
+                pos: at,
+                button: PointerButton::Secondary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+    }
+    w.frames(&mut shell, &mut session, 2);
+    let entry = shell.note_here_entry().expect("Note here…, greyed");
+    w.click(&mut shell, &mut session, entry.center());
+    assert!(shell.note_writing().is_none(), "greyed: no field");
+}
+
+/// N7: a pin whose place the section cuts away hangs in no air: drawn
+/// faint and not clickable; the pin on the kept side is as ever; chosen,
+/// the cut-away one is drawn in full.
+#[test]
+fn a_section_leaves_no_full_pin_in_the_half_it_cuts_away() {
+    let mut session = plate();
+    for x in [10.0, 50.0] {
+        session
+            .by_person(|s| {
+                s.execute(
+                    "note.add",
+                    &json!({"text": format!("at {x}"), "on": "Plate:face(1)", "point": [x, 20.0, 10.0]}),
+                )
+            })
+            .unwrap();
+    }
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    assert_eq!(shell.note_markers().0.len(), 2, "both pins before the cut");
+    set(
+        &mut shell,
+        &mut session,
+        json!({"section": {"on": true, "point": [30.0, 20.0, 5.0], "normal": [1.0, 0.0, 0.0]}}),
+    );
+    w.frames(&mut shell, &mut session, 3);
+    let state = get(&mut shell, &mut session);
+    let point = state["section"]["point"][0].as_f64().expect("the plane");
+    let normal = state["section"]["normal"][0].as_f64().expect("its normal");
+    // The note whose place is on the cut-away side of the plane.
+    let gone = if (50.0 - point) * normal > 0.0 { 2 } else { 1 };
+    let ids: Vec<u64> = shell.note_markers().0.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids, vec![3 - gone], "{state}");
+    assert_eq!(shell.note_pins_drawn(), 2, "drawn faint all the same");
+    set(
+        &mut shell,
+        &mut session,
+        json!({"notes": {"selected": gone}}),
+    );
+    w.frames(&mut shell, &mut session, 2);
+    assert!(
+        shell.note_markers().0.iter().any(|(id, _)| *id == gone),
+        "chosen: in full"
+    );
 }
 
 #[test]
@@ -939,5 +1337,95 @@ fn pictures_of_the_notes() {
     assert!(
         before.get(..above) == after.get(..above),
         "a document without notes draws as before"
+    );
+
+    // The UX round of 2026-11-18 (plan/viewer-tools/ux/SPEC.md, N1 to
+    // N7), named by item.
+    // N1: a note in each group, the chosen one's reply field holding text.
+    let mut session = noted();
+    shoot(
+        "N1-tab-groups",
+        &mut session,
+        [1400.0, 900.0],
+        json!({"panels": {"sideTab": "notes"}, "notes": {"selected": 2, "doneOpen": true}}),
+        &|shell, _, _| shell.type_note_reply("No draft: it is a printed part.", false),
+    );
+    // N1: the pill at 480 wide, the count first.
+    let mut session = noted();
+    shoot(
+        "N1-pill-480",
+        &mut session,
+        [480.0, 860.0],
+        json!({}),
+        &nothing,
+    );
+    // N4: pins of each kind, one chosen, one under the pointer (its first
+    // line beside it), light and dark.
+    for theme in ["light", "dark"] {
+        let mut session = noted();
+        shoot(
+            &format!("N4-pins-{theme}"),
+            &mut session,
+            [1400.0, 900.0],
+            json!({"appearance": theme, "notes": {"selected": 1}}),
+            &|shell, session, shot| {
+                let other = shell
+                    .note_markers()
+                    .0
+                    .iter()
+                    .find(|(id, _)| *id != 1)
+                    .map(|(_, at)| *at);
+                if let Some(at) = other {
+                    shot.frame(shell, session, vec![Event::PointerMoved(at)]);
+                    for _ in 0..12 {
+                        shot.frame(shell, session, Vec::new());
+                    }
+                }
+            },
+        );
+    }
+    // N5: the list under the right mouse button, Note here… on top.
+    let mut session = plate();
+    shoot(
+        "N5-note-here",
+        &mut session,
+        [1400.0, 900.0],
+        json!({}),
+        &|shell, session, shot| {
+            let panel = shell.side_hits().panel.map_or(300.0, |p| p.right());
+            let at = Pos2::new((panel + 1400.0) / 2.0, 450.0);
+            shot.frame(shell, session, vec![Event::PointerMoved(at)]);
+            for pressed in [true, false] {
+                shot.frame(
+                    shell,
+                    session,
+                    vec![Event::PointerButton {
+                        pos: at,
+                        button: PointerButton::Secondary,
+                        pressed,
+                        modifiers: Modifiers::NONE,
+                    }],
+                );
+            }
+        },
+    );
+    // N7: the noted plate cut across X: no full pin in the empty half.
+    let mut session = plate();
+    for x in [10.0, 30.0, 50.0] {
+        session
+            .by_person(|s| {
+                s.execute(
+                    "note.add",
+                    &json!({"text": format!("at {x}"), "on": "Plate:face(1)", "point": [x, 20.0, 10.0]}),
+                )
+            })
+            .unwrap();
+    }
+    shoot(
+        "N7-cut",
+        &mut session,
+        [1400.0, 900.0],
+        json!({"section": {"on": true, "point": [40.0, 20.0, 5.0], "normal": [1.0, 0.0, 0.0]}}),
+        &nothing,
     );
 }
