@@ -852,4 +852,9 @@ fn a_range_fits_the_card_at_the_panels_least_width() {
         "{} drawn at {number:?}",
         m.text
     );
+    // Smaller, not taller: within the line the card keeps for it (the
+    // measure font's 24 points and a half), so Keep stays in reach.
+    assert!(number.height() <= 36.0, "{number:?}");
+    let keep = target(&shell, "keep");
+    assert!(keep.top() >= number.bottom(), "{keep:?} under {number:?}");
 }

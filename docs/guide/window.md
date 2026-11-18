@@ -260,8 +260,8 @@ straight edge its length along a line beside it, a whole circle (a hole's rim) i
 its radius **R**, a curved edge its length by its middle, a hole's or a boss's wall its diameter across its
 rim where it opens (as two holes' line is drawn), part of a cylinder (a fillet's round) its radius. A flat face, a vertex and a body show nothing there: their facts are
 at the foot of the panel. Numbers are shown to the document's tolerance, without trailing zeros (`30 mm`,
-`0.006 mm`), in the view and in the facts at the foot of the panel alike; a range too long for the card is
-broken after its dash, or drawn smaller. Click the number to copy it with its unit, as shown. While two things are being measured the
+`0.006 mm`), in the view and in the facts at the foot of the panel alike; a number too long for the card is
+drawn smaller, down to half the size, and past that a range is broken after its dash. Click the number to copy it with its unit, as shown. While two things are being measured the
 card says *Measuring…*; the window goes on meanwhile. In a short window the Features tab shows the card as one
 line, with **Keep as a check**.
 

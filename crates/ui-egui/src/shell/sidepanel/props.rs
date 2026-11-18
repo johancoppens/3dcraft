@@ -1255,9 +1255,10 @@ impl Shell {
         let t = kit.t;
         let sk = kit.skin;
         // The number fits the card at the panel's least width (the review
-        // of 2026-11-17: a range was cut at its edge): on one line where
-        // there is room, else a range broken after its dash, else smaller,
-        // down to half the size.
+        // of 2026-11-17: a range was cut at its edge): smaller where there
+        // is no room, down to half the size; past that a range is broken
+        // after its dash, two lines of half the size, within the height
+        // the card keeps for it (`props_height`), so Keep stays in reach.
         let room = ui.available_width().max(1.0);
         let lay = |text: &str, size: f32| {
             kit.galley(
@@ -1268,21 +1269,15 @@ impl Shell {
             )
         };
         let mut big = lay(&m.text, t.measure_font);
-        if big.size().x > room && m.text.contains(" – ") {
-            big = lay(&m.text.replacen(" – ", " –\n", 1), t.measure_font);
-        }
         if big.size().x > room {
-            let text = big.text().to_string();
             let size = (t.measure_font * room / big.size().x).max(t.measure_font * 0.5);
-            big = lay(&text, size);
+            big = lay(&m.text, size);
+            if big.size().x > room && m.text.contains(" – ") {
+                big = lay(&m.text.replacen(" – ", " –\n", 1), size);
+            }
         }
-        let (rect, number) = ui.allocate_exact_size(
-            vec2(
-                room,
-                (t.measure_font * 1.5).max(big.size().y + t.measure_font * 0.4),
-            ),
-            Sense::click(),
-        );
+        let (rect, number) =
+            ui.allocate_exact_size(vec2(room, t.measure_font * 1.5), Sense::click());
         let at = pos2(rect.left(), rect.center().y - big.size().y * 0.5);
         let ink = if number.hovered() && m.value.is_some() {
             sk.info_ink
