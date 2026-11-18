@@ -243,6 +243,180 @@ fn sampled(surface: &Surface) -> String {
     )
 }
 
+/// One Bézier span as a surface of its own (clamped knots over [0, 1]²).
+fn span_surface(patch: &RationalBezierPatch) -> Option<Surface> {
+    let (m, n) = patch.degrees();
+    let clamped = |d: usize| {
+        let mut k = vec![0.0; d + 1];
+        k.extend(vec![1.0; d + 1]);
+        k
+    };
+    NurbsSurface::new(
+        m,
+        n,
+        clamped(m),
+        clamped(n),
+        m + 1,
+        n + 1,
+        patch.control_points(),
+        patch.weights(),
+    )
+    .ok()
+    .map(Surface::Nurbs)
+}
+
+/// The surface regular at the tolerance, span by span: its offsets by
+/// `+tol` and `−tol` proven not to fold (`geom::offset::regular`, which
+/// proves `1 − d κ > 0` for both principal curvatures from Bernstein forms
+/// of the span), so no radius of curvature below the tolerance on either
+/// side. Per span: proven, a pole (a border drawn into a point: no normal
+/// there), a fold proven at a place (with the radius there), not proven.
+fn tolerance_regularity(surface: &Surface, tol: f64) -> String {
+    let nurbs = match surface {
+        Surface::Nurbs(n) => n.clone(),
+        Surface::Bezier(b) => NurbsSurface::from_bezier(b).unwrap(),
+        _ => return "analytic".to_string(),
+    };
+    let Ok(spans) = nurbs.bezier_spans() else {
+        return "no spans".to_string();
+    };
+    let t = Instant::now();
+    let (mut proven, mut poles, mut unproven, mut other) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut folds: Vec<String> = Vec::new();
+    let mut unproven_at: Vec<String> = Vec::new();
+    for span in &spans {
+        let Some(own) = span_surface(&span.patch) else {
+            other += 1;
+            continue;
+        };
+        let global = |at: (f64, f64)| {
+            (
+                span.u.0 + (span.u.1 - span.u.0) * at.0,
+                span.v.0 + (span.v.1 - span.v.0) * at.1,
+            )
+        };
+        let mut verdict = Ok(());
+        for d in [tol, -tol] {
+            verdict = craft3d_geom::offset::regular(&own, d);
+            if verdict.is_err() {
+                break;
+            }
+        }
+        match verdict {
+            Ok(()) => proven += 1,
+            Err(craft3d_geom::offset::OffsetError::NoNormal { .. }) => poles += 1,
+            Err(craft3d_geom::offset::OffsetError::Folds { at, radius }) => {
+                let (u, v) = global(at);
+                let p = nurbs.eval(u, v);
+                if folds.len() < 6 {
+                    folds.push(format!(
+                        "(u {u:.5} v {v:.5} at ({:.4}, {:.4}, {:.4}) radius {radius:.3e})",
+                        p.x, p.y, p.z
+                    ));
+                } else {
+                    folds.push(String::new());
+                }
+            }
+            Err(craft3d_geom::offset::OffsetError::Unproven { at }) => {
+                unproven += 1;
+                let (u, v) = global(at);
+                let p = nurbs.eval(u, v);
+                if unproven_at.len() < 4 {
+                    unproven_at.push(format!(
+                        "(u {u:.5} v {v:.5} at ({:.4}, {:.4}, {:.4}))",
+                        p.x, p.y, p.z
+                    ));
+                }
+            }
+            Err(_) => other += 1,
+        }
+    }
+    let shown: Vec<&String> = folds.iter().filter(|f| !f.is_empty()).collect();
+    format!(
+        "spans {} proven {proven} poles {poles} folds {} {:?} unproven {unproven} {:?} other {other} ({:.1} ms)",
+        spans.len(),
+        folds.len(),
+        shown,
+        unproven_at,
+        ms(t)
+    )
+}
+
+/// The least radius of curvature over a 600 × 120 grid of the surface's
+/// domain, leaving out samples within four tolerances of a tip (a sample
+/// where the parameter directions are parallel to 1e-6 or one vanishes):
+/// where, how far from the nearest tip, and how many samples are below
+/// the tolerance and below ten tolerances.
+fn curvature_scan(surface: &Surface, tol: f64) -> String {
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let (nu, nv) = (600, 120);
+    let mut tips: Vec<Vec3> = Vec::new();
+    let mut samples: Vec<(f64, f64, f64, Vec3)> = Vec::with_capacity((nu + 1) * (nv + 1));
+    for i in 0..=nu {
+        for j in 0..=nv {
+            let u = u0 + (u1 - u0) * i as f64 / nu as f64;
+            let v = v0 + (v1 - v0) * j as f64 / nv as f64;
+            let (p, du, dv) = surface.derivatives(u, v);
+            let size = du.length() * dv.length();
+            let sine = if size > 0.0 {
+                du.cross(dv).length() / size
+            } else {
+                0.0
+            };
+            if !(sine > 1e-6) {
+                if tips.iter().all(|t| t.distance(p) > tol) && tips.len() < 64 {
+                    tips.push(p);
+                }
+                continue;
+            }
+            let Some((k, h)) = craft3d_geom::curvature::curvatures(surface, u, v) else {
+                continue;
+            };
+            let most = h.abs() + (h * h - k).max(0.0).sqrt();
+            let radius = if most > 0.0 {
+                1.0 / most
+            } else {
+                f64::INFINITY
+            };
+            samples.push((radius, u, v, p));
+        }
+    }
+    let near_tip = |p: Vec3| tips.iter().any(|t| t.distance(p) <= 4.0 * tol);
+    let mut least = (f64::INFINITY, 0.0, 0.0, Vec3::ZERO);
+    let (mut below, mut below_ten) = (0_usize, 0_usize);
+    for &(radius, u, v, p) in &samples {
+        if near_tip(p) {
+            continue;
+        }
+        if radius < tol {
+            below += 1;
+        }
+        if radius < 10.0 * tol {
+            below_ten += 1;
+        }
+        if radius < least.0 {
+            least = (radius, u, v, p);
+        }
+    }
+    let to_tip = tips
+        .iter()
+        .map(|t| t.distance(least.3))
+        .fold(f64::INFINITY, f64::min);
+    format!(
+        "least radius {:.3e} ({:.3e} tolerances) at (u {:.5} v {:.5}) ({:.4}, {:.4}, {:.4}), {:.3e} from the nearest of {} tips; samples below the tolerance {below}, below ten {below_ten}, of {}",
+        least.0,
+        least.0 / tol,
+        least.1,
+        least.2,
+        least.3.x,
+        least.3.y,
+        least.3.z,
+        to_tip,
+        tips.len(),
+        samples.len()
+    )
+}
+
 /// Everything the probe says of one body: `faces` are the faces whose
 /// regularity is printed (the folded ones; every freeform face when
 /// empty).
@@ -349,6 +523,14 @@ fn report(case: &str, body: &Body, tol: &Tolerance, faces: &[usize], finest: f64
             println!(
                 "FOLD {case} face {index} sampled: {}",
                 sampled(&face.surface)
+            );
+            println!(
+                "FOLD {case} face {index} at the tolerance: {}",
+                tolerance_regularity(&face.surface, tol.linear)
+            );
+            println!(
+                "FOLD {case} face {index} curvature: {}",
+                curvature_scan(&face.surface, tol.linear)
             );
         }
     }
@@ -464,7 +646,7 @@ fn the_fade_on_the_hulls_stem() {
         let own: Vec<usize> = (0..made.faces.len())
             .filter(|i| matches!(made.faces[*i], FilletFace::Fillet(_)))
             .collect();
-        report(&case, &made.body, &tol, &own, 1e-5);
+        report(&case, &made.body, &tol, &[], 1e-5);
         // Near the fillet face alone, as regeneration looks after a
         // fillet, at the finest chord.
         let roles: Vec<FaceRole> = (0..made.body.faces.len())
