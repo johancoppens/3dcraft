@@ -272,6 +272,7 @@ fn the_cap_is_lit_as_a_face_in_its_plane() {
             normal: Vec3::new(1.0, 0.0, 0.0),
             cap: true,
             color,
+            hatch: None,
         }),
         ..params(200, 150)
     };
