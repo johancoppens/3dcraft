@@ -295,16 +295,17 @@ fn the_count_per_class_matches_the_cpu_renderer() {
     ));
     // An open sheet (two triangles) of class 1 standing across a block of
     // class 0, through the plane.
-    let mut sheet = Mesh::default();
-    sheet.positions = vec![
-        Vec3::new(1.0, 2.0, -0.5),
-        Vec3::new(5.0, 2.0, -0.5),
-        Vec3::new(5.0, 2.0, 2.5),
-        Vec3::new(1.0, 2.0, 2.5),
-    ];
-    sheet.normals = vec![-Vec3::Y; 4];
-    sheet.triangles = vec![[0, 1, 2], [0, 2, 3]];
-    sheet.face_ids = vec![0, 0];
+    let sheet = Mesh {
+        positions: vec![
+            Vec3::new(1.0, 2.0, -0.5),
+            Vec3::new(5.0, 2.0, -0.5),
+            Vec3::new(5.0, 2.0, 2.5),
+            Vec3::new(1.0, 2.0, 2.5),
+        ],
+        normals: vec![-Vec3::Y; 4],
+        triangles: vec![[0, 1, 2], [0, 2, 3]],
+        face_ids: vec![0, 0],
+    };
     let (mesh, firsts) = combine(&[block(0.0, 0.0, 0.0, 6.0, 4.0, 2.0), sheet]);
     scenes.push((
         "open sheet",
@@ -445,7 +446,7 @@ fn the_fade_of_each_class_matches_the_cpu_renderer() {
     let cut = section(Vec3::new(3.0, 2.0, 1.0), Vec3::Z);
     let mut scenes = Vec::new();
     let mut exercised = [[0_usize; 2]; 4];
-    for class in 0..4 {
+    for (class, seen) in exercised.iter_mut().enumerate() {
         let (c, s) = craft3d_render::hatch_direction(class);
         let azimuth = s.patan2(c).to_degrees();
         for perspective in [false, true] {
@@ -462,10 +463,10 @@ fn the_fade_of_each_class_matches_the_cpu_renderer() {
                 let cam = camera(perspective, 1.75, elevation, azimuth);
                 let (h, a) = across(&cam, class);
                 if a > 2.0 && a < 3.0 {
-                    exercised[class][0] += 1;
+                    seen[0] += 1;
                 }
                 if a < 2.0 {
-                    exercised[class][1] += 1;
+                    seen[1] += 1;
                 }
                 scenes.push((class, perspective, elevation, a, h.odd_ink, cam));
             }
