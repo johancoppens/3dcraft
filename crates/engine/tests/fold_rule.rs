@@ -93,7 +93,7 @@ fn loft_through_its_axis(k: f64) -> Body {
 
 #[test]
 fn the_rule_shows_the_folds_and_check_refuses_none_of_them_yet() {
-    assert!(!craft3d_topo::FOLDS_REFUSED);
+    const { assert!(!craft3d_topo::FOLDS_REFUSED) };
     for name in SEVEN {
         let body = read_step(&fixtures().join(format!("fades/{name}.step")), 0.02).unwrap();
         let found = folds(&body, &tolerance(0.02));
