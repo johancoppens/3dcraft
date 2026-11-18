@@ -707,6 +707,109 @@ fn classed_scenes() -> Vec<Scene> {
     scenes
 }
 
+/// The pixels outside `band` whose colour differs by 2 or more between
+/// `cpu` and `gpu`, and the box around them.
+fn off_pixels(
+    cpu: &craft3d_gpu::Frame,
+    gpu: &craft3d_gpu::Frame,
+    band: &[bool],
+) -> (usize, Option<[usize; 4]>) {
+    let w = cpu.width as usize;
+    let mut count = 0;
+    let mut bounds: Option<[usize; 4]> = None;
+    for i in (0..cpu.ids.len()).filter(|&i| !band[i]) {
+        let off = (0..3)
+            .map(|c| cpu.rgb[i * 3 + c].abs_diff(gpu.rgb[i * 3 + c]))
+            .max()
+            .unwrap_or(0);
+        if off >= 2 {
+            count += 1;
+            let (x, y) = (i % w, i / w);
+            bounds = Some(bounds.map_or([x, y, x, y], |[x0, y0, x1, y1]| {
+                [x0.min(x), y0.min(y), x1.max(x), y1.max(y)]
+            }));
+        }
+    }
+    (count, bounds)
+}
+
+/// The see-through tie of touching parts: the two see-through framings of
+/// blocks that truly touch, with their hatch classes and with every part
+/// of class 0, compared CPU against GPU (the readback renderer and the
+/// viewport), printed as `TIE` lines: the pixels outside the band that
+/// differ by 2 or more and the box around them. Run on demand.
+#[test]
+#[ignore]
+fn the_see_through_tie_of_touching_parts_with_and_without_classes() {
+    let readback: Vec<Scene> = classed_scenes()
+        .into_iter()
+        .filter(|s| s.name.contains("classes-round0-x1-seethrough"))
+        .collect();
+    let viewport: Vec<Scene> = viewport_scenes()
+        .into_iter()
+        .filter(|s| s.name.contains("classes-z0-seethrough"))
+        .collect();
+    assert!(!readback.is_empty() && !viewport.is_empty());
+    let mut worst = 0;
+    for mut offscreen in offscreens() {
+        let adapter = offscreen.adapter().to_string();
+        for scene in &readback {
+            for (label, colors) in [
+                ("with classes", scene.colors.clone()),
+                ("all class 0", FaceColors::new()),
+            ] {
+                let cpu = craft3d_render::render_colored(
+                    &scene.mesh,
+                    &colors,
+                    &scene.camera,
+                    &scene.params,
+                )
+                .unwrap();
+                let gpu = offscreen
+                    .render_colored(&scene.mesh, &colors, &scene.camera, &scene.params)
+                    .unwrap();
+                let (_, band) = compare_with(&scene.mesh, &scene.camera, &scene.params, &cpu, &gpu);
+                let (count, bounds) = off_pixels(&cpu, &gpu, &band);
+                println!(
+                    "TIE readback {} {label} on {adapter}: {count} pixels, box {bounds:?}",
+                    scene.name
+                );
+                worst = worst.max(count);
+            }
+        }
+    }
+    for (adapter, device, queue) in devices() {
+        let adapter_name = name_of(&adapter);
+        let mut onscreen = Onscreen::new(&device, &queue, &adapter).unwrap();
+        let lines = onscreen.upload_lines(&[]).unwrap();
+        let options = DrawOptions {
+            bodies: true,
+            capture: true,
+        };
+        for scene in &viewport {
+            for (label, colors) in [
+                ("with classes", scene.colors.clone()),
+                ("all class 0", FaceColors::new()),
+            ] {
+                let (mesh, camera, params) = (&scene.mesh, &scene.camera, &scene.params);
+                let cpu = craft3d_render::render_colored(mesh, &colors, camera, params).unwrap();
+                let uploaded = onscreen.upload_colored(mesh, &colors).unwrap();
+                onscreen
+                    .draw(&uploaded, &lines, camera, params, &no_overlay(), options)
+                    .unwrap();
+                let gpu = onscreen.read_frame().unwrap();
+                let (parity, _) = compare_msaa_with(mesh, camera, params, &cpu, &gpu);
+                println!(
+                    "TIE viewport {} {label} on {adapter_name}: {} plain pixels over, {:?}",
+                    scene.name, parity.color_plain_over, parity.color_plain_histogram
+                );
+                worst = worst.max(parity.color_plain_over);
+            }
+        }
+    }
+    assert_eq!(worst, 0, "the see-through tie of touching parts");
+}
+
 /// What the classes cost a frame on the GPU (printed, not bounded: the
 /// build server's adapters are shared): 162 balls of about 600 triangles
 /// each in a grid, each touching its neighbours, about the developer's
@@ -1122,6 +1225,13 @@ fn name_of(adapter: &wgpu::Adapter) -> String {
 /// hollow block, the drilled plate and the teapot, opaque and see-through.
 #[test]
 fn the_viewports_cut_open_picture_matches_the_cpu_renderer_away_from_the_edges() {
+    let scenes = viewport_scenes();
+    viewport_check(&scenes);
+}
+
+/// The scenes of the viewport's comparison
+/// ([`the_viewports_cut_open_picture_matches_the_cpu_renderer_away_from_the_edges`]).
+fn viewport_scenes() -> Vec<Scene> {
     // And parts of four hatch classes, touching and overlapping, hatched:
     // the cap's colour of a pixel on the border of two classes is the
     // mean of its samples' (`cut_samples.wgsl`'s `cap_color_samples`).
@@ -1172,6 +1282,11 @@ fn the_viewports_cut_open_picture_matches_the_cpu_renderer_away_from_the_edges()
         }
     }
     assert_eq!(scenes.len(), 24);
+    scenes
+}
+
+/// The viewport's comparison of `scenes` with the CPU renderer.
+fn viewport_check(scenes: &[Scene]) {
     let mut log = String::new();
     let mut measured = Vec::new();
     for (adapter, device, queue) in devices() {
@@ -1182,7 +1297,7 @@ fn the_viewports_cut_open_picture_matches_the_cpu_renderer_away_from_the_edges()
             bodies: true,
             capture: true,
         };
-        for scene in &scenes {
+        for scene in scenes {
             let (mesh, camera, params) = (&scene.mesh, &scene.camera, &scene.params);
             let cpu = craft3d_render::render_colored(mesh, &scene.colors, camera, params).unwrap();
             let uploaded = onscreen.upload_colored(mesh, &scene.colors).unwrap();
