@@ -267,7 +267,7 @@ fn an_overlap_is_cross_hatched_between_classes_and_a_hole_within_one() {
     let frame = render_colored(&mesh, &two, &front(), &params(1)).unwrap();
     let one = render_colored(&mesh, &FaceColors::new(), &front(), &params(1)).unwrap();
     let mut crossed = 0;
-    for row in [110, 120, 150, 200, 240] {
+    for row in [105, 120, 150, 180, 195] {
         for column in 0..160 {
             let i = row * 400 + column;
             let (px, py) = (column as f64 + 0.5, row as f64 + 0.5);
