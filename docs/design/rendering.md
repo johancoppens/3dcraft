@@ -1811,7 +1811,8 @@ four cells (X, Y, Z, ∥) share the room three had, as they did while a face was
 phone wants them a finger's width each, which makes the bar wider).
 
 *The plane through an axis* (2026-11-18, the developer: "Ja, na de spelden"). One cylindrical face selected (a
-hole, a shaft: `select.query` with context gives its axis, a point and a direction) makes the fourth button
+hole, a shaft: its axis from the scene's mesh, `Session::face_axis`, whose normals are the surface's own at
+the corners, all square to the axis, so nothing is regenerated for it) makes the fourth button
 lay the plane through that axis, turned to face the viewer: its normal is the camera's direction toward the
 eye less its part along the axis (`CameraState::toward_eye` at the click), so the half toward the viewer is
 cut away and one looks into the hole. A second click, on that plane already, turns it a quarter about the

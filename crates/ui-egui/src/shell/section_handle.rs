@@ -350,33 +350,17 @@ pub fn planes_of(
 }
 
 /// The axis of the round face `face` of the body of `feature` (a hole, a
-/// shaft: a cylinder), as `select.query` describes it: a point of it and
-/// its unit direction. `None` for any other face.
+/// shaft: part of a cylinder), from the scene's mesh
+/// (`Session::face_axis`: nothing is run or regenerated for it, the web
+/// keeps its bodies elsewhere): a point of it and its unit direction.
+/// `None` for any other face.
 fn round_axis(
-    session: &mut craft3d_engine::Session,
+    session: &craft3d_engine::Session,
+    scene: &Scene,
     feature: &str,
     face: &str,
 ) -> Option<(Vec3, Vec3)> {
-    let found = session
-        .execute(
-            "select.query",
-            &serde_json::json!({"kind": "face", "where": {"in": feature, "name": face}, "context": true, "limit": 1}),
-        )
-        .ok()?;
-    let surface = found.get("items")?.get(0)?.get("surface")?;
-    if surface.get("type")?.as_str()? != "cylinder" {
-        return None;
-    }
-    let triple = |key: &str| -> Option<Vec3> {
-        let v = surface.get(key)?.as_array()?;
-        Some(Vec3::new(
-            v.first()?.as_f64()?,
-            v.get(1)?.as_f64()?,
-            v.get(2)?.as_f64()?,
-        ))
-    };
-    let (point, axis) = (triple("center")?, triple("axis")?.normalized()?);
-    (point.is_finite() && axis.is_finite()).then_some((point, axis))
+    session.face_axis(scene, Some(feature), face).ok()
 }
 
 /// Why a face gives no plane, in the window's words: the engine's speak
@@ -1251,7 +1235,7 @@ impl Shell {
         // One round face (a hole, a shaft): the plane through its axis
         // (the developer, 2026-11-18).
         if let [(feature, face)] = faces.as_slice()
-            && let Some((point, axis)) = round_axis(session, feature, face)
+            && let Some((point, axis)) = round_axis(session, scene, feature, face)
         {
             self.section_handle.face = Some(PlaneChoice {
                 made: Some(SectionMade::Axis),
@@ -1384,10 +1368,12 @@ impl Shell {
         // lies in the plane.
         if from.made == SectionMade::Axis {
             let holds = match from.faces.as_slice() {
-                [(feature, face)] => round_axis(session, feature, face).is_some_and(|(p, a)| {
-                    let off = (point - p) - a * (point - p).dot(a);
-                    off.length() <= 1e-9 * reach && normal.dot(a).abs() <= 1e-9
-                }),
+                [(feature, face)] => {
+                    round_axis(session, scene, feature, face).is_some_and(|(p, a)| {
+                        let off = (point - p) - a * (point - p).dot(a);
+                        off.length() <= 1e-9 * reach && normal.dot(a).abs() <= 1e-9
+                    })
+                }
                 _ => false,
             };
             if !holds {

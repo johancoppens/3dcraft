@@ -1793,7 +1793,15 @@ fn a_hole_gives_the_plane_through_its_axis_facing_the_viewer() {
         dot_product.abs() < 1e-9 && second[2].abs() < 1e-9,
         "{second:?}"
     );
-    // Looking down the hole: refused in words, nothing changes.
+    // Another plane, then looking down the hole: refused in words,
+    // nothing changes. (On the axis's plane already, a click still turns
+    // it a quarter: no view is needed for that.)
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"section": {"plane": "yz", "offset": 30}}),
+    );
     let _ = shell.handle_method(&mut session, "ui.fit", Some(&json!({"view": "top"})));
     window.frames(&mut shell, &mut session, 3);
     let eye = shell.state.camera.toward_eye();

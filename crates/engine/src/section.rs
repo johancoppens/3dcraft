@@ -374,7 +374,88 @@ fn face_plane(scene: &Scene, ids: &[u32], name: &str) -> Result<(Vec3, Vec3), St
     Ok((origin, normal))
 }
 
+/// The axis of the round face `name` (the triangles of `ids` in `scene`'s
+/// mesh): a cylinder's, from its mesh as the scene holds it, so a frame
+/// never regenerates for it (the web keeps its bodies elsewhere). Its
+/// normals are the surface's own at each corner: all square to one
+/// direction, the axis, and the lines along them from the corners meet
+/// on it, every corner as far from it. A point of the axis and its unit
+/// direction; why not where the face is not round (flat, a cone, a
+/// ball, a torus, a freeform face).
+pub fn face_axis(scene: &Scene, ids: &[u32], name: &str) -> Result<(Vec3, Vec3), String> {
+    let mesh = &scene.mesh;
+    let not_round = || format!("face {name} is not round (not part of a cylinder)");
+    let mut corners: Vec<(Vec3, Vec3)> = Vec::new();
+    for (t, face) in mesh.face_ids.iter().enumerate() {
+        if !ids.contains(face) {
+            continue;
+        }
+        let Some(triangle) = mesh.triangles.get(t) else {
+            continue;
+        };
+        for &v in triangle {
+            let v = v as usize;
+            if let (Some(&p), Some(n)) = (mesh.positions.get(v), mesh.normals.get(v))
+                && let Some(n) = n.normalized()
+                && p.is_finite()
+            {
+                corners.push((p, n));
+            }
+        }
+        if corners.len() > 300_000 {
+            break;
+        }
+    }
+    let &(p0, n0) = corners.first().ok_or_else(|| {
+        format!("face {name} has no area in the picture's mesh, so it gives no axis")
+    })?;
+    // The normal turned furthest from the first: with it, the axis.
+    let &(p1, n1) = corners
+        .iter()
+        .max_by(|(_, a), (_, b)| n0.cross(*a).length().total_cmp(&n0.cross(*b).length()))
+        .ok_or_else(not_round)?;
+    let across = n0.cross(n1);
+    if across.length() < 1e-3 {
+        return Err(not_round());
+    }
+    let axis = across.normalized().ok_or_else(not_round)?;
+    // Where the lines along the two normals meet, seen along the axis.
+    let s = (p1 - p0).cross(n1).dot(axis) / across.dot(axis);
+    let centre = p0 + n0 * s;
+    if !(centre.is_finite() && s.is_finite()) {
+        return Err(not_round());
+    }
+    let extent = Bbox3::from_points(corners.iter().map(|(p, _)| *p)).diagonal();
+    let slack = 1e-6 * extent.max(f64::MIN_POSITIVE) + 1e-9 * centre.length();
+    let radius = |p: Vec3| {
+        let off = p - centre;
+        (off - axis * off.dot(axis)).length()
+    };
+    let r0 = radius(p0);
+    let round = corners
+        .iter()
+        .all(|(p, n)| n.dot(axis).abs() <= 1e-6 && (radius(*p) - r0).abs() <= slack);
+    if round && r0 > slack {
+        Ok((centre, axis))
+    } else {
+        Err(not_round())
+    }
+}
+
 impl Session {
+    /// The axis of the round face `face` of the body of `feature` as
+    /// `scene` (the active document's) shows it ([`face_axis`]): what the
+    /// window's section lays its plane through when one is selected.
+    pub fn face_axis(
+        &self,
+        scene: &Scene,
+        feature: Option<&str>,
+        face: &str,
+    ) -> Result<(Vec3, Vec3), String> {
+        let found = scene.faces_named(feature, face)?;
+        face_axis(scene, &found.ids, face)
+    }
+
     /// The active document's angular tolerance, in radians: within it two
     /// directions are one (the window's plane midway between two faces).
     /// `None` without a document.

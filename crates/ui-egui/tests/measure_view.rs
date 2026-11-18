@@ -877,6 +877,8 @@ fn in_a_short_window_the_card_of_one_face_keeps_fly_measure_and_copy_name() {
                 "ui.set",
                 json!({"panels": {"drawer": true}}),
             );
+            // The drawer slides in, in a tenth of a second.
+            window.frames(&mut shell, &mut session, 20);
         }
         select(
             &mut session,
