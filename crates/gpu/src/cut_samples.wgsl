@@ -46,7 +46,7 @@ fn fs_cap_samples(in: CutOut) -> CapOut {
         discard;
     }
     var out: CapOut;
-    out.color = cap_color();
+    out.color = cap_color(in);
     out.mask = mask;
     {{SET_DEPTH}}
     return out;
@@ -76,7 +76,7 @@ fn fs_cap_front_samples(in: CutOut) -> CapFrontOut {
         discard;
     }
     var out: CapFrontOut;
-    out.color = cap_color();
+    out.color = cap_color(in);
     out.key = key_bytes(bitcast<u32>(in.clip.z));
     out.mask = mask;
     {{SET_DEPTH}}
@@ -143,7 +143,7 @@ fn fs_cap_behind_samples(in: CutOut) -> BehindOut {
         discard;
     }
     var out: BehindOut;
-    out.color = cap_color();
+    out.color = cap_color(in);
     out.mask = mask;
     {{SET_DEPTH}}
     return out;

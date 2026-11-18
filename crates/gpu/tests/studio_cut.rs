@@ -181,6 +181,7 @@ fn scenes() -> Vec<(Scene, Section)> {
                 normal: Vec3::new(0.0, -1.0, 0.25),
                 cap: true,
                 color: [200, 90, 60],
+                hatch: None,
             },
         ),
         (
@@ -198,6 +199,7 @@ fn scenes() -> Vec<(Scene, Section)> {
                 normal: Vec3::new(0.6, -0.8, 0.0),
                 cap: true,
                 color: [120, 180, 90],
+                hatch: None,
             },
         ),
     ]
@@ -375,6 +377,117 @@ fn see_through_and_cut_open_studio_pictures_match_the_cpu_renderer() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+/// [`compare`] for a picture whose cap is hatched: a pixel where the CPU's
+/// picture changes quickly (the ramp about a line, lit) may differ by one
+/// more level per 128 its neighbours differ by, as a plain picture's may
+/// (`common/mod.rs`, *Colour*): the GPU works the coverage out in `f32`
+/// from a cap whose corners the rasteriser snapped.
+fn compare_hatched(
+    scene: &Scene,
+    params: &RenderParams,
+    cpu: &Frame,
+    doubt: &[f32],
+    gpu: &Frame,
+) -> Stats {
+    let band = band_of(&scene.mesh, &scene.camera, params, cpu);
+    let (w, h) = (cpu.width as usize, cpu.height as usize);
+    let level = |frame: &Frame, i: usize, k: usize| i32::from(frame.rgb[3 * i + k]);
+    let mut stats = Stats::default();
+    for (i, &in_band) in band.iter().enumerate().take(cpu.ids.len()) {
+        if in_band {
+            continue;
+        }
+        stats.share_sum += f64::from(doubt[i]);
+        if doubt[i] > DOUBT_SHARE {
+            stats.doubt += 1;
+            continue;
+        }
+        stats.compared += 1;
+        if cpu.ids[i] != gpu.ids[i] {
+            stats.id_outside += 1;
+        }
+        let (x, y) = (i % w, i / w);
+        let mut gradient = 0;
+        for ny in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+            for nx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+                for k in 0..3 {
+                    gradient = gradient.max((level(cpu, i, k) - level(cpu, ny * w + nx, k)).abs());
+                }
+            }
+        }
+        let allowed = 1 + gradient / 128;
+        let d = (0..3)
+            .map(|k| (level(cpu, i, k) - level(gpu, i, k)).abs())
+            .max()
+            .unwrap();
+        if d > allowed {
+            stats.over_one += 1;
+        }
+        stats.most = stats
+            .most
+            .max(u8::try_from(d.clamp(0, 255)).unwrap_or(u8::MAX));
+    }
+    stats
+}
+
+/// The cap hatched in the studio look (2026-11-18): lit paper with the
+/// lines, the base colour of the cap's light `Hatching::color` in both
+/// renderers, within the tolerances above (a pixel on a line's ramp
+/// allowed what a pixel where a plain picture changes quickly is).
+#[test]
+fn hatched_cut_open_studio_pictures_match_the_cpu_renderer() {
+    let mut failures = Vec::new();
+    let scenes = scenes();
+    let mut compared = 0;
+    for (scene, section) in &scenes {
+        let hatched = Section {
+            color: [232, 228, 220],
+            hatch: Some(craft3d_render::Hatch {
+                ink: [88, 84, 78],
+                spacing_points: 9.0,
+                width_points: 1.0,
+                height_points: None,
+            }),
+            ..*section
+        };
+        let p = RenderParams {
+            section: Some(hatched),
+            ..scene.params
+        };
+        let mut cpus = Vec::new();
+        for (name, look) in looks(scene.plain) {
+            let (frame, doubt) = cpu_render(scene, &p, &look);
+            assert!(frame.ids.contains(&SECTION_FACE), "{}", scene.name);
+            craft3d_testkit::evidence::print(
+                &format!("studio-hatched-cpu-{}-{}.png", tag(scene.name), tag(name)),
+                &frame.to_png().unwrap(),
+            );
+            cpus.push((name, look, frame, doubt));
+        }
+        for mut offscreen in offscreens() {
+            let adapter = offscreen.adapter().to_string();
+            for (name, look, cpu, doubt) in &cpus {
+                let studio = Studio {
+                    env: scene.env.clone(),
+                    look: *look,
+                };
+                let gpu = offscreen
+                    .render_studio(&scene.mesh, &scene.colors, &scene.camera, &p, &studio)
+                    .unwrap();
+                let stats = compare_hatched(scene, &p, cpu, doubt, &gpu);
+                check(
+                    &mut failures,
+                    &format!("hatched {adapter} | {} | {name}", scene.name),
+                    &stats,
+                );
+                compared += 1;
+            }
+        }
+    }
+    assert!(compared > 0);
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 #[test]
 fn see_through_and_cut_open_studio_pictures_are_deterministic() {
     let (scene, section) = scenes().into_iter().next().unwrap();
@@ -523,6 +636,7 @@ fn see_through_and_cut_open_frames_on_a_thousand_faces() {
         normal: Vec3::new(0.3, -1.0, 0.0),
         cap: true,
         color: [200, 90, 60],
+        hatch: None,
     };
     let colors = FaceColors::new();
     for (adapter, device, queue) in devices::devices() {

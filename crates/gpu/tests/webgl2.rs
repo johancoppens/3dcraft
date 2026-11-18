@@ -212,6 +212,7 @@ fn scenes() -> Vec<(String, Kind, Mesh, RenderParams, Camera)> {
                     normal,
                     cap: true,
                     color: [214, 132, 74],
+                    hatch: None,
                 }),
                 ..params(420, 300, 1)
             };

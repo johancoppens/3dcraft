@@ -313,6 +313,7 @@ fn both_drawing_paths_honour_the_toggle() {
         normal: craft3d_math::Vec3::X,
         cap: true,
         color: [200, 60, 60],
+        hatch: None,
     };
     let cut = viewport::SectionCut::new(&scene, section).unwrap();
     let cut_open = Marks {

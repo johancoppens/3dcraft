@@ -132,8 +132,11 @@ fn in_cap_box(in: CutOut) -> bool {
 }
 
 // The cap's colour: drawn as it is, and seen through like a body's face.
-fn cap_color() -> vec4<f32> {
-    return vec4<f32>(scene.section_cap.rgb, 1.0);
+// Hatched paper (`scene.wgsl`'s `section_hatch_color`, the CPU's
+// `Hatching::color`), worked out from the point of the plane under the
+// fragment, so the lines are fixed to the model.
+fn cap_color(in: CutOut) -> vec4<f32> {
+    return vec4<f32>(section_hatch_color(in.rel), 1.0);
 }
 
 // The cap's id and the bits of its view distance: the distance of the

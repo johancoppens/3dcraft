@@ -835,6 +835,35 @@ fn note_here_writes_on_the_face_pointed_at_not_the_one_selected() {
     );
 }
 
+/// The verdict of 2026-11-18, fix 10 (with builder A's `hover_point`): a
+/// pointer placed without a mouse (`ui.pick` with `hover`) on a pin is
+/// that pin's pointer: it rings it (`note_hovered`), and `ui.get` ›
+/// `hovered` names the note.
+#[test]
+fn a_pointer_placed_on_a_pin_rings_it() {
+    let mut session = noted();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    let (id, head) = shell.note_markers().0[0];
+    let rect = shell.viewport_rect().expect("the view");
+    let [vw, vh] = shell.viewport_size();
+    let x = f64::from(head.x - rect.left()) * f64::from(vw) / f64::from(rect.width());
+    let y = f64::from(head.y - rect.top()) * f64::from(vh) / f64::from(rect.height());
+    let placed = shell
+        .handle_method(
+            &mut session,
+            "ui.pick",
+            Some(&json!({"x": x, "y": y, "hover": true})),
+        )
+        .unwrap()
+        .expect("the pointer placed");
+    w.frames(&mut shell, &mut session, 12);
+    assert_eq!(shell.note_hovered(), Some(id), "{placed}");
+    let state = get(&mut shell, &mut session);
+    assert_eq!(state["hovered"]["kind"], "note", "{}", state["hovered"]);
+    assert_eq!(state["hovered"]["id"], id, "{}", state["hovered"]);
+}
+
 /// The verdict of 2026-11-18, fix 5: nothing runs past the right-click
 /// list's plate. In the toggle clamp, whose names are the longest of the
 /// examples (`F4:copy(1)/F2:rim(241645167161946)/F2:face(0) ·

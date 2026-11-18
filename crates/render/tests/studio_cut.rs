@@ -206,6 +206,7 @@ fn the_studio_picture_has_the_plain_pictures_surfaces() {
                 normal: Vec3::new(1.0, -0.3, 0.2),
                 cap: true,
                 color: [200, 90, 60],
+                hatch: None,
             }),
             ..params(160, 120)
         };
@@ -271,6 +272,7 @@ fn the_cap_is_lit_as_a_face_in_its_plane() {
             normal: Vec3::new(1.0, 0.0, 0.0),
             cap: true,
             color,
+            hatch: None,
         }),
         ..params(200, 150)
     };
@@ -447,6 +449,7 @@ fn what_is_cut_away_casts_no_shadow() {
             normal: Vec3::new(1.0, 0.0, 0.0),
             cap: true,
             color: [200, 80, 80],
+            hatch: None,
         },
         &section_bounds(&mesh),
     )
@@ -492,6 +495,7 @@ fn the_same_input_gives_the_same_cut_open_see_through_picture() {
             normal: Vec3::new(0.3, -1.0, 0.1),
             cap: true,
             color: [90, 160, 200],
+            hatch: None,
         }),
         ..params(120, 90)
     };

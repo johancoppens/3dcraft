@@ -1062,6 +1062,7 @@ fn two_steps_give_the_one_step_frame() {
             normal: Vec3::new(0.3, -1.0, 0.2),
             cap: true,
             color: [200, 60, 40],
+            hatch: None,
         }),
         ..size
     };
@@ -1257,6 +1258,7 @@ fn soak_frame(offscreen: &mut craft3d_gpu::Offscreen, mesh: &Mesh) -> Frame {
                 normal: Vec3::new(0.3, -1.0, 0.2),
                 cap: true,
                 color: [200, 60, 40],
+                hatch: None,
             });
         }
         _ => {}

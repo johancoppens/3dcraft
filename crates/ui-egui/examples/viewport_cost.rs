@@ -266,7 +266,8 @@ fn measure(large: bool, tolerance: Option<f64>) -> Result<(), String> {
         origin: (lo + hi) * 0.5,
         normal: craft3d_math::Vec3::Z,
         cap: true,
-        color: tokens.section_cap,
+        color: tokens.section_paper,
+        hatch: Some(tokens.section_hatch(None)),
     };
     let mut outline_ms = f64::INFINITY;
     let mut cut = None;

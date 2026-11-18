@@ -177,6 +177,9 @@ fn evidence(name: &str, width: u32, height: u32, rgb: &[u8]) {
     std::fs::write(dir.join(name), png).unwrap();
 }
 
+/// The cap's colour in the tests of where it is.
+const FLAT_CAP: [u8; 3] = [214, 132, 74];
+
 fn count(rgb: &[u8], color: [u8; 3]) -> usize {
     rgb.chunks(3).filter(|px| *px == color).count()
 }
@@ -185,7 +188,13 @@ fn count(rgb: &[u8], color: [u8; 3]) -> usize {
 fn the_section_is_view_state_that_ui_set_sets_and_the_screenshot_shows() {
     let mut session = part();
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
-    let cap = shell.tokens.section_cap;
+    // Where the cap is, told by one flat colour nothing else in the
+    // picture has: the hatching off and the paper the cap's orange of
+    // before (2026-11-18: the window's cap is hatched paper; the hatching
+    // is checked in `tests/hatch.rs`).
+    shell.tokens.section_paper = FLAT_CAP;
+    shell.tokens.section_hatch_spacing = 0.0;
+    let cap = FLAT_CAP;
     // The datum plane is drawn (hidden by default since 2026-11-11): its
     // fill tells the background from the body in the picture from above.
     call(
@@ -698,7 +707,13 @@ fn a_cut_open_frame_of_a_gpu_viewport_is_drawn_by_the_gpu() {
     let mut session = part();
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
     shell.attach_gpu(&state).unwrap();
-    let cap = shell.tokens.section_cap;
+    // Where the cap is, told by one flat colour nothing else in the
+    // picture has: the hatching off and the paper the cap's orange of
+    // before (2026-11-18: the window's cap is hatched paper; the hatching
+    // is checked in `tests/hatch.rs`).
+    shell.tokens.section_paper = FLAT_CAP;
+    shell.tokens.section_hatch_spacing = 0.0;
+    let cap = FLAT_CAP;
     // The viewport this test was written for, 740 × 654 pixels: the
     // window was 700 points high before the row of the documents' tabs
     // took 29 of them. Found when the tabs came (2026-10-14): at most

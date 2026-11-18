@@ -17,7 +17,7 @@
 mod common;
 
 use common::plain::{run, session};
-use craft3d_engine::{PickKind, SECTION_CAP_COLOR, SectionSpec, Session};
+use craft3d_engine::{PickKind, SECTION_INK, SECTION_PAPER, SectionSpec, Session};
 use craft3d_math::Vec3;
 use craft3d_render::{Camera, Projection, SECTION_FACE};
 use serde_json::{Value, json};
@@ -83,10 +83,26 @@ fn base64(text: &str) -> Vec<u8> {
     out
 }
 
-/// How many pixels of a picture have the cap's colour.
+/// How many pixels of a picture have a colour of the cap: its paper
+/// mixed with the ink of its hatching (2026-11-18: the cut is hatched
+/// paper; before, one flat colour, counted by equality), each channel
+/// within two levels of one mix. The bodies' blue grey is never such a
+/// colour.
 fn cap_pixels(result: &Value) -> usize {
     let (_, _, rgb) = png_pixels(result);
-    rgb.chunks(3).filter(|px| *px == SECTION_CAP_COLOR).count()
+    rgb.chunks(3).filter(|px| on_cap(px)).count()
+}
+
+fn on_cap(px: &[u8]) -> bool {
+    let level = |c: [u8; 3], i: usize| f64::from(c[i]);
+    let share = (level(SECTION_PAPER, 0) - f64::from(px[0]))
+        / (level(SECTION_PAPER, 0) - level(SECTION_INK, 0));
+    (-0.01..=1.01).contains(&share)
+        && (0..3).all(|i| {
+            let mix =
+                level(SECTION_PAPER, i) + (level(SECTION_INK, i) - level(SECTION_PAPER, i)) * share;
+            (mix - f64::from(px[i])).abs() <= 2.0
+        })
 }
 
 #[test]
@@ -298,7 +314,7 @@ fn a_pick_on_a_cut_open_model_is_what_is_seen() {
     // the eye (y below 15) cut away; seen from the front, from -y.
     assert_eq!(plane.normal, -Vec3::Y);
     assert_eq!(plane.range(&scene.mesh.bbox()), Some([0.0, 30.0]));
-    let section = plane.section(SECTION_CAP_COLOR);
+    let section = plane.section(SECTION_PAPER, None);
     let camera = Camera {
         eye: Vec3::new(20.0, -200.0, 10.0),
         target: Vec3::new(20.0, 0.0, 10.0),

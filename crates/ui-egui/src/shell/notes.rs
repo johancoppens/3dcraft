@@ -1559,13 +1559,8 @@ impl Shell {
         // The pin under the pointer (none while a button is held: a drag
         // turns the view).
         // The pointer egui knows, else one placed without a mouse (`ui.pick`
-        // with `hover`: `state.hovered`, in the viewport's pixels).
-        let placed = self.state.hovered.as_ref().map(|h| {
-            egui::pos2(
-                rect.left() + (h.x / scale) as f32,
-                rect.top() + (h.y / scale) as f32,
-            )
-        });
+        // with `hover`: where it rests, kept apart from what it points at).
+        let placed = self.hover_point();
         let pointer = ui
             .input(|i| (!i.pointer.any_down()).then(|| i.pointer.hover_pos()))
             .flatten()

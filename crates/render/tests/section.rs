@@ -54,6 +54,7 @@ fn section(origin: Vec3, normal: Vec3) -> Section {
         normal,
         cap: true,
         color: CAP,
+        hatch: None,
     }
 }
 

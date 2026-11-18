@@ -13,7 +13,9 @@ mod section;
 pub mod studio;
 
 pub use section::{
-    Cut, SECTION_FACE, SECTION_MARGIN, SECTION_SNAP, Section, Slabs, section_bounds,
+    Cut, HATCH_FADE_FROM, Hatch, Hatching, SECTION_FACE, SECTION_MARGIN, SECTION_SNAP, Section,
+    Slabs, hatch_coverage, hatch_distance, hatch_fade, hatch_frame, hatch_odd_ink, hatch_spacing,
+    section_bounds,
 };
 
 use craft3d_math::{Bbox3, Vec3};
@@ -1356,6 +1358,11 @@ pub fn render_analysed(
     let cut = params
         .section
         .and_then(|section| Cut::new(&section, &section_bounds(mesh)));
+    // The cap's hatching, in pixels of the picture (not of the samples).
+    let hatching = match (params.section.and_then(|s| s.hatch), cut) {
+        (Some(hatch), Some(cut)) => Hatching::new(cut.normal, cut.color, &hatch, camera, height),
+        _ => None,
+    };
     let bounds = clip::depth_bounds(&section_bounds(mesh), cut.is_some_and(|c| c.cap));
     let near = clip::near_distance(&view, &bounds);
     let clipped = clip::clip_mesh(mesh, values, &view, &bounds)?;
@@ -1578,9 +1585,11 @@ pub fn render_analysed(
     if let Some(cut) = cut.filter(|cut| cut.cap) {
         for (i, _) in odd.iter().enumerate().filter(|&(_, &inside)| inside) {
             let (px, py) = ((i % w) as f64 + 0.5, (i / w) as f64 + 0.5);
-            let Some((key, dist, _)) = view.cap_at(&cut, px, py, near) else {
+            let Some((key, dist, point)) = view.cap_at(&cut, px, py, near) else {
                 continue;
             };
+            // Paper, hatched where a line of ink passes (`Hatching`).
+            let ink = hatching.map_or(cut.color, |h| h.color(point, dist));
             let (Some(k_slot), Some(c_slot), Some(id_slot), Some(d_slot)) = (
                 depth_key.get_mut(i),
                 color.get_mut(i),
@@ -1597,7 +1606,7 @@ pub fn render_analysed(
                     *slot = (nearest, *c_slot);
                 }
                 *k_slot = key;
-                *c_slot = cut.color;
+                *c_slot = ink;
                 *id_slot = SECTION_FACE;
                 *d_slot = dist;
                 if let Some(slot) = front_on.get_mut(i) {
@@ -1607,7 +1616,7 @@ pub fn render_analysed(
                 && let Some(slot) = behind.get_mut(i)
                 && key < slot.0
             {
-                *slot = (key, cut.color);
+                *slot = (key, ink);
             }
         }
     }
@@ -2250,6 +2259,7 @@ mod tests {
                 normal: Vec3::new(-1.0, 0.0, 0.0),
                 cap: true,
                 color: [1, 2, 3],
+                hatch: None,
             };
             let cut = Cut::new(&section, &bounds).unwrap();
             (

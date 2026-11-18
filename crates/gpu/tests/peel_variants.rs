@@ -85,6 +85,7 @@ fn kinds(mesh: &Mesh, base: RenderParams) -> Vec<(&'static str, RenderParams)> {
         normal: Vec3::new(0.5, -0.7, 0.6),
         cap: true,
         color: [214, 132, 74],
+        hatch: None,
     };
     [
         ("see-through", 0.45, None),

@@ -487,6 +487,7 @@ The **display bar** at the bottom of the view:
   drawn.
 - **See-through** makes the bodies transparent (drag its slider), to look at pockets and cavities.
 - **Section** cuts the view open with a plane across X, Y or Z, through the middle of the model at first.
+  The cut shows as paper with thin lines at 45° that stay on the part as you turn it.
 
 While the section is on, the view shows its plane: a dashed outline (faint until the pointer comes near),
 an arrow at the cut's edge pointing into the half that is cut away, and beside it one small dark group: the
@@ -651,7 +652,8 @@ measures too ([Measuring and assertions › Surface quality](measure.md#surface-
 ## Pointing at things
 
 A click selects what is under the pointer: a corner (vertex) when one is within a few points, else an
-edge, else the face.
+edge, else the face. Before you click, resting the mouse on the model outlines in amber what a click there
+would select: a face by its border, an edge along itself, a corner as a dot.
 
 | Do | To |
 |---|---|
