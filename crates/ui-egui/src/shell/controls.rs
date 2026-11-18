@@ -347,18 +347,49 @@ pub(super) fn triad_reach(tokens: &Tokens, place: Rect) -> f32 {
 /// The section's base planes by the axis they are across: X, Y and Z.
 pub(super) const SECTION_PLANES: [(&str, &str); 3] = [("x", "yz"), ("y", "zx"), ("z", "xy")];
 
+/// A place of the model this near the middle of its range (as a share of
+/// the range) is where a plane chosen in the controls starts.
+const MIDDLE_SNAP: f64 = 0.01;
+
 /// The middle of the model along axis `axis`: where a plane that is
-/// chosen in the controls starts.
+/// chosen in the controls starts. The middle of the mesh's box is a place
+/// of the triangles, not of the model (a disc's reads 0.011 mm off its
+/// axis), so it is taken to a place of the model within [`MIDDLE_SNAP`]
+/// of the range where there is one (the UX verdict of 2026-11-18): the
+/// nearest of the places the section's arrow snaps to (a flat face across
+/// the axis, the axis of a hole, a boss or a round:
+/// `SectionPlane::snaps`) and the origin.
 fn model_middle(scene: Option<&Scene>, axis: usize) -> f64 {
-    scene
-        .and_then(|scene| scene.bbox.corners())
-        .map_or(0.0, |(lo, hi)| {
-            let (lo, hi) = ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
-            match (lo.get(axis), hi.get(axis)) {
-                (Some(lo), Some(hi)) => (lo + hi) * 0.5,
-                _ => 0.0,
-            }
-        })
+    let Some(scene) = scene else {
+        return 0.0;
+    };
+    let Some((lo, hi)) = scene.bbox.corners() else {
+        return 0.0;
+    };
+    let (lo, hi) = ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
+    let (Some(&lo), Some(&hi)) = (lo.get(axis), hi.get(axis)) else {
+        return 0.0;
+    };
+    let middle = (lo + hi) * 0.5;
+    let reach = (hi - lo).abs() * MIDDLE_SNAP;
+    if !(middle.is_finite() && reach.is_finite()) {
+        return 0.0;
+    }
+    let along = axis_direction(axis);
+    let plane = craft3d_engine::SectionPlane {
+        origin: craft3d_math::Vec3::ZERO,
+        normal: along,
+        base: craft3d_math::Vec3::ZERO,
+        along,
+    };
+    plane
+        .snaps(scene)
+        .iter()
+        .map(|snap| snap.offset)
+        .chain([0.0])
+        .filter(|place| (place - middle).abs() <= reach)
+        .min_by(|a, b| (a - middle).abs().total_cmp(&(b - middle).abs()))
+        .unwrap_or(middle)
 }
 
 /// The unit direction of the axis `axis` (0 X, 1 Y, 2 Z): the normal of
@@ -457,16 +488,35 @@ pub(super) fn choose_axis(
 }
 
 impl Shell {
-    /// A section switched on (by `ui.set`) without saying where: across Z
-    /// when it names no plane, and through the middle of the model's box
-    /// along the normal of a base plane (X, Y or Z) when it gives no
-    /// offset, as the Section chip and the axis choice do. The middle is
-    /// that of the scene shown: before the first one is drawn it is 0.
-    pub(crate) fn section_through_the_middle(&mut self, offset_given: bool) {
+    /// A section switched on (by `ui.set`) without saying where: as the
+    /// Section chip's first click lays it (the UX verdict of 2026-11-18:
+    /// the agent's cut and the person's the same): across the base plane
+    /// that faces the eye most ([`first_axis`]), the half on the eye's
+    /// side cut away unless `flip` was given; across Z where nothing is
+    /// shown yet. A plane named keeps its own, through the middle of the
+    /// model's box along its normal (a base plane, X, Y or Z) when no
+    /// offset is given (`offset_given`), as the axis choice does.
+    pub(crate) fn section_through_the_middle(&mut self, offset_given: bool, flip_given: bool) {
         let scene = self.shown_scene.clone();
+        let camera = self.state.camera;
         let section = &mut self.state.section;
         if section.plane.is_none() && section.normal.is_none() && section.point.is_none() {
-            section.plane = Some("xy".to_string());
+            let shown = scene.as_deref().filter(|scene| !scene.bodies.is_empty());
+            let axis = match shown {
+                Some(scene) => first_axis(camera.toward_eye(), Some(scene)),
+                None => 2,
+            };
+            let Some((_, plane)) = SECTION_PLANES.get(axis) else {
+                return;
+            };
+            section.plane = Some((*plane).to_string());
+            if !offset_given {
+                section.offset = model_middle(scene.as_deref(), axis);
+            }
+            if shown.is_some() && !flip_given {
+                section.flip = side_across(axis, section.offset, &camera, section.flip);
+            }
+            return;
         }
         if offset_given || section.feature.is_some() {
             return;

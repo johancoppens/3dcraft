@@ -47,7 +47,7 @@ pub fn hint_for(state: &HintState) -> Option<&'static str> {
         1 if state.notes => Some("Shift-click another to measure between · N writes a note"),
         1 => Some("Shift-click another to measure between"),
         2 => Some("Esc clears"),
-        _ => Some("two things give a measure"),
+        _ => Some("a measure takes one or two things"),
     }
 }
 
@@ -251,7 +251,10 @@ mod tests {
             Some("Shift-click another to measure between")
         );
         assert_eq!(hint_for(&state(2)), Some("Esc clears"));
-        assert_eq!(hint_for(&state(3)), Some("two things give a measure"));
+        assert_eq!(
+            hint_for(&state(3)),
+            Some("a measure takes one or two things")
+        );
         assert_eq!(
             hint_for(&HintState {
                 on_arrow: true,

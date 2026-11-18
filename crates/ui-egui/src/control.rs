@@ -516,7 +516,10 @@ impl Shell {
                 .iter()
                 .any(|k| section.contains_key(*k))
         {
-            self.section_through_the_middle(section.contains_key("offset"));
+            self.section_through_the_middle(
+                section.contains_key("offset"),
+                section.contains_key("flip"),
+            );
         }
         // The look is checked (an unknown environment or tone curve
         // changes nothing) and kept as parsed: clamped, turned within 0 to

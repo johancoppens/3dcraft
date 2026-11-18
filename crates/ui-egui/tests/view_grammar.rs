@@ -167,7 +167,10 @@ fn the_status_bar_says_what_a_click_will_do() {
     assert_eq!(hint(&shell).as_deref(), Some("Esc clears"));
     select(&mut session, "face", json!({"in": "Plate"}), 3);
     window.frames(&mut shell, &mut session, 3);
-    assert_eq!(hint(&shell).as_deref(), Some("two things give a measure"));
+    assert_eq!(
+        hint(&shell).as_deref(),
+        Some("a measure takes one or two things")
+    );
     // A hint given for four seconds takes the bar's place, then goes.
     shell.hint(
         "Select a face, an edge or a vertex first, then press N",
@@ -180,7 +183,10 @@ fn the_status_bar_says_what_a_click_will_do() {
     );
     window.time += 5.0;
     window.frames(&mut shell, &mut session, 2);
-    assert_eq!(hint(&shell).as_deref(), Some("two things give a measure"));
+    assert_eq!(
+        hint(&shell).as_deref(),
+        Some("a measure takes one or two things")
+    );
     // The pointer on the section's arrow.
     run(&mut session, "select.set", json!({"mode": "clear"}));
     call(

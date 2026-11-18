@@ -1094,9 +1094,42 @@ fn the_card_opens_with_the_number_the_view_shows() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(
         got["measurement"]["words"],
-        "Two things give a measure: Shift-click takes one away"
+        "A measure takes one or two things"
     );
     assert_eq!(got["measurement"]["text"], Value::Null);
+    // Three things, the first a whole hole (the UX verdict of 2026-11-18,
+    // fix 4): its Type says Ø as the single card's does, the card's and
+    // the status bar's sentence is the one for any count.
+    let holes = run(
+        &mut session,
+        "select.query",
+        json!({"kind": "face", "where": {"in": "Bevel", "hole": true}}),
+    );
+    let bottom = run(
+        &mut session,
+        "select.query",
+        json!({"kind": "face", "where": {"in": "Bevel", "normal": {"along": "-z"}}}),
+    );
+    let item = |v: &Value| json!({"kind": "face", "feature": v["feature"], "name": v["name"]});
+    run(
+        &mut session,
+        "select.set",
+        json!({"items": [item(&holes["items"][0]), item(&holes["items"][1]), item(&bottom["items"][0])]}),
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let props = shell.side_props().cloned().expect("the card");
+    let kind = props
+        .rows
+        .iter()
+        .find(|r| r.label == "Type")
+        .map(|r| r.value.clone());
+    assert_eq!(kind.as_deref(), Some("Cylinder  Ø 6 mm"), "{props:?}");
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(
+        got["measurement"]["words"],
+        "A measure takes one or two things"
+    );
+    assert_eq!(got["hint"], "a measure takes one or two things");
 }
 
 /// V4: Keep as a check is quiet, and what it did shows: the Checks

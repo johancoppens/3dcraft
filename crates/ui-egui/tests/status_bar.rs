@@ -823,3 +823,52 @@ fn the_renderers_numbers_only_with_a_document() {
     assert!(shell.start_shown());
     assert_eq!(shell.status_shown(StatusSlot::Render), None);
 }
+
+/// The UX verdict of 2026-11-18: a picture of the window taken at once
+/// after a file opened showed "0 triangles" in the status bar. Two frames
+/// after an open, the bar says the triangles of the picture shown, never
+/// 0 while the scene has some.
+#[test]
+fn two_frames_after_an_open_the_bar_counts_the_triangles_shown() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("status-bar-open");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut session = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir),
+    });
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(&mut session, "feature.block", json!({"size": [30, 20, 10]}));
+    run(&mut session, "file.save", json!({"path": "opened.3dcraft"}));
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let ctx = egui::Context::default();
+    let mut clock = 0_u32;
+    let mut frame = |shell: &mut Shell, session: &mut Session| {
+        clock += 1;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))),
+            time: Some(f64::from(clock) / 60.0),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
+        output.textures_delta.clear();
+    };
+    for _ in 0..3 {
+        frame(&mut shell, &mut session);
+    }
+    run(&mut session, "file.open", json!({"path": "opened.3dcraft"}));
+    for _ in 0..2 {
+        frame(&mut shell, &mut session);
+    }
+    let scene = shell.shown_scene_arc().expect("the opened part's scene");
+    assert!(scene.triangles() > 0);
+    let said = shell
+        .status_shown(StatusSlot::Render)
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        !said.contains(" 0 triangles"),
+        "two frames after the open the bar says {said:?}"
+    );
+}

@@ -837,3 +837,66 @@ fn two_selected_faces_offer_the_mates_that_join_them() {
         "{added}"
     );
 }
+
+/// The UX verdict of 2026-11-18, fix 8: a body of an instance, selected
+/// in a posed assembly, shows the box of its own placed mesh, once (at the
+/// head of its card, no Box row besides): the crank turned 60 degrees,
+/// not the box of every instance of the part (which read the assembly's
+/// width and height).
+#[test]
+fn a_body_of_an_instance_shows_its_own_placed_box_once() {
+    let (mut s, _dir) = window_session("box");
+    let mut shell = Shell::new();
+    let mut window = Window::new();
+    four_bar(&mut s);
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Drive", "value": "60 deg" }),
+    );
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut s);
+    }
+    let crank = shell
+        .assembly_outline()
+        .unwrap()
+        .instances
+        .iter()
+        .find(|i| i.name == "Crank")
+        .unwrap()
+        .features[0]
+        .clone();
+    run(
+        &mut s,
+        "select.set",
+        json!({"items": [{"kind": "body", "feature": crank}]}),
+    );
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut s);
+    }
+    let (lo, hi) = crank_box(&shell);
+    let props = shell.side_props().cloned().expect("the crank's card");
+    let tolerance = s.linear_tolerance().unwrap_or(1e-6);
+    let side =
+        |k: usize| craft3d_ui_egui::shell::shown::length_number(hi[k] - lo[k], tolerance, "mm");
+    let want = format!("{} × {} × {} mm", side(0), side(1), side(2));
+    // Once: at the head (the volume not known here) or as a row.
+    let boxes: Vec<String> = props
+        .head
+        .iter()
+        .filter(|h| h.measure == "box")
+        .map(|h| h.text.clone())
+        .chain(
+            props
+                .rows
+                .iter()
+                .filter(|r| r.label == "Box")
+                .map(|r| r.value.clone()),
+        )
+        .collect();
+    assert_eq!(boxes, [want], "{props:?}");
+    // The crank, turned, is not as wide as the four-bar.
+    let scene = shell.shown_scene_arc().unwrap();
+    let (all_lo, all_hi) = scene.bbox.corners().unwrap();
+    assert!(hi[1] - lo[1] < (all_hi.y - all_lo.y) - 1.0, "{lo:?} {hi:?}");
+}

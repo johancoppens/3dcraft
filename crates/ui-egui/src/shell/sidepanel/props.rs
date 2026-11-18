@@ -26,7 +26,7 @@ use crate::shell::shown;
 use crate::shell::views::FlyTo;
 use craft3d_engine::history_view::number;
 use craft3d_engine::{Scene, SelectionKind, Session};
-use craft3d_math::{Portable, Vec3};
+use craft3d_math::{Bbox3, Portable, Vec3};
 use egui::{Sense, pos2, vec2};
 use serde_json::{Value, json};
 
@@ -933,12 +933,18 @@ pub(crate) fn read(
     let tolerance = session.linear_tolerance().unwrap_or(1e-6);
     let angular = session.angular_tolerance().map_or(0.0, f64::to_degrees);
     // Three things or more give no number: the words say why.
+    // Three things or more give no number: one sentence says why, true
+    // for any count (the UX verdict of 2026-11-18); `whole` holds what is
+    // selected in a few words, what the short card shows.
     let many = (count > 2).then(|| Head {
         measure: "none",
         value: None,
         text: String::new(),
-        whole: String::new(),
-        words: "Two things give a measure: Shift-click takes one away".to_string(),
+        whole: format!(
+            "{} selected",
+            craft3d_engine::selection_summary(&view.items)
+        ),
+        words: MANY_WORDS.to_string(),
         small: false,
     });
     let mut rows = Vec::new();
@@ -985,7 +991,16 @@ pub(crate) fn read(
                 rows.push(plain("Area", shown::area(a, &unit)));
             }
         }
-        if let Some((lo, hi)) = scene.and_then(|s| s.feature_box(&id).corners()) {
+        // The box of this body's own mesh, as the scene places it (an
+        // instance of an assembly in the assembly's space): not the box of
+        // everything its feature made, which in an assembly is every
+        // instance of the part (the UX verdict of 2026-11-18: Base[2] read
+        // the assembly's width and height).
+        let mut bbox = Bbox3::EMPTY;
+        if let Some(scene) = scene {
+            scene.items_points(std::slice::from_ref(&first), &mut |p| bbox.add(p));
+        }
+        if let Some((lo, hi)) = bbox.corners() {
             let d = hi - lo;
             let [x, y, z] = [d.x, d.y, d.z].map(|v| shown::length_number(v, tolerance, &unit));
             let text = if unit.is_empty() {
@@ -993,14 +1008,16 @@ pub(crate) fn read(
             } else {
                 format!("{x} × {y} × {z} {unit}")
             };
-            rows.push(plain("Box", text.clone()));
             // Its volume not known here (an assembly's part, the bodies
-            // built elsewhere): its box.
-            if head.is_none() {
+            // built elsewhere): its box heads the card, and no row says it
+            // again.
+            if head.is_none() && count == 1 {
                 head = Some(Head {
                     small: true,
                     ..Head::of("box", None, text, "Size of its box")
                 });
+            } else {
+                rows.push(plain("Box", text));
             }
         }
         made_by = Some(id.clone());
@@ -1029,11 +1046,13 @@ pub(crate) fn read(
     } else {
         None
     };
-    // One thing: the measure the view shows beside it.
-    let single = match (&described, count) {
-        (Some(item), 1) => single_of(item, &first, scene, &unit, tolerance),
-        _ => None,
-    };
+    // The first thing's measure: the view shows it beside it for one thing
+    // alone; its Type row says it in the same words whatever the count (a
+    // whole cylinder Ø, part of one R: the UX verdict of 2026-11-18).
+    let first_single = described
+        .as_ref()
+        .and_then(|item| single_of(item, &first, scene, &unit, tolerance));
+    let single = first_single.clone().filter(|_| count == 1);
     let local = local_name(&first.name);
     let mut of = name_of(&first.feature);
     let mut head = single.as_ref().map(|single| {
@@ -1065,7 +1084,7 @@ pub(crate) fn read(
         if let Some(surface) = item.get("surface") {
             rows.push(plain(
                 "Type",
-                surface_text(surface, &unit, tolerance, single.as_ref()),
+                surface_text(surface, &unit, tolerance, first_single.as_ref()),
             ));
         }
         if let Some(area) = item.get("area").and_then(Value::as_f64) {
@@ -1096,7 +1115,7 @@ pub(crate) fn read(
         if let Some(curve) = item.get("curve") {
             rows.push(plain(
                 "Type",
-                curve_text(curve, &unit, tolerance, single.as_ref()),
+                curve_text(curve, &unit, tolerance, first_single.as_ref()),
             ));
             if let Some(length) = curve.get("length").and_then(Value::as_f64) {
                 rows.push(plain(
@@ -1447,6 +1466,10 @@ fn point_text(p: &Value, tolerance: f64, unit: &str) -> String {
     format!("({})", v.join(", "))
 }
 
+/// What the card of three things or more says, and the status bar after
+/// what is selected: one sentence, true for any count.
+pub const MANY_WORDS: &str = "A measure takes one or two things";
+
 /// How long a click on a number says *Copied* in its hover, in seconds.
 pub const COPIED_SECONDS: f32 = 1.5;
 /// How long the check just kept is tinted in the Checks, in seconds.
@@ -1504,7 +1527,8 @@ impl Shell {
                     + kit.hit(t.control_height);
             }
             Headline::Wall(_) => number(t.measure_font),
-            Headline::Thing(head) if head.text.is_empty() => t.label_row_height,
+            // The many-things sentence wraps: two lines at most.
+            Headline::Thing(head) if head.text.is_empty() => 2.0 * t.label_row_height,
             Headline::Thing(head) if head.small => number(t.measure_font * 2.0 / 3.0),
             Headline::Thing(_) => number(t.measure_font),
             Headline::None => 0.0,
@@ -1587,6 +1611,19 @@ impl Shell {
             ui.ctx().copy_text(text.to_string());
             self.side.copied = Some(Timed::seconds(format!("Copied {text}"), COPIED_SECONDS));
         }
+    }
+
+    /// Small dim words that wrap to the panel, never cut: the many-things
+    /// sentence.
+    fn words_wrapped_ui(&self, ui: &mut egui::Ui, text: &str) {
+        let kit = Kit::panel(&self.tokens);
+        let sk = kit.skin;
+        let room = ui.available_width().max(1.0);
+        let g = ui
+            .painter()
+            .layout(text.to_string(), kit.font(), kit.c(sk.text_dim), room);
+        let (rect, _) = ui.allocate_exact_size(vec2(room, g.size().y.max(1.0)), Sense::hover());
+        ui.painter().galley(rect.min, g, kit.c(sk.text_dim));
     }
 
     /// A line of small dim words under the number, cut to the panel; its
@@ -1780,7 +1817,9 @@ impl Shell {
             Headline::Thing(head) if !head.text.is_empty() => {
                 format!("{} · {}", props.heading, head.text)
             }
-            Headline::Thing(head) => head.words.clone(),
+            // Many things: what is selected; the sentence is the hover's,
+            // never cut on this one line.
+            Headline::Thing(head) => head.whole.clone(),
             Headline::None => props.heading.clone(),
         };
         if props.measurement.as_ref().is_some_and(|m| m.measuring) {
@@ -1949,7 +1988,11 @@ impl Shell {
                     };
                     self.number_ui(ui, &head.text, &head.whole, size, true);
                 }
-                self.words_ui(ui, &head.words, None);
+                if head.text.is_empty() {
+                    self.words_wrapped_ui(ui, &head.words);
+                } else {
+                    self.words_ui(ui, &head.words, None);
+                }
             }
             Headline::None => {}
         }

@@ -23,7 +23,7 @@
 //! - X, Y or Z turns the plane across that axis through the middle of the
 //!   model; the word button after them lays it by the selection, and says
 //!   what a click will do now (`On face`, `Midway`, `Bisect`, `Other
-//!   bisector`, `Through axis`, `Turn 90°`; greyed `From selection` with
+//!   bisector`, `Through axis`; greyed `From selection` with
 //!   why under the plate: the UX round of 2026-11-18, V2).
 //! - Every plane a button makes or turns cuts away the half on the eye's
 //!   side (V3), so a cut faces you.
@@ -129,14 +129,13 @@ pub const WIDEST_WORD: &str = "From selection";
 
 /// Every label the word button has: the phone's row is laid out for the
 /// widest of them.
-pub const WORD_LABELS: [&str; 7] = [
+pub const WORD_LABELS: [&str; 6] = [
     "From selection",
     "On face",
     "Midway",
     "Bisect",
     "Other bisector",
     "Through axis",
-    "Turn 90°",
 ];
 
 /// What the plate says under it once the plane lies on a face, and what
@@ -164,7 +163,7 @@ pub const SIDE_BAND: f64 = 0.02;
 /// from the view's target to the eye): `flip` such that the normal into
 /// the half cut away points toward the eye. Within [`SIDE_BAND`] of
 /// square to the line of sight (a plane seen nearly edge on, such as one
-/// turned a quarter about a hole's axis from the one facing the eye) the
+/// through a hole's axis seen from far round its side) the
 /// side the eye itself is on decides, `from_eye` (how far the eye lies
 /// along `along` from the plane); where that is not known or nothing,
 /// `was`.
@@ -183,7 +182,7 @@ pub fn eye_side(along: Vec3, toward_eye: Vec3, from_eye: Option<f64>, was: bool)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WordButton {
     /// What a click will do: `On face`, `Midway`, `Bisect`, `Other
-    /// bisector`, `Through axis`, `Turn 90°`, `From selection`.
+    /// bisector`, `Through axis`, `From selection`.
     pub label: &'static str,
     /// Its hover: what it does, or why it cannot.
     pub hover: String,
@@ -210,6 +209,10 @@ impl WordButton {
 /// sine) is looking along it: the plane through the axis facing the
 /// viewer turns wildly with the view there.
 pub const ALONG: f64 = 0.034_899_496_702_500_97;
+
+/// The cut through a hole's axis faces the eye while its normal is within
+/// 1 degree (as its cosine) of the one a click would lay now.
+pub const FACING: f64 = 0.999_847_695_156_391_2;
 
 /// Two faces' normals closer than this (the sine of the angle between
 /// them, or between one and the other's opposite) are parallel, where the
@@ -246,34 +249,43 @@ impl PlaneChoice {
     }
 
     /// The plane through the axis of the round face selected (`planes`
-    /// holds its point and unit direction) a click makes for `section` as
-    /// it is, seen along `toward_eye` (the unit direction from the view's
-    /// target to the eye): its normal the part of that square to the
-    /// axis, toward the viewer, so the half toward them is cut away; a
-    /// second click, on that plane already, turns it a quarter about the
-    /// axis. `None` looking along the axis (within [`ALONG`]).
-    fn axis_plane(&self, section: &SectionState, toward_eye: Vec3) -> Option<([f64; 3], [f64; 3])> {
+    /// holds its point and unit direction) a click makes, seen along
+    /// `toward_eye` (the unit direction from the view's target to the eye):
+    /// its normal the part of that square to the axis, toward the viewer,
+    /// so the half toward them is cut away, the cut facing them. After the
+    /// view has turned a click lays it facing the eye again (the UX
+    /// verdict of 2026-11-18: no quarter turn, which is always seen edge
+    /// on). `None` looking along the axis (within [`ALONG`]).
+    fn axis_plane(&self, toward_eye: Vec3) -> Option<([f64; 3], [f64; 3])> {
         let &(point, [ax, ay, az]) = self.planes.first()?;
         let axis = Vec3::new(ax, ay, az).normalized()?;
-        let normal = match section.normal {
-            Some([nx, ny, nz])
-                if section.made == Some(SectionMade::Axis)
-                    && section.point == Some(point)
-                    && Vec3::new(nx, ny, nz).dot(axis).abs() < 1e-9 =>
-            {
-                axis.cross(Vec3::new(nx, ny, nz)).normalized()?
-            }
-            _ => {
-                let across = toward_eye - axis * toward_eye.dot(axis);
-                if across.length() < ALONG {
-                    return None;
-                }
-                across.normalized()?
-            }
-        };
+        let across = toward_eye - axis * toward_eye.dot(axis);
+        if across.length() < ALONG {
+            return None;
+        }
+        let normal = across.normalized()?;
         normal
             .is_finite()
             .then_some((point, [normal.x, normal.y, normal.z]))
+    }
+
+    /// Whether `section` is the plane through the axis a click would lay
+    /// now (`axis_plane`): through the same point, its normal into the
+    /// half cut away within [`FACING`] of the one facing the eye.
+    fn faces_axis(&self, section: &SectionState, toward_eye: Vec3) -> bool {
+        let Some((point, [fx, fy, fz])) = self.axis_plane(toward_eye) else {
+            return false;
+        };
+        let Some([nx, ny, nz]) = section.normal else {
+            return false;
+        };
+        let side = if section.flip { -1.0 } else { 1.0 };
+        let normal = Vec3::new(nx, ny, nz) * side;
+        section.made == Some(SectionMade::Axis)
+            && section.point == Some(point)
+            && normal
+                .normalized()
+                .is_some_and(|n| n.dot(Vec3::new(fx, fy, fz)) >= FACING)
     }
 
     /// Which of `planes` a click takes for `section` as it is: the other
@@ -382,28 +394,24 @@ impl PlaneChoice {
                     )
                 }
             }
-            Some(SectionMade::Axis) => {
-                let on_axis = section.made == Some(SectionMade::Axis)
-                    && self
-                        .planes
-                        .first()
-                        .is_some_and(|(point, _)| section.point == Some(*point));
-                match self.axis_plane(section, toward_eye) {
-                    None => WordButton::new("Through axis", ALONG_AXIS, false, true),
-                    Some(_) if on_axis => WordButton::new(
-                        "Turn 90°",
-                        "Turn the cut a quarter around the axis",
-                        false,
-                        false,
-                    ),
-                    Some(_) => WordButton::new(
-                        "Through axis",
-                        "Cut through the middle of this hole, facing you",
-                        false,
-                        false,
-                    ),
-                }
-            }
+            // Lit only while a click would change nothing: the cut lies
+            // through the axis facing the eye; once the view has turned, a
+            // click lays it facing the eye again.
+            Some(SectionMade::Axis) => match self.axis_plane(toward_eye) {
+                None => WordButton::new("Through axis", ALONG_AXIS, false, true),
+                Some(_) if self.faces_axis(section, toward_eye) => WordButton::new(
+                    "Through axis",
+                    "The cut lies through the axis, facing you",
+                    true,
+                    false,
+                ),
+                Some(_) => WordButton::new(
+                    "Through axis",
+                    "Cut through the middle of this hole, facing you",
+                    false,
+                    false,
+                ),
+            },
             None => WordButton::new("From selection", TAKES_FACES, false, true),
         }
     }
@@ -439,7 +447,7 @@ pub fn choose_plane_seen(
     // away).
     let along = match choice.made {
         Some(SectionMade::Axis) => {
-            let Some((point, normal)) = choice.axis_plane(section, toward_eye) else {
+            let Some((point, normal)) = choice.axis_plane(toward_eye) else {
                 return;
             };
             section.plane = None;
@@ -3128,20 +3136,27 @@ mod tests {
         assert!((n.length() - 1.0).abs() < 1e-12);
         let across = Vec3::new(eye.x, eye.y, 0.0).normalized().unwrap();
         assert!((n - across).length() < 1e-12, "{n:?} {across:?}");
-        // A second click: a quarter about the axis.
+        // Laid: lit, a click would change nothing (the UX verdict of
+        // 2026-11-18: no quarter turn, which is always seen edge on).
+        let word = round.button(&section, eye);
+        assert_eq!((word.label, word.lit), ("Through axis", true));
         assert_eq!(
             round.words(&section, eye),
-            "Turn the cut a quarter around the axis"
+            "The cut lies through the axis, facing you"
         );
-        assert_eq!(round.button(&section, eye).label, "Turn 90°");
-        choose_plane(&mut section, &round, eye);
+        // The view turned 40 degrees about the axis: offered again, and a
+        // click lays the cut facing the eye now.
+        let (s40, c40) = 40.0_f64.to_radians().psin_cos();
+        let turned = Vec3::new(eye.x * c40 - eye.y * s40, eye.x * s40 + eye.y * c40, eye.z);
+        let word = round.button(&section, turned);
+        assert_eq!((word.label, word.lit), ("Through axis", false));
+        choose_plane(&mut section, &round, turned);
         let [mx, my, mz] = section.normal.unwrap();
         let m = Vec3::new(mx, my, mz);
-        assert!(
-            m.dot(n).abs() < 1e-12 && m.dot(Vec3::Z).abs() < 1e-12,
-            "{m:?}"
-        );
+        let facing = Vec3::new(turned.x, turned.y, 0.0).normalized().unwrap();
+        assert!(m.dot(facing) > FACING && !section.flip, "{m:?}");
         assert_eq!(section.point, Some(axis.0));
+        assert!(round.button(&section, turned).lit);
         // Looking along the axis (1 degree off it): refused, nothing changes.
         let along = Vec3::new(
             1.0_f64.to_radians().psin(),

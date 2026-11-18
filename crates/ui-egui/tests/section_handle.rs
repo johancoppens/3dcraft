@@ -16,6 +16,7 @@
 )]
 
 use craft3d_engine::{Session, SnapKind, Workspace};
+use craft3d_math::Portable;
 use craft3d_ui_egui::shell::section_handle::{
     ALONG_AXIS, HIDDEN, HandlePart, NEITHER, NO_PLANE, NUMBER_FIELD, ON_FACE_NOTE, Snapped,
     TAKES_FACES,
@@ -1733,7 +1734,9 @@ fn another_body_beyond_does_not_make_a_convex_edges_outer_bisector_cut() {
 /// round face selected (a hole) makes the fourth button lay the plane
 /// through its axis, turned to face the viewer (the view's direction
 /// toward the eye less its part along the axis), so the half toward the
-/// viewer is cut away; a second click turns it a quarter about the axis;
+/// viewer is cut away; lit then, a click changes nothing; once the view
+/// has turned it is offered again and lays the cut facing the eye now (the
+/// UX verdict of 2026-11-18: no quarter turn, always seen edge on);
 /// looking along the axis it is refused in words and nothing changes. The
 /// plate says `axis`; the plane holds the axis; a drag moves it along its
 /// normal and the offset field prints the offset by the one rule.
@@ -1774,10 +1777,32 @@ fn a_hole_gives_the_plane_through_its_axis_facing_the_viewer() {
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
     assert_eq!(got["section"]["direction"], "free", "{}", got["section"]);
     assert!(shell.section_handle().unwrap().number.width() > 0.0);
-    // A second click: a quarter about the axis.
+    // Laid: lit, and a second click changes nothing.
+    let word = choice.button(&shell.state.section, eye);
+    assert_eq!((word.label, word.lit), ("Through axis", true));
+    let before = shell.state.section.clone();
+    let dot = shell.section_handle().unwrap().dots[3];
+    window.click(&mut shell, &mut session, dot);
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(shell.state.section, before);
+    // The view orbited 40 degrees about the hole's axis: offered again,
+    // not lit, and a click lays the cut facing the eye now, within a
+    // degree; Turn 90° never occurs.
+    let yaw = shell.state.camera.yaw + 40.0;
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"camera": {"yaw": yaw}}),
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let turned = shell.state.camera.toward_eye();
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    let word = &got["section"]["fromSelection"];
     assert_eq!(
-        choice.words(&shell.state.section, eye),
-        "Turn the cut a quarter around the axis"
+        (word["label"].as_str(), word["lit"].as_bool()),
+        (Some("Through axis"), Some(false)),
+        "{word}"
     );
     let dot = shell.section_handle().unwrap().dots[3];
     window.click(&mut shell, &mut session, dot);
@@ -1785,14 +1810,15 @@ fn a_hole_gives_the_plane_through_its_axis_facing_the_viewer() {
     let (again, second, made) = plane_of(&mut shell, &mut session);
     assert_eq!(made, "axis");
     assert_eq!(again, point);
-    let dot_product = first[0] * second[0] + first[1] * second[1] + first[2] * second[2];
-    assert!(
-        dot_product.abs() < 1e-9 && second[2].abs() < 1e-9,
-        "{second:?}"
-    );
+    let facing = craft3d_math::Vec3::new(turned.x, turned.y, 0.0)
+        .normalized()
+        .unwrap();
+    let cos = second[0] * facing.x + second[1] * facing.y + second[2] * facing.z;
+    assert!(cos > 1.0_f64.to_radians().pcos(), "{second:?} {facing:?}");
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_ne!(got["section"]["fromSelection"]["label"], "Turn 90°");
     // Another plane, then looking down the hole: refused in words,
-    // nothing changes. (On the axis's plane already, a click still turns
-    // it a quarter: no view is needed for that.)
+    // nothing changes.
     call(
         &mut shell,
         &mut session,
@@ -1937,7 +1963,7 @@ fn the_word_button_says_what_a_click_will_do() {
     window.frames(&mut shell, &mut session, 3);
     let (label, _, lit, _) = word_of(&mut shell, &mut session);
     assert_eq!((label.as_str(), lit), ("Bisect", true));
-    // A hole: Through axis, then Turn 90°.
+    // A hole: Through axis, then lit (no Turn 90°: the UX verdict).
     select_face(&mut session, json!({"hole": true, "radius": 3}));
     window.frames(&mut shell, &mut session, 3);
     let (label, hover, ..) = word_of(&mut shell, &mut session);
@@ -1951,10 +1977,14 @@ fn the_word_button_says_what_a_click_will_do() {
     let dot = shell.section_handle().unwrap().dots[3];
     window.click(&mut shell, &mut session, dot);
     window.frames(&mut shell, &mut session, 3);
-    let (label, hover, ..) = word_of(&mut shell, &mut session);
+    let (label, hover, lit, _) = word_of(&mut shell, &mut session);
     assert_eq!(
-        (label.as_str(), hover.as_str()),
-        ("Turn 90°", "Turn the cut a quarter around the axis")
+        (label.as_str(), hover.as_str(), lit),
+        (
+            "Through axis",
+            "The cut lies through the axis, facing you",
+            true
+        )
     );
     // Two faces of which one is a hole's wall: no plane.
     select_faces(
@@ -2067,9 +2097,9 @@ fn a_cut_faces_the_eye_from_every_view() {
     assert_eq!(shell.state.section.plane.as_deref(), Some("yz"));
 }
 
-/// V3: Turn 90° keeps the cut toward the eye: the eye lies on the side
-/// cut away (the plane turned a quarter about the axis holds the line of
-/// sight, so the eye's own place decides), and a typed distance outside
+/// V3: the cut through a hole's axis keeps toward the eye, also laid again
+/// after the view turned: the eye lies on the side cut away, and a
+/// typed distance outside
 /// where the plane meets the bodies is brought to the nearer end, and
 /// the plate says so.
 #[test]
@@ -2084,7 +2114,17 @@ fn a_turned_cut_and_a_typed_distance_cut_something() {
     );
     select_face(&mut session, json!({"hole": true, "radius": 3}));
     window.frames(&mut shell, &mut session, 3);
-    for _ in 0..2 {
+    for turn in 0..2 {
+        if turn == 1 {
+            let yaw = shell.state.camera.yaw + 40.0;
+            call(
+                &mut shell,
+                &mut session,
+                "ui.set",
+                json!({"camera": {"yaw": yaw}}),
+            );
+            window.frames(&mut shell, &mut session, 3);
+        }
         let dot = shell.section_handle().unwrap().dots[3];
         window.click(&mut shell, &mut session, dot);
         window.frames(&mut shell, &mut session, 3);
@@ -2184,4 +2224,94 @@ fn on_a_phone_the_word_button_has_its_labels_width_where_there_is_room() {
             }
         }
     }
+}
+
+/// A flange: a disc 80 across and 10 thick with a bore of 24 and six bolt
+/// holes of 8 on a circle of 60: round, so its mesh's box is a hair off
+/// its axis.
+fn flange() -> Session {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 40, "height": 10, "name": "Disc"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 12, "height": 30, "position": [0, 0, -10], "name": "Bore"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Disc", "tool": "Bore", "name": "Drilled0"}),
+    );
+    let mut last = "Drilled0".to_string();
+    for k in 0..6 {
+        let a = (60.0 * f64::from(k)).to_radians();
+        let (sin, cos) = a.psin_cos();
+        let hole = format!("Hole{k}");
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 4, "height": 30, "position": [30.0 * cos, 30.0 * sin, -10], "name": hole}),
+        );
+        let next = if k == 5 {
+            "Flange".to_string()
+        } else {
+            format!("Drilled{}", k + 1)
+        };
+        run(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": last, "tool": hole, "name": next}),
+        );
+        last = next;
+    }
+    s
+}
+
+/// The UX verdict of 2026-11-18, fixes 3 and 9: the first cut of the
+/// flange from the iso view lies through a place of the model (the bore's
+/// axis, the origin: `0 mm`, not the middle of its mesh's box, which reads
+/// 0.011 mm off), facing the eye; and an agent's `ui.set {section: {on:
+/// true}}` on a fresh tab lays the very same cut.
+#[test]
+fn the_first_cut_lies_through_a_place_of_the_model_and_an_agents_is_the_persons() {
+    let mut session = flange();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1200.0, 800.0);
+    window.frames(&mut shell, &mut session, 4);
+    let toggle = shell
+        .section_hits()
+        .iter()
+        .find(|(n, _)| *n == "toggle")
+        .unwrap()
+        .1
+        .center();
+    window.click(&mut shell, &mut session, toggle);
+    window.frames(&mut shell, &mut session, 3);
+    let clicked = shell.state.section.clone();
+    assert!(
+        matches!(clicked.plane.as_deref(), Some("yz" | "zx")),
+        "{clicked:?}"
+    );
+    assert_eq!(clicked.offset, 0.0, "{clicked:?}");
+    let eye = shell.state.camera.toward_eye();
+    let (_, normal, _) = plane_of(&mut shell, &mut session);
+    let n = craft3d_math::Vec3::new(normal[0], normal[1], normal[2]);
+    assert!(n.dot(eye) > 0.5, "facing: {n:?} {eye:?}");
+    // The agent's switch-on: the same cut.
+    let mut agent = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1200.0, 800.0);
+    window.frames(&mut agent, &mut session, 4);
+    call(
+        &mut agent,
+        &mut session,
+        "ui.set",
+        json!({"section": {"on": true}}),
+    );
+    window.frames(&mut agent, &mut session, 2);
+    assert_eq!(agent.state.section, clicked);
 }

@@ -523,7 +523,7 @@ slider and **Flip**.
 | Select a flat face, then click **On face** | Lay the plane on that face: along it, through it, the arrow pointing out of the body; the group says *Drag the arrow into the part to cut* |
 | Select two parallel flat faces, then click **Midway** | The plane midway between them (the two walls of a slot) |
 | Select two flat faces at an angle, then click **Bisect** | The plane that halves their angle, between them, through the line where they meet; the button then says **Other bisector**: click it for the other one, square to it, where that one cuts the model |
-| Select a hole's or a shaft's round face, then click **Through axis** | The plane through its axis, turned to face you: the half toward you is cut away, so you look into the hole; the button then says **Turn 90°**, to turn it a quarter about the axis |
+| Select a hole's or a shaft's round face, then click **Through axis** | The plane through its axis, turned to face you: the half toward you is cut away, so you look into the hole. The button is then lit; turn the view and it offers **Through axis** again, to lay the cut facing you as you look now |
 
 The word button says what a click will do now. Lit, the plane is that already, and a click changes
 nothing. Greyed (**From selection**), the selection gives no plane: nothing selected, a face that is neither

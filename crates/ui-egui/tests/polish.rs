@@ -231,9 +231,12 @@ fn one_t_on_screen_while_a_motion_plays() {
     }
 }
 
-/// A first section switched on without a place cuts across Z through the
-/// middle of the model's box; switched off and on again it keeps where
-/// it was; an offset given is kept.
+/// A first section switched on without a place cuts as the Section
+/// chip's first click does (the UX verdict of 2026-11-18; was across Z):
+/// across the plane that faces the eye most, from the iso view the
+/// model's shorter side (Y: 40 against 60), through the middle of the
+/// model's box, the half on the eye's side cut away; switched off and on
+/// again it keeps where it was; an offset given is kept.
 #[test]
 fn a_first_section_cuts_through_the_middle() {
     let mut session = Session::new(Workspace::none());
@@ -242,12 +245,15 @@ fn a_first_section_cuts_through_the_middle() {
     let mut window = Window::new(1280.0, 800.0);
     window.frames(&mut shell, &mut session, 3);
     set(&mut shell, &mut session, json!({"section": {"on": true}}));
-    assert_eq!(shell.state.section.plane.as_deref(), Some("xy"));
+    assert_eq!(shell.state.section.plane.as_deref(), Some("zx"));
     assert!(
-        (shell.state.section.offset - 15.0).abs() < 1e-9,
+        (shell.state.section.offset - 20.0).abs() < 1e-9,
         "{:?}",
         shell.state.section
     );
+    let eye = shell.state.camera.toward_eye();
+    let normal_y = if shell.state.section.flip { -1.0 } else { 1.0 };
+    assert!(normal_y * eye.y > 0.0, "the eye's half away: {eye:?}");
     set(
         &mut shell,
         &mut session,
