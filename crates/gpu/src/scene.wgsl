@@ -67,6 +67,18 @@ struct Scene {
     analysis_second: vec4<f32>,
     analysis_point: vec4<f32>,
     analysis_colors: array<vec4<f32>, 11>,
+    // The hatching of the section's cap (`craft3d_render::Hatching`,
+    // `cut.wgsl`'s `cap_color`). xyz: the plane's frame U and V; w: what
+    // is added to a point's u and v relative to the mesh origin, a whole
+    // number of spacings taken off near the camera's target.
+    section_u: vec4<f32>,
+    section_v: vec4<f32>,
+    // x: the spacing of the lines (0: no hatching, the paper alone);
+    // y: half a line's width in pixels; z: the model units of a pixel
+    // (at distance 1 in perspective); w: 1 in perspective.
+    section_hatch: vec4<f32>,
+    // rgb: the ink, as bytes over 255.
+    section_ink: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> scene: Scene;

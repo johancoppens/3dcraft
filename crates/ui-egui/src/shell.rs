@@ -630,7 +630,8 @@ struct SectionCache {
     revision: u64,
     tolerance: (f64, Option<f64>),
     state: SectionState,
-    cap: crate::theme::Rgb,
+    /// The cap's paper and hatching ([`Shell::section_cap`]).
+    cap: (crate::theme::Rgb, craft3d_render::Hatch),
     plane: SectionPlane,
     /// The offsets between which the plane passes through the bodies.
     range: Option<[f64; 2]>,
@@ -2359,7 +2360,16 @@ impl Shell {
     pub fn section(&self) -> Option<Section> {
         self.section_cache
             .as_ref()
-            .map(|cache| cache.plane.section(cache.cap))
+            .map(|cache| cache.plane.section(cache.cap.0, Some(cache.cap.1)))
+    }
+
+    /// The section's cap as the theme inks it: its paper, and its
+    /// hatching for the viewport's height in points (the window's pictures
+    /// of other sizes keep their lines where the viewport has them).
+    fn section_cap(&self) -> (crate::theme::Rgb, craft3d_render::Hatch) {
+        let points = f64::from(self.size[1]) / f64::from(self.pixels_per_point);
+        let points = (points.is_finite() && points > 0.0).then_some(points);
+        (self.tokens.section_paper, self.tokens.section_hatch(points))
     }
 
     /// The section made ready for the scene that is shown.
@@ -2471,7 +2481,7 @@ impl Shell {
             self.section_cache = None;
             return;
         }
-        let cap = self.tokens.section_cap;
+        let cap = self.section_cap();
         let current = self.section_cache.as_ref().is_some_and(|cache| {
             cache.revision == scene.revision
                 && cache.tolerance == scene.sampling()
@@ -2531,7 +2541,7 @@ impl Shell {
                     range: plane.range(&bounds),
                     cut: viewport::SectionCut::within(
                         scene,
-                        plane.section(cap),
+                        plane.section(cap.0, Some(cap.1)),
                         &bounds,
                         slabs.as_deref(),
                     ),

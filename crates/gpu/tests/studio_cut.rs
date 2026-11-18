@@ -181,6 +181,7 @@ fn scenes() -> Vec<(Scene, Section)> {
                 normal: Vec3::new(0.0, -1.0, 0.25),
                 cap: true,
                 color: [200, 90, 60],
+                hatch: None,
             },
         ),
         (
@@ -198,6 +199,7 @@ fn scenes() -> Vec<(Scene, Section)> {
                 normal: Vec3::new(0.6, -0.8, 0.0),
                 cap: true,
                 color: [120, 180, 90],
+                hatch: None,
             },
         ),
     ]
@@ -523,6 +525,7 @@ fn see_through_and_cut_open_frames_on_a_thousand_faces() {
         normal: Vec3::new(0.3, -1.0, 0.0),
         cap: true,
         color: [200, 90, 60],
+        hatch: None,
     };
     let colors = FaceColors::new();
     for (adapter, device, queue) in devices::devices() {

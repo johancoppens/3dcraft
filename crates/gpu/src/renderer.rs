@@ -32,8 +32,9 @@ pub(crate) const DEPTH_STENCIL_FORMAT: wgpu::TextureFormat =
 
 /// Number of `f32` in the scene uniform block: eight `vec4` for the view
 /// and the shading, one for the highlight's colour, one for its light,
-/// four for its runs of faces and four for the section.
-pub(crate) const SCENE_FLOATS: usize = 140;
+/// four for its runs of faces, four for the section, one for the fill
+/// light, sixteen for the analysis and four for the cap's hatching.
+pub(crate) const SCENE_FLOATS: usize = 156;
 
 /// Face ids are compared as `f32` in the shader: exact below this.
 const MAX_HIGHLIGHT_FACE: u32 = 1 << 24;
@@ -232,7 +233,8 @@ pub(crate) fn scene_uniforms(
         [f.x, f.y, f.z, if fill.is_some() { SHADE_FILL } else { 0.0 }],
     ];
     let analysis = analysis_uniforms(params, &axes, &mesh.bounds);
-    let wide = wide.iter().chain(analysis.iter());
+    let hatch = cut::hatch_uniforms(mesh, camera, params, cut);
+    let wide = wide.iter().chain(analysis.iter()).chain(hatch.iter());
     let mut out = [0.0_f32; SCENE_FLOATS];
     for (slot, value) in out.iter_mut().zip(wide.flatten()) {
         // Deliberate narrowing at the GPU boundary.

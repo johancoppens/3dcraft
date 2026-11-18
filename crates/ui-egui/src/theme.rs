@@ -26,10 +26,19 @@ pub struct Tokens {
     /// or the one an agent points at (`ui.highlight`). Shaded like the
     /// body, so the face keeps its shape.
     pub face_highlight: Rgb,
-    /// The cap of the section plane: where the plane passes through the
-    /// inside of a body. Drawn as it is, not shaded, so a cut reads as a
-    /// cut whatever the light.
-    pub section_cap: Rgb,
+    /// The cap of the section plane, where the plane passes through the
+    /// inside of a body: hatched paper, never the selection's colour (the
+    /// UX round of 2026-11-18, V1; taste the developer may overrule, one
+    /// token each). `section_paper` is its ground and `section_ink` its
+    /// lines at 45° in the plane, fixed to the model
+    /// (`craft3d_render::Hatch`): at most `section_hatch_spacing` points
+    /// apart at the camera's target (a power of two of the model unit;
+    /// 0 draws the paper alone), `section_hatch_width` points wide. Drawn
+    /// as it is, not shaded, so a cut reads as a cut whatever the light.
+    pub section_paper: Rgb,
+    pub section_ink: Rgb,
+    pub section_hatch_spacing: f32,
+    pub section_hatch_width: f32,
     /// Sketch geometry that is part of a profile, and its points: the
     /// info accent's indigo (2026-10-24, the developer's choice), cool
     /// against the warm body.
@@ -878,6 +887,17 @@ impl Default for Tokens {
 }
 
 impl Tokens {
+    /// The section cap's hatching as the renderers take it, for a picture
+    /// `height_points` high (`None`: a pixel is a point).
+    pub fn section_hatch(&self, height_points: Option<f64>) -> craft3d_render::Hatch {
+        craft3d_render::Hatch {
+            ink: self.section_ink,
+            spacing_points: f64::from(self.section_hatch_spacing),
+            width_points: f64::from(self.section_hatch_width),
+            height_points,
+        }
+    }
+
     /// The colours the renderers draw an analysis in.
     pub fn analysis_colors(&self) -> craft3d_render::analysis::AnalysisColors {
         craft3d_render::analysis::AnalysisColors {
@@ -900,7 +920,10 @@ impl Tokens {
             viewport_background: craft3d_engine::VIEWPORT_BACKGROUND,
             body: [221, 217, 210],
             face_highlight: [217, 134, 44],
-            section_cap: craft3d_engine::SECTION_CAP_COLOR,
+            section_paper: craft3d_engine::SECTION_PAPER,
+            section_ink: craft3d_engine::SECTION_INK,
+            section_hatch_spacing: craft3d_engine::SECTION_HATCH_SPACING as f32,
+            section_hatch_width: craft3d_engine::SECTION_HATCH_WIDTH as f32,
             // Indigo #4C5AA6 (the info accent), its light tint #8692D6 for
             // construction, the selection's copper #D9862C.
             sketch: [76, 90, 166],

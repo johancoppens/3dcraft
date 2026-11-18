@@ -17,13 +17,31 @@ use crate::{CommandError, Session};
 use craft3d_doc::{PlaneRef, WorldPlane};
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_regen::Datum;
-use craft3d_render::Section;
+use craft3d_render::{Hatch, Section};
 use serde_json::Value;
 use std::sync::Arc;
 
-/// The colour of a section's cap in the pictures the engine makes
-/// (`view.render`); a shell has its own in its theme.
-pub const SECTION_CAP_COLOR: [u8; 3] = [214, 132, 74];
+/// The paper of a section's cap: its ground, unshaded, in the pictures
+/// the engine makes (`view.render`), and through the theme's tokens in
+/// the window's. A cut is hatched paper, never the selection's colour
+/// (the UX round of 2026-11-18, V1).
+pub const SECTION_PAPER: [u8; 3] = [232, 228, 220];
+/// The ink of the cap's hatching: the edges' colour.
+pub const SECTION_INK: [u8; 3] = [88, 84, 78];
+/// The hatching's lines stand at most this many points apart at the
+/// camera's target, and more than half as many
+/// (`craft3d_render::Hatch::spacing_points`).
+pub const SECTION_HATCH_SPACING: f64 = 9.0;
+/// How wide a line of the hatching is, in points.
+pub const SECTION_HATCH_WIDTH: f64 = 1.0;
+/// The cap's hatching in a picture whose pixels are its points
+/// (`view.render`).
+pub const SECTION_HATCH: Hatch = Hatch {
+    ink: SECTION_INK,
+    spacing_points: SECTION_HATCH_SPACING,
+    width_points: SECTION_HATCH_WIDTH,
+    height_points: None,
+};
 /// The largest coordinate of a section's point and the largest offset, in
 /// model units.
 pub const MAX_SECTION_EXTENT: f64 = 1e12;
@@ -63,14 +81,16 @@ pub struct SectionPlane {
 }
 
 impl SectionPlane {
-    /// The section for a renderer, with a cap in `color`. The bodies of a
-    /// document are closed solids, so the plane through one has a cap.
-    pub fn section(&self, color: [u8; 3]) -> Section {
+    /// The section for a renderer, with a cap of `paper` hatched by
+    /// `hatch` (`None`: one flat colour). The bodies of a document are
+    /// closed solids, so the plane through one has a cap.
+    pub fn section(&self, paper: [u8; 3], hatch: Option<Hatch>) -> Section {
         Section {
             origin: self.origin,
             normal: self.normal,
             cap: true,
-            color,
+            color: paper,
+            hatch,
         }
     }
 
@@ -691,6 +711,6 @@ pub(crate) fn resolve_param(
         .map_err(|e| CommandError::new(format!("{command}: {e}")))?;
     Ok(Section {
         cap,
-        ..plane.section(SECTION_CAP_COLOR)
+        ..plane.section(SECTION_PAPER, Some(SECTION_HATCH))
     })
 }

@@ -480,6 +480,7 @@ fn a_section_cuts_the_grid_and_its_lines_end_on_the_plane() {
             normal,
             cap: true,
             color: [255, 128, 0],
+            hatch: None,
         };
         let cut = viewport::SectionCut::new(&scene, section).unwrap();
         let side = |p: Vec3| cut.cut.side(p);
