@@ -7,10 +7,10 @@
 //! [`UiState::hovered`]: crate::state::UiState::hovered
 //! [`UiState::picked`]: crate::state::UiState::picked
 
-use super::{Shell, edge_ref};
-use crate::state::{CameraState, Picked, PickedEntity, PickedKind};
+use super::{Shell, edge_ref, named_vertex};
+use crate::state::{CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, VertexRef};
 use crate::viewport;
-use craft3d_engine::{PickKind, Scene, SceneNear, ScenePointed};
+use craft3d_engine::{PickKind, Scene, SceneNear, ScenePointed, SelectionKind};
 use craft3d_render::Section;
 use serde_json::{Value, json};
 // The browser has no clock in `std` (`std::time::Instant::now` panics
@@ -78,6 +78,11 @@ pub const HOVER_EVERY: f64 = 0.033;
 /// rested [`HOVER_REST`] seconds, and nothing is outlined while it moves.
 pub const HOVER_QUICK_MS: f64 = 4.0;
 pub const HOVER_REST: f64 = 0.080;
+/// A pick under the pointer that has cost more than this many milliseconds
+/// (the median of the last ones) on the model shown stops the hover there:
+/// the window would stall a frame at every rest. `ui.pick` with `hover`
+/// still places one. Measured again on a model of another size.
+pub const HOVER_MAX_MS: f64 = 16.0;
 /// Most segments of a face's boundary outlined under the pointer.
 pub const MAX_HOVER_SEGMENTS: usize = 20_000;
 /// How many of the last picks their cost is the median of.
@@ -92,6 +97,10 @@ struct HoverKey {
     scene: (usize, u64, (f64, Option<f64>)),
     section: Option<Section>,
     size: [u32; 2],
+    /// What is selected and lit by the last click: a thing already chosen
+    /// is not outlined.
+    selection: u64,
+    lit: (Option<FaceRef>, Option<EdgeRef>, Option<VertexRef>),
 }
 
 /// Where the pointer rests over the viewport, and what was found there.
@@ -117,8 +126,15 @@ pub(super) struct Hover {
     /// (the frame's key).
     marks: viewport::Marks,
     drawn: u64,
-    /// What the last picks cost, in milliseconds.
+    /// What the last picks cost, in milliseconds, and the size of the
+    /// model they were made on (its triangles).
     costs: Vec<f64>,
+    costs_for: Option<usize>,
+    /// How many picks the frames made under the pointer.
+    picks: u64,
+    /// What lies under the pointer is selected or lit already: not
+    /// outlined.
+    chosen: bool,
 }
 
 impl Hover {
@@ -244,7 +260,11 @@ impl Shell {
     /// The outline of what a click would select under the pointer, drawn
     /// over the picture with the other marks.
     pub(crate) fn hover_marks(&self) -> viewport::Marks {
-        self.hover.marks.clone()
+        if self.hover_fresh() {
+            self.hover.marks.clone()
+        } else {
+            viewport::Marks::default()
+        }
     }
 
     fn hover_key(&self, scene: &Scene, [x, y]: [f64; 2]) -> HoverKey {
@@ -258,7 +278,78 @@ impl Shell {
             ),
             section: self.section(),
             size: self.size,
+            selection: self.selection_drawn(),
+            lit: (
+                self.state.highlight.clone(),
+                self.state.highlight_edge.clone(),
+                self.state.highlight_vertex.clone(),
+            ),
         }
+    }
+
+    /// Whether what `found` points at is selected already, or lit by the
+    /// last click: a person who has just clicked a thing needs no outline
+    /// of what a click would select there.
+    fn already_chosen(&self, found: &ScenePointed) -> bool {
+        let items = &self.select.view.items;
+        let has = |kind: SelectionKind, feature: &str, name: Option<&str>| {
+            name.is_some_and(|name| {
+                items
+                    .iter()
+                    .any(|i| i.kind == kind && i.feature == feature && i.name == name)
+            })
+        };
+        match found.kind() {
+            Some(PickKind::Vertex) => found.vertex.as_ref().is_some_and(|near| {
+                has(SelectionKind::Vertex, &near.feature, near.name.as_deref())
+                    || named_vertex(&near.feature, near.name.as_deref(), &near.faces)
+                        .is_some_and(|v| self.state.highlight_vertex.as_ref() == Some(&v))
+            }),
+            Some(PickKind::Edge) => found.edge.as_ref().is_some_and(|near| {
+                has(SelectionKind::Edge, &near.feature, near.name.as_deref())
+                    || edge_ref(near)
+                        .is_some_and(|e| self.state.highlight_edge.as_ref() == Some(&e))
+            }),
+            Some(PickKind::Face) => found.face.as_ref().is_some_and(|hit| {
+                self.select.faces.binary_search(&hit.face_id).is_ok()
+                    || hit.face.as_ref().is_some_and(|face| {
+                        self.state.highlight.as_ref().is_some_and(|lit| {
+                            &lit.face == face
+                                && lit.feature.as_deref().is_none_or(|f| f == hit.feature)
+                        })
+                    })
+            }),
+            Some(PickKind::Section) | None => false,
+        }
+    }
+
+    /// Whether what the hover found was found on the scene shown now (an
+    /// edit or another tab since leaves it stale until the next frame).
+    fn hover_fresh(&self) -> bool {
+        let shown = self.shown_scene_arc();
+        match (&self.hover.found_for, shown.as_deref()) {
+            (Some(key), Some(scene)) => {
+                key.scene.0 == std::ptr::from_ref(scene).addr() && key.scene.1 == scene.revision
+            }
+            _ => false,
+        }
+    }
+
+    /// How many picks the frames made under the pointer (`ui.pick` with
+    /// `hover` not counted).
+    pub fn hover_picks(&self) -> u64 {
+        self.hover.picks
+    }
+
+    /// Takes `milliseconds` as what the last picks under the pointer cost
+    /// on the model shown now: for tests of the ceiling
+    /// ([`HOVER_MAX_MS`]), which a clock cannot hold still.
+    pub fn note_hover_costs(&mut self, milliseconds: &[f64]) {
+        self.hover.costs.clear();
+        for &ms in milliseconds {
+            self.hover.note_cost(ms);
+        }
+        self.hover.costs_for = self.shown_scene_arc().map(|s| s.mesh.triangles.len());
     }
 
     /// Takes `found` at (`x`, `y`) as what lies under the pointer, and
@@ -275,9 +366,13 @@ impl Shell {
             (None, None) => true,
             _ => false,
         };
-        if !same {
-            self.hover.marks =
-                scene.map_or_else(viewport::Marks::default, |scene| outline_of(scene, found));
+        let chosen = next.is_some() && self.already_chosen(found);
+        if !same || chosen != self.hover.chosen {
+            self.hover.marks = match scene {
+                Some(scene) if !chosen => outline_of(scene, found),
+                _ => viewport::Marks::default(),
+            };
+            self.hover.chosen = chosen;
             self.hover.drawn = self.hover.drawn.wrapping_add(1);
         }
         self.state.hovered = next;
@@ -369,7 +464,6 @@ impl Shell {
             self.hover.at = None;
         }
         let blocked = moving
-            || down
             || touch
             || self.touch_gesture
             || self.select.menu.is_some()
@@ -381,6 +475,26 @@ impl Shell {
             self.clear_hovered();
             return;
         };
+        // A button down: what is outlined holds, no new pick (a click
+        // does not flicker; a drag clears it as the camera moves).
+        if down {
+            return;
+        }
+        // The costs measured on a model of another size do not hold.
+        let triangles = scene.mesh.triangles.len();
+        let other = self.hover.costs_for.is_none_or(|n| {
+            let ratio = triangles as f64 / n.max(1) as f64;
+            !(0.5..=2.0).contains(&ratio)
+        });
+        if other {
+            self.hover.costs.clear();
+            self.hover.costs_for = Some(triangles);
+        }
+        // Too dear on this model: no hover but one an agent placed.
+        if self.hover.cost() > HOVER_MAX_MS && !self.hover.placed {
+            self.clear_hovered();
+            return;
+        }
         let key = self.hover_key(scene, at);
         if self.hover.found_for.as_ref() == Some(&key) {
             return;
@@ -402,6 +516,7 @@ impl Shell {
         let found = self.pick(Some(scene), x, y, None, None, false);
         self.hover
             .note_cost(started.elapsed().as_secs_f64() * 1000.0);
+        self.hover.picks = self.hover.picks.saturating_add(1);
         self.hover.last = now;
         self.hover.found_for = Some(key);
         match found {
@@ -417,6 +532,9 @@ impl Shell {
         if let Some(id) = self.hover_point().and_then(|at| self.pin_at(at)) {
             let [x, y] = self.hover.at.unwrap_or_default();
             return json!({"kind": "note", "id": id, "x": x, "y": y, "serial": self.hover.serial});
+        }
+        if !self.hover_fresh() {
+            return Value::Null;
         }
         self.state
             .hovered

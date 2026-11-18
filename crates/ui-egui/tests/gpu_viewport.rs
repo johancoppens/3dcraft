@@ -1748,6 +1748,18 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
     assert_eq!(got["render"]["msaa"], report.msaa);
     assert_eq!(got["render"]["ssaa"], 1);
 
+    // The pointer comes to rest where the drag below starts first: resting
+    // on the model it outlines what a click there would select, a picture
+    // of its own (the hover, 2026-11-18), which is not the drag's.
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::PointerMoved(pos2(600.0, 350.0))],
+    );
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+
     // Nothing is drawn again while nothing changes.
     let count = shell.render_count();
     window.frame(&mut shell, &mut session, Vec::new());

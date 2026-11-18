@@ -345,6 +345,10 @@ fn on_the_direct_path_a_moving_camera_is_one_smaller_frame_and_a_resting_one_ful
         vec![Event::PointerMoved(at)],
     );
     window.release(&mut shell, &mut s, at, 1.0 / 60.0);
+    // The pointer leaves the view: resting on the model it would outline
+    // the face under it (the hover, 2026-11-18), which the picture before
+    // the turn did not have.
+    window.frame(&mut shell, &mut s, 1.0 / 60.0, vec![Event::PointerGone]);
     window.frame(&mut shell, &mut s, STILL_DELAY * 2.0, Vec::new());
     assert!(!shell.interacting_light());
     let (drawn, w, h, after) = settled(&mut window, &mut shell, &mut s, "rested");

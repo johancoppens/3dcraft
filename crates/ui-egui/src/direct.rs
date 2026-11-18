@@ -336,11 +336,6 @@ pub fn segments_marked(
             }
         }
     }
-    for &[a, b] in &marks.lines {
-        if let Some([a, b]) = marks.kept(a, b) {
-            line(a, b, LineKind::Highlight, true, true, false, 0.0);
-        }
-    }
     // What a click would select, where it is in sight: its dark casing,
     // then the amber over it.
     for (kind, lines) in [
@@ -353,6 +348,11 @@ pub fn segments_marked(
             if let Some([a, b]) = marks.kept(a, b) {
                 line(a, b, kind, true, false, false, 0.0);
             }
+        }
+    }
+    for &[a, b] in &marks.lines {
+        if let Some([a, b]) = marks.kept(a, b) {
+            line(a, b, LineKind::Highlight, true, true, false, 0.0);
         }
     }
     for sketch in scene
@@ -402,24 +402,6 @@ pub fn segments_marked(
         });
     }
     for point in marks
-        .points
-        .iter()
-        .filter(|point| marks.kept(**point, **point).is_some())
-    {
-        out.push(Segment {
-            from: *point,
-            to: *point,
-            color: LineKind::Highlight.color(tokens),
-            width: LineKind::Highlight.dot_radius(tokens) * 2.0 * scale,
-            tested: true,
-            dimmed: true,
-            axis: false,
-            hidden_opacity: None,
-            edge: None,
-            lift: 0.0,
-        });
-    }
-    for point in marks
         .hover_points
         .iter()
         .filter(|point| marks.kept(**point, **point).is_some())
@@ -438,6 +420,24 @@ pub fn segments_marked(
                 lift: 0.0,
             });
         }
+    }
+    for point in marks
+        .points
+        .iter()
+        .filter(|point| marks.kept(**point, **point).is_some())
+    {
+        out.push(Segment {
+            from: *point,
+            to: *point,
+            color: LineKind::Highlight.color(tokens),
+            width: LineKind::Highlight.dot_radius(tokens) * 2.0 * scale,
+            tested: true,
+            dimmed: true,
+            axis: false,
+            hidden_opacity: None,
+            edge: None,
+            lift: 0.0,
+        });
     }
     out
 }

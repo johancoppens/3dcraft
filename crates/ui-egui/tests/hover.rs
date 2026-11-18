@@ -412,17 +412,13 @@ fn the_outline_goes_with_a_button_down_the_mouse_gone_and_the_mouse_moving_in() 
     window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
     window.frames(&mut shell, &mut session, 4);
     assert_eq!(hovered(&mut shell, &mut session)["kind"], "face");
-    // A button down (a drag about to turn the view): no outline.
+    // A button down: what was outlined holds, and no new pick is made
+    // (a click does not flicker; a drag that turns the view takes the
+    // outline away as the camera moves).
+    let picks = shell.hover_picks();
     window.button(&mut shell, &mut session, at, true);
-    assert_eq!(hovered(&mut shell, &mut session), Value::Null);
-    assert!(
-        !shell
-            .overlay()
-            .0
-            .lines
-            .iter()
-            .any(|l| l.kind == LineKind::Hover)
-    );
+    assert_eq!(hovered(&mut shell, &mut session)["kind"], "face");
+    assert_eq!(shell.hover_picks(), picks);
     window.button(&mut shell, &mut session, at, false);
     call(
         &mut shell,
@@ -736,4 +732,116 @@ fn the_hover_outline_reads_on_any_body_colour() {
             changed.len()
         );
     }
+}
+
+/// A thing already selected is not outlined as what a click would select
+/// (the review of 2026-11-18): the pointer resting on an edge outlines it;
+/// clicked, it is selected and lit, and the hover draws nothing over the
+/// selection's light; `hovered` still names it.
+#[test]
+fn what_is_selected_already_is_not_outlined_again() {
+    let (mut session, mut shell, mut window) = plate_in_a_window();
+    let rect = shell.viewport_rect().unwrap();
+    let things = three_things(&mut shell, &mut session);
+    let (_, [x, y], _) = &things[1];
+    let at = egui::pos2(rect.left() + *x as f32, rect.top() + *y as f32);
+    let hover_lines = |shell: &Shell| {
+        shell
+            .overlay()
+            .0
+            .lines
+            .iter()
+            .filter(|l| matches!(l.kind, LineKind::HoverEdge | LineKind::HoverEdgeCasing))
+            .count()
+    };
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
+    window.frames(&mut shell, &mut session, 4);
+    assert!(hover_lines(&shell) > 0, "the edge is outlined");
+    window.button(&mut shell, &mut session, at, true);
+    window.button(&mut shell, &mut session, at, false);
+    window.frames(&mut shell, &mut session, 4);
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(
+        got["selection"]["items"][0]["kind"], "edge",
+        "{}",
+        got["selection"]
+    );
+    assert_eq!(got["hovered"]["kind"], "edge", "{}", got["hovered"]);
+    assert_eq!(hover_lines(&shell), 0, "no outline over the selection");
+    assert!(
+        shell
+            .overlay()
+            .0
+            .lines
+            .iter()
+            .any(|l| l.kind == LineKind::Highlight)
+    );
+    // Taken out of the selection, it is outlined again.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.select",
+        json!({"mode": "clear"}),
+    );
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"highlight": null, "highlightEdge": null, "highlightVertex": null}),
+    );
+    window.frames(&mut shell, &mut session, 4);
+    assert!(hover_lines(&shell) > 0, "outlined again");
+}
+
+/// Where a pick under the pointer has cost more than 16 ms on the model
+/// shown, the frames make no more of them (the window would stall at each
+/// rest); `ui.pick` with `hover` still places one; a model of another size
+/// is measured again. Counted, not timed: the costs are given.
+#[test]
+fn a_pick_too_dear_for_the_model_stops_the_hover() {
+    let (mut session, mut shell, mut window) = plate_in_a_window();
+    let rect = shell.viewport_rect().unwrap();
+    let [x, y] = pixel_of(&shell, Vec3::new(30.0, 20.0, 8.0));
+    let on = egui::pos2(rect.left() + x as f32, rect.top() + y as f32);
+    let off = egui::pos2(rect.left() + 5.0, rect.top() + 5.0);
+    let hovered = |shell: &mut Shell, session: &mut Session| {
+        call(shell, session, "ui.get", json!({}))["hovered"].clone()
+    };
+    // Cheap: the mouse resting on the face picks it.
+    shell.note_hover_costs(&[1.0; 15]);
+    let picks = shell.hover_picks();
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(on)]);
+    window.frames(&mut shell, &mut session, 8);
+    assert!(shell.hover_picks() > picks);
+    assert_eq!(hovered(&mut shell, &mut session)["kind"], "face");
+    // Dear: no pick, nothing outlined.
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(off)]);
+    window.frames(&mut shell, &mut session, 4);
+    shell.note_hover_costs(&[20.0; 15]);
+    let picks = shell.hover_picks();
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(on)]);
+    window.frames(&mut shell, &mut session, 8);
+    assert_eq!(shell.hover_picks(), picks, "no pick on a model too dear");
+    assert_eq!(hovered(&mut shell, &mut session), Value::Null);
+    // An agent's pointer still is placed.
+    let placed = call(
+        &mut shell,
+        &mut session,
+        "ui.pick",
+        json!({"x": x, "y": y, "hover": true}),
+    );
+    assert_eq!(placed["hovered"]["kind"], "face", "{placed}");
+    // A model of another size is measured again: the plate patterned 4
+    // times over.
+    run(
+        &mut session,
+        "feature.pattern",
+        json!({"source": "Plate", "count": 4, "step": [70, 0, 0], "name": "Plates"}),
+    );
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(off)]);
+    window.frames(&mut shell, &mut session, 2);
+    let picks = shell.hover_picks();
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(on)]);
+    window.frames(&mut shell, &mut session, 8);
+    assert!(shell.hover_picks() > picks, "measured again");
 }
