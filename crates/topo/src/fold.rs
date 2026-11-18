@@ -67,7 +67,7 @@ const OPPOSITE: f64 = -0.9;
 /// The search's grid over its box, a side.
 const GRID: usize = 120;
 /// Steps along each edge of the walk.
-const PER_EDGE: usize = 256;
+const PER_EDGE: usize = 1024;
 /// The work of a face: suspects searched, pairs looked at in one search,
 /// spans asked.
 const MOST_SEARCHES: usize = 32;
@@ -648,7 +648,7 @@ fn walk(body: &Body, face: &Face) -> Chart {
         sags: Vec::new(),
         followed: true,
     };
-    let steps = f64::from(u32::try_from(PER_EDGE).unwrap_or(256));
+    let steps = f64::from(u32::try_from(PER_EDGE).unwrap_or(1024));
     for id in &face.loops {
         let Some(lp) = body.loop_(*id) else {
             out.followed = false;
