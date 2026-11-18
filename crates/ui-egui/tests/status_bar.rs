@@ -867,25 +867,26 @@ fn the_bar_counts_the_triangles_of_the_scene_shown_never_the_last_documents_0() 
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     let empty = empty.expect("the empty document's renderer item");
-    assert!(empty.ends_with(" 0 triangles"), "{empty:?}");
+    assert!(empty.contains(" 0 triangles"), "{empty:?}");
     run(&mut session, "file.open", json!({"path": "opened.3dcraft"}));
-    let mut counted = None;
-    for k in 0..400 {
+    let mut counted: Option<usize> = None;
+    for k in 0..400_usize {
         frame(&mut shell, &mut session);
         let Some(scene) = shell.shown_scene_arc().filter(|s| s.triangles() > 0) else {
             std::thread::sleep(std::time::Duration::from_millis(2));
             continue;
         };
-        let shown = said(&shell);
-        assert!(
-            !shown.as_deref().is_some_and(|s| s.contains(" 0 triangles")),
-            "frame {k} after the open the bar says {shown:?} beside {} triangles",
-            scene.triangles()
-        );
-        if let Some(shown) = shown {
-            let count = format!(" {} triangles", scene.triangles());
-            if shown.contains(&count) {
-                counted = Some(shown);
+        // From the first frame that shows the part: its own count, or
+        // none while its picture is still to come; never another's.
+        let count = format!(" {} triangles", scene.triangles());
+        if let Some(shown) = said(&shell) {
+            assert!(
+                shown.contains(&count),
+                "frame {k} after the open the bar says {shown:?} beside{count}"
+            );
+            // Watched a second longer: the sharp picture after the quick.
+            let first = *counted.get_or_insert(k);
+            if k > first + 60 {
                 break;
             }
         }

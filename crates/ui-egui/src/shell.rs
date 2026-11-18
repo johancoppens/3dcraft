@@ -4285,16 +4285,20 @@ impl Shell {
         }
         // The renderer's numbers only while a document is shown: the start
         // screen has no picture to speak of (2026-11-10).
-        // Never a picture's 0 beside a scene that has triangles: the bar
-        // is laid out before the viewport draws, so the first frames after
-        // an open would say the empty document's 0 beside the model (the
-        // UX verdict of 2026-11-18). The item waits for the next picture,
-        // and says it at once (its hold let go of). An empty document's 0
-        // is said (the review of the UX round).
-        let shown_triangles = self.shown_scene.as_ref().map_or(0, |s| s.triangles());
-        let stale = self
-            .stats
-            .is_some_and(|stats| stats.triangles == 0 && shown_triangles > 0);
+        // Only the count the scene shown draws, on either path: the bar is
+        // laid out before the viewport draws, so the first frames after an
+        // open would say the last picture's count, the empty document's 0
+        // beside the model (the UX verdict of 2026-11-18). A picture of
+        // another scene waits for the next, which is said at once (its
+        // hold let go of). An empty document's 0 is said (the review of
+        // the UX round).
+        let drawn = self.shown_scene.as_ref().map_or(0, |scene| {
+            self.analysis_view.as_ref().map_or_else(
+                || scene.triangles(),
+                |analysis| analysis.mesh_or(&scene.mesh).triangles.len(),
+            )
+        });
+        let stale = self.stats.is_some_and(|stats| stats.triangles != drawn);
         if stale {
             self.calm.render = calm::Held::default();
         }
