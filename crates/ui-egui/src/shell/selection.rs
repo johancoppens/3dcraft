@@ -547,6 +547,23 @@ impl Shell {
         });
     }
 
+    /// A right click at (`x`, `y`) of the viewport's pixels without a
+    /// mouse (`ui.pick` with `secondary`): opens the list a right click
+    /// there opens, *Note here…* on top for what it points at, where a
+    /// right click would put it. It chooses no entry, so it changes no
+    /// document; it opens nothing but the view's own list.
+    pub(crate) fn open_note_list(&mut self, scene: &Scene, x: f64, y: f64) {
+        let Some(rect) = self.rect else {
+            return;
+        };
+        let scale = self.pixels_per_point.max(0.1);
+        let at = egui::pos2(
+            rect.left() + (x / f64::from(scale)) as f32,
+            rect.top() + (y / f64::from(scale)) as f32,
+        );
+        self.open_other_menu(Some(scene), x, y, at, false);
+    }
+
     /// The faces of the open "select other" list, front to back, as
     /// (feature, face name): what a click on entry `k` selects.
     pub fn other_menu(&self) -> Option<Vec<(String, Option<String>)>> {

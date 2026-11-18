@@ -32,8 +32,8 @@ pub const UI_METHODS: &[UiMethod] = &[
     },
     UiMethod {
         name: "ui.pick",
-        params: r#"{"x": number, "y": number, "width": integer = the viewport's, "height": integer = the viewport's, "radius": number = the click's (4 points), "select": boolean = false, "hover": boolean = false, "all": boolean = false, "shift": boolean = false, "alt": boolean = false}"#,
-        summary: "Says what the viewport shows at a position, as the command view.pick does, for the viewport's mesh and camera and cut open by the viewport's section when that is on (then kind is section where the cap of the section is in front, with section: {feature, body, point, depth}, the body that is cut there and the point of the plane): kind (vertex when a vertex is near, otherwise edge when an edge is near, otherwise face), the face under the position (the body as feature and name, the face's persistent name as document.inspect lists it under faceNames, with faceIndex and aliases, and the point in space) and, when its nearest point in sight is within radius pixels, edge: {feature, body, name, index, faces, point, depth, distance}, the edge as document.edges lists it (name is its own persistent name or null, faces the names of the faces it lies between), or vertex, with the same fields, when a vertex in sight is within radius pixels (faces: the faces that meet in it; index: its index under vertices of document.edges). x and y are in pixels from the top-left corner of the viewport (the picture ui.screenshot makes; width and height when that picture was made at another size), the centre of pixel (i, j) at (i + 0.5, j + 0.5). radius is in pixels of that picture, 0 to 64, 0 for faces only; without it, it is what a click uses. hit is false when nothing is there, with outside true when the position is not in the viewport. With select it counts as a click of the mouse: state.picked becomes this pick and what it points at is highlighted, the vertex (state.highlightVertex), or else the edge (state.highlightEdge), or else the face (state.highlight); a pick on nothing clears them. A click in the viewport does the same, so state.picked of ui.get is what the developer pointed at last. A click also selects (ui.select, select.get): what it points at (the vertex, else the edge, else the face) replaces the selection, nothing clears it; with shift (Shift held) it is toggled instead; a click again on the same spot (within 3 pixels, the camera and the model unchanged), or with alt (Alt held), selects the next face behind the last one along the ray, going round to the front after the last, and highlights it; the result then has selection, as select.get gives it. With all, hits lists every face along the ray front to back, as view.pick gives it (the faces a right click in the viewport lists to choose from). With hover it places the pointer there without a click, in the viewport's pixels as a click is: what it points at becomes hovered (ui.get › hovered, null on nothing), what a click there would select, outlined in the view as the mouse resting there outlines it, until the mouse moves over the viewport; the result then has hovered. hover and select are not given together.",
+        params: r#"{"x": number, "y": number, "width": integer = the viewport's, "height": integer = the viewport's, "radius": number = the click's (4 points), "select": boolean = false, "hover": boolean = false, "secondary": boolean = false, "all": boolean = false, "shift": boolean = false, "alt": boolean = false}"#,
+        summary: "Says what the viewport shows at a position, as the command view.pick does, for the viewport's mesh and camera and cut open by the viewport's section when that is on (then kind is section where the cap of the section is in front, with section: {feature, body, point, depth}, the body that is cut there and the point of the plane): kind (vertex when a vertex is near, otherwise edge when an edge is near, otherwise face), the face under the position (the body as feature and name, the face's persistent name as document.inspect lists it under faceNames, with faceIndex and aliases, and the point in space) and, when its nearest point in sight is within radius pixels, edge: {feature, body, name, index, faces, point, depth, distance}, the edge as document.edges lists it (name is its own persistent name or null, faces the names of the faces it lies between), or vertex, with the same fields, when a vertex in sight is within radius pixels (faces: the faces that meet in it; index: its index under vertices of document.edges). x and y are in pixels from the top-left corner of the viewport (the picture ui.screenshot makes; width and height when that picture was made at another size), the centre of pixel (i, j) at (i + 0.5, j + 0.5). radius is in pixels of that picture, 0 to 64, 0 for faces only; without it, it is what a click uses. hit is false when nothing is there, with outside true when the position is not in the viewport. With select it counts as a click of the mouse: state.picked becomes this pick and what it points at is highlighted, the vertex (state.highlightVertex), or else the edge (state.highlightEdge), or else the face (state.highlight); a pick on nothing clears them. A click in the viewport does the same, so state.picked of ui.get is what the developer pointed at last. A click also selects (ui.select, select.get): what it points at (the vertex, else the edge, else the face) replaces the selection, nothing clears it; with shift (Shift held) it is toggled instead; a click again on the same spot (within 3 pixels, the camera and the model unchanged), or with alt (Alt held), selects the next face behind the last one along the ray, going round to the front after the last, and highlights it; the result then has selection, as select.get gives it. With all, hits lists every face along the ray front to back, as view.pick gives it (the faces a right click in the viewport lists to choose from). With hover it places the pointer there without a click, in the viewport's pixels as a click is: what it points at becomes hovered (ui.get › hovered, null on nothing), what a click there would select, outlined in the view as the mouse resting there outlines it, until the mouse moves over the viewport; the result then has hovered. With secondary it is a right click there (a press and hold on a touch screen), for an agent showing the person around: the view's list opens as the right button opens it, Note here… on top for what is pointed at (greyed with the reason in an assembly or a Jig in use), then the faces under it; the result then has list ([{feature, face}], the faces, front to back). It chooses no entry and changes no document, and it opens the view's own list only: a position outside the view is refused, and it never reaches a panel, a dialog or a question of the File menu. hover, select and secondary are not given together.",
     },
     UiMethod {
         name: "ui.highlight",
@@ -749,7 +749,17 @@ impl Shell {
             method,
             params,
             &[
-                "x", "y", "width", "height", "radius", "select", "hover", "all", "shift", "alt",
+                "x",
+                "y",
+                "width",
+                "height",
+                "radius",
+                "select",
+                "hover",
+                "secondary",
+                "all",
+                "shift",
+                "alt",
             ],
         )?;
         let number = |key: &str| match map.get(key) {
@@ -784,13 +794,21 @@ impl Shell {
         };
         let select = flag("select")?;
         let hover = flag("hover")?;
-        if select && hover {
+        let secondary = flag("secondary")?;
+        if u8::from(select) + u8::from(hover) + u8::from(secondary) > 1 {
             return Err(format!(
-                "{method}: `hover` places the pointer without a click and `select` clicks; give one of them"
+                "{method}: `hover` places the pointer without a click, `select` clicks and `secondary` clicks the right button; give one of them"
+            ));
+        }
+        // A right click opens the view's own list, so it falls in the
+        // view: never on a panel, a dialog or a question of the File menu.
+        if secondary && !(x >= 0.0 && y >= 0.0 && x < f64::from(width) && y < f64::from(height)) {
+            return Err(format!(
+                "{method}: `secondary` clicks the right button in the view: x and y must be pixels within its {width} × {height}"
             ));
         }
         // A click and the pointer are in the viewport's own pixels.
-        let in_viewport = select || hover;
+        let in_viewport = select || hover || secondary;
         let all = flag("all")?;
         let (shift, alt) = (flag("shift")?, flag("alt")?);
         if (shift || alt) && !select {
@@ -854,6 +872,14 @@ impl Shell {
             self.apply_selection_requests(session);
             self.sync(session);
         }
+        // A right click: the list of the faces under it, *Note here…* on
+        // top for what it points at (an agent showing the person around).
+        let listed = if secondary {
+            self.open_note_list(&scene, px, py);
+            Some(self.other_menu().unwrap_or_default())
+        } else {
+            None
+        };
         let outside = !(x >= 0.0 && y >= 0.0 && x < f64::from(width) && y < f64::from(height));
         let mut result = json!({
             "x": x,
@@ -865,6 +891,16 @@ impl Shell {
             pointed.describe(map);
             if pointed.kind().is_none() {
                 map.insert("outside".into(), outside.into());
+            }
+            if let Some(listed) = &listed {
+                map.insert(
+                    "list".into(),
+                    listed
+                        .iter()
+                        .map(|(feature, face)| json!({"feature": feature, "face": face}))
+                        .collect::<Vec<_>>()
+                        .into(),
+                );
             }
             if let Some(hits) = &hits {
                 map.insert(

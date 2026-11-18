@@ -835,6 +835,67 @@ fn note_here_writes_on_the_face_pointed_at_not_the_one_selected() {
     );
 }
 
+/// `ui.pick` with `secondary` (2026-11-18): a right click without a mouse
+/// opens the view's list with *Note here…* on top and returns the faces
+/// under it; it chooses no entry and changes no document; it is refused
+/// with `select` or `hover`, and at a position outside the view or no
+/// number at all.
+#[test]
+fn ui_pick_secondary_opens_the_list_and_changes_nothing() {
+    let mut session = plate();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    let [vw, vh] = shell.viewport_size();
+    let (x, y) = (f64::from(vw) / 2.0, f64::from(vh) / 2.0);
+    let before = session.document_bytes();
+    let pick = |shell: &mut Shell, session: &mut Session, params: Value| {
+        shell
+            .handle_method(session, "ui.pick", Some(&params))
+            .unwrap()
+    };
+    let listed = pick(
+        &mut shell,
+        &mut session,
+        json!({"x": x, "y": y, "secondary": true}),
+    )
+    .expect("a right click in the view");
+    let list = listed["list"].as_array().expect("the list's faces");
+    assert!(!list.is_empty(), "{listed}");
+    w.frames(&mut shell, &mut session, 2);
+    assert!(shell.note_here_entry().is_some(), "Note here… on top");
+    assert!(shell.note_writing().is_none(), "no entry chosen");
+    assert!(shell.selection().items.is_empty(), "nothing selected");
+    assert!(session.document_bytes() == before, "the document as it was");
+    for (params, says) in [
+        (
+            json!({"x": x, "y": y, "secondary": true, "select": true}),
+            "give one of them",
+        ),
+        (
+            json!({"x": x, "y": y, "secondary": true, "hover": true}),
+            "give one of them",
+        ),
+        (json!({"x": 1e308, "y": y, "secondary": true}), "within its"),
+        (json!({"x": -1.0, "y": y, "secondary": true}), "within its"),
+        (
+            json!({"x": x, "y": f64::from(vh), "secondary": true}),
+            "within its",
+        ),
+        (
+            json!({"x": null, "y": y, "secondary": true}),
+            "missing parameter `x`",
+        ),
+        (
+            json!({"x": "a", "y": y, "secondary": true}),
+            "finite number",
+        ),
+        (json!({"x": x, "y": y, "secondary": 1}), "true or false"),
+    ] {
+        let refused = pick(&mut shell, &mut session, params.clone()).unwrap_err();
+        assert!(refused.contains(says), "{params}: {refused}");
+    }
+}
+
 /// N5: **N** says why it writes nothing: nothing selected, or more than
 /// one thing.
 #[test]
