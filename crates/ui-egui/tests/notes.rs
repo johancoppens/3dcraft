@@ -444,6 +444,102 @@ fn ui_set_refuses_a_note_the_document_does_not_have() {
     assert_eq!(shell.state.notes.selected, Some(2));
 }
 
+/// Where the side panel drew the target `key` in the last frame.
+fn side_target(shell: &Shell, key: &str) -> Option<Rect> {
+    shell
+        .side_hits()
+        .targets
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, r)| *r)
+}
+
+/// The tab's field for a note's changed text keeps it when `note.edit`
+/// refuses it, and says why (review-pins 2b: not checked).
+#[test]
+fn a_refused_change_keeps_its_text_in_the_tab() {
+    let mut session = noted();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    set(
+        &mut shell,
+        &mut session,
+        json!({"panels": {"sideTab": "notes"}, "notes": {"selected": 1}}),
+    );
+    w.frames(&mut shell, &mut session, 3);
+    let edit = side_target(&shell, "note edit:1").expect("Edit on the chosen note");
+    w.click(&mut shell, &mut session, edit.center());
+    assert_eq!(shell.note_editing().map(|(id, ..)| id), Some(1));
+    shell.type_note_edit("a bell\u{7} here", true);
+    w.frames(&mut shell, &mut session, 3);
+    let (id, text, error) = shell
+        .note_editing()
+        .map(|(id, text, error)| (id, text.to_string(), error.map(str::to_string)))
+        .expect("the field stays open");
+    assert_eq!(id, 1);
+    assert_eq!(text, "a bell\u{7} here");
+    assert!(
+        error
+            .as_deref()
+            .is_some_and(|e| e.contains("control character")),
+        "{error:?}"
+    );
+    let listed = run(&mut session, "note.list", json!({}));
+    assert_eq!(listed["notes"][0]["text"], "2 mm thicker here", "{listed}");
+    // Put right, it is kept and the field closes.
+    shell.type_note_edit("3 mm thicker here", true);
+    w.frames(&mut shell, &mut session, 3);
+    assert!(shell.note_editing().is_none());
+    let listed = run(&mut session, "note.list", json!({}));
+    assert_eq!(listed["notes"][0]["text"], "3 mm thicker here", "{listed}");
+}
+
+/// On a short window the selection's card under the Notes tab keeps its
+/// buttons within the panel (review-pins 2b: Measure and Copy name ended
+/// 3 px below it at 1280 × 460 and 26 px at 390 × 500).
+#[test]
+fn the_card_under_the_notes_tab_is_within_reach_on_short_windows() {
+    for size in [[1280.0_f32, 460.0], [390.0, 500.0]] {
+        let mut session = plate();
+        for k in 0..30 {
+            session
+                .by_person(|s| {
+                    s.execute(
+                        "note.add",
+                        &json!({"text": format!("note {k}"), "on": "Plate:face(1)",
+                                "point": [5.0 + 1.5 * f64::from(k), 20.0, 10.0]}),
+                    )
+                })
+                .unwrap();
+        }
+        let mut w = Window::new(size[0], size[1]);
+        let mut shell = open(&mut w, &mut session);
+        run(
+            &mut session,
+            "select.set",
+            json!({"names": ["F2:copy(0)/F1:face(1)"]}),
+        );
+        let mut panels = json!({"sideTab": "notes"});
+        if size[0] < 500.0 {
+            panels["drawer"] = json!(true);
+        }
+        set(&mut shell, &mut session, json!({ "panels": panels }));
+        w.frames(&mut shell, &mut session, 6);
+        let panel = shell.side_hits().panel.expect("the side panel");
+        let mut seen = 0;
+        for key in ["measure", "copy name"] {
+            if let Some(r) = side_target(&shell, key) {
+                seen += 1;
+                assert!(
+                    panel.expand(1.0).contains_rect(r),
+                    "{size:?}: {key} {r:?} not within {panel:?}"
+                );
+            }
+        }
+        assert!(seen > 0, "{size:?}: the card's buttons were drawn");
+    }
+}
+
 #[test]
 fn the_tab_closes_a_note_and_the_pill_counts_an_agents_questions() {
     let mut session = noted();

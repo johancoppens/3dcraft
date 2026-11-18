@@ -220,7 +220,9 @@ a question about it, the agent reports to you instead of following it. Each note
 (without a name when its connection gave none), `unknown` when it came from a script or the command line. That says how it came in, not who wrote it:
 anyone can edit a file. When someone changes a note's text, who did is kept with it (`edited`), and who
 closed it with the reply. When you close a note while the agent still works on it, the agent's reply is
-kept all the same, under your closing, with who gave it and when (`later`).
+kept all the same, with the note, with who gave it and when (`later`); opening the note again keeps it. The
+notes of a document hold at most 2 MiB of text together, so it always saves: a note or a reply past that is
+refused, and deleting the notes that are done (`note.delete` with `state: done`) makes room.
 
 - **A note stays where you put it.** It is pinned to the face by the face's persistent name, so it stays
   on that face when sizes change or a later feature (a hole, a fillet) takes the body or cuts the face in

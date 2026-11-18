@@ -217,7 +217,7 @@ fn noted(notes: &Value) -> Value {
         notes
             .iter()
             .map(|n| {
-                json!({
+                let mut kept = json!({
                     "id": n["id"], "text": n["text"], "state": n["state"],
                     "author": n["author"], "agent": n["agent"],
                     "on": {"kind": n["on"]["kind"], "name": n["on"]["name"], "feature": n["on"]["feature"]},
@@ -226,7 +226,18 @@ fn noted(notes: &Value) -> Value {
                         now.iter().map(|item| item["name"].clone()).collect::<Vec<_>>()
                     }),
                     "point": n["point"], "reply": n["done"]["reply"], "closedBy": n["done"]["agent"],
-                })
+                });
+                // The replies after a closing (format 77), without when.
+                if let Some(later) = n.get("later").and_then(Value::as_array)
+                    && let Some(map) = kept.as_object_mut()
+                {
+                    let replies: Vec<Value> = later
+                        .iter()
+                        .map(|r| json!({"author": r["author"], "agent": r["agent"], "reply": r["reply"]}))
+                        .collect();
+                    map.insert("later".into(), replies.into());
+                }
+                kept
             })
             .collect(),
     )
