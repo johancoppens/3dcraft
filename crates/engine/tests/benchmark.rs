@@ -20,7 +20,10 @@
 //! - the tessellator (`craft3d_tess::tess_work`): bodies meshed, their
 //!   faces, triangles; and (`craft3d_tess::fold_work`) the comparisons
 //!   of its look for points of a face on one another, a sort's counted
-//!   as `n` times the bits of `n`.
+//!   as `n` times the bits of `n`;
+//! - the rule of a face folded over itself (`craft3d_topo::fold_work`,
+//!   asked by `document.check`): Bézier spans asked (each surface once)
+//!   and searches for two layers or a missing normal.
 //!
 //! Each count may not exceed its baseline in `bench_models/baseline.txt`
 //! by more than [`MARGIN`]. A count that grows past it is a slowdown (or
@@ -92,6 +95,7 @@ fn snapshot() -> Counts {
     let kernel = craft3d_kernel::work::work();
     let (faces_integrated, mass_evaluations) = craft3d_topo::mass_work();
     let (meshes, faces_meshed, triangles) = craft3d_tess::tess_work();
+    let (fold_spans, fold_searches) = craft3d_topo::fold_work();
     [
         ("regenerations", regen.regenerations),
         ("features_rebuilt", regen.features_rebuilt),
@@ -110,6 +114,8 @@ fn snapshot() -> Counts {
         ("mesh_faces", faces_meshed),
         ("triangles", triangles),
         ("fold_checks", craft3d_tess::fold_work()),
+        ("turn_back_spans", fold_spans),
+        ("turn_back_searches", fold_searches),
     ]
     .into_iter()
     .map(|(name, value)| (name.to_string(), value))

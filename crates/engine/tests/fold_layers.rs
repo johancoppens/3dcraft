@@ -1433,23 +1433,53 @@ fn listed(folder: &str, suffix: &str) -> Vec<PathBuf> {
 /// Every own body of `doc` at its tolerance and at `coarse` (when that is
 /// coarser), each surface once per tolerance; documents with a finding
 /// printed, the sums added up; and the regeneration's time.
+thread_local! {
+    /// The rule as built (`craft3d_topo::folds`), per test thread: at the
+    /// documents' own tolerance and at 0.01: warnings, places not proven,
+    /// milliseconds, bodies.
+    static RULE: std::cell::RefCell<[(usize, usize, f64, usize); 2]> =
+        const { std::cell::RefCell::new([(0, 0, 0.0, 0); 2]) };
+}
+
+/// Every own body of `doc` asked by the rule as built, at its tolerance
+/// and at `coarse` (when that is coarser), cold for each document;
+/// documents with a place printed; and the regeneration's time.
 fn document(name: &str, doc: &Document, coarse: f64, totals: &mut [Sum; 2], regen_ms: &mut f64) {
+    let _ = totals;
+    craft3d_topo::forget_folds();
     let start = Instant::now();
     let regen = craft3d_regen::regenerate(doc);
-    *regen_ms += ms(start);
+    let regenerated = ms(start);
+    *regen_ms += regenerated;
     let own = doc.tolerance.linear;
     for (k, t) in [own, coarse.max(own)].into_iter().enumerate() {
         if k == 1 && !(coarse > own) {
             continue;
         }
-        let mut sum = Sum::new();
+        let tol = tolerance(t);
+        let start = Instant::now();
+        let mut found = Vec::new();
+        let mut bodies = 0_usize;
         for (_, body) in regen.bodies() {
-            sum.add(&rule(&format!("{name} at {t:e}"), body, t, false));
+            bodies += 1;
+            found.extend(craft3d_topo::folds(body, &tol));
         }
-        if sum.shown_faces > 0 || sum.crossing_faces > 0 || !sum.suspects.is_empty() {
-            println!("LAYERS corpus {name} | t {t:e} | {}", sum.said(t));
+        let spent = ms(start);
+        let warnings = found.iter().filter(|f| f.is_fold()).count();
+        let unproven = found.len() - warnings;
+        RULE.with(|r| {
+            let mut r = r.borrow_mut();
+            r[k].0 += warnings;
+            r[k].1 += unproven;
+            r[k].2 += spent;
+            r[k].3 += bodies;
+        });
+        if !found.is_empty() || spent > 0.05 * regenerated.max(20.0) {
+            println!(
+                "LAYERS rule {name} | t {t:e} | {warnings} warnings, {unproven} not proven | rule {spent:.1} ms, regeneration {regenerated:.1} ms, {bodies} bodies | first: {}",
+                found.first().map(ToString::to_string).unwrap_or_default()
+            );
         }
-        totals[k].add(&sum);
     }
 }
 
@@ -1501,8 +1531,20 @@ fn corpus(tag: &str, files: &[&str], scripts: &[(&str, &str)]) {
     }
     let mut line =
         format!("LAYERS corpus tally {tag}: {documents} documents, regeneration {regen_ms:.0} ms");
-    let _ = write!(line, " | at their own tolerance: {}", totals[0].said(1.0));
-    let _ = write!(line, " | at 0.01 where coarser: {}", totals[1].said(1.0));
+    RULE.with(|r| {
+        let r = r.borrow();
+        for (k, what) in [(0, "own tolerance"), (1, "0.01 where coarser")] {
+            let _ = write!(
+                line,
+                " | rule at {what}: {} warnings, {} not proven, {:.0} ms over {} bodies ({:.2} % of the regeneration)",
+                r[k].0,
+                r[k].1,
+                r[k].2,
+                r[k].3,
+                100.0 * r[k].2 / regen_ms.max(1e-9)
+            );
+        }
+    });
     println!("{line}");
 }
 
@@ -1625,6 +1667,24 @@ fn abc_models() {
             .file_stem()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
+        let start = Instant::now();
+        let found = craft3d_topo::folds(&body, &tolerance(1e-6));
+        let spent = ms(start);
+        let warned = found.iter().filter(|f| f.is_fold()).count();
+        RULE.with(|r| {
+            let mut r = r.borrow_mut();
+            r[0].0 += warned;
+            r[0].1 += found.len() - warned;
+            r[0].2 += spent;
+            r[0].3 += 1;
+        });
+        if !found.is_empty() {
+            println!(
+                "LAYERS rule abc {name} | {} places | first: {}",
+                found.len(),
+                found[0]
+            );
+        }
         let sum = rule(&format!("abc {name}"), &body, 1e-6, false);
         if sum.shown_faces > 0 || sum.crossing_faces > 0 {
             println!("LAYERS abc {name} | t 1e-6 | {}", sum.said(1e-6));
@@ -1643,9 +1703,10 @@ fn abc_models() {
         }
     }
     println!(
-        "LAYERS abc tally: {asked} asked (every {stride}th of {}), {read} read, {:.0} s | at 1e-6: {} | loose ones at their working tolerance: {}",
+        "LAYERS abc tally: {asked} asked (every {stride}th of {}), {read} read, {:.0} s | the rule at 1e-6: {:?} | the probe at 1e-6: {} | loose ones at their working tolerance: {}",
         files.len(),
         started.elapsed().as_secs_f64(),
+        RULE.with(|r| r.borrow()[0]),
         totals[0].said(1.0),
         totals[1].said(1.0)
     );

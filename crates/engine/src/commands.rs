@@ -4657,6 +4657,34 @@ pub(crate) fn check_document(
             }
         }
     }
+    // A face folded over itself (docs/design/verification.md › *A face
+    // folded over itself*): a warning for each place shown, and each
+    // place the rule could not settle in a quieter list of its own; no
+    // feature fails for it yet (`craft3d_topo::FOLDS_REFUSED`).
+    let mut folds_not_proven: Vec<Value> = Vec::new();
+    for (id, body) in regen.bodies() {
+        if only.is_some_and(|o| o != id) {
+            continue;
+        }
+        let name = doc
+            .feature(id)
+            .map_or_else(|| id.to_string(), |f| f.name.clone());
+        for found in craft3d_topo::folds(body, &tolerance) {
+            let line = json!({
+                "kind": found.kind_name(),
+                "feature": id.to_string(),
+                "name": name,
+                "face": found.face.0,
+                "at": [found.at.x, found.at.y, found.at.z],
+                "warning": found.to_string(),
+            });
+            if found.is_fold() {
+                sketch_warnings.push(line);
+            } else {
+                folds_not_proven.push(line);
+            }
+        }
+    }
     // Broken assertions are problems of the design, like failed
     // features (only when the whole document is checked); those that are
     // not proven either way are warnings.
@@ -4710,6 +4738,9 @@ pub(crate) fn check_document(
     }
     if let (false, Some(map)) = (loose.is_empty(), result.as_object_mut()) {
         map.insert("loose".into(), loose.into());
+    }
+    if let (false, Some(map)) = (folds_not_proven.is_empty(), result.as_object_mut()) {
+        map.insert("foldsNotProven".into(), folds_not_proven.into());
     }
     if let (Some(status), Some(map)) = (status, result.as_object_mut()) {
         map.insert("status".into(), status.into());

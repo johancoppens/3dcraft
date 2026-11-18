@@ -186,6 +186,15 @@ pub enum Defect {
         vertex_tolerance: f64,
         edge_tolerance: f64,
     },
+    /// A face folds over itself (`crate::folds`): two of its layers face
+    /// each other within the tolerance with air between them, or its
+    /// surface has no normal at `at`. Not refused yet:
+    /// [`crate::FOLDS_REFUSED`] is off, and `document.check` warns.
+    FaceFolds {
+        face: FaceId,
+        at: craft3d_math::Vec3,
+        reason: String,
+    },
 }
 
 impl fmt::Display for Defect {
@@ -262,6 +271,11 @@ impl fmt::Display for Defect {
                 f,
                 "the loops of face {} do not bound a region: {reason}",
                 face.0
+            ),
+            Defect::FaceFolds { face, at, reason } => write!(
+                f,
+                "face {} folds over itself at ({}, {}, {}): {reason}",
+                face.0, at.x, at.y, at.z
             ),
             Defect::LoopNotSimple {
                 face,
@@ -862,6 +876,28 @@ pub fn check_capped(body: &Body, tol: &Tolerance, cap: f64) -> Vec<Defect> {
     }
     if shells_sound {
         shell_defects(body, &mut defects);
+    }
+    // A face folded over itself: the one place where the rule would
+    // become a defect, off for the round in which it is a warning
+    // (`document.check`; docs/design/verification.md › *A face folded over
+    // itself*).
+    if crate::FOLDS_REFUSED && defects.is_empty() {
+        for found in crate::folds(body, tol) {
+            if found.is_fold() {
+                let reason = match found.kind {
+                    crate::FoldKind::Layers { gap } => format!(
+                        "two of its layers face each other {gap:e} apart with air between them, within the tolerance {:e}",
+                        tol.linear
+                    ),
+                    _ => "its surface has no normal there".to_string(),
+                };
+                defects.push(Defect::FaceFolds {
+                    face: found.face,
+                    at: found.at,
+                    reason,
+                });
+            }
+        }
     }
     defects
 }
