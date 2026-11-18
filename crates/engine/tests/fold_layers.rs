@@ -212,7 +212,21 @@ fn chart(body: &Body, face: &Face) -> Chart {
                     .find(|(_, q)| q.distance(*p) <= 1e-9 * size.max(1e-300) + 1e-12)
                     .map(|(k, _)| *k);
                 at_pole.push(pole);
-                uvs.push(surface.project(*p).ok());
+                // Each point from the one before (the walk the region rule
+                // makes): on a face that turns back on itself the nearest
+                // foot may be on another layer.
+                let before = uvs
+                    .iter()
+                    .rev()
+                    .find_map(|x| *x)
+                    .or_else(|| ring.last().copied());
+                uvs.push(match before {
+                    Some(start) => surface
+                        .project_from(*p, start)
+                        .ok()
+                        .or_else(|| surface.project(*p).ok()),
+                    None => surface.project(*p).ok(),
+                });
             }
             for i in 0..points.len() {
                 let Some(k) = at_pole[i] else {
@@ -249,7 +263,7 @@ fn chart(body: &Body, face: &Face) -> Chart {
                 {
                     continue;
                 }
-                if let Ok(m) = surface.project(middle) {
+                if let Ok(m) = surface.project_from(middle, firm[i]) {
                     let chord = (
                         0.5 * (firm[i].0 + firm[i + 1].0),
                         0.5 * (firm[i].1 + firm[i + 1].1),
