@@ -39,6 +39,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// it fewer fold to their header.
 const MIN_LIST_ROWS: f32 = 6.0;
 
+/// Frames the list keeps scrolling to a selected row not yet wholly in
+/// view.
+const SCROLL_TRIES: u8 = 8;
+
 /// A line of the list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SideLine {
@@ -702,8 +706,10 @@ impl Shell {
         // it (to the group or the parent a folded one is in).
         let scroll_to = self.tree_scroll.take();
         // Where the list showed its rows in the last frame: a row there is
-        // in view, and the list stays.
+        // in view, and the list stays (but on a try again, below: then
+        // it is not wholly in view now).
         let view_before = self.tree_view;
+        let again = self.side.scroll_tries > 0;
         let editing = self.side.editing.clone();
         let focus = std::mem::take(&mut self.side.focus_pending);
         let menu_for = self.state.side_panel.menu.clone();
@@ -743,12 +749,12 @@ impl Shell {
         let rows = std::mem::take(&mut self.rows);
         // Never taller than the room left above the foot: egui's least
         // height for a scrolled area (64 points) drew the list over the
-        // card in a short drawer (the review of 2026-11-18).
+        // card in a short drawer (the review of 2026-11-18). Only that
+        // least is lowered; with more room the list is laid as before.
         let list = egui::ScrollArea::vertical()
             .id_salt(("craft3d-side-features", self.viewing))
             .auto_shrink([false, false])
-            .min_scrolled_height(ui.available_height().max(0.0))
-            .max_height(ui.available_height().max(0.0))
+            .min_scrolled_height(ui.available_height().clamp(0.0, 64.0))
             .show(ui, |ui| {
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
@@ -903,7 +909,7 @@ impl Shell {
                             if scroll_to
                                 .as_ref()
                                 .is_some_and(|t| *t == id || line.members.contains(t))
-                                && !view_before.is_some_and(|v| mostly_in(rect, v))
+                                && (again || !view_before.is_some_and(|v| mostly_in(rect, v)))
                             {
                                 // Only as far as it takes, and at once.
                                 hits.response.scroll_to_me_animation(
@@ -1321,6 +1327,28 @@ impl Shell {
         // The strip that names the dependencies, over the list's foot.
         if let Some(id) = self.state.side_panel.hover.clone() {
             self.dependency_strip(ui, &kit, &id, list_rect);
+        }
+        // The row scrolled to stays the target until it is wholly in view,
+        // a few frames at most: the card at the foot can take room in the
+        // frame after the selection (2026-11-18: the short card's second
+        // line left the selected row behind it).
+        if let Some(target) = scroll_to {
+            // Its row, or the group's or the parent's it is folded in.
+            let in_view = rows_drawn.iter().any(|(id, r)| {
+                (*id == target
+                    || lines
+                        .iter()
+                        .any(|l| l.members.contains(&target) && l.id == *id))
+                    && r.top() >= list_rect.top() - 1.0
+                    && r.bottom() <= list_rect.bottom() + 1.0
+            });
+            if !in_view && self.side.scroll_tries < SCROLL_TRIES {
+                self.side.scroll_tries += 1;
+                self.tree_scroll = Some(target);
+                ui.ctx().request_repaint();
+            } else {
+                self.side.scroll_tries = 0;
+            }
         }
         self.side.hits.rows = rows_drawn;
         self.tree_row_hits = self.side.hits.rows.clone();
