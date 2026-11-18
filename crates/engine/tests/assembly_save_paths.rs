@@ -20,21 +20,36 @@ mod common;
 use common::plain::run;
 use common::{error, session_in, workdir};
 use craft3d_engine::{Access, Session, Workspace};
-use serde_json::json;
-use std::path::{Component, Path};
+use serde_json::{Value, json};
+use std::path::{Component, Path, PathBuf};
 
-/// The part `model/v2/rod.3dcraft` (one block), and an assembly without a
-/// file holding one instance of it, `Rod`, added by its path relative to
-/// the root.
-fn rod_assembly(s: &mut Session) {
+/// The part `model/v2/rod.3dcraft`: one block 4 × 4 and `length` long.
+fn rod_part(s: &mut Session, length: f64) {
+    rod_part_at(s, "model/v2/rod.3dcraft", length);
+}
+
+/// [`rod_part`] saved at `path`.
+fn rod_part_at(s: &mut Session, path: &str, length: f64) {
     run(s, "file.new", json!({ "units": "mm" }));
     run(
         s,
         "feature.block",
-        json!({ "name": "Rod", "size": [40, 4, 4] }),
+        json!({ "name": "Rod", "size": [length, 4, 4] }),
     );
-    run(s, "file.save", json!({ "path": "model/v2/rod.3dcraft" }));
+    run(s, "file.save", json!({ "path": path }));
     run(s, "file.close", json!({}));
+}
+
+/// The part `model/v2/rod.3dcraft` (one block 40 long), and an assembly
+/// without a file holding one instance of it, `Rod`, added by its path
+/// relative to the root.
+fn rod_assembly(s: &mut Session) {
+    rod_assembly_of(s, 40.0);
+}
+
+/// [`rod_assembly`] with a rod `length` long.
+fn rod_assembly_of(s: &mut Session, length: f64) {
+    rod_part(s, length);
     run(s, "assembly.new", json!({ "units": "mm" }));
     run(
         s,
@@ -44,13 +59,15 @@ fn rod_assembly(s: &mut Session) {
 }
 
 /// The open assembly's instance `Rod` has the source path `want` and is
-/// placed from its file: one body.
-fn placed(s: &mut Session, want: &str, after: &str) {
-    let i = run(s, "assembly.inspect", json!({}));
+/// placed from its file: one body, nothing held back. The inspection.
+fn placed(s: &mut Session, want: &str, after: &str) -> Value {
+    let i = run(s, "assembly.inspect", json!({ "measures": true }));
     let rod = &i["instances"][0];
     assert_eq!(rod["source"]["path"], want, "after {after}: {i}");
     assert_eq!(rod["status"], "ok", "after {after}: {i}");
+    assert!(rod["held"].is_null(), "after {after}: {i}");
     assert_eq!(i["bodies"], 1, "after {after}: {i}");
+    i
 }
 
 /// The source path the assembly file at `file` holds for its first
@@ -472,45 +489,221 @@ fn a_source_that_leads_nowhere_is_refused_by_a_save_elsewhere() {
     assert_eq!(stored(&file), nowhere);
 }
 
-/// As the window runs the person's Save As: writing in the chosen file's
-/// folder only, with no read root. An assembly that has no file yet has
-/// its sources relative to a root this save does not know: refused in
-/// words, nothing written. Saved once beneath the root, the same Save As
-/// places them from its file.
-#[test]
-fn a_save_as_without_the_root_of_an_assembly_without_a_file_is_refused() {
-    let dir = workdir("asm-save-paths", "grant");
-    folders(&dir, &["model/v2", "work", "out"]);
-    let rooted = Workspace {
-        read: Access::Root(dir.clone()),
-        write: Access::Root(dir.clone()),
-    };
-    let out = dir.join("out");
-    let person = Workspace {
+/// An agent's workspace at the window: these folders, read and written.
+fn agent(roots: &[PathBuf]) -> Workspace {
+    Workspace {
+        read: Access::from_roots(roots.to_vec()),
+        write: Access::from_roots(roots.to_vec()),
+    }
+}
+
+/// The person's Save As at the window (`apps/craft3d/src/files.rs`,
+/// `grant`): writing in the folder of the file chosen, no reading at all.
+fn person(folder: &Path) -> Workspace {
+    Workspace {
         read: Access::None,
-        write: Access::Root(out.clone()),
-    };
-    let target = out.join("a.3dcraftasm");
+        write: Access::Root(folder.to_path_buf()),
+    }
+}
+
+/// The person saves the active assembly as `target` (absolute), as the
+/// window does: the save's own answer, then the agent's workspace back.
+fn saved_by_the_person(s: &mut Session, target: &Path, back: &Workspace) -> Value {
+    let folder = target.parent().unwrap();
+    s.set_workspace(person(folder));
+    let saved = run(s, "file.save", json!({ "path": text(target) }));
+    s.set_workspace(back.clone());
+    saved
+}
+
+/// The assembly file `file` opened by its absolute path in a fresh
+/// session that reads everywhere (the command line) and in one rooted at
+/// `root`: every instance placed; the volume of its first instance.
+fn reopened(root: &Path, file: &Path) -> f64 {
+    let mut volume = None;
+    for workspace in [
+        Workspace::unrestricted(),
+        Workspace {
+            read: Access::Root(root.to_path_buf()),
+            write: Access::None,
+        },
+    ] {
+        let mut s = Session::new(workspace);
+        run(&mut s, "file.open", json!({ "path": text(file) }));
+        let i = run(&mut s, "assembly.inspect", json!({ "measures": true }));
+        for instance in i["instances"].as_array().unwrap() {
+            assert_eq!(instance["status"], "ok", "{}: {i}", file.display());
+        }
+        assert_eq!(i["bodies"], 1, "{}: {i}", file.display());
+        volume = i["instances"][0]["measured"]["volume"].as_f64();
+    }
+    volume.unwrap()
+}
+
+/// The case the bug was met by (2026-11-18): an agent at the window adds
+/// a part by its path relative to the folder it was given, and the
+/// person saves the assembly, never saved, through the window into a
+/// folder of their own, outside the agent's. The paths lead to the
+/// agent's files; the open assembly stays placed, with the person's
+/// access (none to read) and the agent's back; the file opens elsewhere.
+#[test]
+fn the_person_saves_an_agents_assembly_into_a_folder_of_their_own() {
+    let dir = workdir("asm-save-paths", "person");
+    folders(&dir, &["agent/model/v2", "home/me"]);
+    let roots = [dir.join("agent")];
+    let mut s = Session::new(agent(&roots));
+    rod_assembly(&mut s);
+    placed(&mut s, "model/v2/rod.3dcraft", "instance.add");
+    let target = dir.join("home/me/clamp.3dcraftasm");
+    let want = "../../agent/model/v2/rod.3dcraft";
+    s.set_workspace(person(&dir.join("home/me")));
+    let saved = run(&mut s, "file.save", json!({ "path": text(&target) }));
+    assert!(saved.get("warnings").is_none(), "{saved}");
+    assert_eq!(stored(&target), want);
+    placed(&mut s, want, "the save, with the person's access");
+    s.set_workspace(agent(&roots));
+    placed(&mut s, want, "the save, with the agent's access");
+    // As the window does when it has the focus back.
+    run(&mut s, "assembly.follow", json!({}));
+    placed(&mut s, want, "assembly.follow");
+    assert!((reopened(&dir, &target) - 640.0).abs() < 1e-6);
+    // Saved again by the agent, beneath its folder, and by the person
+    // over their file: still the same rod.
+    folders(&dir, &["agent/work"]);
+    run(
+        &mut s,
+        "file.save",
+        json!({ "path": "work/clamp.3dcraftasm" }),
+    );
+    let theirs = dir.join("agent/work/clamp.3dcraftasm");
+    assert_eq!(stored(&theirs), "../model/v2/rod.3dcraft");
+    placed(&mut s, "../model/v2/rod.3dcraft", "the agent's save");
+    saved_by_the_person(&mut s, &target, &agent(&roots));
+    assert_eq!(stored(&target), want);
+    placed(&mut s, want, "the person's second save");
+}
+
+/// The same with two read roots: a relative path is read beneath the
+/// first, and the paths lead there, not to the rod of the same name
+/// beneath the second.
+#[test]
+fn with_two_read_roots_the_paths_lead_beneath_the_first() {
+    let dir = workdir("asm-save-paths", "two-roots");
+    folders(&dir, &["a/model/v2", "b/model/v2", "home"]);
+    let mut other = session_in(&dir.join("b"));
+    rod_part(&mut other, 20.0);
+    let roots = [dir.join("a"), dir.join("b")];
+    let mut s = Session::new(agent(&roots));
+    rod_assembly(&mut s);
+    let target = dir.join("home/two.3dcraftasm");
+    saved_by_the_person(&mut s, &target, &agent(&roots));
+    assert_eq!(stored(&target), "../a/model/v2/rod.3dcraft");
+    placed(&mut s, "../a/model/v2/rod.3dcraft", "the save");
+    assert!((reopened(&dir, &target) - 640.0).abs() < 1e-6);
+}
+
+/// A part added by its absolute path beneath the agent's folder, and an
+/// undo and a redo of the addition before the person's save.
+#[test]
+fn a_part_added_by_its_absolute_path_and_an_undone_addition_save_as_well() {
+    let dir = workdir("asm-save-paths", "absolute-source");
+    folders(&dir, &["agent/model/v2", "home"]);
+    let roots = [dir.join("agent")];
+    let mut s = Session::new(agent(&roots));
+    rod_part(&mut s, 40.0);
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    let rod = dir.join("agent/model/v2/rod.3dcraft");
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": text(&rod), "name": "Rod" }),
+    );
+    placed(
+        &mut s,
+        "model/v2/rod.3dcraft",
+        "instance.add by its absolute path",
+    );
+    run(&mut s, "edit.undo", json!({}));
+    let i = run(&mut s, "assembly.inspect", json!({}));
+    assert_eq!(i["instances"].as_array().unwrap().len(), 0, "{i}");
+    run(&mut s, "edit.redo", json!({}));
+    placed(&mut s, "model/v2/rod.3dcraft", "edit.redo");
+    let target = dir.join("home/abs.3dcraftasm");
+    saved_by_the_person(&mut s, &target, &agent(&roots));
+    assert_eq!(stored(&target), "../agent/model/v2/rod.3dcraft");
+    placed(&mut s, "../agent/model/v2/rod.3dcraft", "the save");
+    // Undo after the save keeps the rewritten path and the rod placed.
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.redo", json!({}));
+    placed(&mut s, "../agent/model/v2/rod.3dcraft", "undo and redo");
+    assert!((reopened(&dir, &target) - 640.0).abs() < 1e-6);
+}
+
+/// Two assemblies without a file in two tabs, made while the agent had
+/// two different folders, each saved by the person: each leads to the
+/// rod of its own folder (40 and 20 long). (Their paths differ: a path
+/// relative to the agent's folder names the file of that name beneath
+/// whatever folder the agent has when it is read again, so two tabs with
+/// one relative path would follow one file.)
+#[test]
+fn two_assemblies_in_two_tabs_keep_their_own_folders() {
+    let dir = workdir("asm-save-paths", "tabs");
+    folders(&dir, &["a/model/v2", "b/parts", "home"]);
+    let (a, b) = ([dir.join("a")], [dir.join("b")]);
+    let mut s = Session::new(agent(&a));
+    rod_assembly_of(&mut s, 40.0);
+    s.set_workspace(agent(&b));
+    rod_part_at(&mut s, "parts/short.3dcraft", 20.0);
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "parts/short.3dcraft", "name": "Rod" }),
+    );
+    let statuses = s.document_statuses();
+    assert_eq!(statuses.len(), 2, "{statuses:?}");
+    for (index, roots, name, want, volume) in [
+        (0, &a, "one", "../a/model/v2/rod.3dcraft", 640.0),
+        (1, &b, "two", "../b/parts/short.3dcraft", 320.0),
+    ] {
+        s.set_workspace(agent(roots));
+        run(&mut s, "file.activate", json!({ "document": index }));
+        let target = dir.join(format!("home/{name}.3dcraftasm"));
+        saved_by_the_person(&mut s, &target, &agent(roots));
+        assert_eq!(stored(&target), want, "{name}");
+        placed(&mut s, want, name);
+        assert!((reopened(&dir, &target) - volume).abs() < 1e-6, "{name}");
+    }
+}
+
+/// Where the folder the sources are relative to is truly not known, the
+/// save is still refused in words, nothing written: an assembly without
+/// a file whose sources were never read in this session (here its bytes
+/// opened as the browser opens a file), saved where there is no read
+/// root. Read once where they can be, the same save goes through.
+#[test]
+fn an_assembly_whose_sources_were_never_read_here_is_refused_without_a_read_root() {
+    let dir = workdir("asm-save-paths", "unknown");
+    folders(&dir, &["model/v2", "home"]);
     let mut s = session_in(&dir);
     rod_assembly(&mut s);
-    s.set_workspace(person.clone());
+    run(&mut s, "file.save", json!({ "path": "a.3dcraftasm" }));
+    let bytes = std::fs::read(dir.join("a.3dcraftasm")).unwrap();
+    let mut s = Session::new(person(&dir.join("home")));
+    s.open_bytes("a.3dcraftasm", &bytes).unwrap();
+    let target = dir.join("home/a.3dcraftasm");
     let e = error(&mut s, "file.save", json!({ "path": text(&target) }));
     assert!(
-        e.contains("no file yet") && e.contains("read root") && e.contains("save it first"),
+        e.contains("not known here") && e.contains("assembly.reload"),
         "{e}"
     );
     assert!(!target.exists());
-    s.set_workspace(rooted.clone());
-    placed(&mut s, "model/v2/rod.3dcraft", "the refusal");
-    run(&mut s, "file.save", json!({ "path": "work/a.3dcraftasm" }));
-    s.set_workspace(person);
-    run(&mut s, "file.save", json!({ "path": text(&target) }));
-    s.set_workspace(rooted);
+    s.set_workspace(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::None,
+    });
+    run(&mut s, "assembly.reload", json!({}));
+    placed(&mut s, "model/v2/rod.3dcraft", "assembly.reload");
+    saved_by_the_person(&mut s, &target, &agent(std::slice::from_ref(&dir)));
     assert_eq!(stored(&target), "../model/v2/rod.3dcraft");
-    // The save looked for the sources from their new folder with no
-    // read root; the window follows them again when it has its own back
-    // (it gets the focus), as here.
-    run(&mut s, "assembly.follow", json!({}));
-    placed(&mut s, "../model/v2/rod.3dcraft", "the Save As");
-    opens(&dir, "out/a.3dcraftasm");
 }

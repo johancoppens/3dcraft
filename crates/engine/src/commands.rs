@@ -1240,8 +1240,8 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     };
     let open = session.document_mut()?;
     let mut document = std::sync::Arc::clone(open.history.current());
-    if let Some((old_base, new_base)) = &rebase {
-        match crate::asm_cmds::rebased(&document, old_base, new_base) {
+    if let Some(bases) = &rebase {
+        match crate::asm_cmds::rebased(&document, &bases.old, &bases.new) {
             Ok(Some(rebased)) => document = std::sync::Arc::new(rebased),
             Ok(None) => {}
             Err(why) => {
@@ -1262,15 +1262,20 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         save_to_disk(&resolved, &document, png.as_deref().map(Vec::as_slice)).map_err(cannot)?;
     }
     let open = session.document_mut()?;
-    if let Some((old_base, new_base)) = &rebase {
+    if let Some(bases) = &rebase {
         // The state written was rewritten whole above. A state undo or
         // redo reaches whose sources cannot be (an instance deleted since,
         // whose source is on another drive) keeps its paths.
         open.history.rewrite_all(|doc| {
-            crate::asm_cmds::rebased(doc, old_base, new_base)
+            crate::asm_cmds::rebased(doc, &bases.old, &bases.new)
                 .ok()
                 .flatten()
         });
+        // The files read stay the files read, under the paths the
+        // rewritten sources name them by.
+        if let Some(frame) = &bases.frame {
+            crate::asm_cmds::carry_sources(&mut open.asm, frame);
+        }
     }
     open.mark_saved();
     let kept = crate::workspace::kept_path(&access, &path, &resolved);
@@ -1285,8 +1290,12 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     open.title = None;
     let mut result = json!({ "path": kept });
     // The open assemblies that have this file as a source follow it
-    // (`asm_follow.rs`): what an instance shows is what was saved.
-    let followed = session.follow_sources(None, Some(&resolved));
+    // (`asm_follow.rs`): what an instance shows is what was saved. Not
+    // the one saved, whose sources the save did not change: read again
+    // here, they would be read with the save's access, which may not
+    // reach them (the person's Save As at the window has no read root).
+    let active = session.active;
+    let followed = session.follow_sources(None, Some(active), Some(&resolved));
     if let (false, Some(map)) = (followed.is_empty(), result.as_object_mut()) {
         let warnings: Vec<Value> = followed
             .iter()
