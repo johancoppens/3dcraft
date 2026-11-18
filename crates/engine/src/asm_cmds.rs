@@ -1917,33 +1917,12 @@ impl Relinker {
 
     /// The folder the open assembly joins its source paths with after the
     /// save: its path's folder; an absolute one as the file system spells
-    /// it ([`Relinker::kept`]).
+    /// it ([`real_kept`]).
     fn key_base(&self) -> String {
         match &self.new_folder {
             Some(folder) if crate::asm_paths::is_absolute(&self.new_base) => real_folder(folder),
             _ => self.new_base.clone(),
         }
-    }
-
-    /// The path the open assembly keeps for the file saved as `kept`: an
-    /// absolute one in the folder as the file system spells it, where that
-    /// differs (a folder reached through a link), so the paths it joins
-    /// with it lead where the file's own paths lead; as it is otherwise.
-    pub(crate) fn kept(&self, kept: &str) -> String {
-        let Some(folder) = &self.new_folder else {
-            return kept.to_string();
-        };
-        let real = real_folder(folder);
-        if !crate::asm_paths::is_absolute(&self.new_base)
-            || asm::join(folder, "").ok().as_deref() == Some(real.as_str())
-        {
-            return kept.to_string();
-        }
-        let name = kept.rsplit(['/', '\\']).next().unwrap_or(kept);
-        std::path::Path::new(&real)
-            .join(name)
-            .to_str()
-            .map_or_else(|| kept.to_string(), str::to_string)
     }
 
     /// The sources of `doc` (saved) the open assembly can no longer follow:
@@ -2067,6 +2046,29 @@ fn real_file(path: &str) -> String {
         return asm::join(path, "").unwrap_or_else(|_| path.to_string());
     }
     asm::join(&real_folder(&folder), name).unwrap_or_else(|_| path.to_string())
+}
+
+/// The path an open assembly keeps for its file `kept`: an absolute one
+/// in its folder as the file system spells it ([`real_folder`]) where that
+/// differs (a folder reached through a link), so the source paths joined
+/// with it lead where they lead from the file on disk (2026-11-18: an
+/// assembly in a folder reached through a link read its sources from the
+/// link's spelling, by text); a relative one, or one the file system
+/// cannot spell, as it is.
+pub(crate) fn real_kept(kept: &str) -> String {
+    if !crate::asm_paths::is_absolute(kept) {
+        return kept.to_string();
+    }
+    let folder = asm::dir_of(kept);
+    let real = real_folder(&folder);
+    if asm::join(&folder, "").ok().as_deref() == Some(real.as_str()) {
+        return kept.to_string();
+    }
+    let name = kept.rsplit(['/', '\\']).next().unwrap_or(kept);
+    std::path::Path::new(&real)
+        .join(name)
+        .to_str()
+        .map_or_else(|| kept.to_string(), str::to_string)
 }
 
 /// Whether `path`'s first part is `..`, so that it climbs out of the

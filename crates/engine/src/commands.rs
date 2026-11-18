@@ -1107,7 +1107,13 @@ pub(crate) fn file_open(session: &mut Session, params: &Value) -> Run {
         });
     }
     let features = document.features.len();
-    let kept = crate::workspace::kept_path(&session.workspace.read, path, &resolved);
+    let mut kept = crate::workspace::kept_path(&session.workspace.read, path, &resolved);
+    // An assembly's source paths lead from its file's folder on disk: an
+    // absolute path through a link is kept in the folder's real spelling,
+    // so the paths joined with it lead there too (2026-11-18).
+    if document.is_assembly() && !in_memory {
+        kept = crate::asm_cmds::real_kept(&kept);
+    }
     let mut open = OpenDocument::new(document, Some(kept.clone()));
     open.disk = file_stamp(in_memory, &resolved);
     open.file = file_on_disk(in_memory, &resolved);
@@ -1274,7 +1280,9 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         // The files read stay the files read, under the paths the
         // rewritten sources name them by.
         relinker.carry(&mut open.asm);
-        kept = relinker.kept(&kept);
+        if !in_memory {
+            kept = crate::asm_cmds::real_kept(&kept);
+        }
         not_followed = relinker.not_followed(&document);
     }
     open.mark_saved();

@@ -639,8 +639,9 @@ shares, a source that climbs above the start of the file system, a path longer t
 compared as the file system spells them (`workspace::canonical`, as `source_relative` does: links on the way followed,
 the source file itself as it is, so what may be read is not widened; as text in the browser and the memory store): a
 folder reached through a link, or a root spelled two ways, writes the path that leads there on disk, and an absolute
-path the open assembly keeps is written in its folder's real spelling where that differs, so its own paths lead where
-the file's do. Then two checks: the last line of defence, that the folder written into joined with the new path is
+path an open assembly keeps, saved or opened (`asm_cmds::real_kept`), is written in its folder's real spelling where
+that differs, so the paths it joins with it lead where they lead from the file on disk (before, an assembly opened
+through a link read its sources by the link's spelling, as text). Then two checks: the last line of defence, that the folder written into joined with the new path is
 the file the old folder joined with the old path was (both written by `asm::join`; in memory, where every path is a
 name in one store, the two names), and that this session, reading a path kept relative beneath its read root, would
 not read another file by it. A path whose first part is `..` (not one that starts with two dots, `..x`) climbs out of
