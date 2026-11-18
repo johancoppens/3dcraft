@@ -6265,6 +6265,14 @@ fn chrome_frame(fill: crate::theme::Rgb) -> egui::Frame {
 /// is drawn only where it is over the image ([`paint_overlay`]).
 const LONG_LINE: f64 = 4.0;
 
+/// Whether the segment `ends` stroked `width` wide can put a pixel in
+/// `clip`: egui's tessellator leaves out a segment whose box grown by its
+/// width misses its clip rectangle, so one this leaves out (a point more
+/// round it) draws nothing either way.
+fn may_show(clip: egui::Rect, [a, b]: [egui::Pos2; 2], width: f32) -> bool {
+    clip.intersects(egui::Rect::from_two_pos(a, b).expand(width + 1.0))
+}
+
 fn paint_overlay(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -6280,6 +6288,7 @@ fn paint_overlay(
     );
     let (wf, hf) = (f64::from(w), f64::from(h));
     let diagonal = wf.phypot(hf);
+    let clip = painter.clip_rect();
     let place = |p: [f64; 2]| {
         egui::pos2(
             rect.left() + (p[0] * sx) as f32,
@@ -6307,8 +6316,16 @@ fn paint_overlay(
             let opacity = (alpha * fade).round().clamp(0.0, 255.0) as u8;
             egui::Stroke::new(line.width(tokens), color_alpha(ink, opacity))
         };
+        // Nothing that cannot show (the review of the runaway: close by, a
+        // frame painted 77 168 pieces, 76 909 of them off the view): what
+        // the tessellator would leave out, before its fade is worked out.
+        let width = line.width(tokens);
+        let whole = [place(line.from), place(line.to)];
+        if !may_show(clip, whole, width) {
+            continue;
+        }
         let Some(edge) = line.edge else {
-            painter.line_segment([place(line.from), place(line.to)], stroke(1.0));
+            painter.line_segment(whole, stroke(1.0));
             continue;
         };
         let long = viewport::fade_short(edge.extent, tokens, pixels_per_point);
@@ -6350,13 +6367,17 @@ fn paint_overlay(
                 t_from + (t_to - t_from) * (k as f64 / pieces as f64),
                 t_from + (t_to - t_from) * ((k + 1) as f64 / pieces as f64),
             );
+            let ends = [place(at(t0)), place(at(t1))];
+            if !may_show(clip, ends, width) {
+                continue;
+            }
             let middle = at(0.5 * (t0 + t1));
             let mut fade = viewport::edge_fade(long, density.at(middle[0], middle[1]), tokens);
             // Where the studio look's lens blurs it, as at the piece's middle.
             if let Some(blur) = &overlay.blur {
                 fade *= blur.fade_along(edge.depth, 0.5 * (t0 + t1), wide);
             }
-            painter.line_segment([place(at(t0)), place(at(t1))], stroke(fade));
+            painter.line_segment(ends, stroke(fade));
         }
     }
     for point in &overlay.points {
@@ -6365,6 +6386,60 @@ fn paint_overlay(
             viewport::opacity(point.hidden, tokens),
         );
         painter.circle_filled(place(point.at), point.kind.dot_radius(tokens), tint);
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::may_show;
+    use egui::epaint::{Mesh, TessellationOptions, Tessellator};
+    use egui::{Color32, Shape, Stroke, pos2};
+
+    /// xorshift: the same segments every run.
+    struct Rng(u64);
+
+    impl Rng {
+        fn unit(&mut self) -> f32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 40) as f32 / (1u64 << 24) as f32
+        }
+    }
+
+    #[test]
+    fn a_piece_left_out_is_one_the_tessellator_leaves_out() {
+        // Short pieces in and round a view, at one and two pixels a point:
+        // every one `paint_overlay` leaves out makes no vertex when egui
+        // tessellates it, so the picture is the same pixel for pixel.
+        let clip = egui::Rect::from_min_max(pos2(100.0, 50.0), pos2(900.0, 650.0));
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        let (mut left_out, mut kept) = (0, 0);
+        for k in 0..40_000 {
+            let a = pos2(rng.unit() * 1400.0 - 200.0, rng.unit() * 1100.0 - 225.0);
+            let b = a + egui::vec2(rng.unit() * 40.0 - 20.0, rng.unit() * 40.0 - 20.0);
+            let width = 0.25 + rng.unit() * 6.0;
+            let pixels_per_point = if k % 2 == 0 { 1.0 } else { 2.0 };
+            let mut tessellator = Tessellator::new(
+                pixels_per_point,
+                TessellationOptions::default(),
+                [1, 1],
+                Vec::new(),
+            );
+            tessellator.set_clip_rect(clip);
+            let mut mesh = Mesh::default();
+            tessellator.tessellate_shape(
+                Shape::line_segment([a, b], Stroke::new(width, Color32::WHITE)),
+                &mut mesh,
+            );
+            if may_show(clip, [a, b], width) {
+                kept += 1;
+            } else {
+                left_out += 1;
+                assert!(mesh.vertices.is_empty(), "{a:?} {b:?} {width}");
+            }
+        }
+        assert!(left_out > 5_000 && kept > 5_000, "{left_out} {kept}");
     }
 }
 
