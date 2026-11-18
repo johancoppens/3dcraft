@@ -23,17 +23,6 @@ use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
 pub use crate::blend::law::{Fade, FadeFault, RadiusLaw};
 pub use crate::blend::tangent_chain;
 
-/// For probes only: whether a law fillet refuses a face that turns back
-/// on itself before it is put in ([`FadeFault::TurnsBack`]); on unless a
-/// probe switches it off to build the folded faces a review found and
-/// measure what the general checks say of them (fold-check, 2026-11-18).
-/// It holds for the whole process: only a test binary of its own may
-/// switch it off.
-#[doc(hidden)]
-pub fn probe_asks_turned_back(asks: bool) {
-    crate::blend::law::set_asks_turned_back(asks);
-}
-
 /// Most edges one fillet takes.
 pub const MAX_FILLET_EDGES: usize = blend::MAX_EDGES;
 

@@ -10,10 +10,9 @@
 //! Bernstein net per span, a dense sample of the sine between its
 //! parameter directions). Run with `-- --nocapture`.
 //!
-//! The fillet whose radius fades along the hull's stem (the review of
-//! 2026-11-17) is built with the fillet's own refusal of a face that turns
-//! back switched off (`fillet::probe_asks_turned_back`), which is why this
-//! file is a test binary of its own.
+//! The fillets whose radius fades along the hull's stem that the review
+//! of 2026-11-17 found folded are read from STEP fixtures
+//! (`tests/fold_probe/fades/`): the fillet refuses them now.
 
 #![allow(
     clippy::unwrap_used,
@@ -31,9 +30,7 @@
 
 use craft3d_geom::{Curve3, Line, NurbsCurve, NurbsSurface, Plane, RationalBezierPatch, Surface};
 use craft3d_io::{MeshFormat, StepBody, StepOptions, export_mesh, export_step};
-use craft3d_kernel::fillet::{
-    Fade, FilletFace, FilletLawEdge, RadiusLaw, fillet_by_law, probe_asks_turned_back,
-};
+use craft3d_kernel::fillet::{Fade, FilletLawEdge, RadiusLaw, fillet_by_law};
 use craft3d_kernel::loft::{Options as LoftOptions, Section, loft};
 use craft3d_kernel::offset_face::{FaceOffset, offset_faces};
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
@@ -41,8 +38,7 @@ use craft3d_kernel::sweep::sweep;
 use craft3d_math::{Frame, Portable, Tolerance, Vec3};
 use craft3d_meshio::Unit;
 use craft3d_tess::{
-    FaceRole, SelfCheck, SelfCheckParams, TessParams, body_self_intersections,
-    body_self_intersections_near, tessellate_body,
+    SelfCheck, SelfCheckParams, TessParams, body_self_intersections, tessellate_body,
 };
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId, check, mass_properties};
 use std::time::Instant;
@@ -672,43 +668,6 @@ fn stem(body: &Body) -> (EdgeId, bool) {
     found.unwrap()
 }
 
-/// The review's seven folded fades written as STEP, printed as evidence
-/// lines (`EV fade-<radius>-<over>-<back> <i> <base64>`) to become fixtures
-/// once the fillet's switch is gone.
-#[test]
-fn export_the_seven_folds() {
-    probe_asks_turned_back(false);
-    let (body, tol) = hull();
-    let (edge, foot_at_start) = stem(&body);
-    for (radius, over, back) in [
-        (3.0, 6.0, 0.33),
-        (3.0, 6.0, 0.5),
-        (4.0, 8.0, 0.33),
-        (4.0, 8.0, 0.5),
-        (5.0, 10.0, 1.0),
-        (3.0, 3.0, 2.0),
-        (4.0, 8.0, 1.0),
-    ] {
-        let fade = Some(Fade::tip(over, back));
-        let law = RadiusLaw {
-            radius,
-            fades: if foot_at_start {
-                [fade, None]
-            } else {
-                [None, fade]
-            },
-        };
-        let made = fillet_by_law(&body, &[FilletLawEdge { edge, law }], &tol).unwrap();
-        let options = StepOptions {
-            tolerance: tol,
-            file_name: format!("fade-{radius}-{over}-{back}.step"),
-            ..StepOptions::default()
-        };
-        let (bytes, _) = export_step(&[StepBody::new("fold", &made.body)], &options).unwrap();
-        craft3d_testkit::evidence::print(&format!("fade-{radius}-{over}-{back}"), &bytes);
-    }
-}
-
 #[test]
 fn the_hulls_sides_at_the_forefoot() {
     // How the radius of curvature of the hull's lofted sides grows with
@@ -768,69 +727,48 @@ fn the_hulls_sides_at_the_forefoot() {
 
 #[test]
 fn the_fade_on_the_hulls_stem() {
-    probe_asks_turned_back(false);
+    // The review's seven folded fades, as the fillet built them with its
+    // own refusal of a face that turns back switched off (STEP fixtures,
+    // written on `check/fold-check` 15954a14, Check 44328620802).
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fold_probe/fades");
+    for name in [
+        "fade-3-6-0.33",
+        "fade-3-6-0.5",
+        "fade-4-8-0.33",
+        "fade-4-8-0.5",
+        "fade-5-10-1",
+        "fade-3-3-2",
+        "fade-4-8-1",
+    ] {
+        let tol = tolerance(0.02);
+        let options = craft3d_stepread::Options {
+            metres_per_unit: 1e-3,
+            tolerance: tol,
+            loosest: 1000.0 * tol.linear,
+        };
+        let bytes = std::fs::read(dir.join(format!("{name}.step"))).unwrap();
+        let body = craft3d_stepread::parse(&bytes)
+            .unwrap()
+            .build(0, &options)
+            .unwrap()
+            .body;
+        report(name, &body, &tol, &[], 1e-5);
+    }
+    // The sound law beside them, built with the refusal on.
     let (body, tol) = hull();
     let (edge, foot_at_start) = stem(&body);
-    for (radius, over, back) in [
-        (3.0, 6.0, 0.33),
-        (3.0, 6.0, 0.5),
-        (4.0, 8.0, 0.33),
-        (4.0, 8.0, 0.5),
-        (5.0, 10.0, 1.0),
-        (3.0, 3.0, 2.0),
-        (4.0, 8.0, 1.0),
-        (3.0, 15.0, 0.33),
-    ] {
-        let case = format!("fade r{radius} over{over} back{back}");
-        let fade = Some(Fade::tip(over, back));
-        let law = RadiusLaw {
-            radius,
-            fades: if foot_at_start {
-                [fade, None]
-            } else {
-                [None, fade]
-            },
-        };
-        let t = Instant::now();
-        let made = fillet_by_law(&body, &[FilletLawEdge { edge, law }], &tol);
-        let made = match made {
-            Ok(made) => made,
-            Err(e) => {
-                println!("FOLD {case} op: refused: {e} ({:.0} ms)", ms(t));
-                continue;
-            }
-        };
-        println!("FOLD {case} op: built ({:.0} ms)", ms(t));
-        let own: Vec<usize> = (0..made.faces.len())
-            .filter(|i| matches!(made.faces[*i], FilletFace::Fillet(_)))
-            .collect();
-        report(&case, &made.body, &tol, &[], 1e-5);
-        // Near the fillet face alone, as regeneration looks after a
-        // fillet, at the finest chord.
-        let roles: Vec<FaceRole> = (0..made.body.faces.len())
-            .map(|i| {
-                if own.contains(&i) {
-                    FaceRole::New
-                } else {
-                    FaceRole::Known(0)
-                }
-            })
-            .collect();
-        for rel in [1e-3, 1e-5] {
-            let params = SelfCheckParams {
-                relative_chord: rel,
-                ..SelfCheckParams::new(tol.linear)
-            };
-            let t = Instant::now();
-            match body_self_intersections_near(&made.body, &params, &roles) {
-                Ok(found) => println!(
-                    "FOLD {case} near rel {rel:.0e}: {} ({:.0} ms)",
-                    said(&found),
-                    ms(t)
-                ),
-                Err(e) => println!("FOLD {case} near rel {rel:.0e}: error {e}"),
-            }
-        }
+    let fade = Some(Fade::tip(15.0, 0.33));
+    let law = RadiusLaw {
+        radius: 3.0,
+        fades: if foot_at_start {
+            [fade, None]
+        } else {
+            [None, fade]
+        },
+    };
+    match fillet_by_law(&body, &[FilletLawEdge { edge, law }], &tol) {
+        Ok(made) => report("fade r3 over15 back0.33", &made.body, &tol, &[], 1e-5),
+        Err(e) => println!("FOLD fade r3 over15 back0.33 op: refused: {e}"),
     }
 }
 
