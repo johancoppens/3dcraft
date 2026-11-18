@@ -2338,7 +2338,9 @@ cut.**
   moving the plane or the camera, or playing a motion changes no part's direction (a motion's moments are
   scenes of the same document, with the same places); bodies next to each other in the document always
   differ, and an assembly is mostly built neighbour after neighbour; a part added at the end changes no
-  other. Per instance, not per source part: two copies of a bolt side by side are two parts and must read
+  other. A class is a place in the document: deleting a part (or inserting one) moves every part after it
+  one place and changes their directions, and leaves the parts before it as they were
+  (`engine/tests/hatch_classes.rs`). Per instance, not per source part: two copies of a bolt side by side are two parts and must read
   apart (drawing practice's "one part, one direction" is about the same part cut in several places). A
   document with one body hatches it as it always did. Colouring by contact (no two touching parts of one
   class, found from their boxes) was weighed and left: a moment of a motion moves the parts and could change
@@ -2363,12 +2365,15 @@ cut.**
   times the time (17.1 against 17.3 ms for 10 000): nothing measurable. The GPU, 162 balls of about 600
   triangles cut through at 1280 × 800, a frame with its read back: RADV 14.1 ms cut without classes, 14.5
   with; radeonsi 11.0 and 11.1; llvmpipe 85.1 and 85.1 (`gpu/tests/section.rs` ›
-  `what_the_classes_cost_a_frame`; both with the four-channel count: the one-channel count of before is not
-  in this build to compare).
+  `what_the_classes_cost_a_frame`; both with the four-channel count, so this is the classes' shading, not
+  the count's wider target). Against the tree before the classes (the review of 2026-11-19, runs
+  44419485412 and 44420265283, 400 parts cut): llvmpipe +10 %, RADV +6 %, radeonsi +3 % a frame.
 - *Unchanged:* a mesh without classes, and every body of class 0, is drawn byte for byte as before (pinned by
   `render/src/section.rs` › `class_zero_is_hatched_byte_for_byte_as_before_the_classes` against the old
   arithmetic, and `render/tests/hatch_classes.rs` › `without_classes_the_picture_is_byte_for_byte_as_before`);
-  a picture without a section runs none of it.
+  a picture without a section runs none of it. Since the review the cap's tone is rounded a half up on both
+  renderers (`floor(x + 0.5)`; WGSL's `round` took a half to the even number), so a GPU byte that fell on an
+  exact half can move by one, towards the CPU's.
 
 **Checks:** the unit tests of `render/src/section.rs` (directions, runs of classes, each class's lines, the
 overlap's cross-hatch, class 0 against the old arithmetic) and of `gpu/src/cut.rs` (the blend per channel, the

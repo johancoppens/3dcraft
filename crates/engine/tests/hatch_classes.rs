@@ -91,6 +91,21 @@ fn each_body_is_hatched_by_its_place_and_hiding_one_changes_no_other() {
     assert_eq!(again.face_colors, scene.face_colors);
 }
 
+/// A class is a place in the document: deleting a part moves the parts
+/// after it one place up, so their directions change, and the parts
+/// before it keep theirs.
+#[test]
+fn deleting_a_part_changes_the_directions_of_the_parts_after_it_and_no_other() {
+    let mut s = blocks(6, 0.0);
+    run(&mut s, "feature.delete", json!({"feature": "B2"}));
+    let scene = s.scene(None).unwrap().unwrap();
+    let want: Vec<(String, usize)> = [("B0", 0), ("B1", 1), ("B3", 2), ("B4", 3), ("B5", 0)]
+        .into_iter()
+        .map(|(name, class)| (name.to_string(), class))
+        .collect();
+    assert_eq!(classes(&scene), want);
+}
+
 #[test]
 fn a_document_with_one_body_hatches_it_as_it_always_was() {
     let mut s = blocks(1, 0.0);

@@ -589,15 +589,12 @@ fn hatched_caps_at_other_scales_match_the_cpu_renderer() {
     check("hatched-scales", &scenes);
 }
 
-/// Parts side by side and overlapping, as an assembly's: blocks in a row,
-/// each a fiftieth of a unit short of the next (under a pixel: their caps
-/// meet on the picture; two faces that touch in one plane would be a tie
-/// behind a see-through front, which the renderers break each their own
-/// way, as `studio_cut.rs` says of the block on the plate; the CPU tests
-/// of `render/tests/hatch_classes.rs` have blocks that touch), a pin
-/// through two of them and a block that sinks into its neighbour (an
-/// interference), one mesh with a run of face ids per part. Returns the
-/// mesh and the first face of each part.
+/// Parts that touch and overlap, as an assembly's: blocks in a row, each
+/// touching the next, a pin through two of them and a block that sinks
+/// into its neighbour (an interference; wide enough that the plane z1,
+/// which keeps only its top, leaves enough of the model in the picture to
+/// compare), one mesh with a run of face ids per part. Returns the mesh
+/// and the first face of each part.
 fn parts_in_a_row(scale: f64, origin: Vec3) -> (Mesh, Vec<u32>) {
     let place = |x: f64, y: f64, z: f64| {
         let p = origin + Vec3::new(x, y, z) * scale;
@@ -608,7 +605,7 @@ fn parts_in_a_row(scale: f64, origin: Vec3) -> (Mesh, Vec<u32>) {
         bodies.push(
             primitives::block(
                 &place(f64::from(k) * 2.0, 0.0, 0.0),
-                1.98 * scale,
+                2.0 * scale,
                 3.0 * scale,
                 2.0 * scale,
             )
@@ -626,7 +623,7 @@ fn parts_in_a_row(scale: f64, origin: Vec3) -> (Mesh, Vec<u32>) {
     );
     // A block that sinks 0.5 into the last one, from above.
     bodies.push(
-        primitives::block(&place(6.5, 0.5, 1.5), 1.0 * scale, 2.0 * scale, 1.5 * scale).unwrap(),
+        primitives::block(&place(6.1, 0.1, 1.5), 1.8 * scale, 2.8 * scale, 1.5 * scale).unwrap(),
     );
     let mut mesh = Mesh::default();
     let mut firsts = Vec::new();
@@ -673,12 +670,7 @@ fn classed_scenes() -> Vec<Scene> {
             round,
             &mut of_row,
         );
-        // Not the plane z1, which keeps only the top of the block that
-        // sinks into its neighbour: too little to compare.
-        for mut scene in hatched(of_row)
-            .into_iter()
-            .filter(|s| !s.name.contains("-z1-"))
-        {
+        for mut scene in hatched(of_row) {
             scene.colors = colors.clone();
             scenes.push(scene);
         }

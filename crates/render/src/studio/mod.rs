@@ -1375,6 +1375,8 @@ pub(crate) fn rasterise_layers(
             continue;
         };
         let flat_normal = (pb - pa).cross(pc - pa).normalized();
+        // The triangle's hatch class, as a bit of the count.
+        let class_bit = classes.bit(face);
         let towards = match view.projection {
             Projection::Perspective { .. } => pa - view.eye,
             Projection::Orthographic { .. } => view.forward,
@@ -1414,7 +1416,7 @@ pub(crate) fn rasterise_layers(
                         if let Some(slot) = odd.get_mut(i)
                             && owns_sample(on_edge, [&a, &b, &c])
                         {
-                            *slot ^= classes.bit(face);
+                            *slot ^= class_bit;
                         }
                         continue;
                     }

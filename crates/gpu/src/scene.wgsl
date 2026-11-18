@@ -215,12 +215,14 @@ fn section_hatch_color(rel: vec3<f32>, mask: u32) -> vec3<f32> {
     } else if m != 0u {
         c = max(hatch_class_coverage(rel, 0u, spacing), hatch_class_coverage(rel, 1u, spacing));
     }
-    // A whole number of 255ths (`Hatching::color`): never a half between
-    // two bytes, so the conversion to bytes rounds it as the CPU does.
-    // And each channel a whole byte, as the CPU rounds it: a value between
-    // two bytes is converted by the hardware, which some round otherwise.
-    let mixed = mix(paper, scene.section_ink.rgb, round(c * 255.0) / 255.0);
-    return round(mixed * 255.0) / 255.0;
+    // A whole number of 255ths (`Hatching::color_mask`): never a half
+    // between two bytes, so the conversion to bytes rounds it as the CPU
+    // does. And each channel a whole byte, as the CPU rounds it: a value
+    // between two bytes is converted by the hardware, which some round
+    // otherwise. Both a half up, `floor(x + 0.5)`, as the CPU: WGSL's
+    // `round` takes a half to the even number.
+    let mixed = mix(paper, scene.section_ink.rgb, floor(c * 255.0 + 0.5) / 255.0);
+    return floor(mixed * 255.0 + 0.5) / 255.0;
 }
 
 struct VertexIn {

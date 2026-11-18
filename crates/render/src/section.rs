@@ -486,15 +486,17 @@ impl Hatching {
     }
 
     /// [`Self::color`] where the classes `mask` are cut
-    /// ([`Self::coverage_mask`]).
+    /// ([`Self::coverage_mask`]). Rounded as `floor(x + 0.5)` (a half up),
+    /// which both renderers write alike: Rust's `round` takes a half away
+    /// from zero, WGSL's to the even number.
     pub fn color_mask(&self, p: Vec3, distance: f64, mask: u8) -> [u8; 3] {
-        let c = (self.coverage_mask(p, distance, mask) * 255.0).round() / 255.0;
+        let c = (self.coverage_mask(p, distance, mask) * 255.0 + 0.5).floor() / 255.0;
         let mut out = self.paper;
         for (channel, ink) in out.iter_mut().zip(self.ink) {
             let paper = f64::from(*channel);
             // Between two bytes: within 0..=255.
-            *channel = (paper + (f64::from(ink) - paper) * c)
-                .round()
+            *channel = (paper + (f64::from(ink) - paper) * c + 0.5)
+                .floor()
                 .clamp(0.0, 255.0) as u8;
         }
         out
