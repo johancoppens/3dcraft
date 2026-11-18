@@ -117,20 +117,37 @@ pub struct Tokens {
     /// How near the pointer must be to a marker's line to point at it,
     /// in points.
     pub mate_hit: f32,
-    /// A note's marker in the view (`shell/notes.rs`): its radius, in
-    /// points; how near another pin a note is drawn by that pin (which
-    /// says how many more it stands for); the width of the text beside
-    /// the chosen one and of the field a note is written in.
+    /// A note's marker in the view (`shell/notes.rs`): its head's radius,
+    /// in points (`note_touch_radius` with touch sizes); how near another
+    /// pin a note is drawn by that pin (which says how many more it stands
+    /// for); the width of the text beside the chosen one and of the field
+    /// a note is written in; the size of the number on a head; how far
+    /// from the head's centre a click reaches it (`note_touch_reach` with
+    /// touch sizes); how long the pointer rests on a pin before its first
+    /// line shows beside it, in seconds (the UX round of 2026-11-18, N4).
     pub note_radius: f32,
     pub note_cell: f32,
     pub note_text_width: f32,
-    /// The pins' colours: an open note's head (and an agent's question's
-    /// ring), a done note's tick, a note off its entity (detached, or its
-    /// place gone), the fill inside a ring, the number on a head. Over
-    /// the viewport, which is not themed: the same in both appearances.
-    pub note_open: Rgb,
+    pub note_number_size: f32,
+    pub note_reach: f32,
+    pub note_touch_radius: f32,
+    pub note_touch_reach: f32,
+    pub note_hover_delay: f32,
+    /// The pins' colours (N4, "the developer may overrule"): an open note
+    /// for the agent, a dark plate with a rim of `note_rim` at
+    /// `note_rim_opacity`; an open note that waits for the person, the
+    /// agent's indigo; a done note's tick; a note off its entity
+    /// (detached, or its place gone); the ring of the chosen pin, the
+    /// selection's amber (at `note_rim_opacity` under the pointer); the
+    /// fill inside a ring; the number on a head. Over the viewport, which
+    /// is not themed: the same in both appearances.
+    pub note_for_agent: Rgb,
+    pub note_for_you: Rgb,
+    pub note_rim: Rgb,
+    pub note_rim_opacity: u8,
     pub note_done: Rgb,
     pub note_astray: Rgb,
+    pub note_chosen: Rgb,
     pub note_fill: Rgb,
     pub note_ink: Rgb,
     /// A point's path over the motion (`view.trace`): a deep violet,
@@ -944,14 +961,25 @@ impl Tokens {
             mate_hot_width: 2.0,
             mate_size: 40.0,
             mate_hit: 6.0,
-            note_radius: 7.0,
+            note_radius: 9.0,
             note_cell: 22.0,
             note_text_width: 220.0,
-            // The accent, the light set's ok, the viewport's own text,
-            // the light panel (2026-11-17).
-            note_open: [224, 169, 62],
+            note_number_size: 11.0,
+            note_reach: 12.0,
+            note_touch_radius: 12.0,
+            note_touch_reach: 20.0,
+            note_hover_delay: 0.3,
+            // The plates' dark, the agent's indigo, the section handle's
+            // near white at 60 %, the light set's ok, the viewport's own
+            // text, the selection's amber, the light panel (2026-11-17;
+            // the pins' meanings of the UX round, 2026-11-18).
+            note_for_agent: [22, 21, 20],
+            note_for_you: [76, 90, 166],
+            note_rim: [250, 248, 244],
+            note_rim_opacity: 153,
             note_done: [42, 125, 68],
             note_astray: [104, 100, 94],
+            note_chosen: [224, 169, 62],
             note_fill: [247, 246, 243],
             note_ink: [247, 246, 243],
             trace: [80, 0, 140],
@@ -1289,6 +1317,9 @@ impl Tokens {
         t.hit_min = t.hit_min.max(t.touch_target);
         // The section's handle: a finger takes the arrow and the dots.
         t.section_hit = t.section_hit.max(t.touch_target * 0.5);
+        // A note's pin: a larger head, a finger's reach.
+        t.note_radius = t.note_radius.max(t.note_touch_radius);
+        t.note_reach = t.note_reach.max(t.note_touch_reach);
         // The arrow's whole shape scaled as one, so a finger sees it;
         // the grab area above is a finger's whatever it draws.
         let grown = (t.touch_target * 1.8 / t.section_arrow_length.max(1.0)).max(1.0);
@@ -2089,7 +2120,10 @@ mod tests {
             ("mate_halo", l.mate_halo, d.mate_halo),
             ("viewport_text", l.viewport_text, d.viewport_text),
             ("viewport_failed", l.viewport_failed, d.viewport_failed),
-            ("note_open", l.note_open, d.note_open),
+            ("note_for_agent", l.note_for_agent, d.note_for_agent),
+            ("note_for_you", l.note_for_you, d.note_for_you),
+            ("note_rim", l.note_rim, d.note_rim),
+            ("note_chosen", l.note_chosen, d.note_chosen),
             ("note_done", l.note_done, d.note_done),
             ("note_astray", l.note_astray, d.note_astray),
             ("note_fill", l.note_fill, d.note_fill),

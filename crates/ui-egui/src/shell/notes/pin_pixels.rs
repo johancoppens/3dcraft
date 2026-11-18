@@ -2,7 +2,7 @@
 //! whose picture comes from the CPU reference renderer, not from egui): the
 //! same pins as the window paints over the view (`paint_pin`),
 //! at the same places, sizes and colours, faint behind a face, with their
-//! numbers, "?" and "+n" in strokes of their own (the window's text is
+//! numbers and "+n" in strokes of their own (the window's text is
 //! egui's font, which a picture without the window does not have). Each
 //! shape covers a pixel by how far the pixel's centre lies inside it, so
 //! the edges are smooth.
@@ -288,6 +288,17 @@ impl Canvas<'_> {
     }
 }
 
+/// The height of the number on a head of radius `r` (pixels): smaller
+/// for three digits and more, so it stays inside.
+fn number(id: u64, r: f32) -> f32 {
+    let digits = id.to_string().len().max(1) as f32;
+    if digits > 2.0 {
+        r * 0.9 * 2.0 / digits
+    } else {
+        r * 0.9
+    }
+}
+
 /// Draws `pins` (their places in points) into `rgb`, a picture of `size`
 /// pixels at `scale` pixels a point, as `paint_pin` paints them.
 pub(super) fn draw_pins(rgb: &mut [u8], size: [u32; 2], pins: &[Pin], tokens: &Tokens, scale: f32) {
@@ -324,22 +335,22 @@ pub(super) fn draw_pins(rgb: &mut [u8], size: [u32; 2], pins: &[Pin], tokens: &T
                     alpha,
                 );
             }
-            PinKind::Question | PinKind::Astray => {
+            PinKind::Astray => {
                 canvas.disc(head, r, tokens.note_fill, alpha);
                 canvas.ring(head, r, 1.5 * scale, ink, alpha);
-                let words = if pin.kind == PinKind::Astray {
-                    pin.id.to_string()
-                } else {
-                    "?".to_string()
-                };
-                canvas.text(&words, head, r, false, ink, alpha);
+                canvas.text(&pin.id.to_string(), head, number(pin.id, r), false, ink, alpha);
             }
-            PinKind::Open => {
+            PinKind::ForAgent | PinKind::ForYou => {
                 canvas.disc(head, r, ink, alpha);
+                if pin.kind == PinKind::ForAgent {
+                    // The dark plate's light rim.
+                    let rim = f32::from(tokens.note_rim_opacity) / 255.0;
+                    canvas.ring(head, r - 0.5 * scale, scale, tokens.note_rim, alpha * rim);
+                }
                 canvas.text(
                     &pin.id.to_string(),
                     head,
-                    r * 0.9,
+                    number(pin.id, r),
                     false,
                     tokens.note_ink,
                     alpha,
@@ -347,7 +358,14 @@ pub(super) fn draw_pins(rgb: &mut [u8], size: [u32; 2], pins: &[Pin], tokens: &T
             }
         }
         if pin.chosen {
-            canvas.ring(head, r + 2.5 * scale, scale, ink, alpha);
+            // A 2 pt ring of the selection's amber, 3 pt outside the head.
+            canvas.ring(
+                head,
+                r + 4.0 * scale,
+                2.0 * scale,
+                tokens.note_chosen,
+                alpha,
+            );
         }
         if pin.more > 0 {
             canvas.text(
@@ -380,8 +398,8 @@ mod tests {
         let mut rgb = vec![255u8; (w * h * 3) as usize];
         let pin = Pin {
             id: 7,
-            at: egui::pos2(30.0, 45.0),
-            kind: PinKind::Open,
+            at: egui::pos2(30.0, 50.0),
+            kind: PinKind::ForYou,
             behind: false,
             chosen: false,
             more: 0,
@@ -391,10 +409,11 @@ mod tests {
             let k = ((y * w + x) * 3) as usize;
             [rgb[k], rgb[k + 1], rgb[k + 2]]
         };
-        // The head's rim, in the open colour; a corner untouched.
-        let head = Pin::head(egui::pos2(30.0, 45.0), tokens.note_radius);
-        let rim = at(head.x as u32 + 5, head.y as u32);
-        assert_eq!(rim, tokens.note_open, "{rim:?}");
+        // The head, in the colour of a note that waits for the person
+        // (N4); a corner untouched.
+        let head = Pin::head(egui::pos2(30.0, 50.0), tokens.note_radius);
+        let fill = at(head.x as u32 + 5, head.y as u32);
+        assert_eq!(fill, tokens.note_for_you, "{fill:?}");
         assert_eq!(at(1, 1), [255, 255, 255]);
         // A picture of another size than its rows is left alone.
         let mut short = vec![0u8; 10];

@@ -227,13 +227,19 @@ fn noted(notes: &Value) -> Value {
                     }),
                     "point": n["point"], "reply": n["done"]["reply"], "closedBy": n["done"]["agent"],
                 });
-                // The replies after a closing (format 77), without when.
-                if let Some(later) = n.get("later").and_then(Value::as_array)
+                // The replies after a closing (format 77), without when:
+                // note.list's `replies` (its `later` until 2026-11-18),
+                // under the name and in the shape the frozen expectations
+                // were written with.
+                if let Some(later) = n
+                    .get("replies")
+                    .and_then(Value::as_array)
+                    .filter(|list| !list.is_empty())
                     && let Some(map) = kept.as_object_mut()
                 {
                     let replies: Vec<Value> = later
                         .iter()
-                        .map(|r| json!({"author": r["author"], "agent": r["agent"], "reply": r["reply"]}))
+                        .map(|r| json!({"author": r["author"], "agent": r["agent"], "reply": r["text"]}))
                         .collect();
                     map.insert("later".into(), replies.into());
                 }

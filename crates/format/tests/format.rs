@@ -6745,6 +6745,57 @@ fn a_reply_after_the_closing_and_an_unnamed_agent_round_trip() {
     assert!(back.note(id).unwrap().done.is_none());
 }
 
+/// A reply on a note that was never closed (`note.reply`, 2026-11-18)
+/// needs no new format: format 77 keeps a note's replies on the note,
+/// whatever its state, so the file is a version-77 file as main's build of
+/// fd13129d writes and reads it (this crate's reader is that build's, not
+/// changed since): written as `later` beside no `done`, read back as it
+/// was, through the manifest and through the whole file.
+#[test]
+fn a_reply_on_a_note_never_closed_is_a_format_77_file() {
+    use craft3d_doc::{NoteAuthor, Turn};
+    let mut doc = small();
+    let id = doc
+        .add_note("2 mm thicker here", None, [0.0; 3], NoteAuthor::Person, 1)
+        .unwrap();
+    doc.reply_to_note(
+        id,
+        NoteAuthor::Agent("Claude Code".to_string()),
+        "From 5 mm to 7 mm?",
+        2,
+    )
+    .unwrap();
+    assert!(doc.note(id).unwrap().done.is_none(), "never closed");
+    assert_eq!(doc.note(id).unwrap().waiting(), Some(Turn::Person));
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 77, "no new format");
+    let note = &value["document"]["notes"]["items"][0];
+    assert!(note.get("done").is_none(), "{note}");
+    assert_eq!(
+        note["later"],
+        serde_json::json!([{"by": {"agent": "Claude Code"}, "timeMs": 2, "text": "From 5 mm to 7 mm?"}])
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    // The same file as fd13129d's build would be handed it, written by
+    // hand: read, and the note waits for the person.
+    let by_hand = json.replacen(
+        "\"text\": \"From 5 mm to 7 mm?\"",
+        "\"text\": \"From 5 mm to 7 mm, or 2 mm more where it is thinnest?\"",
+        1,
+    );
+    assert_ne!(by_hand, json);
+    let read = from_manifest_json(by_hand.as_bytes()).unwrap();
+    let note = read.note(id).unwrap();
+    assert!(note.done.is_none());
+    assert_eq!(note.later.len(), 1);
+    assert_eq!(note.waiting(), Some(Turn::Person));
+    read.validate().unwrap();
+    // The whole file, as saved.
+    let bytes = to_bytes(&doc).unwrap();
+    assert_eq!(from_bytes(&bytes).unwrap(), doc);
+}
+
 /// Within format 75 the replies after the closing came later (the
 /// developer's preview build of b39e4345 writes 75 without them; the
 /// workshop's builds of 2026-11-17 wrote them under the closing): the
