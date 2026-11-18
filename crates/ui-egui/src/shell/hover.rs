@@ -223,7 +223,16 @@ impl Shell {
         self.hover.at = Some([x, y]);
         self.hover.placed = true;
         self.hover.found_for = scene.map(|scene| self.hover_key(scene, [x, y]));
-        self.take_hovered(scene, &found, x, y);
+        // On something drawn over the model that takes the click (a
+        // note's pin): nothing of the model is outlined.
+        if self
+            .hover_point()
+            .is_some_and(|at| self.taken_elsewhere(at))
+        {
+            self.clear_hovered();
+        } else {
+            self.take_hovered(scene, &found, x, y);
+        }
         Ok(found)
     }
 
@@ -282,6 +291,21 @@ impl Shell {
             self.hover.drawn = self.hover.drawn.wrapping_add(1);
         }
         self.hover.found_for = None;
+    }
+
+    /// Where the pointer rests, in points of the window: the mouse's, or
+    /// the place `ui.pick` with `hover` put it (pixels of the viewport,
+    /// once the viewport was drawn).
+    fn hover_point(&self) -> Option<egui::Pos2> {
+        let ([x, y], rect) = self.hover.at.zip(self.rect)?;
+        let [width, height] = self.size;
+        let across = |from: f32, length: f32, at: f64, pixels: u32| {
+            from + (at / f64::from(pixels.max(1)) * f64::from(length)) as f32
+        };
+        Some(egui::pos2(
+            across(rect.left(), rect.width(), x, width),
+            across(rect.top(), rect.height(), y, height),
+        ))
     }
 
     /// Whether a click at `at` (points) is taken by something drawn over
@@ -353,7 +377,9 @@ impl Shell {
             || self.touch_gesture
             || self.select.menu.is_some()
             || self.scrubbed_step().is_some()
-            || over.is_some_and(|at| self.taken_elsewhere(at));
+            || self
+                .hover_point()
+                .is_some_and(|at| self.taken_elsewhere(at));
         let (Some(scene), Some(at), false) = (scene, self.hover.at, blocked) else {
             self.clear_hovered();
             return;
