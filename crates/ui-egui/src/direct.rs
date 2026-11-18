@@ -258,7 +258,7 @@ pub fn segments_marked(
             });
         };
     for &[a, b] in marks.outline() {
-        line(a, b, LineKind::Edge, true, see_through, false, 0.0);
+        line(a, b, LineKind::CutOutline, true, see_through, false, 0.0);
     }
     for (axis, direction) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
         line(
@@ -341,8 +341,11 @@ pub fn segments_marked(
             line(a, b, LineKind::Highlight, true, true, false, 0.0);
         }
     }
-    // What a click would select, where it is in sight.
+    // What a click would select, where it is in sight: its dark casing,
+    // then the amber over it.
     for (kind, lines) in [
+        (LineKind::HoverCasing, &marks.hover_lines),
+        (LineKind::HoverEdgeCasing, &marks.hover_edges),
         (LineKind::Hover, &marks.hover_lines),
         (LineKind::HoverEdge, &marks.hover_edges),
     ] {
@@ -421,18 +424,20 @@ pub fn segments_marked(
         .iter()
         .filter(|point| marks.kept(**point, **point).is_some())
     {
-        out.push(Segment {
-            from: *point,
-            to: *point,
-            color: LineKind::HoverEdge.color(tokens),
-            width: LineKind::HoverEdge.dot_radius(tokens) * 2.0 * scale,
-            tested: true,
-            dimmed: false,
-            axis: false,
-            hidden_opacity: None,
-            edge: None,
-            lift: 0.0,
-        });
+        for kind in [LineKind::HoverEdgeCasing, LineKind::HoverEdge] {
+            out.push(Segment {
+                from: *point,
+                to: *point,
+                color: kind.color(tokens),
+                width: kind.dot_radius(tokens) * 2.0 * scale,
+                tested: true,
+                dimmed: false,
+                axis: false,
+                hidden_opacity: None,
+                edge: None,
+                lift: 0.0,
+            });
+        }
     }
     out
 }

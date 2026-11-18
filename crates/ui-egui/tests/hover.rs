@@ -592,3 +592,148 @@ fn hover_cost_on_thousands_of_faces() {
     );
     assert!(at(0.5) < 1_000.0);
 }
+
+/// On a note's pin a click is the pin's: nothing of the model is outlined
+/// there, with the mouse on it or the pointer an agent placed on it, and
+/// `hovered` names the note (the verdict's fix 10; the pin's ring, which
+/// reads `Shell::hover_point`, is the notes' to test).
+#[test]
+fn on_a_notes_pin_nothing_of_the_model_is_outlined() {
+    let (mut session, mut shell, mut window) = plate_in_a_window();
+    let note = run(
+        &mut session,
+        "note.add",
+        json!({"text": "2 mm thicker here", "on": "Plate", "point": [30, 20, 8]}),
+    );
+    window.frames(&mut shell, &mut session, 4);
+    let pin = shell.note_markers().0.first().expect("the pin is drawn").1;
+    let rect = shell.viewport_rect().unwrap();
+    let (x, y) = (
+        f64::from(pin.x - rect.left()),
+        f64::from(pin.y - rect.top()),
+    );
+    // Under the pin lies the plate's top: placed there, the note.
+    let named = |hovered: &Value| hovered["kind"] == "note" && hovered["id"] == note["id"];
+    let picked = call(&mut shell, &mut session, "ui.pick", json!({"x": x, "y": y}));
+    assert_eq!(picked["hit"], true, "{picked}");
+    let placed = call(
+        &mut shell,
+        &mut session,
+        "ui.pick",
+        json!({"x": x, "y": y, "hover": true}),
+    );
+    assert!(named(&placed["hovered"]), "{placed}");
+    window.frames(&mut shell, &mut session, 3);
+    let hovered = |shell: &mut Shell, session: &mut Session| {
+        call(shell, session, "ui.get", json!({}))["hovered"].clone()
+    };
+    assert!(named(&hovered(&mut shell, &mut session)));
+    assert_eq!(shell.state.hovered, None, "nothing of the model");
+    assert!(
+        !shell
+            .overlay()
+            .0
+            .lines
+            .iter()
+            .any(|l| l.kind == LineKind::Hover)
+    );
+    // The mouse on it: the note too; beside it, the plate's top.
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(pin)]);
+    window.frames(&mut shell, &mut session, 4);
+    assert!(named(&hovered(&mut shell, &mut session)));
+    assert_eq!(shell.state.hovered, None, "nothing of the model");
+    let beside = egui::pos2(pin.x + 40.0, pin.y + 40.0);
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(beside)]);
+    window.frames(&mut shell, &mut session, 4);
+    assert_eq!(hovered(&mut shell, &mut session)["kind"], "face");
+}
+
+fn pixels(result: &Value) -> Vec<u8> {
+    let text = result["base64"].as_str().unwrap();
+    let value = |c: u8| -> u32 {
+        match c {
+            b'A'..=b'Z' => u32::from(c - b'A'),
+            b'a'..=b'z' => u32::from(c - b'a') + 26,
+            b'0'..=b'9' => u32::from(c - b'0') + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => panic!("not base64: {c}"),
+        }
+    };
+    let mut png = Vec::new();
+    for chunk in text.as_bytes().chunks(4) {
+        let pad = chunk.iter().filter(|&&c| c == b'=').count();
+        let bits = chunk.iter().fold(0_u32, |acc, &c| {
+            (acc << 6) | if c == b'=' { 0 } else { value(c) }
+        });
+        let bits = bits << (6 * (4 - chunk.len()));
+        png.extend_from_slice(&bits.to_be_bytes()[1..4 - pad]);
+    }
+    let decoder = png::Decoder::new(std::io::Cursor::new(png));
+    let mut reader = decoder.read_info().unwrap();
+    let mut rgb = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut rgb).unwrap();
+    rgb.truncate(info.buffer_size());
+    rgb
+}
+
+/// The hover's amber wears a dark casing, as the dimension line does (the
+/// verdict's fix 7), so it reads on a body of any colour: copper brown,
+/// near white, near black, the amber itself and slate blue. On each, the
+/// pixels the outline of an edge changes hold both the amber and the
+/// casing's ink.
+#[test]
+fn the_hover_outline_reads_on_any_body_colour() {
+    let apart = |a: &[u8], b: [u8; 3]| -> u32 {
+        a.iter()
+            .zip(b)
+            .map(|(&x, y)| u32::from(x.abs_diff(y)))
+            .sum()
+    };
+    for color in ["#8a5a3c", "#f0f0f0", "#202020", "#d9862c", "#5b7299"] {
+        let (mut session, mut shell) = plate();
+        run(
+            &mut session,
+            "body.appearance",
+            json!({"body": "Plate", "color": color}),
+        );
+        let tokens = shell.tokens;
+        let things = three_things(&mut shell, &mut session);
+        let (_, [x, y], _) = &things[1];
+        let shot = |shell: &mut Shell, session: &mut Session| {
+            pixels(&call(
+                shell,
+                session,
+                "ui.screenshot",
+                json!({"scale": 1.0}),
+            ))
+        };
+        let before = shot(&mut shell, &mut session);
+        call(
+            &mut shell,
+            &mut session,
+            "ui.pick",
+            json!({"x": x, "y": y, "hover": true}),
+        );
+        let after = shot(&mut shell, &mut session);
+        let changed: Vec<&[u8]> = before
+            .chunks(3)
+            .zip(after.chunks(3))
+            .filter(|(a, b)| a != b)
+            .map(|(_, b)| b)
+            .collect();
+        let amber = changed
+            .iter()
+            .filter(|px| apart(px, tokens.face_highlight) <= 90)
+            .count();
+        let casing = changed
+            .iter()
+            .filter(|px| apart(px, tokens.hover_casing) <= 60)
+            .count();
+        assert!(
+            amber >= 10 && casing >= 10,
+            "{color}: {} pixels changed, {amber} amber, {casing} of the casing",
+            changed.len()
+        );
+    }
+}

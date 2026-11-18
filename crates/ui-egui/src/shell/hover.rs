@@ -12,7 +12,7 @@ use crate::state::{CameraState, Picked, PickedEntity, PickedKind};
 use crate::viewport;
 use craft3d_engine::{PickKind, Scene, SceneNear, ScenePointed};
 use craft3d_render::Section;
-use serde_json::Value;
+use serde_json::{Value, json};
 // The browser has no clock in `std` (`std::time::Instant::now` panics
 // there).
 #[cfg(not(target_arch = "wasm32"))]
@@ -223,7 +223,16 @@ impl Shell {
         self.hover.at = Some([x, y]);
         self.hover.placed = true;
         self.hover.found_for = scene.map(|scene| self.hover_key(scene, [x, y]));
-        self.take_hovered(scene, &found, x, y);
+        // On something drawn over the model that takes the click (a
+        // note's pin): nothing of the model is outlined.
+        if self
+            .hover_point()
+            .is_some_and(|at| self.taken_elsewhere(at))
+        {
+            self.clear_hovered();
+        } else {
+            self.take_hovered(scene, &found, x, y);
+        }
         Ok(found)
     }
 
@@ -284,6 +293,22 @@ impl Shell {
         self.hover.found_for = None;
     }
 
+    /// Where the pointer rests, in points of the window: the mouse's, or
+    /// the place `ui.pick` with `hover` put it (pixels of the viewport,
+    /// once the viewport was drawn). Kept whatever lies there, the model or
+    /// something drawn over it (a note's pin reads it to light up).
+    pub(crate) fn hover_point(&self) -> Option<egui::Pos2> {
+        let ([x, y], rect) = self.hover.at.zip(self.rect)?;
+        let [width, height] = self.size;
+        let across = |from: f32, length: f32, at: f64, pixels: u32| {
+            from + (at / f64::from(pixels.max(1)) * f64::from(length)) as f32
+        };
+        Some(egui::pos2(
+            across(rect.left(), rect.width(), x, width),
+            across(rect.top(), rect.height(), y, height),
+        ))
+    }
+
     /// Whether a click at `at` (points) is taken by something drawn over
     /// the model: the section's handle, a note's pin, the dimension's
     /// number, a mate's marker.
@@ -291,11 +316,7 @@ impl Shell {
         let reach = self.tokens.note_radius + 3.0;
         self.section_handle()
             .is_some_and(|place| place.part_at(at).is_some() || place.group.contains(at))
-            || self
-                .notes
-                .markers
-                .iter()
-                .any(|(_, c)| c.distance(at) <= reach)
+            || self.pin_at(at).is_some()
             || self
                 .dimension_place()
                 .is_some_and(|place| place.number.expand(2.0).contains(at))
@@ -353,7 +374,9 @@ impl Shell {
             || self.touch_gesture
             || self.select.menu.is_some()
             || self.scrubbed_step().is_some()
-            || over.is_some_and(|at| self.taken_elsewhere(at));
+            || self
+                .hover_point()
+                .is_some_and(|at| self.taken_elsewhere(at));
         let (Some(scene), Some(at), false) = (scene, self.hover.at, blocked) else {
             self.clear_hovered();
             return;
@@ -390,10 +413,27 @@ impl Shell {
     /// `ui.get` › `hovered`: what a click would select where the pointer
     /// rests, shaped as `state.picked`; null when nothing is under it.
     pub(crate) fn hovered_json(&self) -> Value {
+        // On a note's pin: the note, whose pin a click chooses.
+        if let Some(id) = self.hover_point().and_then(|at| self.pin_at(at)) {
+            let [x, y] = self.hover.at.unwrap_or_default();
+            return json!({"kind": "note", "id": id, "x": x, "y": y, "serial": self.hover.serial});
+        }
         self.state
             .hovered
             .as_ref()
             .and_then(|hovered| serde_json::to_value(hovered).ok())
             .unwrap_or(Value::Null)
+    }
+
+    /// The note whose pin, as the last frame drew it, is within reach of
+    /// `at` (points): the nearest.
+    fn pin_at(&self, at: egui::Pos2) -> Option<u64> {
+        let reach = self.tokens.note_radius + 3.0;
+        self.notes
+            .markers
+            .iter()
+            .filter(|(_, c)| c.distance(at) <= reach)
+            .min_by(|a, b| a.1.distance(at).total_cmp(&b.1.distance(at)))
+            .map(|(id, _)| *id)
     }
 }
