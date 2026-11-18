@@ -673,7 +673,12 @@ fn classed_scenes() -> Vec<Scene> {
             round,
             &mut of_row,
         );
-        for mut scene in hatched(of_row) {
+        // Not the plane z1, which keeps only the top of the block that
+        // sinks into its neighbour: too little to compare.
+        for mut scene in hatched(of_row)
+            .into_iter()
+            .filter(|s| !s.name.contains("-z1-"))
+        {
             scene.colors = colors.clone();
             scenes.push(scene);
         }
