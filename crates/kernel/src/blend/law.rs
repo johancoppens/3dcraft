@@ -311,6 +311,24 @@ pub enum FadeFault {
     TurnsBack { at: Vec3, radius: f64 },
 }
 
+/// Whether a law fillet asks whether its face turns back on itself
+/// ([`FadeFault::TurnsBack`]): always, but in a probe that builds the
+/// folded faces a review found, to measure what the general checks of a
+/// body say of them (`crate::fillet::probe_asks_turned_back`; fold-check,
+/// 2026-11-18). One switch for the process, so only a test binary of its
+/// own sets it.
+static ASKS_TURNED_BACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// See [`ASKS_TURNED_BACK`].
+pub(crate) fn asks_turned_back() -> bool {
+    ASKS_TURNED_BACK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// See [`ASKS_TURNED_BACK`].
+pub(crate) fn set_asks_turned_back(asks: bool) {
+    ASKS_TURNED_BACK.store(asks, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Pieces a span between two knots is cut into, and the range of a curve
 /// that has none.
 const PER_SPAN: u32 = 4;

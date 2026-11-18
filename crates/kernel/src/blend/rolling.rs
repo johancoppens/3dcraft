@@ -1744,6 +1744,7 @@ fn blend_open(
             // it).
             if law.is_some()
                 && index == home
+                && law::asks_turned_back()
                 && let Some(fault) = turned_back(solver, data, &params, &sections, centre)
             {
                 return Err(BlendError::Fade { edge, fault });
@@ -1786,6 +1787,7 @@ fn blend_open(
     // A radius that varies: the face may not turn back on itself.
     let home_solver = solvers.get(home).ok_or_else(lost)?;
     if law.is_some()
+        && law::asks_turned_back()
         && let Some(fault) = turned_back(home_solver, data, &params, &sections, centre)
     {
         return Err(BlendError::Fade { edge, fault });
