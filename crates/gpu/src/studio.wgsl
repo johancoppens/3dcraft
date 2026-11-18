@@ -1660,8 +1660,9 @@ fn studio_of(in: VertexOut) -> Shaded {
     }
     var slot = in.optics & OPTICS_SLOT;
     if in.face == CAP_FACE {
-        // The cap: its colour, lit like a face without a finish.
-        base = round(scene.section_cap.rgb * 255.0);
+        // The cap: its hatched paper (`section_hatch_color`), lit like a
+        // face without a finish.
+        base = round(section_hatch_color(in.rel) * 255.0);
         metallic = 0.0;
         roughness = DEFAULT_ROUGHNESS;
         slot = 0u;

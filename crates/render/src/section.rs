@@ -120,17 +120,50 @@ pub fn hatch_coverage(d: f64, half_width: f64) -> f64 {
     if c.is_nan() { 0.0 } else { c.clamp(0.0, 1.0) }
 }
 
+/// Where over a step of the spacing the lines in between begin to fade:
+/// the spacing is the largest power of two within the span the hatch
+/// allows (`span / spacing` from 1 to 2), and from a ratio of 1.5 the
+/// lines at odd multiples of the spacing lose their ink, down to none as
+/// the spacing nears doubling. Zooming out, every second line fades away
+/// before the spacing doubles; zooming in, the new lines fade in after it
+/// halves. No line ever moves, and the density never doubles at once.
+pub const HATCH_FADE_FROM: f64 = 1.5;
+
+/// The ink of the lines at odd multiples of the spacing ([`HATCH_FADE_FROM`]),
+/// 0 to 1, for the ratio of the span to the spacing (1 to 2).
+pub fn hatch_odd_ink(ratio: f64) -> f64 {
+    let ink = (2.0 - ratio) / (2.0 - HATCH_FADE_FROM);
+    if ink.is_nan() {
+        1.0
+    } else {
+        ink.clamp(0.0, 1.0)
+    }
+}
+
+/// How much of the lines' own pattern is drawn where the lines stand
+/// `across` pixels apart on screen, measured across them: all of it from
+/// 3 pixels, none at 2 and below, where the picture could not show them
+/// without moiré and the hatching is its mean tone instead.
+pub fn hatch_fade(across: f64) -> f64 {
+    let k = across - 2.0;
+    if k.is_nan() { 0.0 } else { k.clamp(0.0, 1.0) }
+}
+
 /// [`Hatch`] resolved for one picture: the plane's frame, the spacing for
-/// the camera, and the size of a pixel. Both renderers make it here, so
-/// they draw the same lines (`craft3d_gpu` hands its numbers to the cap's
-/// shaders).
+/// the camera, the size of a pixel and the camera's axes. Both renderers
+/// make it here, so they draw the same lines (`craft3d_gpu` hands its
+/// numbers to the cap's shaders).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hatching {
-    /// The plane's frame ([`hatch_frame`]).
+    /// The plane's frame ([`hatch_frame`]) and its unit normal.
     pub u: Vec3,
     pub v: Vec3,
+    pub normal: Vec3,
     /// How far apart the lines are, in model units: a power of two.
     pub spacing: f64,
+    /// The ink of the lines at odd multiples of the spacing
+    /// ([`hatch_odd_ink`]); the others have all of theirs.
+    pub odd_ink: f64,
     /// Half a line's width, in pixels of the picture.
     pub half_width: f64,
     /// The model units one pixel covers: at distance 1 along the view in
@@ -138,6 +171,12 @@ pub struct Hatching {
     /// orthographic view.
     pub pixel: f64,
     pub perspective: bool,
+    /// The camera: its eye and axes, for the footprint of a pixel on the
+    /// plane ([`Self::footprint`]).
+    pub eye: Vec3,
+    pub right: Vec3,
+    pub up: Vec3,
+    pub forward: Vec3,
     pub paper: [u8; 3],
     pub ink: [u8; 3],
 }
@@ -149,9 +188,10 @@ impl Hatching {
     /// within `hatch.spacing_points` points at the camera's target: the
     /// model units a point covers there are the view's height there over
     /// the picture's height in points. Orbit and pan keep it; zoom changes
-    /// it in steps of two, and every line at one spacing is a line at half
-    /// of it. `None` when there is nothing to hatch: a camera that looks
-    /// nowhere, sizes that are not numbers.
+    /// it in steps of two, every line at one spacing is a line at half of
+    /// it, and the lines in between fade over the step
+    /// ([`HATCH_FADE_FROM`]). `None` when there is nothing to hatch: a
+    /// camera that looks nowhere, sizes that are not numbers.
     pub fn new(
         normal: Vec3,
         paper: [u8; 3],
@@ -160,6 +200,7 @@ impl Hatching {
         height: u32,
     ) -> Option<Hatching> {
         let (u, v) = hatch_frame(normal)?;
+        let normal = normal.normalized()?;
         let axes = camera.axes().ok()?;
         let pixels = f64::from(height.max(1));
         let points = hatch
@@ -176,34 +217,119 @@ impl Hatching {
             1.0
         };
         let per_point = pixel * at_target * pixels / points;
-        let spacing = hatch_spacing(hatch.spacing_points * per_point)?;
+        let span = hatch.spacing_points * per_point;
+        let spacing = hatch_spacing(span)?;
         let half_width = 0.5 * hatch.width_points * pixels / points;
         (pixel.is_finite() && pixel > 0.0 && half_width.is_finite()).then_some(Hatching {
             u,
             v,
+            normal,
             spacing,
+            odd_ink: hatch_odd_ink(span / spacing),
             half_width,
             pixel,
             perspective,
+            eye: axes.eye,
+            right: axes.right,
+            up: axes.up,
+            forward: axes.forward,
             paper,
             ink: hatch.ink,
         })
     }
 
-    /// How much ink covers the pixel that shows the point `p` of the plane
-    /// at `distance` along the view, 0 to 1 ([`hatch_coverage`]).
-    pub fn coverage(&self, p: Vec3, distance: f64) -> f64 {
-        let w = (p.dot(self.u) + p.dot(self.v)) * std::f64::consts::FRAC_1_SQRT_2;
-        let d = hatch_distance(w, self.spacing);
-        let q = if self.perspective {
+    /// The model units one pixel covers at `distance` along the view.
+    fn pixel_at(&self, distance: f64) -> f64 {
+        if self.perspective {
             self.pixel * distance
         } else {
             self.pixel
+        }
+    }
+
+    /// How far across the lines (along `w`) the point of the plane under a
+    /// pixel moves when the pixel moves by one, in model units, at the
+    /// point `p` at `distance` along the view: the length of the gradient
+    /// of `w` on screen. Worked out from the plane and the camera, as both
+    /// renderers have them: a step `δ` across the screen (the camera's
+    /// right or up, a pixel long) moves the ray, and its point on the plane
+    /// by `δ − r (n·δ) / (n·r)`, `r` the ray's direction (`p` less the eye
+    /// in perspective, the view's direction in an orthographic view).
+    /// `None` where the plane is seen edge on.
+    pub fn footprint(&self, p: Vec3, distance: f64) -> Option<f64> {
+        let t = (self.u + self.v) * std::f64::consts::FRAC_1_SQRT_2;
+        let r = if self.perspective {
+            p - self.eye
+        } else {
+            self.forward
         };
+        let n = self.normal;
+        let nr = n.dot(r);
+        let edge_on = 1e-12 * r.length();
+        if nr.is_nan() || edge_on.is_nan() || nr.abs() <= edge_on {
+            return None;
+        }
+        let across = |step: Vec3| t.dot(step) - t.dot(r) * n.dot(step) / nr;
+        let (x, y) = (across(self.right), across(self.up));
+        let f = self.pixel_at(distance) * (x * x + y * y).sqrt();
+        (f.is_finite() && f > 0.0).then_some(f)
+    }
+
+    /// How many pixels apart the lines stand on screen across them, at the
+    /// point `p` at `distance` along the view; 0 where the plane is seen
+    /// edge on.
+    pub fn across(&self, p: Vec3, distance: f64) -> f64 {
+        self.footprint(p, distance)
+            .map_or(0.0, |f| self.spacing / f)
+    }
+
+    /// The hatching's mean tone at `distance` along the view: the lines'
+    /// share of the plane, each line's ink over the spacing (a line one
+    /// pixel of the point's scale wide over its ramps), 0 to 1.
+    pub fn mean(&self, distance: f64) -> f64 {
+        let q = self.pixel_at(distance);
+        let a = 0.5 + self.half_width;
+        // The integral of the ramp across a line, in pixels.
+        let line = if a >= 1.0 {
+            2.0 * self.half_width
+        } else {
+            a * a
+        };
+        let mean = q * line * (1.0 + self.odd_ink) / (2.0 * self.spacing);
+        if mean.is_nan() {
+            0.0
+        } else {
+            mean.clamp(0.0, 1.0)
+        }
+    }
+
+    /// How much ink covers the pixel that shows the point `p` of the plane
+    /// at `distance` along the view, 0 to 1. The lines' own pattern: a
+    /// ramp one pixel wide at the point's scale ([`hatch_coverage`]) about
+    /// each line, the lines at even multiples of the spacing at full ink
+    /// and the others at [`Self::odd_ink`]; blended into the mean tone
+    /// ([`Self::mean`]) where the lines stand under 3 pixels apart on
+    /// screen ([`hatch_fade`], from the footprint across them,
+    /// [`Self::footprint`]), all of it under 2.
+    pub fn coverage(&self, p: Vec3, distance: f64) -> f64 {
+        let q = self.pixel_at(distance);
         if !(q.is_finite() && q > 0.0) {
             return 0.0;
         }
-        hatch_coverage(d / q, self.half_width)
+        let mean = self.mean(distance);
+        let Some(f) = self.footprint(p, distance) else {
+            return mean;
+        };
+        let w = (p.dot(self.u) + p.dot(self.v)) * std::f64::consts::FRAC_1_SQRT_2;
+        let two = 2.0 * self.spacing;
+        let even = hatch_coverage(hatch_distance(w, two) / q, self.half_width);
+        let odd = hatch_coverage(hatch_distance(w - self.spacing, two) / q, self.half_width);
+        let line = even.max(self.odd_ink * odd);
+        let across = self.spacing / f;
+        let fade = hatch_fade(2.0 * across)
+            + self.odd_ink * (hatch_fade(across) - hatch_fade(2.0 * across));
+        let c = mean + fade * (line - mean);
+        if c.is_nan() { 0.0 } else { c.clamp(0.0, 1.0) }
     }
 
     /// The cap's colour at `p`: the paper mixed with the ink by
@@ -915,5 +1041,103 @@ mod tests {
         // Sizes that are not numbers cover nothing.
         assert_eq!(hatch_coverage(f64::NAN, 0.5), 0.0);
         assert_eq!(hatch_coverage(0.0, f64::NAN), 0.0);
+    }
+
+    /// Seen nearly edge on, the lines stand closer than 2 pixels apart on
+    /// screen across them: the hatching is its mean tone there, the same at
+    /// every point (no moiré), the lines' share of the plane; between 2 and
+    /// 3 pixels it is between the two.
+    #[test]
+    fn seen_nearly_edge_on_the_hatching_is_its_mean_tone() {
+        let grazing = |height: f64| Camera {
+            eye: Vec3::new(0.0, -100.0, height),
+            target: Vec3::ZERO,
+            up: Vec3::Z,
+            projection: Projection::Orthographic { half_height: 50.0 },
+        };
+        let h = Hatching::new(Vec3::Z, PAPER, &hatch(None), &grazing(2.0), 400).unwrap();
+        assert_eq!(h.spacing, 2.0);
+        assert_eq!(h.odd_ink, 1.0);
+        let p = |w: f64| {
+            let r = std::f64::consts::SQRT_2;
+            Vec3::new(w / r, w / r, 0.0)
+        };
+        assert!(h.across(p(1.0), 100.0) < 2.0, "{}", h.across(p(1.0), 100.0));
+        // A quarter of a unit per pixel, a line one pixel wide every 2
+        // units: an eighth.
+        assert!((h.mean(100.0) - 0.125).abs() < 1e-12);
+        for k in 0..200 {
+            let w = f64::from(k) * 0.0137;
+            assert_eq!(h.coverage(p(w), 100.0), h.mean(100.0), "{w}");
+        }
+        // Face on, the lines themselves.
+        let face_on = Hatching::new(Vec3::Z, PAPER, &hatch(None), &from_above(50.0), 400).unwrap();
+        assert!(face_on.across(p(1.0), 100.0) > 7.9);
+        assert!((face_on.coverage(p(0.0), 100.0) - 1.0).abs() < 1e-12);
+        assert_eq!(face_on.coverage(p(1.0), 100.0), 0.0);
+        // In between: from the lines to the tone, continuously, as the
+        // camera comes down to the plane.
+        let mut last: Option<(f64, f64)> = None;
+        for step in 0..=400 {
+            let height = 100.0 * (1.0 - f64::from(step) / 400.0) + 1.0;
+            let h = Hatching::new(Vec3::Z, PAPER, &hatch(None), &grazing(height), 400).unwrap();
+            let across = h.across(p(0.0), 100.0);
+            let c = h.coverage(p(0.0), 100.0);
+            if across >= 3.0 {
+                assert!((c - 1.0).abs() < 1e-12, "{height}: {c}");
+            }
+            if across <= 2.0 {
+                assert!((c - h.mean(100.0)).abs() < 1e-12, "{height}: {c}");
+            }
+            if let Some((a, previous)) = last {
+                // A small step of the camera, a small change of the ink.
+                assert!(
+                    (c - previous).abs() <= (a - across).abs() + 1e-9,
+                    "{height}: {previous} {c}"
+                );
+            }
+            last = Some((across, c));
+        }
+    }
+
+    /// Zooming across a step of the spacing: the lines in between fade out
+    /// before the spacing doubles and in after it halves, so the ink at a
+    /// fixed point of the plane changes by little per percent of zoom, and
+    /// the lines at even multiples keep all their ink.
+    #[test]
+    fn across_a_step_of_the_spacing_the_ink_changes_little() {
+        let r = std::f64::consts::SQRT_2;
+        // Points on lines at 1, 2, 3 and 4 units, between them, and on
+        // ramps.
+        let points: Vec<Vec3> = [1.0, 2.0, 3.0, 4.0, 0.5, 1.5, 2.25, 3.1, 3.9]
+            .iter()
+            .map(|&w| Vec3::new(w / r, w / r, 0.0))
+            .collect();
+        let mut previous: Option<(f64, Vec<f64>, f64)> = None;
+        let mut steps = 0;
+        let mut half_height = 30.0;
+        while half_height < 130.0 {
+            let h =
+                Hatching::new(Vec3::Z, PAPER, &hatch(None), &from_above(half_height), 400).unwrap();
+            let ink: Vec<f64> = points.iter().map(|&p| h.coverage(p, 100.0)).collect();
+            // A line at an even multiple of the spacing: all of its ink.
+            assert!((h.coverage(Vec3::ZERO, 100.0) - 1.0).abs() < 1e-12);
+            if let Some((spacing, before, height)) = &previous {
+                if *spacing != h.spacing {
+                    steps += 1;
+                }
+                let percent = (half_height / height - 1.0) * 100.0;
+                for (a, b) in before.iter().zip(&ink) {
+                    assert!(
+                        (a - b).abs() <= 0.06 * percent,
+                        "{height} -> {half_height}: {a} -> {b}"
+                    );
+                }
+            }
+            previous = Some((h.spacing, ink, half_height));
+            half_height *= 1.0025;
+        }
+        // From 30 to 130: the spacings 1, 2 and 4.
+        assert!(steps >= 2, "{steps}");
     }
 }

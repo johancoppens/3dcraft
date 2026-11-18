@@ -51,7 +51,7 @@ pub use env::{Key, Level, Prepared};
 pub use hdr::{HdrError, HdrImage, decode_hdr};
 pub use tonemap::Tonemap;
 
-use crate::section::Cut;
+use crate::section::{Cut, Hatching};
 use crate::{
     Camera, FaceColors, Finish, Frame, MAX_SAMPLES, MAX_SIDE, MAX_SSAA, Mesh, NO_FACE, Projection,
     RenderError, RenderParams, SECTION_FACE, View, edge, owns_sample, sample_range, section_bounds,
@@ -898,6 +898,11 @@ fn studio_frame(
     let cut = params
         .section
         .and_then(|section| Cut::new(&section, &section_bounds(mesh)));
+    // The cap's hatching, in pixels of the picture (as the plain look's).
+    let hatching = match (params.section.and_then(|s| s.hatch), cut) {
+        (Some(hatch), Some(cut)) => Hatching::new(cut.normal, cut.color, &hatch, camera, height),
+        _ => None,
+    };
     let opacity = params.opacity();
     let see_through = opacity < 1.0;
     let raster = Raster {
@@ -1013,10 +1018,12 @@ fn studio_frame(
                         _ => 1.0,
                     };
                     let (base, finish, optics) = if surface.face == SECTION_FACE {
-                        // The cap: its colour, lit like a face without a
-                        // finish of its own.
+                        // The cap: its hatched paper, lit like a face
+                        // without a finish of its own.
                         (
-                            cut.map_or(params.color, |cut| cut.color),
+                            cut.map_or(params.color, |cut| {
+                                hatching.map_or(cut.color, |h| h.color(p, surface.dist))
+                            }),
                             Finish::default(),
                             None,
                         )
