@@ -14,6 +14,9 @@
 //! - An area or a volume: [`SIGNIFICANT`] significant digits, no trailing
 //!   zeros (`1450 mm²`, `0.0123 mm²`, `39.9 cm³`).
 //! - A range: each end by its rule (`0.045 – 0.1 mm`).
+//! - A negative number with the ASCII hyphen-minus `-`, never `−`
+//!   (U+2212): a click copies what is shown, and the document's formulas
+//!   and fields, like most programs, read only `-` as a minus.
 //!
 //! What is shortened keeps its whole value ([`Shown::whole`]: to the
 //! document's tolerance) for the hover; a click copies what is shown.
@@ -223,7 +226,7 @@ fn significant(v: f64) -> String {
     };
     let text = trimmed(v, places);
     let (sign, digits) = match text.strip_prefix('-') {
-        Some(rest) => ("−", rest),
+        Some(rest) => ("-", rest),
         None => ("", text.as_str()),
     };
     let (whole, fraction) = match digits.split_once('.') {
@@ -335,5 +338,34 @@ mod tests {
         assert_eq!(area(0.0, "mm"), "0 mm²");
         assert_eq!(volume(39_900.0, "mm"), "39.9 cm³");
         assert_eq!(volume(2.5, "m"), "2.5 m³");
+    }
+
+    #[test]
+    fn every_negative_number_has_the_one_minus_that_reads_back() {
+        let said = [
+            length(-12.5, 1e-6, "mm").text,
+            length(-12.345_678, 1e-6, "mm").whole,
+            length_parts([-1.0, 0.0, 2.0], 1e-6, "mm").text,
+            angle(-22.5, 1e-9).text,
+            area(-1450.0, "mm"),
+            area(-123_456.0, "mm"),
+            volume(-39_900.0, "mm"),
+        ];
+        assert_eq!(
+            said,
+            [
+                "-12.5 mm",
+                "-12.345678 mm",
+                "X -1 · Y 0 · Z 2 mm",
+                "-22.5°",
+                "-1450 mm²",
+                "-123\u{2009}500 mm²",
+                "-39.9 cm³",
+            ]
+        );
+        assert!(said.iter().all(|s| !s.contains('\u{2212}')));
+        // What a click copies reads back as the number.
+        let number: f64 = said[0].trim_end_matches(" mm").parse().unwrap();
+        assert_eq!(number, -12.5);
     }
 }

@@ -352,18 +352,22 @@ pub(super) const SECTION_PLANES: [(&str, &str); 3] = [("x", "yz"), ("y", "zx"), 
 const MIDDLE_SNAP: f64 = 0.01;
 
 /// The middle of the model along axis `axis`: where a plane that is
-/// chosen in the controls starts. The middle of the mesh's box is a place
-/// of the triangles, not of the model (a disc's reads 0.011 mm off its
-/// axis), so it is taken to a place of the model within [`MIDDLE_SNAP`]
+/// chosen in the controls starts. The middle of the bodies' exact box
+/// (`Scene::bodies_box`, from their geometry, not the mesh's: a disc's
+/// mesh box reads 0.011 mm off its axis; the sketches' box where there
+/// are no bodies), taken to a place of the model within [`MIDDLE_SNAP`]
 /// of the range where there is one (the UX verdict of 2026-11-18): the
-/// nearest of the places the section's arrow snaps to (a flat face across
-/// the axis, the axis of a hole, a boss or a round:
-/// `SectionPlane::snaps`) and the origin.
+/// nearest of the places the section's arrow snaps to, a flat face across
+/// the axis or the axis of a hole, a boss or a round
+/// (`SectionPlane::snaps`). The origin is no such place (the review of
+/// the UX round, 2026-11-18: a part whose middle lay within 1 % of it was
+/// cut there, not through its middle).
 fn model_middle(scene: Option<&Scene>, axis: usize) -> f64 {
     let Some(scene) = scene else {
         return 0.0;
     };
-    let Some((lo, hi)) = scene.bbox.corners() else {
+    let exact = scene.bodies_box.corners();
+    let Some((lo, hi)) = exact.or_else(|| scene.bbox.corners()) else {
         return 0.0;
     };
     let (lo, hi) = ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
@@ -386,7 +390,6 @@ fn model_middle(scene: Option<&Scene>, axis: usize) -> f64 {
         .snaps(scene)
         .iter()
         .map(|snap| snap.offset)
-        .chain([0.0])
         .filter(|place| (place - middle).abs() <= reach)
         .min_by(|a, b| (a - middle).abs().total_cmp(&(b - middle).abs()))
         .unwrap_or(middle)
@@ -428,9 +431,7 @@ pub fn first_axis(toward_eye: craft3d_math::Vec3, scene: Option<&Scene>) -> usiz
 }
 
 /// The section switched on or off; switched on with no plane at all, it
-/// is across the base plane that faces the eye most ([`first_axis`],
-/// seen by `camera`) through the model's middle, cutting away the half
-/// on the eye's side.
+/// is the first cut ([`first_cut`]).
 pub(super) fn toggle_section(
     section: &mut crate::state::SectionState,
     scene: Option<&Scene>,
@@ -438,12 +439,33 @@ pub(super) fn toggle_section(
 ) {
     section.on = !section.on;
     if section.on && section.plane.is_none() && section.normal.is_none() {
-        let axis = first_axis(camera.toward_eye(), scene);
-        if let Some((_, plane)) = SECTION_PLANES.get(axis) {
-            section.plane = Some((*plane).to_string());
-            section.offset = model_middle(scene, axis);
-            section.flip = side_across(axis, section.offset, camera, section.flip);
-        }
+        first_cut(section, scene, camera, false, false);
+    }
+}
+
+/// The first cut of a tab, laid alike by the Section chip's first click
+/// and by `ui.set` without a place (the UX verdict of 2026-11-18; in an
+/// empty document too, the review of the UX round): across the base plane
+/// that faces the eye most ([`first_axis`], seen by `camera`), through
+/// the model's middle unless the offset is kept (`keep_offset`), cutting
+/// away the half on the eye's side unless the side is kept (`keep_flip`).
+fn first_cut(
+    section: &mut crate::state::SectionState,
+    scene: Option<&Scene>,
+    camera: &crate::state::CameraState,
+    keep_offset: bool,
+    keep_flip: bool,
+) {
+    let axis = first_axis(camera.toward_eye(), scene);
+    let Some((_, plane)) = SECTION_PLANES.get(axis) else {
+        return;
+    };
+    section.plane = Some((*plane).to_string());
+    if !keep_offset {
+        section.offset = model_middle(scene, axis);
+    }
+    if !keep_flip {
+        section.flip = side_across(axis, section.offset, camera, section.flip);
     }
 }
 
@@ -488,14 +510,13 @@ pub(super) fn choose_axis(
 }
 
 impl Shell {
-    /// A section switched on (by `ui.set`) without saying where: as the
-    /// Section chip's first click lays it (the UX verdict of 2026-11-18:
-    /// the agent's cut and the person's the same): across the base plane
-    /// that faces the eye most ([`first_axis`]), the half on the eye's
-    /// side cut away unless `flip` was given; across Z where nothing is
-    /// shown yet. A plane named keeps its own, through the middle of the
-    /// model's box along its normal (a base plane, X, Y or Z) when no
-    /// offset is given (`offset_given`), as the axis choice does.
+    /// A section switched on (by `ui.set`) without saying where: the
+    /// first cut ([`first_cut`]), as the Section chip's first click lays
+    /// it, the offset and the side kept where `ui.set` gave them
+    /// (`offset_given`, `flip_given`); across Z through the origin before
+    /// any scene is shown. A plane named keeps its own,
+    /// through the middle of the model's box along its normal (a base
+    /// plane, X, Y or Z) when no offset is given, as the axis choice does.
     pub(crate) fn section_through_the_middle(
         &mut self,
         offset_given: bool,
@@ -508,20 +529,17 @@ impl Shell {
         // No plane given: the state's own check has put `xy` there already;
         // the first click's plane takes its place.
         if !plane_given && section.normal.is_none() && section.point.is_none() {
-            let shown = scene.as_deref().filter(|scene| !scene.bodies.is_empty());
-            let axis = match shown {
-                Some(scene) => first_axis(camera.toward_eye(), Some(scene)),
-                None => 2,
-            };
-            let Some((_, plane)) = SECTION_PLANES.get(axis) else {
-                return;
-            };
-            section.plane = Some((*plane).to_string());
-            if !offset_given {
-                section.offset = model_middle(scene.as_deref(), axis);
-            }
-            if shown.is_some() && !flip_given {
-                section.flip = side_across(axis, section.offset, &camera, section.flip);
+            match scene.as_deref() {
+                // A scene shown, an empty document's too.
+                Some(scene) => first_cut(section, Some(scene), &camera, offset_given, flip_given),
+                // Nothing shown yet (no document, or before the window's
+                // first frame): across Z through the origin.
+                None => {
+                    section.plane = Some("xy".to_string());
+                    if !offset_given {
+                        section.offset = 0.0;
+                    }
+                }
             }
             return;
         }

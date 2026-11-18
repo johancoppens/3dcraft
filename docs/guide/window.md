@@ -300,7 +300,7 @@ panel or on the line, to copy it with its unit. Another selection, or Escape, ta
 **Keep as a check** keeps that relation as a check of the document: named after the two things (*Centre
 distance Left face – Right face*), its value now, within the document's tolerance. The **Checks** unfold
 with the new row tinted for a moment, and the status bar says *Kept as the check … · Ctrl+Z takes it back*
-until the next command; the number and the line stay as they are meanwhile. A check is measured again
+until your next click or key; the number and the line stay as they are meanwhile. A check is measured again
 after every change, and is one step to undo; while there is nothing to keep, the button's hover says why. A least distance shown as a
 range (*0.098 – 0.1 mm*: the least found between real places, and no less than the first number, proven)
 or as *about* a number (found on samples of a freeform curve or face, or with no bound) is not proven within

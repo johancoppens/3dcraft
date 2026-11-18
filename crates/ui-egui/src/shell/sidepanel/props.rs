@@ -122,6 +122,8 @@ impl Head {
             "measure": self.measure,
             "value": self.value,
             "text": if self.text.is_empty() { Value::Null } else { self.text.clone().into() },
+            // No number (three things or more), no whole value.
+            "whole": if self.text.is_empty() { Value::Null } else { self.whole.clone().into() },
             "words": self.words,
         })
     }
@@ -224,6 +226,7 @@ impl Wall {
             "measuring": self.measuring,
             "value": self.value,
             "text": self.text,
+            "whole": self.whole,
             "words": self.words,
             "refused": self.refused,
             "from": self.from,
@@ -245,6 +248,9 @@ pub struct Single {
     pub value: f64,
     /// As shown and copied: `48 mm`, `Ø 8 mm`, `R 4.5 mm`.
     pub text: String,
+    /// The value whole in the same words (`Ø 8 mm`, `R 4.513274 mm`): the
+    /// same as `text` where nothing was shortened.
+    pub whole: String,
     /// The edge's points in space (a straight edge's two ends), along
     /// which a length is drawn; empty for a face.
     pub points: Vec<[f64; 3]>,
@@ -262,6 +268,7 @@ impl Single {
             "measure": self.measure,
             "value": self.value,
             "text": self.text,
+            "whole": self.whole,
         })
     }
 }
@@ -287,7 +294,16 @@ fn single_of(
     unit: &str,
     tolerance: f64,
 ) -> Option<Single> {
-    let with_unit = |v: f64| shown::length_text(v, tolerance, unit);
+    // A length's text and its whole value, each with the same sign before
+    // it (`Ø`, `R`): the hover says it in the card's own words (the review
+    // of the UX round, 2026-11-18).
+    let marked = |mark: &str, v: f64| {
+        let said = shown::length(v, tolerance, unit);
+        (
+            format!("{mark}{}", said.text),
+            format!("{mark}{}", said.whole),
+        )
+    };
     let positive = |v: Option<f64>| v.filter(|v| v.is_finite() && *v > 0.0);
     match first.kind {
         SelectionKind::Edge => {
@@ -320,15 +336,16 @@ fn single_of(
                         _ => length
                             .is_some_and(|l| (l - std::f64::consts::TAU * r).abs() <= 1e-12 * l),
                     };
-                    let (measure, value, text) = if whole {
-                        ("diameter", 2.0 * r, format!("Ø {}", with_unit(2.0 * r)))
+                    let (measure, value, (text, said_whole)) = if whole {
+                        ("diameter", 2.0 * r, marked("Ø ", 2.0 * r))
                     } else {
-                        ("radius", r, format!("R {}", with_unit(r)))
+                        ("radius", r, marked("R ", r))
                     };
                     Some(Single {
                         measure,
                         value,
                         text,
+                        whole: said_whole,
                         points,
                         round: Some((center, axis, r)),
                     })
@@ -339,20 +356,24 @@ fn single_of(
                         (Some(a), Some(b)) => vec![*a, *b],
                         _ => Vec::new(),
                     };
+                    let (text, whole) = marked("", length);
                     Some(Single {
                         measure: "length",
                         value: length,
-                        text: with_unit(length),
+                        text,
+                        whole,
                         points: ends,
                         round: None,
                     })
                 }
                 _ => {
                     let length = length?;
+                    let (text, whole) = marked("", length);
                     Some(Single {
                         measure: "length",
                         value: length,
-                        text: with_unit(length),
+                        text,
+                        whole,
                         points,
                         round: None,
                     })
@@ -383,10 +404,12 @@ fn single_of(
                 scene.and_then(|scene| partial_arc(scene, &first.feature, &first.name, at, a))
             {
                 let rim = at + middle * r;
+                let (text, whole) = marked("R ", r);
                 return Some(Single {
                     measure: "radius",
                     value: r,
-                    text: format!("R {}", with_unit(r)),
+                    text,
+                    whole,
                     points: vec![[rim.x, rim.y, rim.z]],
                     round: Some(([at.x, at.y, at.z], [a.x, a.y, a.z], r)),
                 });
@@ -401,10 +424,12 @@ fn single_of(
                 .map(|[x, y, z]| Vec3::new(x, y, z))
                 .filter(|p| p.is_finite())
                 .unwrap_or(at);
+            let (text, whole) = marked("Ø ", 2.0 * r);
             Some(Single {
                 measure: "diameter",
                 value: 2.0 * r,
-                text: format!("Ø {}", with_unit(2.0 * r)),
+                text,
+                whole,
                 points: Vec::new(),
                 round: Some(([rim.x, rim.y, rim.z], [a.x, a.y, a.z], r)),
             })
@@ -932,7 +957,6 @@ pub(crate) fn read(
     // document's tolerance at most.
     let tolerance = session.linear_tolerance().unwrap_or(1e-6);
     let angular = session.angular_tolerance().map_or(0.0, f64::to_degrees);
-    // Three things or more give no number: the words say why.
     // Three things or more give no number: one sentence says why, true
     // for any count (the UX verdict of 2026-11-18); `whole` holds what is
     // selected in a few words, what the short card shows.
@@ -1063,7 +1087,7 @@ pub(crate) fn read(
             _ => "Length along the curve",
         };
         Head {
-            whole: shown::length(single.value, tolerance, &unit).whole,
+            whole: single.whole.clone(),
             ..Head::of(
                 single.measure,
                 Some(single.value),
@@ -1723,7 +1747,7 @@ impl Shell {
 
     /// Keeps the relation `m` as a check of the document, under a name of
     /// its own: the Checks unfold with its row tinted, and the status bar
-    /// says it until the next command.
+    /// says it until the next click, key or command.
     fn keep(&mut self, m: &Measurement) {
         let name = self.free_check_name(&m.check_name);
         if let (Some(params), Some(key)) = (m.check(&name), self.side.kept_key()) {
@@ -1733,10 +1757,7 @@ impl Shell {
             self.side.checks_asked = true;
             self.side.kept_tint =
                 Some((name.clone(), Timed::seconds("", KEPT_TINT_SECONDS), false));
-            self.hint_until_command(
-                format!("Kept as the check {name} · Ctrl+Z takes it back"),
-                None,
-            );
+            self.hint_until_next(format!("Kept as the check {name} · Ctrl+Z takes it back"));
         }
     }
 

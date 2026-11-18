@@ -825,11 +825,12 @@ fn the_renderers_numbers_only_with_a_document() {
 }
 
 /// The UX verdict of 2026-11-18: a picture of the window taken at once
-/// after a file opened showed "0 triangles" in the status bar. Two frames
-/// after an open, the bar says the triangles of the picture shown, never
-/// 0 while the scene has some.
+/// after a file opened showed "0 triangles" in the status bar. An empty
+/// document's bar says its 0 (the review of the UX round: it was hidden);
+/// after an open no frame says 0 beside the opened part, and the bar comes
+/// to say the count of the scene shown.
 #[test]
-fn two_frames_after_an_open_the_bar_counts_the_triangles_shown() {
+fn the_bar_counts_the_triangles_of_the_scene_shown_never_the_last_documents_0() {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("status-bar-open");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -854,21 +855,44 @@ fn two_frames_after_an_open_the_bar_counts_the_triangles_shown() {
         let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
         output.textures_delta.clear();
     };
-    for _ in 0..3 {
+    let said = |shell: &Shell| shell.status_shown(StatusSlot::Render).map(str::to_string);
+    // The empty document: its picture's 0 is said.
+    let mut empty = None;
+    for _ in 0..400 {
         frame(&mut shell, &mut session);
+        empty = said(&shell);
+        if empty.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
     }
+    let empty = empty.expect("the empty document's renderer item");
+    assert!(empty.ends_with(" 0 triangles"), "{empty:?}");
     run(&mut session, "file.open", json!({"path": "opened.3dcraft"}));
-    for _ in 0..2 {
+    let mut counted = None;
+    for k in 0..400 {
         frame(&mut shell, &mut session);
+        let Some(scene) = shell.shown_scene_arc().filter(|s| s.triangles() > 0) else {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            continue;
+        };
+        let shown = said(&shell);
+        assert!(
+            !shown.as_deref().is_some_and(|s| s.contains(" 0 triangles")),
+            "frame {k} after the open the bar says {shown:?} beside {} triangles",
+            scene.triangles()
+        );
+        if let Some(shown) = shown {
+            let count = format!(" {} triangles", scene.triangles());
+            if shown.contains(&count) {
+                counted = Some(shown);
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    let scene = shell.shown_scene_arc().expect("the opened part's scene");
-    assert!(scene.triangles() > 0);
-    let said = shell
-        .status_shown(StatusSlot::Render)
-        .unwrap_or_default()
-        .to_string();
     assert!(
-        !said.contains(" 0 triangles"),
-        "two frames after the open the bar says {said:?}"
+        counted.is_some(),
+        "the bar never said the opened part's triangles"
     );
 }

@@ -3266,6 +3266,9 @@ impl Shell {
         // Whether an Escape of this frame is another part's (a menu, a
         // dialog, a list): asked before they close on it.
         self.esc_elsewhere = self.escape_belongs_elsewhere(ui.ctx());
+        // A click or a key of this frame ends a hint given until the next
+        // action (`hints.rs`): counted before anything answers it.
+        self.count_acts(ui.ctx());
         // Worked out again where the viewport is drawn this frame; a frame
         // without it (the start screen) leaves no stale light look.
         self.interacting = false;
@@ -4187,7 +4190,12 @@ impl Shell {
         }
         let (hint, hint_wait) = self.hint_now(now, ui.ctx().pointer_hover_pos());
         soon(hint_wait);
-        if let Some(hint) = hint.filter(|_| ui.available_width() >= hints::HINT_LEAST_BAR) {
+        // `ui.get` › `hint` is what the bar shows: none in a bar too narrow
+        // for it (the review of the UX round, 2026-11-18), and none where
+        // the items before it leave it no room (below).
+        let hint = hint.filter(|_| ui.available_width() >= hints::HINT_LEAST_BAR);
+        self.hint_shown(hint.clone());
+        if let Some(hint) = hint {
             let text = if selection.is_some() {
                 format!("· {hint}")
             } else {
@@ -4277,15 +4285,20 @@ impl Shell {
         }
         // The renderer's numbers only while a document is shown: the start
         // screen has no picture to speak of (2026-11-10).
-        // Never a count of 0: a picture of nothing says nothing worth the
-        // room, and the bar is laid out before the viewport draws, so the
-        // first frames after an open would say the empty document's 0
-        // beside the model (the UX verdict of 2026-11-18); the next
-        // picture's numbers come.
-        let stats = self
+        // Never a picture's 0 beside a scene that has triangles: the bar
+        // is laid out before the viewport draws, so the first frames after
+        // an open would say the empty document's 0 beside the model (the
+        // UX verdict of 2026-11-18). The item waits for the next picture,
+        // and says it at once (its hold let go of). An empty document's 0
+        // is said (the review of the UX round).
+        let shown_triangles = self.shown_scene.as_ref().map_or(0, |s| s.triangles());
+        let stale = self
             .stats
-            .filter(|_| status.is_some())
-            .filter(|stats| stats.triangles > 0);
+            .is_some_and(|stats| stats.triangles == 0 && shown_triangles > 0);
+        if stale {
+            self.calm.render = calm::Held::default();
+        }
+        let stats = self.stats.filter(|_| status.is_some()).filter(|_| !stale);
         self.status_render = status
             .is_some()
             .then(|| self.stats.as_ref().map(RenderStats::key));
@@ -4399,6 +4412,14 @@ impl Shell {
             measure(label) + tokens.chip_height + tokens.status_gap
         });
         let widths = fit_status((available - copy_width).max(0.0), tokens.status_gap, &fits);
+        // A hint left out for want of room is not shown: `ui.get` says none.
+        let hint_left_out = items
+            .iter()
+            .zip(&widths)
+            .any(|(item, width)| item.slot == StatusSlot::Hint && width.is_none());
+        if hint_left_out {
+            self.hint_shown(None);
+        }
         // The items on the right, with the gaps between them: the room
         // left goes before the first of them.
         let right: Vec<f32> = items

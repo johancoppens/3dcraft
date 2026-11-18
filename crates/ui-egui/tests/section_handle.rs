@@ -2274,9 +2274,11 @@ fn flange() -> Session {
 
 /// The UX verdict of 2026-11-18, fixes 3 and 9: the first cut of the
 /// flange from the iso view lies through a place of the model (the bore's
-/// axis, the origin: `0 mm`, not the middle of its mesh's box, which reads
-/// 0.011 mm off), facing the eye; and an agent's `ui.set {section: {on:
-/// true}}` on a fresh tab lays the very same cut.
+/// axis: `0 mm`, not the middle of its mesh's box, which reads 0.011 mm
+/// off; the axis as the scene's edge line gives it, within a hair of 0,
+/// the origin being no snap place since the review of the UX round),
+/// facing the eye; and an agent's `ui.set {section: {on: true}}` on a
+/// fresh tab lays the very same cut.
 #[test]
 fn the_first_cut_lies_through_a_place_of_the_model_and_an_agents_is_the_persons() {
     let mut session = flange();
@@ -2297,12 +2299,59 @@ fn the_first_cut_lies_through_a_place_of_the_model_and_an_agents_is_the_persons(
         matches!(clicked.plane.as_deref(), Some("yz" | "zx")),
         "{clicked:?}"
     );
-    assert_eq!(clicked.offset, 0.0, "{clicked:?}");
+    assert!(clicked.offset.abs() <= 1e-9, "{clicked:?}");
+    assert_eq!(
+        craft3d_ui_egui::shell::shown::length(clicked.offset, 1e-6, "mm").text,
+        "0 mm"
+    );
     let eye = shell.state.camera.toward_eye();
     let (_, normal, _) = plane_of(&mut shell, &mut session);
     let n = craft3d_math::Vec3::new(normal[0], normal[1], normal[2]);
     assert!(n.dot(eye) > 0.5, "facing: {n:?} {eye:?}");
     // The agent's switch-on: the same cut.
+    let mut agent = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1200.0, 800.0);
+    window.frames(&mut agent, &mut session, 4);
+    call(
+        &mut agent,
+        &mut session,
+        "ui.set",
+        json!({"section": {"on": true}}),
+    );
+    window.frames(&mut agent, &mut session, 2);
+    assert_eq!(agent.state.section, clicked);
+}
+
+/// The review of the UX round, 2026-11-18: the origin is no place the
+/// first cut snaps to. A block 40 long in Y from -20.3 has its middle 0.3
+/// from the origin, within 1 % of its range, and nothing of the model
+/// there: the first cut (across Y, the axis the block is shorter along,
+/// from the iso view) lies through its middle, not at 0; an agent's the
+/// same.
+#[test]
+fn the_first_cut_of_a_part_beside_the_origin_lies_through_its_own_middle() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({"size": [60, 40, 20], "position": [0, -20.3, 0], "name": "Beside"}),
+    );
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1200.0, 800.0);
+    window.frames(&mut shell, &mut session, 4);
+    let toggle = shell
+        .section_hits()
+        .iter()
+        .find(|(n, _)| *n == "toggle")
+        .unwrap()
+        .1
+        .center();
+    window.click(&mut shell, &mut session, toggle);
+    window.frames(&mut shell, &mut session, 3);
+    let clicked = shell.state.section.clone();
+    assert_eq!(clicked.plane.as_deref(), Some("zx"), "{clicked:?}");
+    assert!((clicked.offset + 0.3).abs() <= 1e-9, "{clicked:?}");
     let mut agent = Shell::with_renderer(RendererChoice::Cpu);
     let mut window = Window::new(1200.0, 800.0);
     window.frames(&mut agent, &mut session, 4);
