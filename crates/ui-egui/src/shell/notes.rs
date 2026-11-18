@@ -122,6 +122,19 @@ impl Pin {
     }
 }
 
+/// How pins are laid out ([`lay_out_pins`]): how near (in points at the
+/// view's zoom) a note shares an earlier pin, the pins' radius, the note
+/// chosen, and where the view's own controls are (their plates, the view
+/// cube, the triad: in points from the view's top left), under which no
+/// pin is drawn.
+#[derive(Clone, Copy, Debug)]
+pub struct PinRule<'a> {
+    pub cell: f32,
+    pub radius: f32,
+    pub selected: Option<u64>,
+    pub covered: &'a [egui::Rect],
+}
+
 /// The pins of a view, and how many notes they leave without one.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PinLayout {
@@ -142,17 +155,25 @@ pub struct PinLayout {
 /// for it too; at most [`MAX_MARKERS`] pins, a note after them near none
 /// of them left without. Which notes have pins depends on the places and
 /// the zoom alone: turning the view changes it only where notes come into
-/// or leave the view. `behind` says whether a pin's place (pixels across,
-/// down, and depth) is behind a face; asked for the pins only.
+/// or leave the view. A note whose pin would stand under one of the
+/// view's own controls (`rule.covered`) has none (review-pins 2b: at a
+/// thousand notes the pins ran under the toolbar, the cube and the triad).
+/// `behind` says whether a pin's place (pixels across, down, and depth) is
+/// behind a face; asked for the pins only.
 pub fn lay_out_pins(
     rows: &[NoteRow],
     camera: &craft3d_render::Camera,
     size: [u32; 2],
     scale: f64,
-    cell: f32,
-    selected: Option<u64>,
+    rule: &PinRule<'_>,
     behind: &mut dyn FnMut(u64, [f64; 3]) -> bool,
 ) -> PinLayout {
+    let PinRule {
+        cell,
+        radius,
+        selected,
+        covered,
+    } = *rule;
     let mut layout = PinLayout::default();
     let [w, h] = size;
     let Some(projector) = Projector::new(camera, f64::from(w.max(1)), f64::from(h.max(1))) else {
@@ -184,6 +205,19 @@ pub fn lay_out_pins(
         }
     }
     layout.in_view = placed.len();
+    // A pin spans from its place up its stalk to the top of its head.
+    let r = if radius.is_finite() {
+        radius.max(0.0)
+    } else {
+        0.0
+    };
+    placed.retain(|(_, _, pos, _)| {
+        let span = egui::Rect::from_min_max(
+            egui::pos2(pos.x - r, pos.y - 3.2 * r),
+            egui::pos2(pos.x + r, pos.y),
+        );
+        !covered.iter().any(|c| c.intersects(span))
+    });
     placed.sort_by_key(|(row, ..)| (Some(row.id) != selected, !row.question(), row.done, row.id));
     let near = model_cell(camera, &projector, f64::from(cell) * scale);
     let bucket = |p: Vec3, q: f64| -> (i64, i64, i64) {
@@ -787,6 +821,25 @@ impl Shell {
         self.sync_notes(session, (doc, revision), bodies_here);
     }
 
+    /// Where the view's own controls were drawn in the last frame (the
+    /// plates, the view cube, the triad), in points from the view's top
+    /// left: no pin goes under them.
+    fn controls_covered(&self) -> Vec<egui::Rect> {
+        let Some(view) = self.rect else {
+            return Vec::new();
+        };
+        let origin = view.min.to_vec2();
+        self.controls_layout
+            .as_ref()
+            .map(|l| {
+                l.parts()
+                    .into_iter()
+                    .map(|(_, r)| r.translate(-origin))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Draws the notes' pins into `rgb`, a picture of the view of `size`
     /// pixels at `scale` pixels a point (`ui.screenshot`), as the window
     /// draws them over the view: while they are shown, laid out for that
@@ -805,13 +858,25 @@ impl Shell {
         let camera = self.state.camera.to_render();
         let section = self.section();
         let slack = scene.map_or(0.0, |s| s.bbox.diagonal() * 0.01);
+        // At the view's own size, the same pins as the window: none under
+        // its controls; at another, the controls are not where they were.
+        let covered = if size == self.size {
+            self.controls_covered()
+        } else {
+            Vec::new()
+        };
+        let rule = PinRule {
+            cell: self.tokens.note_cell,
+            radius: self.tokens.note_radius,
+            selected: self.state.notes.selected,
+            covered: &covered,
+        };
         let layout = lay_out_pins(
             &self.notes.rows,
             &camera,
             size,
             scale,
-            self.tokens.note_cell,
-            self.state.notes.selected,
+            &rule,
             &mut |_, at| pin_behind(scene, &camera, size, at, section.as_ref(), slack),
         );
         pin_pixels::draw_pins(rgb, size, &layout.pins, &self.tokens, scale as f32);
@@ -924,19 +989,18 @@ impl Shell {
         let section = self.section();
         let slack = scene.map_or(0.0, |s| s.bbox.diagonal() * 0.01);
         let rows = Arc::clone(&self.notes.rows);
-        let layout = lay_out_pins(
-            &rows,
-            &camera,
-            size,
-            scale,
-            tokens.note_cell,
-            self.state.notes.selected,
-            &mut |id, at| {
-                *seen.entry(id).or_insert_with(|| {
-                    pin_behind(scene, &camera, size, at, section.as_ref(), slack)
-                })
-            },
-        );
+        let covered = self.controls_covered();
+        let rule = PinRule {
+            cell: tokens.note_cell,
+            radius: tokens.note_radius,
+            selected: self.state.notes.selected,
+            covered: &covered,
+        };
+        let layout = lay_out_pins(&rows, &camera, size, scale, &rule, &mut |id, at| {
+            *seen
+                .entry(id)
+                .or_insert_with(|| pin_behind(scene, &camera, size, at, section.as_ref(), slack))
+        });
         self.notes.seen = Some((key, seen));
         let painter = ui.painter_at(rect);
         let origin = rect.min.to_vec2();
@@ -1198,8 +1262,12 @@ mod tests {
                 &camera.to_render(),
                 [1280, 800],
                 1.0,
-                22.0,
-                None,
+                &PinRule {
+                    cell: 22.0,
+                    radius: 7.0,
+                    selected: None,
+                    covered: &[],
+                },
                 &mut |_, _| false,
             )
         };
@@ -1229,5 +1297,47 @@ mod tests {
         if let (Some(d), Some(o)) = (first_done, last_open) {
             assert!(d > o, "open pins are laid out first");
         }
+        // Under the view's controls no pin stands (review-pins 2b): a
+        // control over the left half leaves its notes without, counted
+        // in view; one over the whole view, none at all.
+        let camera = crate::state::CameraState {
+            target: [30.0, 18.0, 0.0],
+            distance: 200.0,
+            yaw: 30.0,
+            pitch: -60.0,
+            ..crate::state::CameraState::default()
+        };
+        let under = |covered: &[egui::Rect]| {
+            lay_out_pins(
+                &rows,
+                &camera.to_render(),
+                [1280, 800],
+                1.0,
+                &PinRule {
+                    cell: 22.0,
+                    radius: 7.0,
+                    selected: None,
+                    covered,
+                },
+                &mut |_, _| false,
+            )
+        };
+        let left = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(640.0, 800.0));
+        let half = under(&[left]);
+        assert_eq!(half.in_view, 1000);
+        assert!(
+            half.stood_for < a.stood_for,
+            "{} {}",
+            half.stood_for,
+            a.stood_for
+        );
+        assert!(
+            half.pins.iter().all(|p| p.at.x - 7.0 > 640.0),
+            "no pin under the control"
+        );
+        let all = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1280.0, 800.0));
+        let none = under(&[all]);
+        assert!(none.pins.is_empty());
+        assert_eq!(none.in_view, 1000);
     }
 }

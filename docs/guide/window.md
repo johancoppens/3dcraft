@@ -348,8 +348,9 @@ In the view each note is a small numbered pin in the accent colour; an agent's q
 it was put. The pins keep their colours in the dark appearance, as the model does. A pin behind the model
 is drawn faint and cannot be clicked. A click on a pin chooses its note and shows its text beside it. Notes
 close together on the model share one pin, which says how many more it stands for; which notes have a pin
-does not change as you turn the view, only as you zoom. At most 400 pins are drawn; when notes in view are
-left without one, the Notes tab says how many, and zooming in shows them.
+does not change as you turn the view, only as you zoom. At most 400 pins are drawn, and none under the
+view's own controls (the toolbar, the view cube, the axes); when notes in view are left without one, the
+Notes tab says how many, and zooming in or turning the view shows them.
 
 When an agent has left open questions, the agent pill in the status bar says how many; a click on it opens
 the Notes tab. A document without notes shows nothing of them. On a phone the tab is in the drawer, and

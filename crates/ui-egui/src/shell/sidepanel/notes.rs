@@ -141,6 +141,7 @@ impl Shell {
         // Notes in the view without a pin of their own or near one.
         let unpinned = self.notes.in_view.saturating_sub(self.notes.drawn.1);
         let in_view = self.notes.in_view;
+        let narrow = self.narrow();
         let rows = std::sync::Arc::clone(&self.notes.rows);
         let selected = self.state.notes.selected;
         let mut open: Vec<&NoteRow> = rows.iter().filter(|r| !r.done).collect();
@@ -186,7 +187,7 @@ impl Shell {
                             kit.paragraph(
                                 ui,
                                 &format!(
-                                    "{unpinned} of the {in_view} notes in view have no pin: at most {MAX_MARKERS} pins are drawn. Zoom in to see them."
+                                    "{unpinned} of the {in_view} notes in view have no pin: at most {MAX_MARKERS} pins are drawn, and none under the view's controls. Zoom in or turn the view to see them."
                                 ),
                                 true,
                             );
@@ -209,9 +210,16 @@ impl Shell {
                                 }
                             }
                         }
+                        // No N without a keyboard: on a phone, the press
+                        // and hold's list (review-pins 2b).
+                        let how = if narrow {
+                            "Tap a face to select it, then press and hold it and choose Note here… to write a note on it."
+                        } else {
+                            "N writes a note on what is selected."
+                        };
                         kit.paragraph(
                             ui,
-                            "N writes a note on what is selected. A note is for whoever works on the model next; an agent asked to work through the notes changes the model where they say and replies on each.",
+                            &format!("{how} A note is for whoever works on the model next; an agent asked to work through the notes changes the model where they say and replies on each."),
                             true,
                         );
                     });

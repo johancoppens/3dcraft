@@ -144,8 +144,9 @@ pub struct Note {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done: Option<NoteDone>,
     /// The replies given after it was closed, kept when it was opened
-    /// again; written only when there are any (a file without them is as
-    /// before).
+    /// again (format version 77; versions 75 and 76 of 2026-11-17 kept
+    /// them under `done`, moved here by `v76_to_v77`); written only when
+    /// there are any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub later: Vec<NoteReply>,
 }
@@ -200,11 +201,6 @@ pub struct NoteDone {
     pub time_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<String>,
-    /// Read only: the replies after the closing as the workshop's builds of
-    /// 2026-11-17 kept them under it (never released), taken to the note's
-    /// own `later` when read; never written.
-    #[serde(default, skip_serializing)]
-    pub later: Vec<NoteReply>,
 }
 
 /// A reply given to a note after it was closed.

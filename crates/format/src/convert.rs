@@ -189,7 +189,6 @@ fn notes_to_manifest(notes: &doc::Notes) -> manifest::Notes {
                             by: note_by_to_manifest(by),
                             time_ms: *time_ms,
                             reply: reply.clone(),
-                            later: Vec::new(),
                         }
                     }),
                     later: later
@@ -243,7 +242,6 @@ fn notes_to_doc(notes: manifest::Notes) -> doc::Notes {
                     done,
                     later,
                 } = note;
-                let mut old_replies: Vec<manifest::NoteReply> = Vec::new();
                 doc::Note {
                     id,
                     text,
@@ -275,24 +273,15 @@ fn notes_to_doc(notes: manifest::Notes) -> doc::Notes {
                         }
                     }),
                     done: done.map(|done| {
-                        let manifest::NoteDone {
-                            by,
-                            time_ms,
-                            reply,
-                            later: under,
-                        } = done;
-                        // Replies kept under the closing by the builds of
-                        // 2026-11-17 go to the note, before its own.
-                        old_replies = under;
+                        let manifest::NoteDone { by, time_ms, reply } = done;
                         doc::NoteDone {
                             by: note_by_to_doc(by),
                             time_ms,
                             reply,
                         }
                     }),
-                    later: old_replies
+                    later: later
                         .into_iter()
-                        .chain(later)
                         .map(|r| {
                             let manifest::NoteReply { by, time_ms, text } = r;
                             doc::NoteReply {
