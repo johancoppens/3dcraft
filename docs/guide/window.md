@@ -257,10 +257,11 @@ checks):
 
 The view shows the measure of **one thing selected** beside it, in a thin dimension line in the accent: a
 straight edge its length along a line beside it, a whole circle (a hole's rim) its diameter **Ø**, an arc
-its radius **R**, a curved edge its length by its middle, a hole's or a boss's wall its diameter, part of a
-cylinder (a fillet's round) its radius. A flat face, a vertex and a body show nothing there: their facts are
+its radius **R**, a curved edge its length by its middle, a hole's or a boss's wall its diameter across its
+rim where it opens (as two holes' line is drawn), part of a cylinder (a fillet's round) its radius. A flat face, a vertex and a body show nothing there: their facts are
 at the foot of the panel. Numbers are shown to the document's tolerance, without trailing zeros (`30 mm`,
-`0.006 mm`). Click the number to copy it with its unit, as shown. While two things are being measured the
+`0.006 mm`), in the view and in the facts at the foot of the panel alike; a number too long for the card is
+drawn smaller, down to half the size, and past that a range is broken after its dash. Click the number to copy it with its unit, as shown. While two things are being measured the
 card says *Measuring…*; the window goes on meanwhile. In a short window the Features tab shows the card as one
 line, with **Keep as a check**.
 
@@ -272,6 +273,8 @@ give their centre distance, two parallel faces the distance between them, two fa
 ([Measuring and assertions › Between two things](measure.md#between-two-things)). Click the number, in the
 panel or on the line, to copy it with its unit. Another selection, or Escape, takes it away.
 
+![Two holes selected: their centre distance, 30 mm, on a line between the centres of their rims on the top, and at the foot of the panel with "Centre distance · axes parallel", its parts along X, Y and Z and Keep as a check](images/measure.png)
+
 **Keep as a check** keeps that relation as a check of the document: named after the two things (*Centre
 distance Left face – Right face*), its value now, within the document's tolerance. It shows under
 **Checks**, is measured again after every change, and is one step to undo. A least distance shown as a
@@ -280,7 +283,7 @@ or as *about* a number (found on samples of a freeform curve or face, or with no
 the tolerance; it is kept as what is proven, at most the number and no less than the bound, and fails when the
 things move nearer or farther than that.
 
-![A hole selected: the foot of the side panel names its surface, its area and axis, the feature that made it and its name](images/selection.png)
+![A hole selected: its diameter, Ø 6 mm, in the view, and at the foot of the side panel its surface, its area and axis, the feature that made it, its name and Measure](images/selection.png)
 
 ### Variables
 
@@ -476,7 +479,7 @@ the display bar then shows only **Section**: the group has the rest. On a phone 
 are left out (a finger's drag in the middle of the model turns it), and the bar keeps **X**, **Y**, **Z**,
 an **Offset** slider and **Flip side**.
 
-![The flange cut open across X through the middle of a bolt hole: the plane's dashed outline, the arrow at the cut's edge, and the group with X 30.00 mm, X, Y, Z and the flip button](images/section.png)
+![The flange cut open across X through the middle of a bolt hole: the plane's dashed outline, the slim arrow at the cut's edge, and the group with X 30.00 mm, X, Y, Z, the plane from the selection (greyed: nothing selected) and the flip button](images/section.png)
 
 | Do | To |
 |---|---|

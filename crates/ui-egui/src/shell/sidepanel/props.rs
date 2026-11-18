@@ -229,12 +229,22 @@ fn single_of(
                     round: Some(([at.x, at.y, at.z], [a.x, a.y, a.z], r)),
                 });
             }
+            // A whole hole or boss: across its rim in view, where it opens
+            // (`opening`, as two holes' line is drawn; the review of
+            // 2026-11-17: at mid-depth it floated on the top face below
+            // the opening); by the middle where it opens nowhere in view.
+            let rim = item
+                .get("opening")
+                .and_then(triple)
+                .map(|[x, y, z]| Vec3::new(x, y, z))
+                .filter(|p| p.is_finite())
+                .unwrap_or(at);
             Some(Single {
                 measure: "diameter",
                 value: 2.0 * r,
                 text: format!("Ø {}", with_unit(2.0 * r)),
                 points: Vec::new(),
-                round: Some(([at.x, at.y, at.z], [a.x, a.y, a.z], r)),
+                round: Some(([rim.x, rim.y, rim.z], [a.x, a.y, a.z], r)),
             })
         }
         _ => None,
@@ -829,6 +839,10 @@ pub(crate) fn read(
         _ => None,
     };
     let local = local_name(&first.name);
+    // Lengths in the facts as everywhere else: to the document's
+    // tolerance, without trailing zeros (the review of 2026-11-17: the
+    // card said 60.00 mm where the view said 60 mm).
+    let tolerance = session.linear_tolerance().unwrap_or(1e-6);
     if let Some(item) = &described {
         if let Some(origin) = item.get("origin") {
             let id = origin.get("feature").and_then(Value::as_str).unwrap_or("");
@@ -839,7 +853,7 @@ pub(crate) fn read(
             }
         }
         if let Some(surface) = item.get("surface") {
-            rows.push(plain("Type", surface_text(surface, &unit)));
+            rows.push(plain("Type", surface_text(surface, &unit, tolerance)));
         }
         if let Some(area) = item.get("area").and_then(Value::as_f64) {
             rows.push(plain("Area", format!("{} {unit}²", grouped(area, 0))));
@@ -848,7 +862,10 @@ pub(crate) fn read(
             if let Some(n) = surface.get("normal") {
                 rows.push(plain("Normal", direction_text(n)));
             } else if let Some(axis) = surface.get("axis") {
-                let through = surface.get("center").map(point_text).unwrap_or_default();
+                let through = surface
+                    .get("center")
+                    .map(|c| point_text(c, tolerance))
+                    .unwrap_or_default();
                 rows.push(plain(
                     "Axis",
                     format!("{}  through {through}", direction_text(axis)),
@@ -856,13 +873,13 @@ pub(crate) fn read(
             }
         }
         if let Some(curve) = item.get("curve") {
-            rows.push(plain("Type", curve_text(curve, &unit)));
+            rows.push(plain("Type", curve_text(curve, &unit, tolerance)));
             if let Some(length) = curve.get("length").and_then(Value::as_f64) {
-                rows.push(plain("Length", format!("{} {unit}", decimals(length, 2))));
+                rows.push(plain("Length", length_text(length, tolerance, &unit)));
             }
         }
         if let Some(point) = item.get("point") {
-            rows.push(plain("Point", point_text(point)));
+            rows.push(plain("Point", point_text(point, tolerance)));
         }
     }
     if subtitle.is_empty() {
@@ -995,16 +1012,6 @@ fn plain(label: &'static str, value: String) -> PropRow {
     }
 }
 
-/// `v` with `places` decimals, trailing zeros kept (a length read off a
-/// curve: `21.99`).
-fn decimals(v: f64, places: usize) -> String {
-    if v.is_finite() {
-        format!("{v:.places$}")
-    } else {
-        "?".to_string()
-    }
-}
-
 /// A volume: cm³ in a millimetre document, else the unit cubed.
 pub fn volume_text(v: f64, unit: &str) -> String {
     if unit == "mm" {
@@ -1088,8 +1095,16 @@ fn face_words(name: &str, scene: Option<&Scene>) -> String {
     format!("{feature} {local}")
 }
 
-fn surface_text(surface: &Value, unit: &str) -> String {
-    let r = |key: &str| surface.get(key).and_then(Value::as_f64).map(number);
+fn surface_text(surface: &Value, unit: &str, tolerance: f64) -> String {
+    // Radii are lengths: to the tolerance; a cone's half angle is not.
+    let r = |key: &str| {
+        let v = surface.get(key).and_then(Value::as_f64)?;
+        Some(if key == "halfAngle" {
+            number(v)
+        } else {
+            number_to(v, tolerance)
+        })
+    };
     // A measure that is missing leaves the surface's word alone, not
     // `R  mm`.
     let with = |word: &str, text: Option<String>| {
@@ -1122,11 +1137,11 @@ fn surface_text(surface: &Value, unit: &str) -> String {
     }
 }
 
-fn curve_text(curve: &Value, unit: &str) -> String {
+fn curve_text(curve: &Value, unit: &str, tolerance: f64) -> String {
     match curve.get("type").and_then(Value::as_str).unwrap_or("") {
         "line" => "Line".to_string(),
         "circle" => match curve.get("radius").and_then(Value::as_f64) {
-            Some(r) => format!("Circle  R {} {unit}", number(r)),
+            Some(r) => format!("Circle  R {} {unit}", number_to(r, tolerance)),
             None => "Circle".to_string(),
         },
         "ellipse" => "Ellipse".to_string(),
@@ -1155,10 +1170,15 @@ fn direction_text(d: &Value) -> String {
     format!("({}, {}, {})", number(*x), number(*y), number(*z))
 }
 
-fn point_text(p: &Value) -> String {
+fn point_text(p: &Value, tolerance: f64) -> String {
     let v: Vec<String> = p
         .as_array()
-        .map(|a| a.iter().filter_map(Value::as_f64).map(number).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_f64)
+                .map(|x| number_to(x, tolerance))
+                .collect()
+        })
         .unwrap_or_default();
     format!("({})", v.join(", "))
 }
@@ -1234,16 +1254,30 @@ impl Shell {
         let kit = Kit::panel(&self.tokens);
         let t = kit.t;
         let sk = kit.skin;
-        let big = kit.galley(
-            ui,
-            m.text.clone(),
-            egui::FontId::proportional(t.measure_font),
-            sk.text,
-        );
-        let (rect, number) = ui.allocate_exact_size(
-            vec2(ui.available_width(), t.measure_font * 1.5),
-            Sense::click(),
-        );
+        // The number fits the card at the panel's least width (the review
+        // of 2026-11-17: a range was cut at its edge): smaller where there
+        // is no room, down to half the size; past that a range is broken
+        // after its dash, two lines of half the size, within the height
+        // the card keeps for it (`props_height`), so Keep stays in reach.
+        let room = ui.available_width().max(1.0);
+        let lay = |text: &str, size: f32| {
+            kit.galley(
+                ui,
+                text.to_string(),
+                egui::FontId::proportional(size),
+                sk.text,
+            )
+        };
+        let mut big = lay(&m.text, t.measure_font);
+        if big.size().x > room {
+            let size = (t.measure_font * room / big.size().x).max(t.measure_font * 0.5);
+            big = lay(&m.text, size);
+            if big.size().x > room && m.text.contains(" – ") {
+                big = lay(&m.text.replacen(" – ", " –\n", 1), size);
+            }
+        }
+        let (rect, number) =
+            ui.allocate_exact_size(vec2(room, t.measure_font * 1.5), Sense::click());
         let at = pos2(rect.left(), rect.center().y - big.size().y * 0.5);
         let ink = if number.hovered() && m.value.is_some() {
             sk.info_ink

@@ -197,6 +197,10 @@ fn two_holes_show_their_centre_distance_by_themselves_and_escape_takes_it_away()
         (single.measure, single.text.as_str()),
         ("diameter", "Ø 6 mm")
     );
+    // Across its rim in view, the top's (z = 20), not at mid-depth (the
+    // review of 2026-11-17).
+    let (centre, _, _) = single.round.expect("drawn across its rim");
+    assert!((centre[2] - 20.0).abs() < 1e-9, "{centre:?}");
     assert_eq!(
         shell.dimension_place().map(|p| p.text.as_str()),
         Some("Ø 6 mm")
@@ -789,4 +793,68 @@ fn faces_named_in_over_8192_bytes_are_measured_and_kept() {
     let rows = listed["assertions"].as_array().unwrap();
     assert_eq!(rows.len(), 1, "{listed}");
     assert_eq!(rows[0]["status"], "passed", "{listed}");
+}
+
+/// The review of 2026-11-17: a range's large number fits the card at the
+/// panel's least width (it was cut at the edge): broken after its dash,
+/// or drawn smaller. An edge in an inner corner and a ball near both of
+/// its faces: the faces come nearer than the edge, so the least is a range.
+#[test]
+fn a_range_fits_the_card_at_the_panels_least_width() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({"size": [20, 10, 2], "name": "Base"}),
+    );
+    run(
+        &mut session,
+        "feature.block",
+        json!({"size": [2, 10, 20], "name": "Wall"}),
+    );
+    run(
+        &mut session,
+        "feature.boolean",
+        json!({"op": "union", "target": "Base", "tool": "Wall", "name": "L"}),
+    );
+    run(
+        &mut session,
+        "feature.sphere",
+        json!({"radius": 0.5, "position": [3, 5, 3], "name": "Ball"}),
+    );
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"panels": {"treeWidth": 190}}),
+    );
+    select(
+        &mut session,
+        "edge",
+        json!({"in": "L", "inside": [[1.9, -1, 1.9], [2.1, 11, 2.1]]}),
+        1,
+    );
+    run(
+        &mut session,
+        "select.query",
+        json!({"kind": "body", "where": {"in": "Ball"}, "then": "add"}),
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let m = shell.measurement().cloned().unwrap();
+    assert!(m.text.contains(" – "), "{}", m.text);
+    let number = target(&shell, "copy value");
+    assert!(
+        number.right() <= 190.0 && number.width() > 0.0,
+        "{} drawn at {number:?}",
+        m.text
+    );
+    // Smaller, not taller: within the line the card keeps for it (the
+    // measure font's 24 points and a half), so Keep stays in reach.
+    assert!(number.height() <= 36.0, "{number:?}");
+    let keep = target(&shell, "keep");
+    assert!(keep.top() >= number.bottom(), "{keep:?} under {number:?}");
 }

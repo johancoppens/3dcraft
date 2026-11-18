@@ -1047,3 +1047,57 @@ fn a_face_named_in_over_8192_bytes_goes_wherever_a_selection_goes() {
     );
     assert!(note.get("id").is_some(), "{note}");
 }
+
+/// The review of 2026-11-17: a circular edge and an axis (a round face's)
+/// give their centre distance only where their axes are parallel (a
+/// pitch, said so with `parallel`); at an angle, the least distance as the
+/// things are. A rim of radius 10 at z = 2 under a bar of radius 2 lying
+/// along X with its axis at z = 4.5: 0.5 at the rim's ends on X; beside
+/// it a post standing parallel 30 away: its centre distance.
+#[test]
+fn a_rim_at_an_angle_to_an_axis_gives_the_least_distance() {
+    for k in [1e-3, 1.0, 1e6] {
+        let mut s = session();
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 10.0 * k, "height": 2.0 * k, "name": "Disk"}),
+        );
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 2.0 * k, "height": 40.0 * k, "position": [-20.0 * k, 0, 4.5 * k], "axis": [1, 0, 0], "name": "Cross"}),
+        );
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 1.0 * k, "height": 5.0 * k, "position": [30.0 * k, 0, 0], "name": "Post"}),
+        );
+        let rim = item(
+            &mut s,
+            "edge",
+            json!({"in": "Disk", "radius": 10.0 * k, "above": {"z": 1.0 * k}}),
+        );
+        let bar = item(
+            &mut s,
+            "face",
+            json!({"in": "Cross", "surface": "cylinder"}),
+        );
+        let got = between(&mut s, &rim, &bar);
+        assert_eq!(got["relation"], "leastDistance", "k={k}: {got}");
+        let tol = got["tolerance"].as_f64().unwrap();
+        assert!(
+            (got["value"].as_f64().unwrap() - 0.5 * k).abs() <= tol.max(1e-9 * k),
+            "k={k}: {got}"
+        );
+        let post = item(&mut s, "face", json!({"in": "Post", "surface": "cylinder"}));
+        let got = between(&mut s, &rim, &post);
+        assert_eq!(got["relation"], "centerDistance", "k={k}: {got}");
+        assert_eq!(got["parallel"], true, "k={k}: {got}");
+        assert!(
+            close(got["value"].as_f64().unwrap(), 30.0 * k, k),
+            "k={k}: {got}"
+        );
+    }
+}

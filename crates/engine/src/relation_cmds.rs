@@ -350,6 +350,7 @@ fn chosen(
     parallel_planes: bool,
     parallel_axis_plane: bool,
     edges: Option<EdgePair>,
+    rims_parallel: bool,
 ) -> Relation {
     use Shape::{Body, Line, Plane, Point};
     match (a, b) {
@@ -366,9 +367,18 @@ fn chosen(
             _ => Relation::CenterDistance,
         },
         (Line { .. }, Line { .. }) => Relation::CenterDistance,
+        // Centres and axes: their centre distance (a hole's or a boss's
+        // pitch); a circle at an angle to the other's axis, the least
+        // distance as the things are (the review of 2026-11-17).
         (Point { centre: true, .. }, Point { centre: true, .. })
         | (Point { centre: true, .. }, Line { edge: false, .. })
-        | (Line { edge: false, .. }, Point { centre: true, .. }) => Relation::CenterDistance,
+        | (Line { edge: false, .. }, Point { centre: true, .. }) => {
+            if rims_parallel {
+                Relation::CenterDistance
+            } else {
+                Relation::LeastDistance
+            }
+        }
         // Two vertices: the distance between them. A vertex and a rim or
         // a ball: the least distance to the rim or the ball, not to its
         // centre.
@@ -572,6 +582,21 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
         (Plane { normal: na, .. }, Plane { normal: nb, .. }) => along(*na, *nb, angular),
         _ => false,
     };
+    // A circular edge's axis with the other's axis (a round face's, or
+    // another circular edge's): whether a centre distance means a pitch.
+    let axis_of = |t: &Thing, s: &Shape| match s {
+        Line {
+            direction,
+            edge: false,
+            ..
+        } => Some(*direction),
+        _ => circle_axis(t),
+    };
+    let rim_axes = match (circle_axis(a), circle_axis(b)) {
+        (Some(n), _) => axis_of(b, &sb).map(|m| (n, m)),
+        (None, Some(m)) => axis_of(a, &sa).map(|n| (n, m)),
+        (None, None) => None,
+    };
     let parallel_axis_plane = match (&sa, &sb) {
         (Line { direction, .. }, Plane { normal, .. })
         | (Plane { normal, .. }, Line { direction, .. }) => {
@@ -595,8 +620,16 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
         }),
         _ => None,
     };
-    let relation =
-        wanted.unwrap_or_else(|| chosen(&sa, &sb, parallel_planes, parallel_axis_plane, edges));
+    let relation = wanted.unwrap_or_else(|| {
+        chosen(
+            &sa,
+            &sb,
+            parallel_planes,
+            parallel_axis_plane,
+            edges,
+            rim_axes.is_none_or(|(n, m)| along(n, m, angular)),
+        )
+    });
     match relation {
         Relation::Distance => match (&sa, &sb) {
             (
@@ -849,18 +882,10 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
                             // the line goes where a model is mostly seen
                             // from, whichever thing came first.
                             let point = |x: f64| *ma + *da * (x - ma.dot(*da));
-                            let by = |u: f64, v: f64| {
-                                if (u - v).abs() <= tol {
-                                    std::cmp::Ordering::Equal
-                                } else {
-                                    u.total_cmp(&v)
-                                }
-                            };
                             let upper = |xs: &[f64]| {
-                                xs.iter().copied().max_by(|x, y| {
-                                    let (p, q) = (point(*x), point(*y));
-                                    by(p.z, q.z).then(by(p.y, q.y)).then(by(p.x, q.x))
-                                })
+                                xs.iter()
+                                    .copied()
+                                    .max_by(|x, y| upper_order(point(*x), point(*y), tol))
                             };
                             let either: Vec<f64> = open_a.iter().chain(&open_b).copied().collect();
                             upper(&common)
@@ -885,14 +910,24 @@ fn measure(ctx: &Ctx<'_>, a: &Thing, b: &Thing, wanted: Option<Relation>) -> Res
                     Line {
                         direction, middle, ..
                     },
-                ) => (*at, foot(*middle, *direction, *at), None),
+                ) => (
+                    *at,
+                    foot(*middle, *direction, *at),
+                    rim_axes.map(|(n, m)| along(n, m, angular)),
+                ),
                 (
                     Line {
                         direction, middle, ..
                     },
                     Point { at, .. },
-                ) => (foot(*middle, *direction, *at), *at, None),
-                (Point { at: p, .. }, Point { at: q, .. }) => (*p, *q, None),
+                ) => (
+                    foot(*middle, *direction, *at),
+                    *at,
+                    rim_axes.map(|(n, m)| along(n, m, angular)),
+                ),
+                (Point { at: p, .. }, Point { at: q, .. }) => {
+                    (*p, *q, rim_axes.map(|(n, m)| along(n, m, angular)))
+                }
                 _ => {
                     return Err(refused(
                         relation,
@@ -1037,6 +1072,71 @@ fn openings(
         outside(past) && outside(past + r * 0.95)
     };
     [(open(hi, 1.0), rim(true)), (open(lo, -1.0), rim(false))]
+}
+
+/// Which of two places is the upper: by Z, then Y, then X, each within
+/// `tol` taken as level (where a model is mostly seen from).
+fn upper_order(p: Vec3, q: Vec3, tol: f64) -> std::cmp::Ordering {
+    let by = |u: f64, v: f64| {
+        if (u - v).abs() <= tol {
+            std::cmp::Ordering::Equal
+        } else {
+            u.total_cmp(&v)
+        }
+    };
+    by(p.z, q.z).then(by(p.y, q.y)).then(by(p.x, q.x))
+}
+
+/// Where the round face `face` of the body of `feature` (a hole's or a
+/// boss's wall) opens in view: the centre of its rim at an end that meets
+/// the air past every body shown, as two holes' line is drawn
+/// ([`openings`]); the upper of two. `None` for a face that is not round
+/// or opens nowhere in view. Where the window draws one hole's diameter
+/// (the review of 2026-11-17: drawn at mid-depth it floated on the top
+/// face below the opening).
+pub(crate) fn opening_of(
+    doc: &craft3d_doc::Document,
+    regen: &craft3d_regen::Regen,
+    feature: FeatureId,
+    face: usize,
+) -> Option<Vec3> {
+    let ctx = Ctx::new(doc, regen).ok()?;
+    let body = Arc::clone(ctx.body(feature).ok()?);
+    let t = Thing {
+        kind: SelectionKind::Face,
+        feature,
+        body,
+        indices: vec![face],
+    };
+    let Shape::Line {
+        direction,
+        middle,
+        ends,
+        edge: false,
+    } = shape_of(&t)
+    else {
+        return None;
+    };
+    let tol = ctx.tolerance.linear;
+    let at = |x: f64| middle + direction * (x - middle.dot(direction));
+    openings(&ctx, &t, middle, direction, ends)
+        .into_iter()
+        .filter(|&(open, _)| open)
+        .map(|(_, x)| at(x))
+        .filter(|p| p.is_finite())
+        .max_by(|p, q| upper_order(*p, *q, tol))
+}
+
+/// The unit axis of a circular edge (its circle's normal); `None` for
+/// anything else.
+fn circle_axis(t: &Thing) -> Option<Vec3> {
+    if t.kind != SelectionKind::Edge {
+        return None;
+    }
+    match &t.indices.first().and_then(|&e| t.body.edges.get(e))?.curve {
+        Curve3::Circle(circle) => circle.frame().z().normalized(),
+        _ => None,
+    }
 }
 
 /// The closest points of the line through `pa` along `da` and the one

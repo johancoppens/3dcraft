@@ -655,8 +655,10 @@ fn the_properties_of_a_face_and_an_edge() {
     window.frames(&mut shell, &mut s, 2);
     assert_eq!(shell.side_props().unwrap().kind, "Edge");
     assert_eq!(prop(&shell, "Type"), "Circle  R 5 mm");
-    // 2π · 5 = 31.42.
-    assert_eq!(prop(&shell, "Length"), "31.42 mm");
+    // 2π · 5 = 31.4159265…, printed as every length is, to the
+    // document's tolerance of 1e-6 without trailing zeros (2026-11-17:
+    // the card printed two decimals where the view printed the number).
+    assert_eq!(prop(&shell, "Length"), "31.415927 mm");
     assert_eq!(prop(&shell, "Angle"), "90°");
     assert!(
         shell
