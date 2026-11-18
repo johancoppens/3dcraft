@@ -18,7 +18,8 @@
     clippy::indexing_slicing,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::too_many_lines
+    clippy::too_many_lines,
+    clippy::neg_cmp_op_on_partial_ord
 )]
 
 mod common;
@@ -396,6 +397,92 @@ fn said(tag: &str, tally: &Tally) {
         tally.places,
         tally.nanos as f64 / 1e6
     );
+}
+
+/// What the deep check's mesh would cost if it followed each face's
+/// curvature (the 12° angle criterion of display meshes beside its chord
+/// of 1e-3 of the body's diagonal): triangles and time of the mesh as it
+/// is and with the angle, and the deep check's own time as it is, for the
+/// bodies of a document.
+fn mesh_costs(name: &str, doc: &Document) {
+    let regen = craft3d_regen::regenerate(doc);
+    for (_, body) in regen.bodies() {
+        let Ok(bbox) = body.bbox() else {
+            continue;
+        };
+        let chord = (1e-3 * bbox.diagonal()).max(4.0 * doc.tolerance.linear);
+        let mut line = format!(
+            "COST {name} | {} faces | chord {chord:.3e}",
+            body.faces.len()
+        );
+        for angle in [None, Some(12.0_f64.to_radians())] {
+            let start = Instant::now();
+            let made = craft3d_tess::tessellate_body(
+                body,
+                &craft3d_tess::TessParams {
+                    chordal_tolerance: chord,
+                    max_angle: angle,
+                    ..craft3d_tess::TessParams::default()
+                },
+            );
+            let _ = write!(
+                line,
+                " | angle {:?}: {} ({:.1} ms)",
+                angle.map(f64::to_degrees),
+                made.map_or_else(
+                    |e| format!("error {e}"),
+                    |m| format!("{} triangles", m.triangles.len())
+                ),
+                start.elapsed().as_secs_f64() * 1e3
+            );
+        }
+        let start = Instant::now();
+        let found = craft3d_tess::body_self_intersections(
+            body,
+            &craft3d_tess::SelfCheckParams::new(doc.tolerance.linear),
+        );
+        let _ = write!(
+            line,
+            " | deep check today: {} ({:.1} ms)",
+            found.map_or_else(
+                |e| format!("error {e}"),
+                |f| format!(
+                    "{} triangles, {} passes, certain {} marginal {}",
+                    f.triangles, f.passes, f.certain_crossings, f.marginal_crossings
+                )
+            ),
+            start.elapsed().as_secs_f64() * 1e3
+        );
+        println!("{line}");
+    }
+}
+
+#[test]
+fn what_a_mesh_that_follows_curvature_costs() {
+    let dir = common::workdir("fold-sweep", "costs");
+    for path in listed("crates/engine/tests/bench_models", ".steps.json") {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let mut s = common::session_in(&dir);
+        let _ = s.execute("file.new", &json!({"units": "mm"}));
+        for (id, params) in steps(&path) {
+            if id.starts_with("file.") || id.starts_with("view.") || id.starts_with("ui.") {
+                continue;
+            }
+            let _ = s.execute(&id, &params);
+        }
+        if let Some(Ok(doc)) = s.document_bytes().map(|b| craft3d_format::from_bytes(&b)) {
+            mesh_costs(&name, &doc);
+        }
+    }
+    for path in listed("docs/showcase", ".3dcraft") {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        if let Ok(doc) = craft3d_format::from_bytes(&bytes) {
+            mesh_costs(&name, &doc);
+        }
+    }
 }
 
 #[test]

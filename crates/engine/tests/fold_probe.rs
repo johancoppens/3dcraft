@@ -24,7 +24,9 @@
     clippy::cast_precision_loss,
     clippy::too_many_lines,
     clippy::similar_names,
-    clippy::many_single_char_names
+    clippy::many_single_char_names,
+    clippy::needless_range_loop,
+    clippy::neg_cmp_op_on_partial_ord
 )]
 
 use craft3d_geom::{Curve3, Line, NurbsCurve, NurbsSurface, Plane, RationalBezierPatch, Surface};
@@ -36,7 +38,7 @@ use craft3d_kernel::loft::{Options as LoftOptions, Section, loft};
 use craft3d_kernel::offset_face::{FaceOffset, offset_faces};
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
 use craft3d_kernel::sweep::sweep;
-use craft3d_math::{Frame, Tolerance, Vec3};
+use craft3d_math::{Frame, Portable, Tolerance, Vec3};
 use craft3d_meshio::Unit;
 use craft3d_tess::{
     FaceRole, SelfCheck, SelfCheckParams, TessParams, body_self_intersections,
@@ -606,6 +608,63 @@ fn stem(body: &Body) -> (EdgeId, bool) {
         }
     }
     found.unwrap()
+}
+
+#[test]
+fn the_hulls_sides_at_the_forefoot() {
+    // How the radius of curvature of the hull's lofted sides grows with
+    // the distance from the forefoot (5, 0, −8.9), the vertex where the
+    // probe's rule claimed a fold on them: for every freeform face that
+    // has that vertex, a fine grid over the corner of its domain nearest
+    // it, binned by distance in tolerances.
+    let (body, tol) = hull();
+    let foot = Vec3::new(5.0, 0.0, -8.9);
+    let t = tol.linear;
+    for (index, face) in body.faces.iter().enumerate() {
+        if !matches!(face.surface, Surface::Nurbs(_) | Surface::Bezier(_)) {
+            continue;
+        }
+        let ((u0, u1), (v0, v1)) = face.surface.domain();
+        let Ok((fu, fv)) = face.surface.project(foot) else {
+            continue;
+        };
+        if face.surface.eval(fu, fv).distance(foot) > 1e-3 {
+            continue;
+        }
+        // Bins: below 1, 2, 4, …, 256 tolerances from the vertex.
+        let mut least = [f64::INFINITY; 10];
+        let mut sine_least = [f64::INFINITY; 10];
+        let n = 800;
+        for i in 0..=n {
+            for j in 0..=n {
+                let u = (fu + (u1 - u0) * 0.05 * (2.0 * i as f64 / n as f64 - 1.0)).clamp(u0, u1);
+                let v = (fv + (v1 - v0) * 0.05 * (2.0 * j as f64 / n as f64 - 1.0)).clamp(v0, v1);
+                let (p, du, dv) = face.surface.derivatives(u, v);
+                let d = p.distance(foot) / t;
+                let bin = if d < 1.0 {
+                    0
+                } else {
+                    ((d.plog2().floor() as usize) + 1).min(9)
+                };
+                let size = du.length() * dv.length();
+                if size > 0.0 {
+                    sine_least[bin] = sine_least[bin].min(du.cross(dv).length() / size);
+                }
+                let Some((k, h)) = craft3d_geom::curvature::curvatures(&face.surface, u, v) else {
+                    continue;
+                };
+                let most = h.abs() + (h * h - k).max(0.0).sqrt();
+                if most > 0.0 {
+                    least[bin] = least[bin].min(1.0 / most / t);
+                }
+            }
+        }
+        println!(
+            "FOLD forefoot face {index} at (u {fu:.6}, v {fv:.6}): least radius in tolerances by distance (<1, 1-2, 2-4, …, ≥256 t): {:?}; least sine: {:?}",
+            least.map(|r| (r * 1000.0).round() / 1000.0),
+            sine_least.map(|s| (s * 1e6).round() / 1e6)
+        );
+    }
 }
 
 #[test]
