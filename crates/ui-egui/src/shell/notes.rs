@@ -1298,7 +1298,8 @@ impl Shell {
             return Vec::new();
         };
         let origin = view.min.to_vec2();
-        self.controls_layout
+        let mut covered: Vec<egui::Rect> = self
+            .controls_layout
             .as_ref()
             .map(|l| {
                 l.parts()
@@ -1306,7 +1307,13 @@ impl Shell {
                     .map(|(_, r)| r.translate(-origin))
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // The section's plate beside its cut is a control of the view too
+        // (the pictures of 2026-11-18: a pin stood over its buttons).
+        if let Some(handle) = self.section_handle() {
+            covered.push(handle.group.translate(-origin));
+        }
+        covered
     }
 
     /// Draws the notes' pins into `rgb`, a picture of the view of `size`

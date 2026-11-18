@@ -920,6 +920,36 @@ fn n_says_why_it_cannot_write() {
     assert_eq!(shell.status_hint(), Some(SELECT_ONE));
 }
 
+/// N5: the tab's *Note on selection (N)*, faint while nothing is
+/// selected, says why on a click (touch has no hover) and opens no field;
+/// with one face selected it opens the field.
+#[test]
+fn note_on_selection_in_the_tab_says_why_or_writes() {
+    use craft3d_ui_egui::shell::notes::SELECT_FIRST;
+    let mut session = noted();
+    let mut w = Window::new(1280.0, 800.0);
+    let mut shell = open(&mut w, &mut session);
+    set(
+        &mut shell,
+        &mut session,
+        json!({"panels": {"sideTab": "notes"}}),
+    );
+    w.frames(&mut shell, &mut session, 3);
+    let link = side_target(&shell, "note on selection").expect("the link");
+    w.click(&mut shell, &mut session, link.center());
+    assert!(shell.note_writing().is_none());
+    assert_eq!(shell.status_hint(), Some(SELECT_FIRST));
+    run(
+        &mut session,
+        "select.set",
+        json!({"names": ["F2:copy(0)/F1:face(1)"]}),
+    );
+    w.frames(&mut shell, &mut session, 2);
+    let link = side_target(&shell, "note on selection").expect("the link");
+    w.click(&mut shell, &mut session, link.center());
+    assert!(shell.note_writing().is_some(), "the field on the face");
+}
+
 /// N6: in a Jig in use **N** says where its notes are written and opens
 /// no field; a refused Delete shows its reason under its row, in a
 /// person's words, the command's own as the hover.
@@ -1054,6 +1084,16 @@ fn a_section_leaves_no_full_pin_in_the_half_it_cuts_away() {
     let ids: Vec<u64> = shell.note_markers().0.iter().map(|(id, _)| *id).collect();
     assert_eq!(ids, vec![3 - gone], "{state}");
     assert_eq!(shell.note_pins_drawn(), 2, "drawn faint all the same");
+    // No pin over the section's plate (the pictures of 2026-11-18).
+    let plate = shell.section_handle().map(|h| h.group).expect("the plate");
+    assert!(
+        shell
+            .note_markers()
+            .0
+            .iter()
+            .all(|(_, head)| !plate.contains(*head)),
+        "{plate:?}"
+    );
     set(
         &mut shell,
         &mut session,

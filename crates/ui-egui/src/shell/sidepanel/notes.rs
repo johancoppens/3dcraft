@@ -334,13 +334,28 @@ impl Shell {
                         let link = |ui: &mut egui::Ui,
                                         hits: &mut Vec<(String, egui::Rect)>,
                                         asked: &mut Option<Asked>| {
-                            let button = kit
-                                .button(
-                                    ui,
-                                    Button::link("Note on selection (N)").enabled(refusal.is_none()),
+                            // A link's words, faint while it cannot write
+                            // (not a disabled button's box, which reads as
+                            // a field); a click on the faint one says why,
+                            // as touch has no hover.
+                            let ink = if refusal.is_some() { s.faint } else { s.info_ink };
+                            let cursor = if refusal.is_some() {
+                                egui::CursorIcon::Default
+                            } else {
+                                egui::CursorIcon::PointingHand
+                            };
+                            let button = ui
+                                .add(
+                                    egui::Label::new(
+                                        egui::RichText::new("Note on selection (N)")
+                                            .font(kit.font())
+                                            .color(color(ink)),
+                                    )
+                                    .selectable(false)
+                                    .sense(egui::Sense::click()),
                                 )
-                                .on_hover_text("Write a note on what is selected")
-                                .on_disabled_hover_text(refusal.unwrap_or_default());
+                                .on_hover_text(refusal.unwrap_or("Write a note on what is selected"))
+                                .on_hover_cursor(cursor);
                             hits.push(("note on selection".to_string(), button.rect));
                             if button.clicked() {
                                 *asked = Some(Asked::NoteOnSelection);
