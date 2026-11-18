@@ -80,6 +80,12 @@ struct Scene {
     // rgb: the ink, as bytes over 255. w: the ink of the lines at odd
     // multiples of the spacing (`Hatching::odd_ink`).
     section_ink: vec4<f32>,
+    // The hatch classes 1 to 3 (`craft3d_render::HATCH_CLASSES`; class 0
+    // runs across `(U + V) / √2`): xyz the unit direction across the
+    // class's lines (`Hatching::across_of`), w what is added to a point's
+    // coordinate along it relative to the mesh origin, a whole number of
+    // two spacings taken off near the camera's target.
+    section_classes: array<vec4<f32>, 3>,
 }
 
 @group(0) @binding(0) var<uniform> scene: Scene;
@@ -96,16 +102,43 @@ fn hatch_fade(across: f32) -> f32 {
     return clamp(across - 2.0, 0.0, 1.0);
 }
 
-// The colour of the section's cap at the point `rel` (from the eye) of its
-// plane, in 0..1: `craft3d_render::Hatching::color`, the paper mixed with
-// the ink by `Hatching::coverage`. Without hatching (a spacing of 0) the
-// paper. `cut.wgsl`'s cap and the studio look's take it.
-fn section_hatch_color(rel: vec3<f32>) -> vec3<f32> {
-    let paper = scene.section_cap.rgb;
-    let spacing = scene.section_hatch.x;
-    if !(spacing > 0.0) {
-        return paper;
-    }
+// `craft3d_render::HATCH_CLASSES`: the classes of bodies whose cuts are
+// hatched apart, each counted in a channel of its own (`cut.wgsl`'s
+// `fs_parity`); a face's class is the two bits of its optics word from
+// `HATCH_CLASS_SHIFT` (`craft3d_gpu::mesh::HATCH_CLASS_SHIFT`).
+const HATCH_CLASSES: u32 = 4u;
+const HATCH_CLASS_SHIFT: u32 = 24u;
+
+// The hatch class of a face with the optics word `optics`.
+fn hatch_class_of(optics: u32) -> u32 {
+    return (optics >> HATCH_CLASS_SHIFT) & (HATCH_CLASSES - 1u);
+}
+
+// The classes whose count is odd in a texel of the count (bit `k` for
+// class `k`, channel `k`).
+fn hatch_mask_of(count: vec4<f32>) -> u32 {
+    return select(0u, 1u, count.r > 0.5) | select(0u, 2u, count.g > 0.5)
+        | select(0u, 4u, count.b > 0.5) | select(0u, 8u, count.a > 0.5);
+}
+
+// The texel of the count that a fragment of hatch class `class` adds: 1
+// in the class's channel (`craft3d_gpu::cut::parity_target`).
+fn hatch_count_of(hatch_class: u32) -> vec4<f32> {
+    return vec4<f32>(
+        select(0.0, 1.0, hatch_class == 0u),
+        select(0.0, 1.0, hatch_class == 1u),
+        select(0.0, 1.0, hatch_class == 2u),
+        select(0.0, 1.0, hatch_class == 3u),
+    );
+}
+
+// `craft3d_render::Hatching::coverage_of`: the ink of the lines of hatch
+// hatch_class `hatch_class` at the point `rel` (from the eye) of the cap's plane, 0
+// to 1, the spacing `spacing` > 0. Class 0's lines run across
+// `(U + V) / √2`, worked out as they always were; the others' across
+// `section_classes[hatch_class - 1]` (`Hatching::across_of`), each with its own
+// offset of a whole number of two spacings.
+fn hatch_class_coverage(rel: vec3<f32>, hatch_class: u32, spacing: f32) -> f32 {
     // The model units of a pixel at the point (`Hatching::pixel_at`) and
     // the ray's direction there.
     var q = scene.section_hatch.z;
@@ -123,10 +156,13 @@ fn section_hatch_color(rel: vec3<f32>) -> vec3<f32> {
         line_area = 2.0 * half;
     }
     let mean = clamp(q * line_area * (1.0 + odd_ink) / (2.0 * spacing), 0.0, 1.0);
-    // `Hatching::footprint`: how far across the lines a pixel's step moves
-    // the point of the plane; none edge on.
+    // `Hatching::footprint_of`: how far across the lines a pixel's step
+    // moves the point of the plane; none edge on.
     let n = scene.section.xyz;
-    let t = (scene.section_u.xyz + scene.section_v.xyz) * 0.70710678118654752;
+    var t = (scene.section_u.xyz + scene.section_v.xyz) * 0.70710678118654752;
+    if hatch_class != 0u {
+        t = scene.section_classes[min(hatch_class, HATCH_CLASSES - 1u) - 1u].xyz;
+    }
     let nr = dot(n, r);
     var c = mean;
     if abs(nr) > 1e-6 * length(r) && q > 0.0 {
@@ -135,9 +171,14 @@ fn section_hatch_color(rel: vec3<f32>) -> vec3<f32> {
         let f = q * sqrt(ax * ax + ay * ay);
         if f > 0.0 {
             let p = scene.eye.xyz + rel;
-            let u = dot(p, scene.section_u.xyz) + scene.section_u.w;
-            let v = dot(p, scene.section_v.xyz) + scene.section_v.w;
-            let w = (u + v) * 0.70710678118654752;
+            var w = 0.0;
+            if hatch_class == 0u {
+                let u = dot(p, scene.section_u.xyz) + scene.section_u.w;
+                let v = dot(p, scene.section_v.xyz) + scene.section_v.w;
+                w = (u + v) * 0.70710678118654752;
+            } else {
+                w = dot(p, t) + scene.section_classes[min(hatch_class, HATCH_CLASSES - 1u) - 1u].w;
+            }
             let two = 2.0 * spacing;
             let d_even = abs(w - two * round(w / two));
             let d_odd = abs(w - spacing - two * round((w - spacing) / two));
@@ -146,6 +187,30 @@ fn section_hatch_color(rel: vec3<f32>) -> vec3<f32> {
             let fade = hatch_fade(2.0 * across) + odd_ink * (hatch_fade(across) - hatch_fade(2.0 * across));
             c = clamp(mean + fade * (line - mean), 0.0, 1.0);
         }
+    }
+    return c;
+}
+
+// The colour of the section's cap at the point `rel` (from the eye) of its
+// plane where the hatch classes `mask` are cut (bit `k` for class `k`,
+// from the count's channels), in 0..1: `craft3d_render::Hatching::
+// color_mask`, the paper mixed with the ink of the class's lines; where
+// two or more classes are cut (bodies of different classes overlap), the
+// more ink of the lines of classes 0 and 1: cross-hatched. Without
+// hatching (a spacing of 0) the paper. `cut.wgsl`'s cap and the studio
+// look's take it.
+fn section_hatch_color(rel: vec3<f32>, mask: u32) -> vec3<f32> {
+    let paper = scene.section_cap.rgb;
+    let spacing = scene.section_hatch.x;
+    if !(spacing > 0.0) {
+        return paper;
+    }
+    let m = mask & ((1u << HATCH_CLASSES) - 1u);
+    var c = 0.0;
+    if countOneBits(m) == 1u {
+        c = hatch_class_coverage(rel, firstTrailingBit(m), spacing);
+    } else if m != 0u {
+        c = max(hatch_class_coverage(rel, 0u, spacing), hatch_class_coverage(rel, 1u, spacing));
     }
     // A whole number of 255ths (`Hatching::color`): never a half between
     // two bytes, so the conversion to bytes rounds it as the CPU does.

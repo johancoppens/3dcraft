@@ -13,9 +13,9 @@ mod section;
 pub mod studio;
 
 pub use section::{
-    Cut, HATCH_FADE_FROM, Hatch, Hatching, SECTION_FACE, SECTION_MARGIN, SECTION_SNAP, Section,
-    Slabs, hatch_coverage, hatch_distance, hatch_fade, hatch_frame, hatch_odd_ink, hatch_spacing,
-    section_bounds,
+    Cut, HATCH_CLASSES, HATCH_FADE_FROM, HATCH_MASK, Hatch, HatchClasses, Hatching, SECTION_FACE,
+    SECTION_MARGIN, SECTION_SNAP, Section, Slabs, hatch_coverage, hatch_direction, hatch_distance,
+    hatch_fade, hatch_frame, hatch_odd_ink, hatch_spacing, section_bounds,
 };
 
 use craft3d_math::{Bbox3, Vec3};
@@ -599,12 +599,26 @@ pub struct FaceColors {
     /// per face id its row there plus one (0 for none).
     optics: Vec<studio::layers::Optics>,
     slots: Vec<u16>,
+    /// The hatch class of each body's faces (none: all of class 0), which
+    /// gives the cut of each body its own direction of hatching.
+    hatch: HatchClasses,
 }
 
 impl FaceColors {
     /// No face has a colour of its own.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The faces from `first` on are of hatch class `class`
+    /// ([`HatchClasses::set`]).
+    pub fn set_hatch_class(&mut self, first: u32, class: usize) -> bool {
+        self.hatch.set(first, class)
+    }
+
+    /// The hatch classes of the faces.
+    pub fn hatch_classes(&self) -> &HatchClasses {
+        &self.hatch
     }
 
     /// Gives `face` its own colour with the plain finish, or takes it away
@@ -1296,10 +1310,16 @@ fn shade(
 ///   that is kept is nearer (on a tie the triangle wins), the one behind
 ///   in a see-through picture where it is the nearest surface behind the
 ///   front. It lies within the box around the mesh ([`SECTION_MARGIN`]).
-/// - *What is not closed.* The count is of all triangles together. For a
-///   mesh of open sheets it means nothing (ask for no cap:
-///   [`Section::cap`]), and where two bodies overlap in space the plane
-///   through both shows no cap.
+/// - *Per class.* The count is kept per hatch class of the faces
+///   ([`FaceColors::hatch_classes`], [`HATCH_CLASSES`] of them, all of
+///   class 0 without): the cap is where the count of any class is odd,
+///   and is hatched in that class's direction ([`Hatching::color_mask`]);
+///   where the counts of two classes are odd, bodies of different classes
+///   overlap there and the cap is cross-hatched.
+/// - *What is not closed.* The count is of all triangles of a class
+///   together. For a mesh of open sheets it means nothing (ask for no
+///   cap: [`Section::cap`]), and where two bodies of the same class
+///   overlap in space the plane through both shows no cap.
 ///
 /// The id and depth buffers are of what is drawn: a pick on a cut-open
 /// model gives what is seen.
@@ -1392,15 +1412,17 @@ pub fn render_analysed(
         Vec::new()
     };
     // The section: every vertex's distance from the plane, and per sample
-    // whether the number of surfaces left out there is odd.
+    // and hatch class whether the number of surfaces left out there is
+    // odd (bit `k` for class `k`).
     let sides: Vec<f64> = cut.map_or_else(Vec::new, |cut| {
         mesh.positions.iter().map(|&p| cut.side(p)).collect()
     });
-    let mut odd: Vec<bool> = if cut.is_some_and(|cut| cut.cap) {
-        vec![false; w * h]
+    let mut odd: Vec<u8> = if cut.is_some_and(|cut| cut.cap) {
+        vec![0; w * h]
     } else {
         Vec::new()
     };
+    let classes = colors.hatch_classes();
 
     for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
         let vertex = |k: u32| {
@@ -1443,6 +1465,8 @@ pub fn render_analysed(
             let facing = flat_normal.map_or(0.0, |n| n.dot(cut.normal));
             ([side(ia), side(ib), side(ic)], facing)
         });
+        // The triangle's hatch class, as a bit of the count.
+        let class_bit = classes.bit(face);
         for y in y0..=y1 {
             let py = y as f64 + 0.5;
             for x in x0..=x1 {
@@ -1470,7 +1494,7 @@ pub fn render_analysed(
                         if let Some(slot) = odd.get_mut(i)
                             && owns_sample(on_edge, [&a, &b, &c])
                         {
-                            *slot = !*slot;
+                            *slot ^= class_bit;
                         }
                         continue;
                     }
@@ -1583,13 +1607,14 @@ pub fn render_analysed(
     // The cap of the section: one more surface where the plane is inside a
     // body, drawn after the triangles, so that a triangle wins a tie.
     if let Some(cut) = cut.filter(|cut| cut.cap) {
-        for (i, _) in odd.iter().enumerate().filter(|&(_, &inside)| inside) {
+        for (i, &mask) in odd.iter().enumerate().filter(|&(_, &mask)| mask != 0) {
             let (px, py) = ((i % w) as f64 + 0.5, (i / w) as f64 + 0.5);
             let Some((key, dist, point)) = view.cap_at(&cut, px, py, near) else {
                 continue;
             };
-            // Paper, hatched where a line of ink passes (`Hatching`).
-            let ink = hatching.map_or(cut.color, |h| h.color(point, dist));
+            // Paper, hatched where a line of ink passes (`Hatching`), in
+            // the direction of the class that is cut there.
+            let ink = hatching.map_or(cut.color, |h| h.color_mask(point, dist, mask));
             let (Some(k_slot), Some(c_slot), Some(id_slot), Some(d_slot)) = (
                 depth_key.get_mut(i),
                 color.get_mut(i),
@@ -1756,9 +1781,37 @@ pub fn pick(
 /// what is drawn there, never a face that is cut away. The cap is a hit
 /// with [`SECTION_FACE`] as its face and no triangle (`usize::MAX`), at
 /// the point of the plane under the position; [`cut_faces`] says which
-/// faces were cut away in front of it.
+/// faces were cut away in front of it. Every face of class 0: see
+/// [`pick_cut_classed`].
 pub fn pick_cut(
     mesh: &Mesh,
+    camera: &Camera,
+    width: u32,
+    height: u32,
+    x: f64,
+    y: f64,
+    section: Option<&Section>,
+) -> Result<Option<Hit>, RenderError> {
+    pick_cut_classed(
+        mesh,
+        HatchClasses::none(),
+        camera,
+        width,
+        height,
+        x,
+        y,
+        section,
+    )
+}
+
+/// [`pick_cut`] of a picture whose faces are of the hatch classes
+/// `classes` ([`FaceColors::hatch_classes`]): the cap is where the count
+/// of what is cut away is odd for any class, as [`render`] draws it (so
+/// also where bodies of different classes overlap).
+#[allow(clippy::too_many_arguments)]
+pub fn pick_cut_classed(
+    mesh: &Mesh,
+    classes: &HatchClasses,
     camera: &Camera,
     width: u32,
     height: u32,
@@ -1771,7 +1824,8 @@ pub fn pick_cut(
     };
     let mut state = SampleState::default();
     for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
-        for seen in sample.seen(mesh, t, *tri, face)?.into_iter().flatten() {
+        for mut seen in sample.seen(mesh, t, *tri, face)?.into_iter().flatten() {
+            seen.bit = classes.bit(face);
             seen.hit(&sample.view, x, y, &mut state, None);
         }
     }
@@ -1941,8 +1995,9 @@ fn seen_clipped(
 struct SampleState {
     /// The nearest triangle that is drawn there, with its depth key.
     best: Option<(f64, Hit)>,
-    /// Whether the number of surfaces left out there by a section is odd.
-    odd: bool,
+    /// Per hatch class (bit `k` for class `k`), whether the number of
+    /// surfaces left out there by a section is odd.
+    odd: u8,
     /// Every triangle drawn there, with its depth key, when asked for
     /// ([`pick_all`]).
     every: Option<Vec<(f64, Hit)>>,
@@ -1961,7 +2016,7 @@ impl SampleState {
     ) -> Option<Hit> {
         let triangle = self.best;
         let cap = cut
-            .filter(|cut| cut.cap && self.odd)
+            .filter(|cut| cut.cap && self.odd != 0)
             .and_then(|cut| view.cap_at(cut, x, y, near));
         match (triangle, cap) {
             // Strict, as in the renderer: the triangle wins a tie.
@@ -1995,6 +2050,8 @@ struct Seen {
     /// In a picture with a section: the section, the corners' distances
     /// from the plane ([`Cut::side`]) and which way the triangle faces.
     cut: Option<(Cut, [f64; 3], f64)>,
+    /// The bit of its face's hatch class in the count ([`HatchClasses`]).
+    bit: u8,
 }
 
 impl Seen {
@@ -2026,6 +2083,7 @@ impl Seen {
             projected: [a, b, c],
             area,
             cut,
+            bit: 1,
         })
     }
 
@@ -2079,7 +2137,7 @@ impl Seen {
             && cut.clips((qa * sa + qb * sb + qc * sc) / q, facing)
         {
             if owns_sample(on_edge, [a, b, c]) {
-                state.odd = !state.odd;
+                state.odd ^= self.bit;
                 if let Some(faces) = left_out {
                     faces.push(self.face);
                 }
@@ -2159,6 +2217,33 @@ impl Neighbourhood {
         radius: f64,
         section: Option<&Section>,
     ) -> Result<Self, RenderError> {
+        Self::new_cut_classed(
+            mesh,
+            HatchClasses::none(),
+            camera,
+            width,
+            height,
+            x,
+            y,
+            radius,
+            section,
+        )
+    }
+
+    /// [`Neighbourhood::new_cut`] as [`pick_cut_classed`] sees the
+    /// picture: its faces of the hatch classes `classes`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_cut_classed(
+        mesh: &Mesh,
+        classes: &HatchClasses,
+        camera: &Camera,
+        width: u32,
+        height: u32,
+        x: f64,
+        y: f64,
+        radius: f64,
+        section: Option<&Section>,
+    ) -> Result<Self, RenderError> {
         if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
             return Err(RenderError::InvalidSize { width, height });
         }
@@ -2188,10 +2273,11 @@ impl Neighbourhood {
             if !usable {
                 continue;
             }
-            for triangle in seen_clipped(&view, near, t, face, corners, cut.as_ref())
+            for mut triangle in seen_clipped(&view, near, t, face, corners, cut.as_ref())
                 .into_iter()
                 .flatten()
             {
+                triangle.bit = classes.bit(face);
                 let [x0, y0, x1, y1] = triangle.bounds();
                 // Negated, so that a box that is not a number is kept out.
                 if x0 <= within[2] && x1 >= within[0] && y0 <= within[3] && y1 >= within[1] {

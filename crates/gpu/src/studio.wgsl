@@ -105,8 +105,8 @@ struct Studio {
 @group(1) @binding(10) var behind_map: texture_2d<u32>;
 @group(1) @binding(11) var backs_map: texture_2d<u32>;
 // The count of a cut-open picture (`cut.wgsl`'s `fs_parity`, here
-// `fs_studio_parity`): 1 where the number of surfaces left out at the
-// sample is odd. A texel of 0 for a whole picture.
+// `fs_studio_parity`): 1 in the channel of each hatch class whose number
+// of surfaces left out at the sample is odd. A texel of 0 for a whole picture.
 @group(2) @binding(0) var parity_map: texture_2d<f32>;
 
 // tonemap::srgb_encode.
@@ -414,10 +414,16 @@ fn cut_clips(side: f32, flat_normal: vec3<f32>) -> bool {
 // loses the distance far from the origin), or a fragment of the cap where
 // the count is even or outside the box the cap is drawn in
 // (`Cut::holds_cap`).
+// The hatch classes cut under the cap's fragment `in` (bit `k` for class
+// `k`, `hatch_mask_of` of the count).
+fn studio_cap_classes(in: VertexOut) -> u32 {
+    return hatch_mask_of(textureLoad(parity_map, vec2<i32>(floor(in.clip.xy)), 0));
+}
+
 fn cut_drops(in: VertexOut) -> bool {
     if in.face == CAP_FACE {
         let p = scene.eye.xyz + in.rel;
-        let odd = textureLoad(parity_map, vec2<i32>(floor(in.clip.xy)), 0).r > 0.5;
+        let odd = studio_cap_classes(in) != 0u;
         let inside = all(p >= scene.section_lo.xyz) && all(p <= scene.section_hi.xyz);
         return !(odd && inside);
     }
@@ -1662,7 +1668,7 @@ fn studio_of(in: VertexOut) -> Shaded {
     if in.face == CAP_FACE {
         // The cap: its hatched paper (`section_hatch_color`), lit like a
         // face without a finish.
-        base = round(section_hatch_color(in.rel) * 255.0);
+        base = round(section_hatch_color(in.rel, studio_cap_classes(in)) * 255.0);
         metallic = 0.0;
         roughness = DEFAULT_ROUGHNESS;
         slot = 0u;
@@ -1778,7 +1784,7 @@ fn fs_studio_parity(in: VertexOut) -> @location(0) vec4<f32> {
     if in.face == CAP_FACE || !cut_clips(in.side, in.flat_normal) {
         discard;
     }
-    return vec4<f32>(1.0);
+    return hatch_count_of(hatch_class_of(in.optics));
 }
 
 // The picture without the faces that let light through (layer 3: what

@@ -149,6 +149,102 @@ pub fn hatch_fade(across: f64) -> f64 {
     if k.is_nan() { 0.0 } else { k.clamp(0.0, 1.0) }
 }
 
+/// How many classes of bodies the hatching of a cut tells apart: each
+/// body's faces carry its class ([`HatchClasses`]), the renderers count
+/// what is cut away per class (a channel each on the GPU), and the cap of
+/// a body is hatched in its class's direction ([`hatch_direction`]), so
+/// that parts that touch read apart (docs/design/rendering.md › *A
+/// direction per part*).
+pub const HATCH_CLASSES: usize = 4;
+
+/// The bits of a mask of classes, one per class.
+pub const HATCH_MASK: u8 = (1u8 << HATCH_CLASSES) - 1;
+
+/// The direction across the lines of hatch class `class` in the plane's
+/// frame ([`hatch_frame`]): `(cos, sin)` of its angle from `U` towards
+/// `V`: 45°, 135°, 75° and 165° for the classes 0 to 3. Class 0 is the
+/// hatching of a part as it always was; 0 and 1 are square to each
+/// other, and every pair is at least 30° apart. A class beyond them
+/// wraps. Square roots only, exact to the last bit on every platform.
+pub fn hatch_direction(class: usize) -> (f64, f64) {
+    let h = std::f64::consts::FRAC_1_SQRT_2;
+    // cos 75° and sin 75°: (√6 − √2) / 4 and (√6 + √2) / 4.
+    let (s6, s2) = (6.0f64.sqrt(), std::f64::consts::SQRT_2);
+    let (lo, hi) = ((s6 - s2) / 4.0, (s6 + s2) / 4.0);
+    match class % HATCH_CLASSES {
+        0 => (h, h),
+        1 => (-h, h),
+        2 => (lo, hi),
+        _ => (-hi, lo),
+    }
+}
+
+/// The hatch class of every face of a mesh ([`HATCH_CLASSES`]): from a
+/// face id on, up to the next such id, the class of a body's faces; a
+/// face before the first is of class 0. The engine gives each body of a
+/// scene one (a body's faces are a run of ids); a mesh without any is all
+/// of class 0 and is drawn as it always was.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HatchClasses {
+    /// Ascending first face ids, each with its class.
+    runs: Vec<(u32, u8)>,
+}
+
+impl HatchClasses {
+    /// None: every face is of class 0.
+    pub fn none() -> &'static HatchClasses {
+        &NO_HATCH_CLASSES
+    }
+
+    /// The faces from `first` on are of `class` (modulo
+    /// [`HATCH_CLASSES`]), up to the next run. False, and nothing changes,
+    /// once [`crate::MAX_FACE_COLORS`] runs are held.
+    pub fn set(&mut self, first: u32, class: usize) -> bool {
+        let class = (class % HATCH_CLASSES) as u8;
+        match self.runs.binary_search_by_key(&first, |&(f, _)| f) {
+            Ok(at) => {
+                if let Some(run) = self.runs.get_mut(at) {
+                    run.1 = class;
+                }
+                true
+            }
+            Err(at) => {
+                if self.runs.len() >= crate::MAX_FACE_COLORS {
+                    return false;
+                }
+                self.runs.insert(at, (first, class));
+                true
+            }
+        }
+    }
+
+    /// The class of `face`.
+    pub fn class(&self, face: u32) -> usize {
+        let at = self.runs.partition_point(|&(f, _)| f <= face);
+        at.checked_sub(1)
+            .and_then(|k| self.runs.get(k))
+            .map_or(0, |&(_, c)| usize::from(c))
+    }
+
+    /// The bit of `face`'s class in a mask of classes.
+    pub fn bit(&self, face: u32) -> u8 {
+        1 << self.class(face)
+    }
+
+    /// Whether every face is of class 0.
+    pub fn is_empty(&self) -> bool {
+        self.runs.iter().all(|&(_, c)| c == 0)
+    }
+
+    /// The runs: each first face id with its class, ascending.
+    pub fn runs(&self) -> impl Iterator<Item = (u32, usize)> + '_ {
+        self.runs.iter().map(|&(f, c)| (f, usize::from(c)))
+    }
+}
+
+/// [`HatchClasses::none`].
+static NO_HATCH_CLASSES: HatchClasses = HatchClasses { runs: Vec::new() };
+
 /// [`Hatch`] resolved for one picture: the plane's frame, the spacing for
 /// the camera, the size of a pixel and the camera's axes. Both renderers
 /// make it here, so they draw the same lines (`craft3d_gpu` hands its
@@ -255,9 +351,34 @@ impl Hatching {
     /// right or up, a pixel long) moves the ray, and its point on the plane
     /// by `δ − r (n·δ) / (n·r)`, `r` the ray's direction (`p` less the eye
     /// in perspective, the view's direction in an orthographic view).
-    /// `None` where the plane is seen edge on.
+    /// `None` where the plane is seen edge on. The lines of class 0.
     pub fn footprint(&self, p: Vec3, distance: f64) -> Option<f64> {
-        let t = (self.u + self.v) * std::f64::consts::FRAC_1_SQRT_2;
+        self.footprint_of(p, distance, 0)
+    }
+
+    /// The unit direction across the lines of `class` ([`hatch_direction`])
+    /// in model space: `w` grows along it. Class 0's is `(U + V) / √2`.
+    pub fn across_of(&self, class: usize) -> Vec3 {
+        if class == 0 {
+            return (self.u + self.v) * std::f64::consts::FRAC_1_SQRT_2;
+        }
+        let (c, s) = hatch_direction(class);
+        self.u * c + self.v * s
+    }
+
+    /// The coordinate of `p` across the lines of `class`: they lie at the
+    /// whole multiples of the spacing of it. Class 0's is `(u + v) / √2`,
+    /// worked out as it always was.
+    pub fn w_of(&self, p: Vec3, class: usize) -> f64 {
+        if class == 0 {
+            return (p.dot(self.u) + p.dot(self.v)) * std::f64::consts::FRAC_1_SQRT_2;
+        }
+        p.dot(self.across_of(class))
+    }
+
+    /// [`Self::footprint`] across the lines of `class`.
+    pub fn footprint_of(&self, p: Vec3, distance: f64, class: usize) -> Option<f64> {
+        let t = self.across_of(class);
         let r = if self.perspective {
             p - self.eye
         } else {
@@ -310,17 +431,38 @@ impl Hatching {
     /// and the others at [`Self::odd_ink`]; blended into the mean tone
     /// ([`Self::mean`]) where the lines stand under 3 pixels apart on
     /// screen ([`hatch_fade`], from the footprint across them,
-    /// [`Self::footprint`]), all of it under 2.
+    /// [`Self::footprint`]), all of it under 2. The lines of class 0.
     pub fn coverage(&self, p: Vec3, distance: f64) -> f64 {
+        self.coverage_of(p, distance, 0)
+    }
+
+    /// The ink where the classes `mask` are cut (bit `k` for class `k`,
+    /// [`HatchClasses`]): one class, its own lines ([`Self::coverage_of`]);
+    /// two or more, bodies of different classes overlap there, a fault,
+    /// and the cap is cross-hatched: the more ink of the lines of classes
+    /// 0 and 1 (45° and 135°). No class: none.
+    pub fn coverage_mask(&self, p: Vec3, distance: f64, mask: u8) -> f64 {
+        let mask = mask & HATCH_MASK;
+        match mask.count_ones() {
+            0 => 0.0,
+            1 => self.coverage_of(p, distance, mask.trailing_zeros() as usize),
+            _ => self
+                .coverage_of(p, distance, 0)
+                .max(self.coverage_of(p, distance, 1)),
+        }
+    }
+
+    /// [`Self::coverage`] with the lines of `class` ([`hatch_direction`]).
+    pub fn coverage_of(&self, p: Vec3, distance: f64, class: usize) -> f64 {
         let q = self.pixel_at(distance);
         if !(q.is_finite() && q > 0.0) {
             return 0.0;
         }
         let mean = self.mean(distance);
-        let Some(f) = self.footprint(p, distance) else {
+        let Some(f) = self.footprint_of(p, distance, class) else {
             return mean;
         };
-        let w = (p.dot(self.u) + p.dot(self.v)) * std::f64::consts::FRAC_1_SQRT_2;
+        let w = self.w_of(p, class);
         let two = 2.0 * self.spacing;
         let even = hatch_coverage(hatch_distance(w, two) / q, self.half_width);
         let odd = hatch_coverage(hatch_distance(w - self.spacing, two) / q, self.half_width);
@@ -337,9 +479,16 @@ impl Hatching {
     /// taken to a whole number of 255ths first: an odd denominator, so the
     /// mix of two whole bytes is never a half and both renderers round it
     /// alike (the mean tone fell on halves, 221.5, which the GPU's
-    /// conversion and the CPU's rounding took to different bytes).
+    /// conversion and the CPU's rounding took to different bytes). The
+    /// lines of class 0.
     pub fn color(&self, p: Vec3, distance: f64) -> [u8; 3] {
-        let c = (self.coverage(p, distance) * 255.0).round() / 255.0;
+        self.color_mask(p, distance, 1)
+    }
+
+    /// [`Self::color`] where the classes `mask` are cut
+    /// ([`Self::coverage_mask`]).
+    pub fn color_mask(&self, p: Vec3, distance: f64, mask: u8) -> [u8; 3] {
+        let c = (self.coverage_mask(p, distance, mask) * 255.0).round() / 255.0;
         let mut out = self.paper;
         for (channel, ink) in out.iter_mut().zip(self.ink) {
             let paper = f64::from(*channel);
@@ -1143,5 +1292,206 @@ mod tests {
         }
         // From 30 to 130: the spacings 1, 2 and 4.
         assert!(steps >= 2, "{steps}");
+    }
+
+    /// The hatching of class 0 as it was before there were classes
+    /// (2026-11-18): the coverage across `(U + V) / √2`, worked out step
+    /// by step as `Hatching::coverage` and `Hatching::color` did.
+    fn color_before_classes(h: &Hatching, p: Vec3, distance: f64) -> [u8; 3] {
+        let coverage = || {
+            let q = h.pixel_at(distance);
+            if !(q.is_finite() && q > 0.0) {
+                return 0.0;
+            }
+            let mean = h.mean(distance);
+            let t = (h.u + h.v) * std::f64::consts::FRAC_1_SQRT_2;
+            let r = if h.perspective { p - h.eye } else { h.forward };
+            let n = h.normal;
+            let nr = n.dot(r);
+            let edge_on = 1e-12 * r.length();
+            if nr.is_nan() || edge_on.is_nan() || nr.abs() <= edge_on {
+                return mean;
+            }
+            let across = |step: Vec3| t.dot(step) - t.dot(r) * n.dot(step) / nr;
+            let (x, y) = (across(h.right), across(h.up));
+            let f = q * (x * x + y * y).sqrt();
+            if !(f.is_finite() && f > 0.0) {
+                return mean;
+            }
+            let w = (p.dot(h.u) + p.dot(h.v)) * std::f64::consts::FRAC_1_SQRT_2;
+            let two = 2.0 * h.spacing;
+            let even = hatch_coverage(hatch_distance(w, two) / q, h.half_width);
+            let odd = hatch_coverage(hatch_distance(w - h.spacing, two) / q, h.half_width);
+            let line = even.max(h.odd_ink * odd);
+            let across = h.spacing / f;
+            let fade = hatch_fade(2.0 * across)
+                + h.odd_ink * (hatch_fade(across) - hatch_fade(2.0 * across));
+            let c = mean + fade * (line - mean);
+            if c.is_nan() { 0.0 } else { c.clamp(0.0, 1.0) }
+        };
+        let c = (coverage() * 255.0).round() / 255.0;
+        let mut out = h.paper;
+        for (channel, ink) in out.iter_mut().zip(h.ink) {
+            let paper = f64::from(*channel);
+            *channel = (paper + (f64::from(ink) - paper) * c)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+        }
+        out
+    }
+
+    /// A body of class 0 (every body of a document with one) is hatched
+    /// byte for byte as before the classes: orthographic and in
+    /// perspective, face on, oblique and grazing (the fade), at two zooms.
+    #[test]
+    fn class_zero_is_hatched_byte_for_byte_as_before_the_classes() {
+        let mut compared = 0;
+        for (normal, camera) in [
+            (Vec3::Z, from_above(50.0)),
+            (Vec3::Z, from_above(37.3)),
+            (
+                Vec3::new(0.3, -0.5, 0.8),
+                Camera {
+                    eye: Vec3::new(30.0, -80.0, 60.0),
+                    target: Vec3::new(1.0, 2.0, 0.5),
+                    up: Vec3::Z,
+                    projection: Projection::Perspective { fov_y_deg: 40.0 },
+                },
+            ),
+            (
+                Vec3::Z,
+                Camera {
+                    eye: Vec3::new(0.0, -100.0, 3.0),
+                    target: Vec3::ZERO,
+                    up: Vec3::Z,
+                    projection: Projection::Orthographic { half_height: 50.0 },
+                },
+            ),
+        ] {
+            let h = Hatching::new(normal, PAPER, &hatch(None), &camera, 400).unwrap();
+            for k in 0..400 {
+                let t = f64::from(k);
+                let p = Vec3::new(t.psin() * 13.7, (t * 0.37).pcos() * 9.1, t * 0.013);
+                let distance = 50.0 + t * 0.25;
+                let before = color_before_classes(&h, p, distance);
+                assert_eq!(h.color(p, distance), before, "{p:?}");
+                assert_eq!(h.color_mask(p, distance, 1), before, "{p:?}");
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 1600);
+    }
+
+    #[test]
+    fn the_classes_directions_are_unit_and_at_least_30_degrees_apart() {
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        assert_eq!(hatch_direction(0), (h, h));
+        assert_eq!(hatch_direction(1), (-h, h));
+        let angle = |k: usize| {
+            let (c, s) = hatch_direction(k);
+            assert!((c * c + s * s - 1.0).abs() < 1e-15, "{k}");
+            s.patan2(c).to_degrees()
+        };
+        let mut least = f64::INFINITY;
+        for a in 0..HATCH_CLASSES {
+            for b in a + 1..HATCH_CLASSES {
+                // Lines, so modulo 180°.
+                let d = (angle(a) - angle(b)).abs() % 180.0;
+                least = least.min(d.min(180.0 - d));
+            }
+        }
+        assert!((least - 30.0).abs() < 1e-9, "{least}");
+        assert!(((angle(1) - angle(0)).abs() - 90.0).abs() < 1e-9);
+        // A class beyond wraps.
+        assert_eq!(hatch_direction(HATCH_CLASSES + 2), hatch_direction(2));
+        // In model space: unit, in the plane, class 0 as it always was.
+        let normal = Vec3::new(0.3, -0.5, 0.8);
+        let hh = Hatching::new(normal, PAPER, &hatch(None), &from_above(50.0), 400).unwrap();
+        for k in 0..HATCH_CLASSES {
+            let t = hh.across_of(k);
+            assert!((t.length() - 1.0).abs() < 1e-12, "{k}");
+            assert!(t.dot(hh.normal).abs() < 1e-12, "{k}");
+        }
+        assert_eq!(hh.across_of(0), (hh.u + hh.v) * h);
+    }
+
+    /// Each class's lines lie where its coordinate is a whole number of
+    /// spacings, face on: ink there, paper half a spacing off; where
+    /// bodies of two classes overlap the cap is cross-hatched: the more
+    /// ink of classes 0 and 1.
+    #[test]
+    fn each_class_has_its_lines_and_an_overlap_is_cross_hatched() {
+        let h = Hatching::new(Vec3::Z, PAPER, &hatch(None), &from_above(50.0), 400).unwrap();
+        assert_eq!(h.spacing, 2.0);
+        for k in 0..HATCH_CLASSES {
+            let t = h.across_of(k);
+            let bit = 1 << k;
+            for n in [-4.0, -2.0, 0.0, 2.0, 6.0] {
+                let on = t * (n * h.spacing);
+                assert!((h.w_of(on, k) - n * h.spacing).abs() < 1e-12);
+                assert!(
+                    (h.coverage_mask(on, 100.0, bit) - 1.0).abs() < 1e-12,
+                    "{k} {n}"
+                );
+                assert_eq!(h.color_mask(on, 100.0, bit), INK, "{k} {n}");
+                let off = t * ((n + 0.5) * h.spacing);
+                assert_eq!(h.coverage_mask(off, 100.0, bit), 0.0, "{k} {n}");
+                assert_eq!(h.color_mask(off, 100.0, bit), PAPER, "{k} {n}");
+            }
+        }
+        // A point on a line of class 0 that is on none of class 1: the
+        // classes' lines differ.
+        let p = h.across_of(1) * 1.0;
+        assert!((h.coverage_of(p, 100.0, 0) - 1.0).abs() < 1e-12);
+        assert_eq!(h.coverage_of(p, 100.0, 1), 0.0);
+        // Overlaps: the more of classes 0 and 1, whichever classes overlap.
+        for k in 0..300 {
+            let t = f64::from(k) * 0.0371;
+            let p = Vec3::new(t.pcos() * t, t.psin() * t, 0.0);
+            let cross = h.coverage_of(p, 100.0, 0).max(h.coverage_of(p, 100.0, 1));
+            for mask in [0b11, 0b101, 0b1100, 0b1111] {
+                assert_eq!(h.coverage_mask(p, 100.0, mask), cross, "{mask:b}");
+            }
+            assert_eq!(h.coverage_mask(p, 100.0, 0), 0.0);
+            // Bits beyond the classes are not classes.
+            assert_eq!(
+                h.coverage_mask(p, 100.0, 0b1_0100),
+                h.coverage_of(p, 100.0, 2)
+            );
+        }
+    }
+
+    #[test]
+    fn hatch_classes_hold_runs_of_faces_in_any_order() {
+        let mut c = HatchClasses::default();
+        assert_eq!(c.class(0), 0);
+        assert_eq!(c.class(u32::MAX), 0);
+        assert!(c.is_empty());
+        assert!(c.set(100, 1));
+        assert!(c.set(10, 2));
+        assert!(c.set(50, 7)); // wraps: 3
+        assert!(c.set(0, 0));
+        assert!(!c.is_empty());
+        for (face, class) in [(0, 0), (9, 0), (10, 2), (49, 2), (50, 3), (99, 3), (100, 1)] {
+            assert_eq!(c.class(face), class, "{face}");
+            assert_eq!(c.bit(face), 1 << class, "{face}");
+        }
+        assert_eq!(c.class(u32::MAX), 1);
+        // The same first face again: its class changes, nothing else.
+        assert!(c.set(50, 0));
+        assert_eq!(
+            c.runs().collect::<Vec<_>>(),
+            vec![(0, 0), (10, 2), (50, 0), (100, 1)]
+        );
+        assert_eq!(HatchClasses::none().class(12), 0);
+        assert!(HatchClasses::none().is_empty());
+        // Many bodies in order: each set is a push, every lookup right.
+        let mut many = HatchClasses::default();
+        for body in 0..10_000_u32 {
+            assert!(many.set(body * 12, body as usize));
+        }
+        for body in 0..10_000_u32 {
+            assert_eq!(many.class(body * 12 + 11), body as usize % HATCH_CLASSES);
+        }
     }
 }

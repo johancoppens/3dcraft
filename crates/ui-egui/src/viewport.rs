@@ -3182,14 +3182,17 @@ pub struct PartsKey {
 impl PartsKey {
     /// True when the faces `first..first + faces` look the same in both
     /// keys' colours: what a part's uploaded vertices hold of them (colour,
-    /// finish, the row of its layers and whether light passes). The rows'
-    /// contents (a brushed finish's direction, which follows the part's
-    /// pose) are the material table's, not the vertices'.
+    /// finish, the row of its layers, whether light passes and the hatch
+    /// class of its cut). The rows' contents (a brushed finish's
+    /// direction, which follows the part's pose) are the material table's,
+    /// not the vertices'.
     fn same_looks(&self, old: &PartsKey, first: u32, faces: u32) -> bool {
+        let (classes, old_classes) = (self.colors.hatch_classes(), old.colors.hatch_classes());
         (first..first.saturating_add(faces)).all(|f| {
             self.colors.look(f) == old.colors.look(f)
                 && self.colors.optics_slot(f) == old.colors.optics_slot(f)
                 && self.colors.is_transmissive(f) == old.colors.is_transmissive(f)
+                && classes.class(f) == old_classes.class(f)
         })
     }
 

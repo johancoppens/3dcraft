@@ -2,27 +2,29 @@
 // of a see-through picture that is cut open. This source follows
 // `scene.wgsl`, `peel.wgsl` and `cut.wgsl` in one module.
 
-// The count of `fs_parity`: 1 where the number of fragments left out at
-// the sample is odd.
+// The count of `fs_parity`: 1 in the channel of each hatch class whose
+// number of fragments left out at the sample is odd.
 @group(1) @binding(1) var parity: texture_2d<f32>;
 
-// True where the cap is: inside a body, within the box around the mesh.
-fn cap_here(in: CutOut) -> bool {
+// The hatch classes cut here (`hatch_mask_of`): the cap is where there
+// are any, inside a body, within the box around the mesh.
+fn cap_classes(in: CutOut) -> u32 {
     if !in_cap_box(in) {
-        return false;
+        return 0u;
     }
-    return textureLoad(parity, vec2<i32>(in.clip.xy), 0).r > 0.5;
+    return hatch_mask_of(textureLoad(parity, vec2<i32>(in.clip.xy), 0));
 }
 
 // The cap with its data: the renderer that reads the frame back. Also the
 // cap as the front of a see-through picture (its alpha is 1).
 @fragment
 fn fs_cap(in: CutOut) -> FragmentOut {
-    if !cap_here(in) {
+    let classes = cap_classes(in);
+    if classes == 0u {
         discard;
     }
     var out: FragmentOut;
-    out.color = cap_color(in);
+    out.color = cap_color(in, classes);
     out.data = cap_data(in);
     {{SET_DEPTH}}
     return out;
@@ -31,11 +33,12 @@ fn fs_cap(in: CutOut) -> FragmentOut {
 // The cap, colour only: a viewport.
 @fragment
 fn fs_cap_color(in: CutOut) -> ColorOut {
-    if !cap_here(in) {
+    let classes = cap_classes(in);
+    if classes == 0u {
         discard;
     }
     var out: ColorOut;
-    out.color = cap_color(in);
+    out.color = cap_color(in, classes);
     {{SET_DEPTH}}
     return out;
 }
@@ -43,7 +46,8 @@ fn fs_cap_color(in: CutOut) -> ColorOut {
 // The cap, data only: a viewport's capture.
 @fragment
 fn fs_cap_data(in: CutOut) -> DataOut {
-    if !cap_here(in) {
+    let classes = cap_classes(in);
+    if classes == 0u {
         discard;
     }
     var out: DataOut;
@@ -99,7 +103,8 @@ fn fs_behind_cut(in: CutOut) -> ColorOut {
 // through the same vertex stage), so it is not behind itself.
 @fragment
 fn fs_cap_behind(in: CutOut) -> ColorOut {
-    if !cap_here(in) {
+    let classes = cap_classes(in);
+    if classes == 0u {
         discard;
     }
     let front = {{FRONT_DEPTH}};
@@ -107,7 +112,7 @@ fn fs_cap_behind(in: CutOut) -> ColorOut {
         discard;
     }
     var out: ColorOut;
-    out.color = cap_color(in);
+    out.color = cap_color(in, classes);
     {{SET_DEPTH}}
     return out;
 }

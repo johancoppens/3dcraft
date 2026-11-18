@@ -85,6 +85,13 @@ pub(crate) fn encode(scene: &Scene) -> Vec<u8> {
         w.u32(face);
         w.optics(o);
     }
+    let classes: Vec<(u32, usize)> = scene.face_colors.hatch_classes().runs().collect();
+    w.len(classes.len());
+    for (face, class) in classes {
+        w.u32(face);
+        // Below `HATCH_CLASSES`.
+        w.u8(u8::try_from(class).unwrap_or(0));
+    }
     w.len(scene.sketches.len());
     for sketch in &scene.sketches {
         w.text(&sketch.feature);
@@ -239,6 +246,16 @@ pub(crate) fn decode(bytes: &[u8], doc: &Document, revision: u64) -> Result<Scen
         let optics = r.optics()?;
         if !face_colors.set_optics(face, Some(optics)) {
             return Err("a face's layers of the scene are out of range".into());
+        }
+    }
+    for _ in 0..r.count(HATCH_RUN)? {
+        let face = r.u32()?;
+        let class = usize::from(r.u8()?);
+        if face >= face_end || class >= craft3d_render::HATCH_CLASSES {
+            return Err("a hatch class of the scene is of no face of its bodies".into());
+        }
+        if !face_colors.set_hatch_class(face, class) {
+            return Err("the scene's hatch classes are out of range".into());
         }
     }
     let count = r.count(SKETCH)?;
@@ -411,6 +428,8 @@ const FACE_COLOR: usize = 4 + 3 + 1 + 1;
 /// A face's layers: the face, nine `f32`, the tangent field's kind and
 /// axis, two flags, the scattering colour's flag and the solid texture's.
 const OPTICS: usize = 4 + 9 * 4 + 1 + 12 + 1 + 1 + 1;
+/// A body's hatch class: its first face and the class.
+const HATCH_RUN: usize = 4 + 1;
 /// A sketch: two texts, four vectors, two counts and whether it is a
 /// grid.
 const SKETCH: usize = 4 + 4 + 4 * 24 + 4 + 4 + 1;
@@ -1000,6 +1019,24 @@ mod tests {
         // The layers cross too: the glass sphere's and the brushed block's.
         assert!(back.face_colors.has_transmission());
         assert!(back.face_colors.optics_table().len() >= 2);
+        // And the hatch classes of the two bodies (the boolean's, the
+        // sphere's: 0 and 1).
+        let classes: Vec<(u32, usize)> = back.face_colors.hatch_classes().runs().collect();
+        let firsts: Vec<u32> = scene.bodies.iter().map(|b| b.first_face_id).collect();
+        assert_eq!(classes, vec![(firsts[0], 0), (firsts[1], 1)]);
+    }
+
+    /// A hatch class of a face no body has is refused, as a face colour
+    /// is.
+    #[test]
+    fn a_hatch_class_of_no_face_is_refused() {
+        let (mut s, scene) = scene();
+        let doc = Arc::clone(s.document_mut().unwrap().history.current());
+        let mut scene = (*scene).clone();
+        let end = numbered(&scene.bodies).unwrap();
+        Arc::make_mut(&mut scene.face_colors).set_hatch_class(end, 2);
+        let error = decode(&encode(&scene), &doc, scene.revision).unwrap_err();
+        assert!(error.contains("hatch class"), "{error}");
     }
 
     /// The grid of a grid surface crosses with its size and its steps; a

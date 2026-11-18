@@ -360,8 +360,20 @@ impl Scene {
         y: f64,
         section: Option<&Section>,
     ) -> Result<(Option<ScenePick>, Option<SceneCut>), String> {
-        let hit = craft3d_render::pick_cut(&self.mesh, camera, width, height, x, y, section)
-            .map_err(|e| e.to_string())?;
+        // The cap is where the count of a hatch class is odd, as the
+        // renderers draw it (also where bodies of different classes
+        // overlap: cross-hatched, and no one body named below).
+        let hit = craft3d_render::pick_cut_classed(
+            &self.mesh,
+            self.face_colors.hatch_classes(),
+            camera,
+            width,
+            height,
+            x,
+            y,
+            section,
+        )
+        .map_err(|e| e.to_string())?;
         let Some(hit) = hit else {
             return Ok((None, None));
         };
@@ -644,8 +656,9 @@ impl Scene {
         let view = Viewpoint::new(camera, width, height).map_err(|e| e.to_string())?;
         // A point within the radius lands within the radius, give or take
         // rounding: one pixel more.
-        let near = Neighbourhood::new_cut(
+        let near = Neighbourhood::new_cut_classed(
             &self.mesh,
+            self.face_colors.hatch_classes(),
             camera,
             width,
             height,

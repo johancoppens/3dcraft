@@ -20,8 +20,8 @@ use common::{
     perspective, write_evidence,
 };
 use craft3d_gpu::{
-    Camera, DrawOptions, GpuError, Highlight, Mesh, Onscreen, OverlayParams, Projection,
-    RenderParams, SECTION_FACE, Section, Segment,
+    Camera, DrawOptions, FaceColors, GpuError, Highlight, Mesh, Onscreen, OverlayParams,
+    Projection, RenderParams, SECTION_FACE, Section, Segment,
 };
 use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::primitives;
@@ -45,6 +45,8 @@ const HATCH: craft3d_render::Hatch = craft3d_render::Hatch {
 struct Scene {
     name: String,
     mesh: Mesh,
+    /// The faces' looks: here their hatch classes (none: all of class 0).
+    colors: FaceColors,
     camera: Camera,
     params: RenderParams,
     evidence: bool,
@@ -161,6 +163,7 @@ fn scenes_of(name: &str, mesh: &Mesh, cap: bool, start: usize, out: &mut Vec<Sce
                 p.highlight = Highlight::new([64, 196, 212], picked).0;
             }
             out.push(Scene {
+                colors: FaceColors::new(),
                 name: format!(
                     "section-{name}-{plane}-{}{}",
                     if see_through { "seethrough" } else { "opaque" },
@@ -238,7 +241,7 @@ fn record_failure(
         text.push_str(&format!("  within x {x0}..={x1}, y {y0}..={y1}\n"));
     }
     for again in 1..=3 {
-        match offscreen.render(&scene.mesh, &scene.camera, &scene.params) {
+        match offscreen.render_colored(&scene.mesh, &scene.colors, &scene.camera, &scene.params) {
             Ok(next) => {
                 let still = (0..cpu.ids.len())
                     .filter(|&i| !band[i] && off(&next, i) >= 2)
@@ -274,7 +277,7 @@ fn gl_race_rendered_again(
         return None;
     }
     let again = offscreen
-        .render(&scene.mesh, &scene.camera, &scene.params)
+        .render_colored(&scene.mesh, &scene.colors, &scene.camera, &scene.params)
         .ok()?;
     let (parity, _) = compare_with(&scene.mesh, &scene.camera, &scene.params, cpu, &again);
     (parity.id_outside + parity.depth_outside + parity.color_outside == 0).then_some(parity)
@@ -289,9 +292,15 @@ fn check(group: &str, scenes: &[Scene]) -> usize {
     for mut offscreen in offscreens() {
         let adapter = offscreen.adapter().clone();
         for scene in scenes {
-            let cpu = craft3d_render::render(&scene.mesh, &scene.camera, &scene.params).unwrap();
+            let cpu = craft3d_render::render_colored(
+                &scene.mesh,
+                &scene.colors,
+                &scene.camera,
+                &scene.params,
+            )
+            .unwrap();
             let gpu = offscreen
-                .render(&scene.mesh, &scene.camera, &scene.params)
+                .render_colored(&scene.mesh, &scene.colors, &scene.camera, &scene.params)
                 .unwrap_or_else(|e| panic!("{} on {adapter}: {e}", scene.name));
             let (mut parity, band) =
                 compare_with(&scene.mesh, &scene.camera, &scene.params, &cpu, &gpu);
@@ -580,6 +589,141 @@ fn hatched_caps_at_other_scales_match_the_cpu_renderer() {
     check("hatched-scales", &scenes);
 }
 
+/// Parts that touch and overlap, as an assembly's: blocks in a row, each
+/// touching the next, a pin through two of them and a block that sinks
+/// into its neighbour (an interference), one mesh with a run of face ids
+/// per part. Returns the mesh and the first face of each part.
+fn parts_in_a_row(scale: f64, origin: Vec3) -> (Mesh, Vec<u32>) {
+    let place = |x: f64, y: f64, z: f64| {
+        let p = origin + Vec3::new(x, y, z) * scale;
+        Frame::new(p, Vec3::Z, Vec3::X).unwrap()
+    };
+    let mut bodies = Vec::new();
+    for k in 0..4 {
+        bodies.push(
+            primitives::block(
+                &place(f64::from(k) * 2.0, 0.0, 0.0),
+                2.0 * scale,
+                3.0 * scale,
+                2.0 * scale,
+            )
+            .unwrap(),
+        );
+    }
+    // A pin along x through the first two blocks: it overlaps them.
+    bodies.push(
+        primitives::cylinder(
+            &Frame::new(origin + Vec3::new(0.5, 1.5, 1.0) * scale, Vec3::X, Vec3::Y).unwrap(),
+            0.4 * scale,
+            2.5 * scale,
+        )
+        .unwrap(),
+    );
+    // A block that sinks 0.5 into the last one, from above.
+    bodies.push(
+        primitives::block(&place(6.5, 0.5, 1.5), 1.0 * scale, 2.0 * scale, 1.5 * scale).unwrap(),
+    );
+    let mut mesh = Mesh::default();
+    let mut firsts = Vec::new();
+    let mut faces = 0_u32;
+    for body in &bodies {
+        let part = mesh_of!(body, 0.01 * scale);
+        let base = mesh.positions.len() as u32;
+        firsts.push(faces);
+        mesh.positions.extend(&part.positions);
+        mesh.normals.extend(&part.normals);
+        mesh.triangles
+            .extend(part.triangles.iter().map(|t| t.map(|i| i + base)));
+        mesh.face_ids
+            .extend(part.face_ids.iter().map(|f| f + faces));
+        faces += part.face_ids.iter().copied().max().map_or(0, |m| m + 1);
+    }
+    (mesh, firsts)
+}
+
+/// The scenes of [`parts_in_a_row`] with each part of the class of its
+/// place: every plane of it, opaque and see-through, one to three samples
+/// a pixel side, hatched, at three scales; and two zooms of one plane, the
+/// second across a step of the spacing and seen nearly edge on (the fade).
+fn classed_scenes() -> Vec<Scene> {
+    let mut scenes = Vec::new();
+    for (round, (scale, origin)) in [
+        (1.0, Vec3::ZERO),
+        (1e-3, Vec3::new(3.0, -2.0, 5.0) * 1e-3),
+        (1e6, Vec3::new(3.0, -2.0, 5.0) * 1e6),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (mesh, firsts) = parts_in_a_row(scale, origin);
+        let mut colors = FaceColors::new();
+        for (k, &first) in firsts.iter().enumerate() {
+            colors.set_hatch_class(first, k);
+        }
+        let mut of_row = Vec::new();
+        scenes_of(
+            &format!("classes-round{round}"),
+            &mesh,
+            true,
+            round,
+            &mut of_row,
+        );
+        for mut scene in hatched(of_row) {
+            scene.colors = colors.clone();
+            scenes.push(scene);
+        }
+        // Nearly edge on, and zoomed across a step of the spacing.
+        let (lo, hi) = mesh.bbox().corners().unwrap();
+        let section = Section {
+            color: PAPER,
+            hatch: Some(HATCH),
+            ..section((lo + hi) * 0.5, Vec3::new(0.0, -1.0, 0.05))
+        };
+        for (k, (toward, zoom)) in [
+            (Vec3::new(0.05, -0.12, 1.0), 1.0),
+            (Vec3::new(0.3, -1.0, 0.4), 1.37),
+            (Vec3::new(0.3, -1.0, 0.4), 1.52),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let p = RenderParams {
+                section: Some(section),
+                ..params(260, 200, 1 + k as u32 % 2)
+            };
+            let camera = orthographic(&mesh, toward, &p).zoomed(zoom).unwrap();
+            scenes.push(Scene {
+                name: format!("classes-round{round}-view{k}"),
+                mesh: mesh.clone(),
+                colors: colors.clone(),
+                camera,
+                params: p,
+                evidence: round == 0,
+            });
+        }
+    }
+    scenes
+}
+
+/// A direction of hatching per part (2026-11-18): the GPU counts what is
+/// cut away per hatch class (a channel each) and hatches each part's cap
+/// in its class's direction, cross-hatched where parts of two classes
+/// overlap; it matches the CPU renderer within the tolerances of
+/// `common/mod.rs` on touching and overlapping parts of four classes, at
+/// a thousandth, one and a million, in the fade and across a step of the
+/// spacing. The CPU pictures have all four directions and an overlap.
+#[test]
+fn hatch_classes_of_parts_match_the_cpu_renderer() {
+    let scenes = classed_scenes();
+    let first = &scenes[0];
+    let cpu =
+        craft3d_render::render_colored(&first.mesh, &first.colors, &first.camera, &first.params)
+            .unwrap();
+    assert!(cpu.ids.contains(&SECTION_FACE), "{}", first.name);
+    let compared = check("classes", &scenes);
+    assert_eq!(compared, scenes.len() * offscreens().len());
+}
+
 /// A camera inside a cut-open body, close to the cap, and one just outside
 /// the drawn box but within the cap's margin (docs/design/rendering.md ›
 /// *Near-plane clipping*): both renderers clip at the near plane of the
@@ -608,6 +752,7 @@ fn a_camera_inside_a_cut_open_body_matches_the_cpu_renderer() {
             ..params(200, 150, 2)
         };
         scenes.push(Scene {
+            colors: FaceColors::new(),
             name: format!("inside-cut-{k}"),
             mesh: mesh.clone(),
             camera: Camera {
@@ -898,15 +1043,27 @@ fn name_of(adapter: &wgpu::Adapter) -> String {
 /// hollow block, the drilled plate and the teapot, opaque and see-through.
 #[test]
 fn the_viewports_cut_open_picture_matches_the_cpu_renderer_away_from_the_edges() {
+    // And parts of four hatch classes, touching and overlapping, hatched:
+    // the cap's colour of a pixel on the border of two classes is the
+    // mean of its samples' (`cut_samples.wgsl`'s `cap_color_samples`).
+    let (row, firsts) = parts_in_a_row(1.0, Vec3::ZERO);
+    let mut classes = FaceColors::new();
+    for (k, &first) in firsts.iter().enumerate() {
+        classes.set_hatch_class(first, k);
+    }
     let models = [
-        ("hollow", hollow_block(), true),
-        ("drilled", drilled_plate(), true),
-        ("teapot", teapot_mesh(), false),
+        ("hollow", hollow_block(), true, FaceColors::new()),
+        ("drilled", drilled_plate(), true, FaceColors::new()),
+        ("teapot", teapot_mesh(), false, FaceColors::new()),
+        ("classes", row, true, classes),
     ];
     let mut scenes = Vec::new();
-    for (index, (name, mesh, cap)) in models.iter().enumerate() {
+    for (index, (name, mesh, cap, colors)) in models.iter().enumerate() {
         let mut all = Vec::new();
         scenes_of(name, mesh, *cap, index, &mut all);
+        if *name == "classes" {
+            all = hatched(all);
+        }
         // Across z, across x and the oblique plane, opaque and seen
         // through; the viewport has one sample of supersampling.
         for scene in all {
@@ -927,6 +1084,7 @@ fn the_viewports_cut_open_picture_matches_the_cpu_renderer_away_from_the_edges()
                     &params,
                 );
                 scenes.push(Scene {
+                    colors: colors.clone(),
                     params,
                     camera,
                     ..scene
@@ -934,7 +1092,7 @@ fn the_viewports_cut_open_picture_matches_the_cpu_renderer_away_from_the_edges()
             }
         }
     }
-    assert_eq!(scenes.len(), 18);
+    assert_eq!(scenes.len(), 24);
     let mut log = String::new();
     let mut measured = Vec::new();
     for (adapter, device, queue) in devices() {
@@ -947,8 +1105,8 @@ fn the_viewports_cut_open_picture_matches_the_cpu_renderer_away_from_the_edges()
         };
         for scene in &scenes {
             let (mesh, camera, params) = (&scene.mesh, &scene.camera, &scene.params);
-            let cpu = craft3d_render::render(mesh, camera, params).unwrap();
-            let uploaded = onscreen.upload(mesh).unwrap();
+            let cpu = craft3d_render::render_colored(mesh, &scene.colors, camera, params).unwrap();
+            let uploaded = onscreen.upload_colored(mesh, &scene.colors).unwrap();
             onscreen
                 .draw(&uploaded, &lines, camera, params, &no_overlay(), options)
                 .unwrap();
@@ -974,7 +1132,7 @@ fn the_viewports_cut_open_picture_matches_the_cpu_renderer_away_from_the_edges()
                 ..*params
             };
             let mut fresh = Onscreen::new(&device, &queue, &adapter).unwrap();
-            let fresh_mesh = fresh.upload(mesh).unwrap();
+            let fresh_mesh = fresh.upload_colored(mesh, &scene.colors).unwrap();
             let fresh_lines = fresh.upload_lines(&[]).unwrap();
             fresh
                 .draw(

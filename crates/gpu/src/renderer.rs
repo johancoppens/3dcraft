@@ -33,8 +33,9 @@ pub(crate) const DEPTH_STENCIL_FORMAT: wgpu::TextureFormat =
 /// Number of `f32` in the scene uniform block: eight `vec4` for the view
 /// and the shading, one for the highlight's colour, one for its light,
 /// four for its runs of faces, four for the section, one for the fill
-/// light, sixteen for the analysis and four for the cap's hatching.
-pub(crate) const SCENE_FLOATS: usize = 156;
+/// light, sixteen for the analysis and seven for the cap's hatching (four,
+/// and one per hatch class beyond the first).
+pub(crate) const SCENE_FLOATS: usize = 168;
 
 /// Face ids are compared as `f32` in the shader: exact below this.
 const MAX_HIGHLIGHT_FACE: u32 = 1 << 24;

@@ -1193,6 +1193,20 @@ pub(crate) fn bodies_box(doc: &Document, regen: &Regen) -> Bbox3 {
     extent
 }
 
+/// The hatch class of the cut of the body that is the `ordinal`-th of its
+/// document's bodies (in the order of the features, the hidden ones too,
+/// from 0): the hatching of a section runs in another direction for each
+/// class (`craft3d_render::hatch_direction`), so that two parts that
+/// touch read apart. Bodies next to each other in the document always
+/// differ; any two whose places differ by a multiple of
+/// `craft3d_render::HATCH_CLASSES` share a direction. The place counts
+/// the hidden bodies, so hiding a part, moving the plane or playing a
+/// motion changes no other part's direction; a document with one body
+/// hatches it as it always was (class 0).
+pub fn hatch_class(ordinal: usize) -> usize {
+    ordinal % craft3d_render::HATCH_CLASSES
+}
+
 /// The most bodies whose boxes [`held_box`] keeps.
 const HELD_BOXES: usize = 4096;
 
@@ -1898,8 +1912,17 @@ fn build(
     let mut next_face_id: u32 = 0;
     let steps = doc.features.len();
     let values = crate::appearance::Values::new(doc);
+    // How many of the document's features before this one pass a body
+    // on, the hidden ones too: a body's place among them, modulo
+    // `craft3d_render::HATCH_CLASSES`, is the hatch class of its cut
+    // (`hatch_class`).
+    let mut bodies_before: usize = 0;
     for (index, feature) in doc.features.iter().enumerate() {
         let outcome = regen.feature(feature.id);
+        let ordinal = bodies_before;
+        if outcome.and_then(|o| o.own_body()).is_some() {
+            bodies_before = bodies_before.saturating_add(1);
+        }
         let (state, error) = match outcome.map(|o| &o.status) {
             Some(Status::Ok) => (FeatureState::Ok, None),
             Some(Status::Suppressed) => (FeatureState::Suppressed, None),
@@ -2098,6 +2121,7 @@ fn build(
             (feature.id, first_face_id, body.faces.len()),
             red.contains(&feature.id).then_some(&red_look),
         );
+        Arc::make_mut(&mut scene.face_colors).set_hatch_class(first_face_id, hatch_class(ordinal));
         Arc::make_mut(&mut scene.bodies).push(SceneBody {
             feature: feature.id.to_string(),
             name: feature.name.clone(),

@@ -192,7 +192,7 @@ pub use scene::{
     MAX_GRID_LINE_POINTS, MAX_GRID_LINES, MIN_CIRCLE_SEGMENTS, PREVIEW_RELATIVE_TOLERANCE, Refined,
     Refinement, SURFACE_LIFT, Scene, SceneBody, SceneDatum, SceneDatumShape, SceneFeature,
     SceneGrid, ScenePlacement, ScenePolyline, SceneQuality, SceneSketch, SketchCurve, arc_segments,
-    base64 as encode_base64, grid_step,
+    base64 as encode_base64, grid_step, hatch_class,
 };
 pub use scrub::{ScrubPosition, ScrubRegeneration, step_caption};
 pub use section::{

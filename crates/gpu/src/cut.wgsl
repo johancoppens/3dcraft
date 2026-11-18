@@ -7,12 +7,14 @@
 // *Section*). A fragment is left out where its distance from the plane,
 // interpolated from the corners like the position, is positive, and a
 // triangle that lies in the plane goes with its body (`Cut::clips`). The
-// cap is where the number of fragments left out at a sample is odd; that
+// cap is where the number of fragments left out at a sample is odd for a
+// hatch class (`craft3d_render::HatchClasses`, a channel each); that
 // count is a pass of its own over the triangles (`fs_parity`), into a
-// target whose blend turns every fragment into "one minus what was
-// there", and the cap is then a quad in the plane, drawn after the
-// triangles and kept on the samples where the count is odd
-// (`cut_flat.wgsl`, `cut_samples.wgsl`).
+// target whose blend turns the channel of every fragment's class into
+// "one minus what was there", and the cap is then a quad in the plane,
+// drawn after the triangles and kept on the samples where a count is odd
+// (`cut_flat.wgsl`, `cut_samples.wgsl`), hatched in the direction of the
+// class that is odd there (cross-hatched where two are).
 //
 // Where in the pixel the distance from the plane is taken decides the
 // count, and the source is a template for it (the markers SIDE_SAMPLE and
@@ -81,6 +83,8 @@ struct ParityOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) @interpolate(flat) flat_normal: vec3<f32>,
     @location(1) {{SIDE_SAMPLE}} side: f32,
+    // The face's hatch class (`hatch_class_of`).
+    @location(2) @interpolate(flat) hatch_class: u32,
 }
 
 @vertex
@@ -90,6 +94,7 @@ fn vs_parity(raw: VertexIn) -> ParityOut {
     out.clip = vertex(in).clip;
     out.flat_normal = in.flat_normal;
     out.side = side_of(in);
+    out.hatch_class = hatch_class_of(in.optics);
     return out;
 }
 
@@ -131,12 +136,13 @@ fn in_cap_box(in: CutOut) -> bool {
     return all(p >= scene.section_lo.xyz) && all(p <= scene.section_hi.xyz);
 }
 
-// The cap's colour: drawn as it is, and seen through like a body's face.
-// Hatched paper (`scene.wgsl`'s `section_hatch_color`, the CPU's
-// `Hatching::color`), worked out from the point of the plane under the
-// fragment, so the lines are fixed to the model.
-fn cap_color(in: CutOut) -> vec4<f32> {
-    return vec4<f32>(section_hatch_color(in.rel), 1.0);
+// The cap's colour where the hatch classes `mask` are cut: drawn as it
+// is, and seen through like a body's face. Hatched paper (`scene.wgsl`'s
+// `section_hatch_color`, the CPU's `Hatching::color_mask`), worked out
+// from the point of the plane under the fragment, so the lines are fixed
+// to the model.
+fn cap_color(in: CutOut, mask: u32) -> vec4<f32> {
+    return vec4<f32>(section_hatch_color(in.rel, mask), 1.0);
 }
 
 // The cap's id and the bits of its view distance: the distance of the
@@ -145,15 +151,16 @@ fn cap_data(in: CutOut) -> vec2<u32> {
     return vec2<u32>(SECTION_FACE, bitcast<u32>(dot(in.rel, scene.forward.xyz)));
 }
 
-// Counts the fragments that are left out, modulo two: the target's blend
-// is "one minus what was there". Per sample where there are several
-// (`ParityOut`).
+// Counts the fragments that are left out, modulo two, per hatch class:
+// the target's blend turns the channel of the fragment's class into "one
+// minus what was there" and leaves the others. Per sample where there
+// are several (`ParityOut`).
 @fragment
 fn fs_parity(in: ParityOut) -> @location(0) vec4<f32> {
     if !clips(in.side, in.flat_normal) {
         discard;
     }
-    return vec4<f32>(1.0);
+    return hatch_count_of(in.hatch_class);
 }
 
 // `fs_main` of a cut-open picture.

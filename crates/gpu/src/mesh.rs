@@ -23,6 +23,11 @@ pub(crate) const VERTEX_BYTES: usize = 60;
 pub(crate) const OPTICS_TEXELS: usize = 16;
 /// The bit of [`optics_word`] that marks a face that lets light through.
 pub(crate) const TRANSMISSIVE_BIT: u32 = 1 << 16;
+/// Where [`optics_word`] holds the face's hatch class
+/// (`FaceColors::hatch_classes`, two bits: `craft3d_render::HATCH_CLASSES`
+/// is 4), which the count of a cut-open picture keeps apart
+/// (`cut.wgsl`'s `fs_parity`).
+pub(crate) const HATCH_CLASS_SHIFT: u32 = 24;
 const TRIANGLE_BYTES: usize = 3 * VERTEX_BYTES;
 /// Triangles per vertex buffer: 31 MB, well under every device's limit.
 const CHUNK_TRIANGLES: usize = 1 << 18;
@@ -204,14 +209,17 @@ pub(crate) fn finish_word(finish: Finish) -> u32 {
 /// A face's layers as the shaders take them: its row in the material
 /// table plus one in the low 16 bits (0 for none,
 /// `FaceColors::optics_slot`), and [`TRANSMISSIVE_BIT`] when it lets light
-/// through (the shadow map and the picture behind leave it out).
+/// through (the shadow map and the picture behind leave it out), and its
+/// hatch class from [`HATCH_CLASS_SHIFT`] (0 for a mesh without classes).
 pub(crate) fn optics_word(colors: &FaceColors, face: u32) -> u32 {
     let transmissive = if colors.is_transmissive(face) {
         TRANSMISSIVE_BIT
     } else {
         0
     };
-    u32::from(colors.optics_slot(face)) | transmissive
+    // Below `HATCH_CLASSES`: two bits.
+    let class = (colors.hatch_classes().class(face) & 3) as u32;
+    u32::from(colors.optics_slot(face)) | transmissive | (class << HATCH_CLASS_SHIFT)
 }
 
 /// The material table of `colors` for a mesh whose positions are relative

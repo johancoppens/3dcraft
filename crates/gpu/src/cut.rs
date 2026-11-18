@@ -8,9 +8,11 @@
 //!
 //! - **The count.** One more pass over the triangles, before the others,
 //!   without a depth test, that keeps only the fragments that are cut away
-//!   and writes them into an `R8Unorm` target whose blend is "one minus
-//!   what was there": after it the target holds, per sample, whether the
-//!   number of surfaces left out there is odd. A blend and not a stencil
+//!   and writes them into an `Rgba8Unorm` target, a channel per hatch
+//!   class of the faces (`craft3d_render::HatchClasses`, in the optics
+//!   word), whose blend is "one minus what was there" in the fragment's
+//!   channel: after it the target holds, per sample and class, whether
+//!   the number of surfaces left out there is odd. A blend and not a stencil
 //!   buffer, because the depth buffer is `Depth32Float` on every backend
 //!   and has none. With several samples per pixel the pass runs per
 //!   sample, with a vertex stage of its own (`vs_parity`) that
@@ -39,8 +41,14 @@ use crate::variant::PeelVariant;
 use craft3d_math::Vec3;
 use craft3d_render::{Camera, Cut, Hatching, RenderParams, SECTION_FACE};
 
-/// The target of the count: 0 or 1 per sample.
-pub(crate) const PARITY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// The target of the count: 0 or 1 per sample and hatch class, a channel
+/// each (`craft3d_render::HATCH_CLASSES`: red for class 0, then green,
+/// blue and alpha).
+pub(crate) const PARITY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// The vectors of the cap's hatching in `scene.wgsl`'s uniform block
+/// ([`hatch_uniforms`]): four, and one per hatch class beyond the first.
+pub(crate) const HATCH_VECTORS: usize = 4 + craft3d_render::HATCH_CLASSES - 1;
 
 /// The cap is one triangle: three vertices of the mesh's layout.
 pub(crate) const CAP_BYTES: usize = 3 * VERTEX_BYTES;
@@ -89,14 +97,17 @@ pub(crate) fn section_uniforms(mesh: &GpuMesh, cut: Option<&Cut>) -> [[f64; 4]; 
 /// are two of `w`: no line moves, none changes its ink), so that they are
 /// small numbers when they become `f32` and a model far from the origin
 /// hatches as one at it. All zero without hatching: the cap is then its
-/// paper alone. The ink's fourth number is `Hatching::odd_ink`.
+/// paper alone. The ink's fourth number is `Hatching::odd_ink`. The last
+/// three are the hatch classes 1 to 3: the direction across each one's
+/// lines (`Hatching::across_of`) and its coordinate's offset, a whole
+/// number of two spacings near the target taken off the same way.
 pub(crate) fn hatch_uniforms(
     mesh: &GpuMesh,
     camera: &Camera,
     params: &RenderParams,
     cut: Option<&Cut>,
-) -> [[f64; 4]; 4] {
-    let none = [[0.0; 4]; 4];
+) -> [[f64; 4]; HATCH_VECTORS] {
+    let none = [[0.0; 4]; HATCH_VECTORS];
     let (Some(cut), Some(hatch)) = (cut, params.section.and_then(|s| s.hatch)) else {
         return none;
     };
@@ -110,6 +121,14 @@ pub(crate) fn hatch_uniforms(
         let whole = step * (camera.target.dot(axis) / step).round();
         if whole.is_finite() { whole } else { 0.0 }
     };
+    // A class's offset: two of its spacings at a time.
+    let two = 2.0 * h.spacing;
+    let class = |k: usize| {
+        let t = h.across_of(k);
+        let whole = two * (camera.target.dot(t) / two).round();
+        let whole = if whole.is_finite() { whole } else { 0.0 };
+        [t.x, t.y, t.z, mesh.origin.dot(t) - whole]
+    };
     let [r, g, b] = h.ink.map(|c| f64::from(c) / 255.0);
     [
         [h.u.x, h.u.y, h.u.z, mesh.origin.dot(h.u) - shift(h.u)],
@@ -121,6 +140,9 @@ pub(crate) fn hatch_uniforms(
             if h.perspective { 1.0 } else { 0.0 },
         ],
         [r, g, b, h.odd_ink],
+        class(1),
+        class(2),
+        class(3),
     ]
 }
 
@@ -331,17 +353,18 @@ pub(crate) fn cap_bind(
     })
 }
 
-/// The colour target of the count: every fragment turns the sample into
-/// one minus what it was.
+/// The colour target of the count: every fragment turns the channel of
+/// its hatch class into one minus what it was and leaves the others: with
+/// `s` 1 in that channel and 0 in the others, `s (1 − d) + d (1 − s)`.
 pub(crate) fn parity_target() -> Option<wgpu::ColorTargetState> {
     let invert = wgpu::BlendComponent {
         src_factor: wgpu::BlendFactor::OneMinusDst,
-        dst_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::OneMinusSrc,
         operation: wgpu::BlendOperation::Add,
     };
     let invert_alpha = wgpu::BlendComponent {
         src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
-        dst_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
         operation: wgpu::BlendOperation::Add,
     };
     Some(wgpu::ColorTargetState {
@@ -575,8 +598,52 @@ mod tests {
         let target = parity_target().unwrap();
         let blend = target.blend.unwrap();
         assert_eq!(blend.color.src_factor, wgpu::BlendFactor::OneMinusDst);
-        assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::Zero);
+        assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::OneMinusSrc);
+        assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::OneMinusDstAlpha);
+        assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+        assert_eq!(blend.color.operation, wgpu::BlendOperation::Add);
         assert_eq!(target.format, PARITY_FORMAT);
+        // Per channel `s (1 − d) + d (1 − s)`: a fragment's own class's
+        // channel (s = 1) flips, the others (s = 0) keep what they hold.
+        for s in [0.0_f64, 1.0] {
+            for d in [0.0_f64, 1.0] {
+                let out = s * (1.0 - d) + d * (1.0 - s);
+                assert_eq!(out, if (s == 1.0) != (d == 1.0) { 1.0 } else { 0.0 });
+            }
+        }
+        // A channel per hatch class.
+        assert_eq!(
+            PARITY_FORMAT.components() as usize,
+            craft3d_render::HATCH_CLASSES
+        );
+    }
+
+    #[test]
+    fn the_shaders_know_the_hatch_classes_as_the_cpu_does() {
+        let scene = include_str!("scene.wgsl");
+        let has = |text: String| assert!(scene.contains(&text), "scene.wgsl lacks `{text}`");
+        has(format!(
+            "const HATCH_CLASSES: u32 = {}u;",
+            craft3d_render::HATCH_CLASSES
+        ));
+        has(format!(
+            "const HATCH_CLASS_SHIFT: u32 = {}u;",
+            crate::mesh::HATCH_CLASS_SHIFT
+        ));
+        has(format!(
+            "section_classes: array<vec4<f32>, {}>,",
+            craft3d_render::HATCH_CLASSES - 1
+        ));
+        // Two bits from the shift, clear of the material's slot and the
+        // transmissive bit.
+        const { assert!(craft3d_render::HATCH_CLASSES == 4) };
+        assert_eq!(
+            (3_u32 << crate::mesh::HATCH_CLASS_SHIFT)
+                & (u32::from(u16::MAX) | crate::mesh::TRANSMISSIVE_BIT),
+            0
+        );
+        // The uniform block: the hatching's vectors are the last.
+        assert_eq!(super::HATCH_VECTORS, 4 + craft3d_render::HATCH_CLASSES - 1);
     }
 
     #[test]

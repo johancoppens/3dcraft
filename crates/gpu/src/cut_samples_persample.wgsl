@@ -5,13 +5,17 @@
 // own sample only. This source follows `scene.wgsl`,
 // `peel_samples_persample.wgsl` and `cut.wgsl` in one module.
 
-// The count of `fs_parity`, per sample: 1 where the number of fragments
-// left out there is odd.
+// The count of `fs_parity`, per sample: 1 in the channel of each hatch
+// class whose number of fragments left out there is odd.
 @group(1) @binding(1) var parity: texture_multisampled_2d<f32>;
 
-// Whether the cap is at this sample.
-fn cap_here(in: CutOut, sample: u32) -> bool {
-    return in_cap_box(in) && textureLoad(parity, vec2<i32>(in.clip.xy), i32(sample)).r > 0.5;
+// The hatch classes cut at this sample (`hatch_mask_of`): the cap is
+// there where there are any. None outside the cap's box.
+fn cap_classes(in: CutOut, sample: u32) -> u32 {
+    if !in_cap_box(in) {
+        return 0u;
+    }
+    return hatch_mask_of(textureLoad(parity, vec2<i32>(in.clip.xy), i32(sample)));
 }
 
 struct CapOut {
@@ -22,11 +26,12 @@ struct CapOut {
 // The cap of an opaque picture.
 @fragment
 fn fs_cap_samples(in: CutOut, @builtin(sample_index) sample: u32) -> CapOut {
-    if !cap_here(in, sample) {
+    let classes = cap_classes(in, sample);
+    if classes == 0u {
         discard;
     }
     var out: CapOut;
-    out.color = cap_color(in);
+    out.color = cap_color(in, classes);
     {{SET_DEPTH}}
     return out;
 }
@@ -49,11 +54,12 @@ fn key_bytes(key: u32) -> vec4<f32> {
 // The cap in the front of a see-through picture, with its key.
 @fragment
 fn fs_cap_front_samples(in: CutOut, @builtin(sample_index) sample: u32) -> CapFrontOut {
-    if !cap_here(in, sample) {
+    let classes = cap_classes(in, sample);
+    if classes == 0u {
         discard;
     }
     var out: CapFrontOut;
-    out.color = cap_color(in);
+    out.color = cap_color(in, classes);
     out.key = key_bytes(bitcast<u32>(in.clip.z));
     {{SET_DEPTH}}
     return out;
@@ -98,11 +104,12 @@ fn fs_behind_samples_cut(in: CutOut, @builtin(sample_index) sample: u32) -> Behi
 // is, and is not the front.
 @fragment
 fn fs_cap_behind_samples(in: CutOut, @builtin(sample_index) sample: u32) -> BehindOut {
-    if !cap_here(in, sample) || front_at(in.clip, sample) == bitcast<u32>(in.clip.z) {
+    let classes = cap_classes(in, sample);
+    if classes == 0u || front_at(in.clip, sample) == bitcast<u32>(in.clip.z) {
         discard;
     }
     var out: BehindOut;
-    out.color = cap_color(in);
+    out.color = cap_color(in, classes);
     {{SET_DEPTH}}
     return out;
 }

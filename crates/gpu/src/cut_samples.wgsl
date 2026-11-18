@@ -12,8 +12,8 @@
 // within the pixel (the outline of the cap is drawn over it as lines);
 // the silhouettes keep their samples.
 
-// The count of `fs_parity`, per sample: 1 where the number of fragments
-// left out there is odd.
+// The count of `fs_parity`, per sample: 1 in the channel of each hatch
+// class whose number of fragments left out there is odd.
 @group(1) @binding(1) var parity: texture_multisampled_2d<f32>;
 
 // The samples of this pixel where the cap is.
@@ -25,11 +25,51 @@ fn cap_mask(in: CutOut) -> u32 {
     let count = i32(textureNumSamples(parity));
     var mask = 0u;
     for (var s = 0; s < count; s = s + 1) {
-        if textureLoad(parity, p, s).r > 0.5 {
+        if hatch_mask_of(textureLoad(parity, p, s)) != 0u {
             mask = mask | (1u << u32(s));
         }
     }
     return mask;
+}
+
+// The cap's colour over the samples `samples` of this pixel: the colour
+// of the hatch classes cut there (`cap_color`), the same for all of them
+// but on a border between two bodies of different classes, where it is
+// the mean of each sample's own (as the CPU averages its samples).
+fn cap_color_samples(in: CutOut, samples: u32) -> vec4<f32> {
+    let p = vec2<i32>(in.clip.xy);
+    let count = i32(textureNumSamples(parity));
+    var first = 0u;
+    var same = true;
+    for (var s = 0; s < count; s = s + 1) {
+        if (samples & (1u << u32(s))) != 0u {
+            let classes = hatch_mask_of(textureLoad(parity, p, s));
+            if first == 0u {
+                first = classes;
+            } else if classes != first {
+                same = false;
+            }
+        }
+    }
+    if same {
+        return cap_color(in, first);
+    }
+    var sum = vec3<f32>(0.0);
+    var n = 0.0;
+    var last = 0u;
+    var color = vec3<f32>(0.0);
+    for (var s = 0; s < count; s = s + 1) {
+        if (samples & (1u << u32(s))) != 0u {
+            let classes = hatch_mask_of(textureLoad(parity, p, s));
+            if classes != last {
+                last = classes;
+                color = cap_color(in, classes).rgb;
+            }
+            sum = sum + color;
+            n = n + 1.0;
+        }
+    }
+    return vec4<f32>(sum / max(n, 1.0), 1.0);
 }
 
 struct CapOut {
@@ -46,7 +86,7 @@ fn fs_cap_samples(in: CutOut) -> CapOut {
         discard;
     }
     var out: CapOut;
-    out.color = cap_color(in);
+    out.color = cap_color_samples(in, mask);
     out.mask = mask;
     {{SET_DEPTH}}
     return out;
@@ -76,7 +116,7 @@ fn fs_cap_front_samples(in: CutOut) -> CapFrontOut {
         discard;
     }
     var out: CapFrontOut;
-    out.color = cap_color(in);
+    out.color = cap_color_samples(in, mask);
     out.key = key_bytes(bitcast<u32>(in.clip.z));
     out.mask = mask;
     {{SET_DEPTH}}
@@ -143,7 +183,7 @@ fn fs_cap_behind_samples(in: CutOut) -> BehindOut {
         discard;
     }
     var out: BehindOut;
-    out.color = cap_color(in);
+    out.color = cap_color_samples(in, mask);
     out.mask = mask;
     {{SET_DEPTH}}
     return out;

@@ -60,6 +60,8 @@ struct Scene {
     name: &'static str,
     mesh: Mesh,
     colors: FaceColors,
+    /// The first face of each part.
+    firsts: Vec<u32>,
     camera: Camera,
     params: RenderParams,
     env: Arc<Prepared>,
@@ -148,13 +150,14 @@ fn scenes() -> Vec<(Scene, Section)> {
         );
     }
     let post_faces = firsts[3]..firsts[3] + 3;
+    let firsts_a = firsts;
     let plate = solids::block(&at(0.0, 0.0, 0.0), 4.0, 4.0, 0.3).unwrap();
     let globe = solids::sphere(&at(2.0, 2.0, 1.0), 0.8).unwrap();
     let cone = solids::cone(&at(1.0, 1.0, 0.3), 0.5, 1.2).unwrap();
     // A block standing on the plate: its bottom face and the plate's top
     // lie in one plane (the surface behind the front is a tie there).
     let block = solids::block(&at(2.9, 0.3, 0.3), 0.8, 0.8, 0.6).unwrap();
-    let (mesh_b, colors_b, _) = combine(vec![
+    let (mesh_b, colors_b, firsts_b) = combine(vec![
         part(&plate, [150, 150, 155], rough),
         part(&globe, [230, 190, 90], gloss),
         part(&cone, [60, 120, 200], metal),
@@ -172,6 +175,7 @@ fn scenes() -> Vec<(Scene, Section)> {
                 camera: perspective(&mesh_a, Vec3::new(0.6, -1.3, 0.8), 35.0, &pa),
                 mesh: mesh_a,
                 colors: colors_a,
+                firsts: firsts_a,
                 params: pa,
                 env: environment("outdoor").unwrap(),
                 plain: false,
@@ -190,6 +194,7 @@ fn scenes() -> Vec<(Scene, Section)> {
                 camera: orthographic(&mesh_b, Vec3::new(0.9, -1.0, 0.8), &pb),
                 mesh: mesh_b,
                 colors: colors_b,
+                firsts: firsts_b,
                 params: pb,
                 env: environment("studio").unwrap(),
                 plain: true,
@@ -482,6 +487,62 @@ fn hatched_cut_open_studio_pictures_match_the_cpu_renderer() {
                 );
                 compared += 1;
             }
+        }
+    }
+    assert!(compared > 0);
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// A direction of hatching per part in the studio look (2026-11-18):
+/// each part of its own hatch class (the housing over parts 0 to 3, the
+/// plate and what stands on it 0 to 3), the count per class in both
+/// renderers, lit paper with each part's lines, cross-hatched where a
+/// part of one class sinks into one of another (the ball in the housing,
+/// the globe in the plate), within the tolerances above.
+#[test]
+fn hatch_classes_in_the_studio_look_match_the_cpu_renderer() {
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for (mut scene, section) in scenes() {
+        for (k, &first) in scene.firsts.iter().enumerate() {
+            assert!(scene.colors.set_hatch_class(first, k));
+        }
+        let p = RenderParams {
+            section: Some(Section {
+                color: [232, 228, 220],
+                hatch: Some(craft3d_render::Hatch {
+                    ink: [88, 84, 78],
+                    spacing_points: 9.0,
+                    width_points: 1.0,
+                    height_points: None,
+                }),
+                ..section
+            }),
+            ..scene.params
+        };
+        let (name, look) = looks(scene.plain).into_iter().next().unwrap();
+        let (cpu, doubt) = cpu_render(&scene, &p, &look);
+        assert!(cpu.ids.contains(&SECTION_FACE), "{}", scene.name);
+        craft3d_testkit::evidence::print(
+            &format!("studio-classes-cpu-{}-{}.png", tag(scene.name), tag(name)),
+            &cpu.to_png().unwrap(),
+        );
+        for mut offscreen in offscreens() {
+            let adapter = offscreen.adapter().to_string();
+            let studio = Studio {
+                env: scene.env.clone(),
+                look,
+            };
+            let gpu = offscreen
+                .render_studio(&scene.mesh, &scene.colors, &scene.camera, &p, &studio)
+                .unwrap();
+            let stats = compare_hatched(&scene, &p, &cpu, &doubt, &gpu);
+            check(
+                &mut failures,
+                &format!("classes {adapter} | {} | {name}", scene.name),
+                &stats,
+            );
+            compared += 1;
         }
     }
     assert!(compared > 0);

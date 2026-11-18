@@ -744,6 +744,9 @@ pub(crate) struct Surface {
     /// The triangle of the mesh the surface is on; [`NO_TRIANGLE`] for
     /// none and for the cap.
     tri: u32,
+    /// The cap's hatch classes cut there (bit `k` for class `k`,
+    /// `crate::HatchClasses`); 0 for any other surface.
+    mask: u8,
 }
 
 /// [`Surface::tri`] of no triangle.
@@ -908,6 +911,7 @@ fn studio_frame(
     let raster = Raster {
         cut: cut.as_ref(),
         caps: true,
+        classes: Some(colors.hatch_classes()),
         peel: see_through,
         depth: crate::clip::depth_bounds(&section_bounds(mesh), cut.is_some_and(|c| c.cap)),
     };
@@ -1022,7 +1026,9 @@ fn studio_frame(
                         // without a finish of its own.
                         (
                             cut.map_or(params.color, |cut| {
-                                hatching.map_or(cut.color, |h| h.color(p, surface.dist))
+                                hatching.map_or(cut.color, |h| {
+                                    h.color_mask(p, surface.dist, surface.mask)
+                                })
                             }),
                             Finish::default(),
                             None,
@@ -1286,6 +1292,9 @@ pub(crate) struct Raster<'c> {
     /// Close the section with its cap where the count of the surfaces left
     /// out is odd (when the section has a cap).
     pub caps: bool,
+    /// The hatch classes of the faces (`None`: all of class 0): the
+    /// count is kept per class, as the plain renderer keeps it.
+    pub classes: Option<&'c crate::HatchClasses>,
     /// Keep the nearest surface strictly behind the front one too (a
     /// see-through picture).
     pub peel: bool,
@@ -1322,6 +1331,7 @@ pub(crate) fn rasterise_layers(
         normal: [0.0; 3],
         face: NO_FACE,
         tri: NO_TRIANGLE,
+        mask: 0,
     };
     let mut out = vec![none; w * h];
     let peel = raster.peel;
@@ -1334,7 +1344,10 @@ pub(crate) fn rasterise_layers(
         mesh.positions.iter().map(|&p| cut.side(p)).collect()
     });
     let caps = raster.caps && cut.is_some_and(|cut| cut.cap);
-    let mut odd: Vec<bool> = if caps { vec![false; w * h] } else { Vec::new() };
+    // Per sample, the hatch classes whose count is odd (bit `k` for class
+    // `k`, as the plain renderer counts).
+    let mut odd: Vec<u8> = if caps { vec![0; w * h] } else { Vec::new() };
+    let classes = raster.classes.unwrap_or(crate::HatchClasses::none());
     for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
         let vertex = |k: u32| {
             let k = k as usize;
@@ -1401,7 +1414,7 @@ pub(crate) fn rasterise_layers(
                         if let Some(slot) = odd.get_mut(i)
                             && owns_sample(on_edge, [&a, &b, &c])
                         {
-                            *slot = !*slot;
+                            *slot ^= classes.bit(face);
                         }
                         continue;
                     }
@@ -1443,6 +1456,7 @@ pub(crate) fn rasterise_layers(
                     normal: [normal.x as f32, normal.y as f32, normal.z as f32],
                     face,
                     tri: u32::try_from(clipped.origin(t)).unwrap_or(NO_TRIANGLE),
+                    mask: 0,
                 };
                 if !front {
                     if let Some(slot) = behind.get_mut(i) {
@@ -1476,7 +1490,7 @@ pub(crate) fn rasterise_layers(
             cut.normal.y as f32,
             cut.normal.z as f32,
         ];
-        for (i, _) in odd.iter().enumerate().filter(|&(_, &inside)| inside) {
+        for (i, &mask) in odd.iter().enumerate().filter(|&(_, &mask)| mask != 0) {
             let (px, py) = (
                 (i % w) as f64 + 0.5 + view.jitter.0,
                 (i / w) as f64 + 0.5 + view.jitter.1,
@@ -1492,6 +1506,7 @@ pub(crate) fn rasterise_layers(
                 normal,
                 face: SECTION_FACE,
                 tri: NO_TRIANGLE,
+                mask,
             };
             let Some(slot) = out.get_mut(i) else {
                 continue;
