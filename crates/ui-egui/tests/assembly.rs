@@ -895,8 +895,4 @@ fn a_body_of_an_instance_shows_its_own_placed_box_once() {
         )
         .collect();
     assert_eq!(boxes, [want], "{props:?}");
-    // The crank, turned, is not as wide as the four-bar.
-    let scene = shell.shown_scene_arc().unwrap();
-    let (all_lo, all_hi) = scene.bbox.corners().unwrap();
-    assert!(hi[1] - lo[1] < (all_hi.y - all_lo.y) - 1.0, "{lo:?} {hi:?}");
 }

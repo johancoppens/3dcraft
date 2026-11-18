@@ -496,11 +496,18 @@ impl Shell {
     /// shown yet. A plane named keeps its own, through the middle of the
     /// model's box along its normal (a base plane, X, Y or Z) when no
     /// offset is given (`offset_given`), as the axis choice does.
-    pub(crate) fn section_through_the_middle(&mut self, offset_given: bool, flip_given: bool) {
+    pub(crate) fn section_through_the_middle(
+        &mut self,
+        offset_given: bool,
+        flip_given: bool,
+        plane_given: bool,
+    ) {
         let scene = self.shown_scene.clone();
         let camera = self.state.camera;
         let section = &mut self.state.section;
-        if section.plane.is_none() && section.normal.is_none() && section.point.is_none() {
+        // No plane given: the state's own check has put `xy` there already;
+        // the first click's plane takes its place.
+        if !plane_given && section.normal.is_none() && section.point.is_none() {
             let shown = scene.as_deref().filter(|scene| !scene.bodies.is_empty());
             let axis = match shown {
                 Some(scene) => first_axis(camera.toward_eye(), Some(scene)),

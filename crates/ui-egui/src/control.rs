@@ -519,6 +519,7 @@ impl Shell {
             self.section_through_the_middle(
                 section.contains_key("offset"),
                 section.contains_key("flip"),
+                section.contains_key("plane"),
             );
         }
         // The look is checked (an unknown environment or tone curve
