@@ -1600,17 +1600,6 @@ impl Shell {
         self.section_handle.face.as_ref()
     }
 
-    /// Whether the section's plane is the one the selection made (the
-    /// fourth button chosen): on a face, midway, a bisector or through an
-    /// axis.
-    pub(super) fn section_from_selection(&self) -> bool {
-        self.section_on_face()
-            || matches!(
-                self.state.section.made,
-                Some(SectionMade::Mid | SectionMade::Bisector | SectionMade::Axis)
-            )
-    }
-
     /// Whether the section's plane is that of a face (laid on it by the
     /// fourth dot, or `ui.set` with a face's name).
     pub fn section_on_face(&self) -> bool {
@@ -2325,11 +2314,11 @@ impl Shell {
         // while the plane is the selection's), and Flip side while it is
         // flipped, filled with the accent; the word button greyed while a
         // click makes no plane.
-        let chosen = if self.section_from_selection() {
-            Some(FACE_DOT)
-        } else {
-            chosen_axis(&self.state.section)
-        };
+        // The word button lit only where the plane is what a click on it
+        // makes now (a plane made from another selection is not: the
+        // pictures of the merged round, 2026-11-18); Flip never, an action
+        // whose side the buttons choose by the eye (V3).
+        let chosen = chosen_axis(&self.state.section);
         let segment = egui::CornerRadius::same(tokens.nav_segment_radius);
         let mut cells: Vec<(HandlePart, Rect, bool)> = place
             .dots
@@ -2344,14 +2333,18 @@ impl Shell {
                 (
                     HandlePart::Dot(k),
                     cell,
-                    chosen == Some(k) || (k == FACE_DOT && word.lit),
+                    if k == FACE_DOT {
+                        word.lit
+                    } else {
+                        chosen == Some(k)
+                    },
                 )
             })
             .collect();
         cells.push((
             HandlePart::Flip,
             Rect::from_center_size(place.flip, egui::Vec2::splat(side)),
-            self.state.section.flip,
+            false,
         ));
         for (part, cell, on) in cells {
             let greyed = part == HandlePart::Dot(FACE_DOT) && !on && word.greyed;

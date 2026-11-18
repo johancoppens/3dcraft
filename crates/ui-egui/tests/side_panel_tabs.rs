@@ -633,7 +633,20 @@ fn the_properties_of_a_face_and_an_edge() {
     window.frames(&mut shell, &mut s, 2);
     assert_eq!(shell.side_props().unwrap().kind, "Face");
     assert_eq!(prop(&shell, "Type"), "Plane");
-    assert_eq!(prop(&shell, "Area"), "1200 mm²");
+    // A flat face's area heads its card (V4), and no row says it again.
+    let head = shell.side_props().unwrap().head.clone().unwrap();
+    assert_eq!(
+        (head.text.as_str(), head.words.as_str()),
+        ("1200 mm²", "Area")
+    );
+    assert!(
+        shell
+            .side_props()
+            .unwrap()
+            .rows
+            .iter()
+            .all(|r| r.label != "Area")
+    );
     assert_eq!(prop(&shell, "Normal"), "Z");
     assert_eq!(prop(&shell, "Made by"), "Plate (F1)");
     run(

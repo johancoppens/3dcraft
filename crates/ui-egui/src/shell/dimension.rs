@@ -35,6 +35,10 @@ pub struct DimensionPlace {
     pub text: String,
 }
 
+/// How opaque a dimension is drawn whose measured places all lie in the
+/// half the section cuts away: as faint as a note's pin there.
+const CUT_AWAY_OPACITY: f32 = 70.0 / 255.0;
+
 /// How far the plate keeps from the line, and its padding, in points.
 const PAD: Vec2 = vec2(6.0, 3.0);
 /// How far beside a straight edge its length is drawn, and how far the
@@ -148,7 +152,14 @@ impl Shell {
         ) else {
             return;
         };
-        let painter = ui.painter_at(rect);
+        // What is measured lies in the half the section cuts away: the
+        // dimension is drawn faint there, as a note's pin is, never a line
+        // hanging bright in the air over the cut (the pictures of the
+        // merged round, 2026-11-18).
+        let mut painter = ui.painter_at(rect);
+        if self.measured_cut_away() {
+            painter.set_opacity(CUT_AWAY_OPACITY);
+        }
         let wall = self
             .side_wall()
             .filter(|_| self.measurement().is_none())
@@ -224,6 +235,38 @@ impl Shell {
             number,
             text,
         });
+    }
+
+    /// Whether the places the dimension of what is selected measures all
+    /// lie in the half the section cuts away (beyond a billionth of the
+    /// model's size); false without a section.
+    fn measured_cut_away(&self) -> bool {
+        let Some(section) = self.section() else {
+            return false;
+        };
+        let points: Vec<[f64; 3]> = if let Some(m) = self.measurement() {
+            vec![m.from, m.to]
+        } else if let Some(wall) = self.side_wall() {
+            wall.from.into_iter().chain(wall.to).collect()
+        } else if let Some(single) = self.single_measure() {
+            match single.round {
+                Some((centre, _, _)) => vec![centre],
+                None => single.points.clone(),
+            }
+        } else {
+            Vec::new()
+        };
+        let size = self
+            .shown_scene
+            .as_ref()
+            .and_then(|s| s.bodies_box.corners())
+            .map_or(1.0, |(lo, hi)| lo.distance(hi));
+        let eps = if size.is_finite() { size * 1e-9 } else { 0.0 };
+        let normal = section.normal;
+        !points.is_empty()
+            && points
+                .iter()
+                .all(|&[x, y, z]| (Vec3::new(x, y, z) - section.origin).dot(normal) > eps)
     }
 
     /// The number `text` on its plate beside `middle`, `outward` of it,

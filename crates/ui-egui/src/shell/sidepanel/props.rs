@@ -968,7 +968,10 @@ pub(crate) fn read(
             let mass = m.get("mass").and_then(Value::as_f64).map(mass_text);
             if let Some(v) = m.get("volume").and_then(Value::as_f64) {
                 let text = shown::volume(v, &unit);
-                rows.push(plain("Volume", text.clone()));
+                // The volume heads the card of one body: no row again.
+                if count != 1 {
+                    rows.push(plain("Volume", text.clone()));
+                }
                 let words = match &mass {
                     Some(mass) => format!("Volume · {mass}"),
                     None => "Volume".to_string(),
@@ -1067,9 +1070,13 @@ pub(crate) fn read(
         }
         if let Some(area) = item.get("area").and_then(Value::as_f64) {
             let text = shown::area(area, &unit);
-            rows.push(plain("Area", text.clone()));
-            if head.is_none() && first.kind == SelectionKind::Face {
+            // The area heads the card of one face that has no other number:
+            // then no row says it again (the pictures of the merged round,
+            // 2026-11-18).
+            if head.is_none() && first.kind == SelectionKind::Face && count == 1 {
                 head = Some(Head::of("area", Some(area), text, "Area"));
+            } else {
+                rows.push(plain("Area", text));
             }
         }
         if let Some(surface) = item.get("surface") {

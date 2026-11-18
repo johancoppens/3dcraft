@@ -1547,7 +1547,6 @@ impl Shell {
             // selection, its label what a click will do now (V2).
             let face = self.section_face_choice().cloned();
             let toward_eye = self.state.camera.toward_eye();
-            let on_face = self.section_from_selection();
             let word = self.section_word();
             // X, Y and Z at their width; after them the word button at
             // its label's (the layout's room for it, V2), a quarter of the
@@ -1557,18 +1556,14 @@ impl Shell {
             let xyz = Rect::from_min_size(axes.min, vec2(xyz_width, axes.height()));
             let word_cell = Rect::from_min_max(pos2(xyz.right(), axes.top()), axes.max);
             let items = vec![(None, "X"), (None, "Y"), (None, "Z")];
-            let chosen = if on_face || word.lit {
-                None
-            } else {
-                chosen_axis(&section)
-            };
+            let chosen = chosen_axis(&section);
             let (cells, axis_clicked) =
                 choice(ui, xyz, "axes", &items, chosen, false, &tokens, None);
             for ((name, _), cell) in SECTION_PLANES.iter().zip(&cells) {
                 hits.push((name, *cell));
             }
             hits.push(("face", word_cell));
-            let word_clicked = self.nav_word(ui, word_cell, &word, on_face || word.lit);
+            let word_clicked = self.nav_word(ui, word_cell, &word, word.lit);
             let clicked = if word_clicked {
                 Some(super::section_handle::FACE_DOT)
             } else {
@@ -1608,7 +1603,9 @@ impl Shell {
                     label: "Flip",
                     named: flip_named,
                 },
-                section.flip,
+                // An action, not lit: the buttons choose the side by the
+                // eye (V3).
+                false,
                 &tokens,
             )
             .on_hover_text(super::section_handle::OTHER_HALF)
