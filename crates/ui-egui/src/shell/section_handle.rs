@@ -2738,6 +2738,7 @@ mod tests {
             flip: pos2(number.right() + 14.0 + 26.0 * 3.0, group.center().y),
             dot_radius: 12.0,
             hit: tokens.section_hit,
+            word: Rect::NOTHING,
         };
         assert_eq!(place.part_at(a.lerp(b, 0.5)), Some(HandlePart::Arrow));
         // The arrow is drawn slim (the developer's choice of 2026-11-17);
