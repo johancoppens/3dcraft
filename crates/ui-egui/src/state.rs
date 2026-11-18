@@ -1037,6 +1037,13 @@ pub struct UiState {
     /// The last click in the viewport. Read-only over the control channel:
     /// `ui.pick` with `select` makes one.
     pub picked: Option<Picked>,
+    /// What a click would select where the pointer rests over the
+    /// viewport, shaped as [`Self::picked`] (`serial` counts these
+    /// picks): outlined in the view (`shell/hover.rs`). Transient: not
+    /// in this state's JSON, not set by a patch; `ui.get` › `hovered`
+    /// reads it, `ui.pick` with `hover` places the pointer.
+    #[serde(skip)]
+    pub hovered: Option<Picked>,
     /// What the viewport draws besides the bodies' faces:
     /// `ui.set {"show": {"datums": true}}` shows the datums (hidden by
     /// default), `{"show": {"sketches": false}}` hides the sketches,
@@ -1705,6 +1712,12 @@ impl UiState {
                     .to_string(),
             );
         }
+        if patch.contains_key("hovered") {
+            return Err(
+                "`hovered` is what lies under the pointer and cannot be set; ui.pick with `hover` places the pointer"
+                    .to_string(),
+            );
+        }
         let mut merged = serde_json::to_value(&turned).map_err(|e| e.to_string())?;
         let mut moved_by_hand = false;
         for (key, value) in patch.iter().filter(|(key, _)| *key != "view") {
@@ -1790,7 +1803,9 @@ impl UiState {
                     .to_string(),
             );
         }
-        *self = next;
+        // Not in the JSON the patch was merged into: kept as it was.
+        let hovered = self.hovered.take();
+        *self = UiState { hovered, ..next };
         Ok(())
     }
 }
@@ -1974,6 +1989,8 @@ mod tests {
                 }),
                 vertex: None,
             }),
+            // Transient, not in the JSON (2026-11-18, hover).
+            hovered: None,
             // Added with datums in the viewport (2026-10-14).
             show: Show {
                 datums: false,

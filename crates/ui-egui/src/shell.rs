@@ -8,8 +8,7 @@ use crate::direct::{Direct, DirectFailure};
 use crate::frames::{Mode, Scheduler, Ticket};
 use crate::state::VertexRef;
 use crate::state::{
-    CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, SectionState, TabView,
-    UiState, Work,
+    CameraState, EdgeRef, FaceRef, PickedEntity, SectionState, TabView, UiState, Work,
 };
 use crate::theme::{Tokens, color, color_alpha};
 use crate::view_cube;
@@ -32,6 +31,7 @@ mod dialogs;
 pub mod dimension;
 mod edit;
 pub mod help;
+mod hover;
 pub(crate) mod icons;
 mod joints;
 mod layout;
@@ -935,8 +935,10 @@ pub struct Shell {
     /// The frame that says the studio look is being prepared, on a device
     /// whose pipelines take long to make: 0 not yet, 1 this frame, 2 done.
     studio_announce: u8,
-    /// How many picks were made in the viewport ([`Picked::serial`]).
+    /// How many picks were made in the viewport ([`crate::state::Picked::serial`]).
     picks: u64,
+    /// What lies under the pointer, and when to look again (`hover.rs`).
+    hover: hover::Hover,
     /// Viewport size in pixels, and pixels per point.
     size: [u32; 2],
     pixels_per_point: f32,
@@ -1591,6 +1593,7 @@ impl Shell {
             studio_first: 0,
             studio_announce: 0,
             picks: 0,
+            hover: hover::Hover::default(),
             size: DEFAULT_VIEWPORT,
             pixels_per_point: 1.0,
             rect: None,
@@ -2626,46 +2629,7 @@ impl Shell {
         if select && x.is_finite() && y.is_finite() {
             self.picks = self.picks.saturating_add(1);
             let hit = found.face.as_ref();
-            let entity = |near: &SceneNear| PickedEntity {
-                feature: near.feature.clone(),
-                body: near.body.clone(),
-                name: near.name.clone(),
-                index: u64::try_from(near.index).unwrap_or(u64::MAX),
-                faces: near.faces.clone(),
-                point: [near.point.x, near.point.y, near.point.z],
-            };
-            // On the cap of the section: the body that is cut there and
-            // the point of the plane, and no face.
-            let cap = found.section.as_ref().filter(|_| hit.is_none());
-            self.state.picked = Some(Picked {
-                serial: self.picks,
-                x,
-                y,
-                feature: hit
-                    .map(|hit| hit.feature.clone())
-                    .or_else(|| cap.and_then(|cap| cap.feature.clone())),
-                name: hit
-                    .map(|hit| hit.body.clone())
-                    .or_else(|| cap.and_then(|cap| cap.body.clone())),
-                face: hit.and_then(|hit| hit.face.clone()),
-                face_index: hit.and_then(|hit| u64::try_from(hit.face_index).ok()),
-                point: hit
-                    .map(|hit| hit.point)
-                    .or(cap.map(|cap| cap.point))
-                    .map(|p| [p.x, p.y, p.z]),
-                kind: found.kind().map(|kind| match kind {
-                    PickKind::Face => PickedKind::Face,
-                    PickKind::Edge => PickedKind::Edge,
-                    PickKind::Vertex => PickedKind::Vertex,
-                    PickKind::Section => PickedKind::Section,
-                }),
-                edge: found
-                    .edge
-                    .as_ref()
-                    .filter(|_| found.vertex.is_none())
-                    .map(entity),
-                vertex: found.vertex.as_ref().map(entity),
-            });
+            self.state.picked = Some(hover::picked_of(&found, x, y, self.picks));
             // One thing is pointed at: the vertex, or else the edge, or
             // else the face. Lit by pointing; a click that selects it
             // says so after (`click_select`).
