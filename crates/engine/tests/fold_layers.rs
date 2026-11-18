@@ -148,6 +148,9 @@ struct Chart {
     /// How far the walk's chords may stray from the edges' feet, in
     /// parameters (measured at the middles of the chords).
     margin: f64,
+    /// Per ring, per segment (from a point to the next): how far the
+    /// walk's chord strays from the edge's feet at its middle.
+    sags: Vec<Vec<f64>>,
 }
 
 const PER_EDGE: usize = 96;
@@ -172,6 +175,7 @@ fn chart(body: &Body, face: &Face) -> Chart {
         followed: Ok(()),
         poles: poles.len(),
         margin: 0.0,
+        sags: Vec::new(),
     };
     for id in &face.loops {
         let Some(lp) = body.loop_(*id) else {
@@ -179,6 +183,7 @@ fn chart(body: &Body, face: &Face) -> Chart {
             return out;
         };
         let mut ring: Vec<(f64, f64)> = Vec::new();
+        let mut ring_sags: Vec<f64> = Vec::new();
         for coedge in &lp.coedges {
             let Some(edge) = body.edge(coedge.edge) else {
                 out.followed = Err("an edge is missing".into());
@@ -233,6 +238,7 @@ fn chart(body: &Body, face: &Face) -> Chart {
                 out.followed = Err("a point of an edge has no foot on the surface".into());
                 return out;
             };
+            let mut own_sags = vec![0.0_f64; firm.len()];
             for i in 0..PER_EDGE {
                 let s = (f64::from(i as u32) + 0.5) / PER_EDGE as f64;
                 let s = if coedge.reversed { 1.0 - s } else { s };
@@ -253,9 +259,11 @@ fn chart(body: &Body, face: &Face) -> Chart {
                         .sqrt();
                     if off.is_finite() {
                         out.margin = out.margin.max(off);
+                        own_sags[i] = off;
                     }
                 }
             }
+            ring_sags.extend(own_sags);
             for uv in firm {
                 if let Some(last) = ring.last() {
                     let jump_u = (uv.0 - last.0).abs() / (u1 - u0).abs().max(1e-300);
@@ -271,6 +279,7 @@ fn chart(body: &Body, face: &Face) -> Chart {
             out.edges.push((points, sag));
         }
         out.rings.push(ring);
+        out.sags.push(ring_sags);
     }
     out
 }
@@ -327,10 +336,10 @@ fn held(chart: &Chart, uv: (f64, f64)) -> Held {
     if chart.followed.is_err() {
         return Held::NotTold;
     }
-    let room = 2.0 * chart.margin + 1e-12;
-    for ring in &chart.rings {
+    for (ring, sags) in chart.rings.iter().zip(&chart.sags) {
         let n = ring.len();
         for i in 0..n {
+            let room = 2.0 * sags.get(i).copied().unwrap_or(chart.margin) + 1e-12;
             if to_segment_2d(uv, ring[i], ring[(i + 1) % n]) <= room {
                 return Held::Near;
             }
@@ -350,6 +359,7 @@ fn held(chart: &Chart, uv: (f64, f64)) -> Held {
 #[derive(Clone, Debug)]
 struct Suspect {
     uv: (f64, f64),
+    span: ((f64, f64), (f64, f64)),
     what: &'static str,
 }
 
@@ -388,6 +398,7 @@ fn suspects(surface: &Surface, outward: f64, t: f64) -> Suspects {
         let Some(own) = span_surface(&span.patch) else {
             out.places.push(Suspect {
                 uv: middle,
+                span: (span.u, span.v),
                 what: "no span",
             });
             continue;
@@ -398,6 +409,7 @@ fn suspects(surface: &Surface, outward: f64, t: f64) -> Suspects {
                 if poles.is_empty() {
                     out.places.push(Suspect {
                         uv: global(at),
+                        span: (span.u, span.v),
                         what: "no normal",
                     });
                 } else {
@@ -406,14 +418,17 @@ fn suspects(surface: &Surface, outward: f64, t: f64) -> Suspects {
             }
             Err(OffsetError::Folds { at, .. }) => out.places.push(Suspect {
                 uv: global(at),
+                span: (span.u, span.v),
                 what: "concave",
             }),
             Err(OffsetError::Unproven { at }) => out.places.push(Suspect {
                 uv: global(at),
+                span: (span.u, span.v),
                 what: "unproven",
             }),
             Err(_) => out.places.push(Suspect {
                 uv: middle,
+                span: (span.u, span.v),
                 what: "other",
             }),
         }
@@ -443,6 +458,7 @@ fn suspects(surface: &Surface, outward: f64, t: f64) -> Suspects {
                     {
                         out.places.push(Suspect {
                             uv: (u, v),
+                            span: ((u, u), (v, v)),
                             what: "crease",
                         });
                     }
@@ -458,6 +474,7 @@ fn suspects(surface: &Surface, outward: f64, t: f64) -> Suspects {
                     {
                         out.places.push(Suspect {
                             uv: (u, v),
+                            span: ((u, u), (v, v)),
                             what: "crease",
                         });
                     }
@@ -466,6 +483,59 @@ fn suspects(surface: &Surface, outward: f64, t: f64) -> Suspects {
         }
     }
     out
+}
+
+/// The least concave radius over a span, away from the tips: a grid of
+/// 24 × 24 over the span, then four rounds of a finer one about the best
+/// place (the review's way to the worst place).
+fn least_concave(
+    surface: &Surface,
+    outward: f64,
+    span: ((f64, f64), (f64, f64)),
+    tips: &[Vec3],
+    t: f64,
+) -> Option<(f64, f64)> {
+    let concave = |u: f64, v: f64| -> Option<f64> {
+        let (k, h) = craft3d_geom::curvature::curvatures(surface, u, v)?;
+        let root = (h * h - k).max(0.0).sqrt();
+        let towards = (outward * (h + root)).max(outward * (h - root));
+        Some(if towards > 0.0 {
+            1.0 / towards
+        } else {
+            f64::INFINITY
+        })
+    };
+    let ((u0, u1), (v0, v1)) = span;
+    let mut best: Option<(f64, (f64, f64))> = None;
+    let (mut cu, mut cv) = (0.5 * (u0 + u1), 0.5 * (v0 + v1));
+    let (mut hu, mut hv) = (0.5 * (u1 - u0), 0.5 * (v1 - v0));
+    for _ in 0..5 {
+        let n = 24;
+        for i in 0..=n {
+            for j in 0..=n {
+                let u = (cu + hu * (2.0 * f64::from(i) / f64::from(n) - 1.0)).clamp(u0, u1);
+                let v = (cv + hv * (2.0 * f64::from(j) / f64::from(n) - 1.0)).clamp(v0, v1);
+                let Some(r) = concave(u, v) else {
+                    continue;
+                };
+                if best.is_some_and(|b| !(r < b.0)) {
+                    continue;
+                }
+                let p = surface.eval(u, v);
+                if tips.iter().any(|tip| tip.distance(p) <= TIP * t) {
+                    continue;
+                }
+                best = Some((r, (u, v)));
+            }
+        }
+        if let Some((_, (u, v))) = best {
+            cu = u;
+            cv = v;
+        }
+        hu /= 6.0;
+        hv /= 6.0;
+    }
+    best.filter(|b| b.0 < t).map(|b| b.1)
 }
 
 // ---------------------------------------------------------------------
@@ -771,8 +841,22 @@ fn rule(tag: &str, body: &Body, t: f64, detail: bool) -> Sum {
         }
         // One search per cluster of suspects (2 t apart).
         let mut centres: Vec<(Suspect, Vec3)> = Vec::new();
+        let mut starts: Vec<Suspect> = Vec::new();
         for s in &found.places {
             *sum.suspects.entry(s.what).or_default() += 1;
+            starts.push(s.clone());
+            if s.span.0.1 > s.span.0.0 && s.span.1.1 > s.span.1.0 {
+                let best = least_concave(&face.surface, outward, s.span, &found.tips, t);
+                if let Some(uv) = best {
+                    starts.push(Suspect {
+                        uv,
+                        span: s.span,
+                        what: "least concave",
+                    });
+                }
+            }
+        }
+        for s in &starts {
             let p = face.surface.eval(s.uv.0, s.uv.1);
             if found.tips.iter().any(|tip| tip.distance(p) <= TIP * t) {
                 *sum.suspects.entry("in a tip ball").or_default() += 1;
