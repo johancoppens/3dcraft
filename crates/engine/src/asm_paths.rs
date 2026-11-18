@@ -126,7 +126,8 @@ fn push_parts<'a>(start: &Start, parts: &mut Vec<&'a str>, text: &'a str) -> Res
 /// The source path that leads from the folder `new_base` to the file the
 /// source path `source` leads to from the folder `old_base`: what a save
 /// into `new_base` writes for it. The two folders are both absolute, or
-/// both relative to one folder (`Session::save_bases`); the path is
+/// both relative to one folder (`asm_cmds::Relinker` gives the file on
+/// disk and the folder written into); the path is
 /// `..` to climb, then the parts down, between `/`. An error, never
 /// another path, when no source path leads there: the folders are of two
 /// kinds, `source` climbs above the start of `old_base`, the folders are
@@ -364,5 +365,313 @@ mod tests {
         assert_eq!(relink("", "p.3dcraft", "").as_deref(), Ok("p.3dcraft"));
         assert_eq!(relink(".", "p.3dcraft", "./.").as_deref(), Ok("p.3dcraft"));
         assert_eq!(relink("/", "p.3dcraft", "///").as_deref(), Ok("p.3dcraft"));
+    }
+}
+
+/// The reviewer's tests (review-asm-save, 2026-11-18): every path
+/// [`relink`] returns, over generated folders and sources of every kind
+/// (Unix, drives in either case, shares, verbatim paths, mixed
+/// separators, `..` beyond the start, NUL, lossy names), leads from the
+/// new folder to the file the source led to from the old one, read by an
+/// independent reading of the two folders; it refuses only where no source
+/// path leads there; nothing panics.
+#[cfg(test)]
+mod review {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
+    use super::*;
+
+    /// A path's start, as a key, and the rest after it; `None` where no
+    /// path can be written against it.
+    fn start(path: &str) -> Option<(String, String)> {
+        fn share(rest: &str) -> Option<(String, String)> {
+            let mut it = rest.splitn(3, ['/', '\\']);
+            let server = it.next()?;
+            let name = it.next()?;
+            if server.is_empty() || name.is_empty() {
+                return None;
+            }
+            Some((
+                format!("share:{}/{}", server.to_lowercase(), name.to_lowercase()),
+                it.next().unwrap_or("").to_string(),
+            ))
+        }
+        // `None`: no drive; `Some(None)`: a drive no path is written
+        // against (`C:x`).
+        fn drive(text: &str) -> Option<Option<(String, String)>> {
+            let mut chars = text.chars();
+            let letter = chars.next()?;
+            if !letter.is_ascii_alphabetic() || chars.next() != Some(':') {
+                return None;
+            }
+            let rest = &text[2..];
+            if !(rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\')) {
+                return Some(None);
+            }
+            Some(Some((
+                format!("drive:{}", letter.to_ascii_uppercase()),
+                rest.to_string(),
+            )))
+        }
+        if let Some(rest) = path.strip_prefix("\\\\?\\") {
+            if let Some(unc) = rest.strip_prefix("UNC\\") {
+                return share(unc);
+            }
+            return drive(rest).flatten();
+        }
+        if let Some(unc) = path.strip_prefix("\\\\") {
+            return share(unc);
+        }
+        if let Some(found) = drive(path) {
+            return found;
+        }
+        if path.starts_with('/') || path.starts_with('\\') {
+            return Some(("root".to_string(), path.to_string()));
+        }
+        Some(("relative".to_string(), path.to_string()))
+    }
+
+    /// `parts` with those of `text` added; `None` above an absolute start.
+    fn walk(relative: bool, parts: &mut Vec<String>, text: &str) -> Option<()> {
+        for part in text.split(['/', '\\']) {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    let back = parts.last().is_some_and(|last| last.as_str() != "..");
+                    if back {
+                        parts.pop();
+                    } else if relative {
+                        parts.push("..".to_string());
+                    } else {
+                        return None;
+                    }
+                }
+                other => parts.push(other.to_string()),
+            }
+        }
+        Some(())
+    }
+
+    /// The file `source` names from the folder `base`: start and parts.
+    fn file_of(base: &str, source: &str) -> Option<(String, Vec<String>)> {
+        let (key, rest) = start(base)?;
+        let relative = key == "relative";
+        let mut parts = Vec::new();
+        walk(relative, &mut parts, &rest)?;
+        walk(relative, &mut parts, source)?;
+        Some((key, parts))
+    }
+
+    fn pick(seed: &mut u64, n: usize) -> usize {
+        *seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        usize::try_from(*seed >> 33).unwrap_or(0) % n
+    }
+
+    const STARTS: [&str; 27] = [
+        "",
+        ".",
+        "/",
+        "//",
+        "\\",
+        "\\\\",
+        "C:",
+        "c:",
+        "C:\\",
+        "c:/",
+        "D:\\",
+        "C:x",
+        "1:/",
+        "é:",
+        "\\\\srv\\share",
+        "\\\\SRV\\Share\\",
+        "\\\\srv",
+        "\\\\srv\\",
+        "\\\\?\\",
+        "\\\\?\\C:\\",
+        "\\\\?\\c:",
+        "\\\\?\\UNC\\srv\\share\\",
+        "\\\\?\\UNC\\srv",
+        "\\\\?\\X\\",
+        "//srv/share/",
+        "\\\\.\\C:\\",
+        "C:/w",
+    ];
+    const PARTS: [&str; 14] = [
+        "a", "b", "A", "..", ".", "", "é", "x y", "\u{FFFD}", "a:b", "nul", "a\u{0}b", "a\\b", "w",
+    ];
+    const SEPARATORS: [&str; 4] = ["/", "\\", "//", "/./"];
+    const SOURCES: [&str; 20] = [
+        "p.3dcraft",
+        "a/p.3dcraft",
+        "../p.3dcraft",
+        "../../p.3dcraft",
+        "../../../p.3dcraft",
+        "a/../p.3dcraft",
+        "../a/../b/p.3dcraft",
+        "é/\u{FFFD}.3dcraft",
+        "",
+        ".",
+        "..",
+        "/",
+        "/p.3dcraft",
+        "a\\p.3dcraft",
+        "C:/p.3dcraft",
+        "p\u{0}.3dcraft",
+        "a//p.3dcraft",
+        "./p.3dcraft",
+        "p.3dcraft/",
+        "x y/p.3dcraft",
+    ];
+
+    fn folder(seed: &mut u64) -> String {
+        let mut out = STARTS[pick(seed, STARTS.len())].to_string();
+        let count = pick(seed, 4);
+        for i in 0..count {
+            if i > 0 || !(out.is_empty() || out.ends_with('/') || out.ends_with('\\')) {
+                out.push_str(SEPARATORS[pick(seed, SEPARATORS.len())]);
+            }
+            out.push_str(PARTS[pick(seed, PARTS.len())]);
+        }
+        out
+    }
+
+    #[test]
+    fn review_every_link_leads_to_the_file_and_nothing_panics() {
+        let mut seed = 0x5eed_u64;
+        let (mut written, mut refused) = (0_usize, 0_usize);
+        let mut wrong: Vec<String> = Vec::new();
+        for _ in 0..60_000 {
+            let old = folder(&mut seed);
+            let new = if pick(&mut seed, 4) == 0 {
+                old.clone()
+            } else {
+                folder(&mut seed)
+            };
+            let source = SOURCES[pick(&mut seed, SOURCES.len())];
+            let Ok(got) = std::panic::catch_unwind(|| relink(&old, source, &new)) else {
+                wrong.push(format!("panic: relink({old:?}, {source:?}, {new:?})"));
+                continue;
+            };
+            let want = file_of(&old, source);
+            let new_start = start(&new);
+            match got {
+                Ok(link) => {
+                    written += 1;
+                    let back = new_start.as_ref().and_then(|_| file_of(&new, &link));
+                    let fine = craft3d_doc::assembly::check_source_path(&link).is_ok()
+                        && want.is_some()
+                        && back == want;
+                    if !fine {
+                        wrong.push(format!(
+                            "relink({old:?}, {source:?}, {new:?}) = {link:?}, which leads to {back:?}, not {want:?}"
+                        ));
+                    }
+                }
+                Err(why) => {
+                    refused += 1;
+                    if why.is_empty() {
+                        wrong.push(format!("relink({old:?}, {source:?}, {new:?}): no reason"));
+                    }
+                    // Refused although a link exists: the two folders of
+                    // one start, the file named, the new folder below the
+                    // part it shares without `..`.
+                    if let (Some((key, target)), Some((new_key, new_rest))) = (&want, &new_start) {
+                        let mut fold = Vec::new();
+                        if key == new_key
+                            && walk(new_key == "relative", &mut fold, new_rest).is_some()
+                        {
+                            let common =
+                                fold.iter().zip(target).take_while(|(a, b)| a == b).count();
+                            let up = &fold[common..];
+                            if !up.iter().any(|p| p == "..") {
+                                let mut link: Vec<String> = vec!["..".to_string(); up.len()];
+                                link.extend(target[common..].iter().cloned());
+                                let link = link.join("/");
+                                if link.len() <= 4096
+                                    && craft3d_doc::assembly::check_source_path(&link).is_ok()
+                                {
+                                    wrong.push(format!(
+                                        "relink({old:?}, {source:?}, {new:?}) refused ({why}), though `{link}` leads there"
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!(
+            "review relink: {written} written, {refused} refused, {} wrong",
+            wrong.len()
+        );
+        for w in wrong.iter().take(40) {
+            println!("WRONG {w}");
+        }
+        assert!(written > 1000 && refused > 1000, "{written} {refused}");
+        assert!(
+            wrong.is_empty(),
+            "{} wrong; first: {:?}",
+            wrong.len(),
+            wrong.first()
+        );
+    }
+
+    #[test]
+    fn review_is_absolute_agrees_with_the_start() {
+        let mut seed = 0xab5_u64;
+        for _ in 0..20_000 {
+            let path = folder(&mut seed);
+            match path_start(&path) {
+                Ok((Start::Relative, _)) => assert!(!is_absolute(&path), "{path:?}"),
+                Ok(_) => assert!(is_absolute(&path), "{path:?}"),
+                Err(why) => assert!(!why.is_empty(), "{path:?}"),
+            }
+        }
+    }
+
+    /// Long and odd inputs, each way: an answer, never a panic; and what
+    /// relink makes of a `source` that is no source path (absolute, a
+    /// drive, a backslash: a stored source never is one, so this is the
+    /// contract at its edge), printed for the review.
+    #[test]
+    fn review_long_and_odd_inputs() {
+        let ups = "../".repeat(10_000);
+        let deep = "/d".repeat(10_000);
+        let lossy = String::from_utf8_lossy(b"caf\xe9/\xff\xfe.3dcraft").to_string();
+        for (old, source, new) in [
+            (ups.as_str(), "p.3dcraft", ""),
+            ("", "p.3dcraft", ups.as_str()),
+            (deep.as_str(), ups.as_str(), deep.as_str()),
+            ("/w", lossy.as_str(), "/x"),
+            ("/w\u{0}", "p.3dcraft", "/x"),
+            ("\u{0}", "\u{0}", "\u{0}"),
+        ] {
+            let got = std::panic::catch_unwind(|| relink(old, source, new));
+            assert!(
+                got.is_ok(),
+                "panic on {} {} {}",
+                old.len(),
+                source.len(),
+                new.len()
+            );
+        }
+        let want = format!("../w/{lossy}");
+        assert_eq!(
+            relink("/w", lossy.as_str(), "/x").as_deref(),
+            Ok(want.as_str())
+        );
+        for (old, source, new) in [
+            ("/w", "/etc/p.3dcraft", "/x"),
+            ("/w", "C:/p.3dcraft", "/x"),
+            ("/w", "a\\p.3dcraft", "/x"),
+            (r"C:\w", r"D:\p.3dcraft", r"C:\x"),
+            ("//srv/share/a", "p.3dcraft", "//srv/other/b"),
+        ] {
+            println!(
+                "review relink({old:?}, {source:?}, {new:?}) = {:?}",
+                relink(old, source, new)
+            );
+        }
     }
 }

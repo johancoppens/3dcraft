@@ -155,100 +155,75 @@ impl Session {
         String::new()
     }
 
-    /// The folder the active assembly's sources are relative to now
-    /// ([`Session::asm_base`]) and the folder of `kept`, the path a save
-    /// keeps for it (written at `resolved`), of one kind for [`rebased`].
-    /// Both absolute or both relative: as they are. Otherwise the relative
-    /// one is written as the folder on disk it stands for (2026-11-18: an
-    /// assembly whose sources were relative to the read root, saved under
-    /// an absolute path, had them written as if the root were the file
-    /// system's): the current one beneath the folder its relative sources
-    /// were read beneath ([`Session::relative_frame`]), the new one as the
-    /// folder the file is written into. An error, in words, where that
-    /// folder is not known.
-    pub(crate) fn save_bases(
+    /// How a save of the active assembly as `kept` (the path the save
+    /// keeps for it, written at `resolved`) rewrites its source paths
+    /// ([`Relinker`]). An error where the folder the file is written into
+    /// cannot be placed on disk.
+    pub(crate) fn relinker(
         &self,
         kept: &str,
         resolved: &std::path::Path,
-    ) -> Result<SaveBases, String> {
-        let old = self.asm_base().map_err(|e| e.message().to_string())?;
-        let new = asm::dir_of(kept);
-        let absolute = crate::asm_paths::is_absolute;
-        let beneath = |frame: &str, folder: &str| {
-            if folder.is_empty() {
-                frame.to_string()
+    ) -> Result<Relinker, String> {
+        let open = self.document().map_err(|e| e.message().to_string())?;
+        let old_base = self.asm_base().map_err(|e| e.message().to_string())?;
+        let new_base = asm::dir_of(kept);
+        let (new_folder, write_frame) = if self.writes_to_memory() {
+            (None, None)
+        } else if crate::asm_paths::is_absolute(&new_base) {
+            (Some(new_base.clone()), None)
+        } else {
+            let frame = self.folder_beneath(kept, resolved).ok_or_else(|| {
+                format!(
+                    "the folder `{new_base}` cannot be found on disk to write the sources relative to it; give the path in full"
+                )
+            })?;
+            let folder = if new_base.is_empty() {
+                frame.clone()
             } else {
-                format!("{frame}/{folder}")
-            }
+                format!("{frame}/{new_base}")
+            };
+            (Some(folder), Some(frame))
         };
-        match (absolute(&old), absolute(&new)) {
-            (false, true) => {
-                let frame = self.relative_frame(&new)?;
-                Ok(SaveBases {
-                    old: beneath(&frame, &old),
-                    new,
-                    frame: Some(Frame::Absolute(frame)),
-                })
-            }
-            (true, false) => {
-                let frame = self.folder_beneath(kept, resolved).ok_or_else(|| {
-                    format!(
-                        "the sources of this assembly are relative to `{old}`, and the folder `{new}` cannot be found on disk to write them relative to it; give the path absolute"
-                    )
-                })?;
-                Ok(SaveBases {
-                    old,
-                    new: beneath(&frame, &new),
-                    frame: Some(Frame::Relative(frame)),
-                })
-            }
-            _ => Ok(SaveBases {
-                old,
-                new,
-                frame: None,
-            }),
-        }
+        Ok(Relinker {
+            old_base,
+            new_base,
+            new_folder,
+            write_frame,
+            read_root: self.read_root_on_disk(),
+            read_from: open.asm.read_from.clone(),
+            default_folder: self.default_folder(),
+        })
     }
 
-    /// The folder on disk the active assembly's relative paths stand for
-    /// ([`Session::save_bases`]): the folder its relative sources were
-    /// last read beneath (`AsmState::read_folder`); else,
-    /// for one with a file, that file's folder without the parts of its
-    /// relative path; else the first read root (the working folder with
-    /// access to every file), spelled as `other` (an absolute folder)
-    /// spells it where that lies beneath it.
-    fn relative_frame(&self, other: &str) -> Result<String, String> {
-        let open = self.document().map_err(|e| e.message().to_string())?;
-        if let Some(folder) = &open.asm.read_folder {
-            return Ok(folder.clone());
-        }
+    /// The folder on disk this session reads a path relative to the root
+    /// beneath now (`Workspace::resolve_read`): its first read root, the
+    /// working folder with access to every file; `None` when it reads
+    /// nothing, or from memory.
+    fn read_root_on_disk(&self) -> Option<String> {
+        let root = match &self.workspace.read {
+            crate::Access::Unrestricted => std::path::PathBuf::from("."),
+            access => access.roots().first()?.to_path_buf(),
+        };
+        std::path::absolute(root)
+            .ok()?
+            .to_str()
+            .map(str::to_string)
+            .filter(|r| crate::asm_paths::is_absolute(r))
+    }
+
+    /// The folder on disk a source path relative to the root stands for
+    /// when it was not read in this session (`AsmState::read_from` has it
+    /// otherwise): for an assembly with a file, that file's folder without
+    /// the parts of its relative path; else the folder this session reads
+    /// such a path beneath now.
+    fn default_folder(&self) -> Option<String> {
+        let open = self.document().ok()?;
         if let (Some(path), Some(file)) = (&open.path, &open.file)
             && let Some(folder) = self.folder_beneath(path, std::path::Path::new(file))
         {
-            return Ok(folder);
+            return Some(folder);
         }
-        let root = match &self.workspace.read {
-            crate::Access::Unrestricted => Some(std::path::PathBuf::from(".")),
-            access => access.roots().first().map(|root| root.to_path_buf()),
-        };
-        let spelled = root.and_then(|root| {
-            let spellings: Vec<std::path::PathBuf> = std::path::absolute(&root)
-                .into_iter()
-                .chain([crate::workspace::spelled_root(&root)])
-                .filter(|p| p.to_str().is_some_and(crate::asm_paths::is_absolute))
-                .collect();
-            spellings
-                .iter()
-                .find(|p| std::path::Path::new(other).starts_with(p))
-                .or(spellings.first())
-                .and_then(|p| p.to_str())
-                .map(str::to_string)
-        });
-        spelled.ok_or_else(|| {
-            format!(
-                "this assembly has no file and its sources were not read in this session, so the folder they are relative to is not known here (there is no read root), and they cannot be written relative to `{other}`; read them first (assembly.reload where they can be read), or save it under a path relative to the folder they were added from, then under this one"
-            )
-        })
+        self.read_root_on_disk()
     }
 
     /// The folder on disk a relative `path` was resolved beneath:
@@ -315,7 +290,7 @@ impl Session {
 
     /// [`Session::read_source_file`], with the folder on disk a relative
     /// `full` was read beneath ([`Session::folder_beneath`]): where the
-    /// assembly's relative source paths stand (`AsmState::read_folder`).
+    /// assembly's relative source paths stand (`AsmState::read_from`).
     pub(crate) fn read_source_at(&self, full: &str) -> Result<(Blob, Option<String>), String> {
         let resolved = self
             .workspace
@@ -805,10 +780,10 @@ fn instance_add(session: &mut Session, params: &Value) -> Run {
     let keep = instance.pinned.is_some().then(|| blob.clone());
     {
         let open = session.document_mut()?;
-        open.asm.files.insert(full, Ok(blob));
-        if folder.is_some() {
-            open.asm.read_folder = folder;
+        if let Some(folder) = folder {
+            open.asm.read_from.insert(full.clone(), folder);
         }
+        open.asm.files.insert(full, Ok(blob));
         open.asm.invalidate();
     }
     asm_edit(session, ID, &format!("Add instance {name}"), |doc| {
@@ -865,10 +840,10 @@ fn instance_edit(session: &mut Session, params: &Value) -> Run {
             hash: blob.sha256(),
         };
         let open = session.document_mut()?;
-        open.asm.files.insert(full, Ok(blob));
-        if folder.is_some() {
-            open.asm.read_folder = folder;
+        if let Some(folder) = folder {
+            open.asm.read_from.insert(full.clone(), folder);
         }
+        open.asm.files.insert(full, Ok(blob));
         open.asm.invalidate();
     }
     if p.has("body") {
@@ -1818,65 +1793,193 @@ fn file_exists(session: &Session, resolved: &std::path::Path) -> bool {
     }
 }
 
-/// The two folders of a save of an assembly, of one kind
-/// ([`Session::save_bases`]).
-pub(crate) struct SaveBases {
-    /// The folder its source paths are relative to now.
-    pub old: String,
-    /// The folder it is saved into.
-    pub new: String,
-    /// How the paths the session read its sources by change kind with
-    /// the save, when its own path does ([`rekey`]).
-    pub frame: Option<Frame>,
+/// How a save rewrites an assembly's source paths
+/// ([`Session::relinker`]): each source is followed to the file on disk
+/// it names (an absolute path as it is; a path relative to the root
+/// beneath the folder it was read beneath, `AsmState::read_from`, else
+/// [`Session::default_folder`]), and written as the path from the folder
+/// the file is written into to that file (2026-11-18: an assembly whose
+/// sources were relative to the read root, saved under an absolute path,
+/// had them written as if the root were the file system's). In memory,
+/// where every path is a name in one store, the paths are rewritten as
+/// text.
+pub(crate) struct Relinker {
+    /// The folder the source paths are relative to now, as the session
+    /// joins them ([`Session::asm_base`]).
+    old_base: String,
+    /// The folder of the path the save keeps.
+    new_base: String,
+    /// The folder on disk the file is written into, absolute; `None` in
+    /// memory.
+    new_folder: Option<String>,
+    /// For a path kept relative to the write root: that root on disk.
+    write_frame: Option<String>,
+    /// The folder on disk this session reads paths relative to the root
+    /// beneath ([`Session::read_root_on_disk`]).
+    read_root: Option<String>,
+    /// The folder each relative source path was read beneath.
+    read_from: std::collections::BTreeMap<String, String>,
+    /// For a relative source path not read in this session.
+    default_folder: Option<String>,
 }
 
-/// The folder on disk paths relative to the root stand for, when a save
-/// takes an assembly from paths of one kind to the other.
-pub(crate) enum Frame {
-    /// From relative paths (beneath this absolute folder) to absolute ones.
-    Absolute(String),
-    /// From absolute paths to paths relative to this absolute folder.
-    Relative(String),
-}
-
-/// The path the session reads the source file it read as `key` by once
-/// the assembly is saved ([`Frame`]): `None` where it stays as it is, or
-/// cannot be written so (it is then read again).
-fn rekey(frame: &Frame, key: &str) -> Option<String> {
-    let absolute = crate::asm_paths::is_absolute(key);
-    match frame {
-        Frame::Absolute(folder) if !absolute => asm::join(folder, key).ok(),
-        Frame::Relative(folder) if absolute => {
-            let name = key.rsplit(['/', '\\']).next().unwrap_or(key);
-            crate::asm_paths::relink(&asm::dir_of(key), name, folder).ok()
+impl Relinker {
+    /// The file on disk the session's path `key` (as [`asm::join`] writes
+    /// it from [`Session::asm_base`]) names, absolute.
+    fn file_of(&self, key: &str) -> Result<String, String> {
+        if crate::asm_paths::is_absolute(key) {
+            return Ok(key.to_string());
         }
-        _ => None,
+        let folder = self
+            .read_from
+            .get(key)
+            .or(self.default_folder.as_ref())
+            .ok_or_else(|| {
+                "it was not read in this session and the assembly has no file, so the folder it is relative to is not known here (there is no read root); read the sources first (assembly.reload where they can be read)".to_string()
+            })?;
+        asm::join(folder, key)
     }
-}
 
-/// The source files an open assembly read, carried over to the paths it
-/// reads them by after a save that changed their kind (2026-11-18): the
-/// rewritten source paths lead to the same files, so their bytes stay,
-/// and a save by a session that could not read them again (the person's
-/// Save As at the window) leaves every instance placed.
-pub(crate) fn carry_sources(state: &mut asm::AsmState, frame: &Frame) {
-    fn carried<V: Clone>(
-        map: &std::collections::BTreeMap<String, V>,
-        frame: &Frame,
-    ) -> std::collections::BTreeMap<String, V> {
-        map.iter()
-            .map(|(key, value)| {
-                (
-                    rekey(frame, key).unwrap_or_else(|| key.clone()),
-                    value.clone(),
-                )
-            })
-            .collect()
+    /// The path a source written `old` (relative to [`Relinker::old_base`])
+    /// is written as in the saved file. An error, the reason, where no
+    /// path leads from the new folder to its file, or where the open
+    /// assembly would then read another file than the one it names.
+    pub(crate) fn link(&self, old: &str) -> Result<String, String> {
+        let key = match asm::join(&self.old_base, old) {
+            Ok(key) => key,
+            // A path that led to no file stays as it is in its own folder.
+            Err(_) if self.same_folder() => return Ok(old.to_string()),
+            Err(_) => {
+                return Err(format!(
+                    "from `{}` it climbs above the start of the file system, so it leads to no file",
+                    self.old_base
+                ));
+            }
+        };
+        let lost = |new: &str, now: &str, then: &str| {
+            format!(
+                "the source would no longer lead to its file: `{old}` from `{}` is `{then}`, `{new}` from `{}` would be `{now}`",
+                self.old_base, self.new_base
+            )
+        };
+        let Some(folder) = &self.new_folder else {
+            // In memory: names in one store, as text.
+            let new = crate::asm_paths::relink(&self.old_base, old, &self.new_base)?;
+            let now = asm::join(&self.new_base, &new)?;
+            return if now == key {
+                Ok(new)
+            } else {
+                Err(lost(&new, &now, &key))
+            };
+        };
+        let file = self.file_of(&key)?;
+        let name = file.rsplit(['/', '\\']).next().unwrap_or(&file);
+        let new = crate::asm_paths::relink(&asm::dir_of(&file), name, folder)?;
+        // The last line of defence: from the folder the file is written
+        // into, the new path names the file the old one named, by the
+        // text of both written the same way. Only string work.
+        let now = asm::join(folder, &new)?;
+        if now != file {
+            return Err(lost(&new, &now, &file));
+        }
+        // And this session never reads another file by it: a path kept
+        // relative to the root is read beneath the read root, which may
+        // not be the folder the file was written beneath (a read root that
+        // is not the write root). One that climbs out of the root is not
+        // read at all (the root refuses it; the bytes read stay).
+        let new_key = asm::join(&self.new_base, &new)?;
+        if !crate::asm_paths::is_absolute(&new_key)
+            && !new_key.starts_with("..")
+            && let Some(root) = &self.read_root
+            && asm::join(root, &new_key).ok().as_deref() != Some(file.as_str())
+        {
+            return Err(format!(
+                "it is `{file}`, and this session, which reads beneath the read root `{root}`, would read another file by `{new_key}` (the file is written beneath another folder than the read root); give the path in full"
+            ));
+        }
+        Ok(new)
     }
-    state.files = carried(&state.files, frame);
-    state.stamps = carried(&state.stamps, frame);
-    state.unfollowed = carried(&state.unfollowed, frame);
-    state.invalidate();
+
+    /// Whether the file is written into the folder the assembly's own
+    /// file is in.
+    fn same_folder(&self) -> bool {
+        match (&self.new_folder, &self.default_folder) {
+            (None, _) => self.old_base == self.new_base,
+            (Some(new), _) if crate::asm_paths::is_absolute(&self.old_base) => {
+                asm::join(new, "").ok() == asm::join(&self.old_base, "").ok()
+            }
+            (Some(new), Some(frame)) => {
+                asm::join(new, "").ok() == asm::join(frame, &self.old_base).ok()
+            }
+            (Some(_), None) => false,
+        }
+    }
+
+    /// The path the open assembly reads the file it read as `key` by after
+    /// the save: the same file, by the path the rewritten sources name it
+    /// by. `None` where it cannot be told (it is read again).
+    fn new_key(&self, key: &str) -> Option<String> {
+        let folder = self.new_folder.as_ref()?;
+        let file = self.file_of(key).ok()?;
+        if crate::asm_paths::is_absolute(&self.new_base) {
+            return Some(file);
+        }
+        let frame = self.write_frame.as_ref().unwrap_or(folder);
+        let name = file.rsplit(['/', '\\']).next().unwrap_or(&file);
+        crate::asm_paths::relink(&asm::dir_of(&file), name, frame).ok()
+    }
+
+    /// The source files the open assembly read, carried over to the paths
+    /// it reads them by after the save: the rewritten paths lead to the
+    /// same files, so their bytes stay, and a save by a session that
+    /// cannot read them again (the person's Save As at the window) leaves
+    /// every instance placed. Nothing changes in memory, or where the
+    /// paths keep their text.
+    pub(crate) fn carry(&self, state: &mut asm::AsmState) {
+        if self.new_folder.is_none() {
+            return;
+        }
+        let mapped: std::collections::BTreeMap<String, Option<String>> = state
+            .files
+            .keys()
+            .chain(state.stamps.keys())
+            .chain(state.unfollowed.keys())
+            .chain(state.read_from.keys())
+            .map(|key| (key.clone(), self.new_key(key)))
+            .collect();
+        if mapped
+            .iter()
+            .all(|(key, new)| new.as_deref() == Some(key.as_str()))
+        {
+            return;
+        }
+        fn carried<V: Clone>(
+            map: &std::collections::BTreeMap<String, V>,
+            mapped: &std::collections::BTreeMap<String, Option<String>>,
+        ) -> std::collections::BTreeMap<String, V> {
+            map.iter()
+                .filter_map(|(key, value)| {
+                    let new = mapped.get(key)?.clone()?;
+                    Some((new, value.clone()))
+                })
+                .collect()
+        }
+        state.files = carried(&state.files, &mapped);
+        state.stamps = carried(&state.stamps, &mapped);
+        state.unfollowed = carried(&state.unfollowed, &mapped);
+        // A path kept relative is read beneath the write root from now on
+        // (`link` made sure that is the read root).
+        state.read_from = match &self.write_frame {
+            Some(frame) => mapped
+                .values()
+                .flatten()
+                .filter(|key| !crate::asm_paths::is_absolute(key))
+                .map(|key| (key.clone(), frame.clone()))
+                .collect(),
+            None => std::collections::BTreeMap::new(),
+        };
+        state.invalidate();
+    }
 }
 
 /// Whether an instance of `doc` refers to its source by a file's path.
@@ -1888,25 +1991,16 @@ pub(crate) fn has_file_sources(doc: &Document) -> bool {
     })
 }
 
-/// Rewrites the active assembly's source paths for a save from the
-/// folder `old_base` they are relative to into the folder `new_base`
-/// (the two of one kind, [`Session::save_bases`]), so each still leads to
-/// the file it led to ([`crate::asm_paths::relink`]). Not an undo step of
-/// its own: part of the save. An error naming the instance where a
-/// source cannot be written so (2026-11-18: before, such a source kept
-/// its path, which then led elsewhere from the new folder): the save is
-/// refused rather than write a path that leads to another file.
-pub(crate) fn rebased(
-    doc: &Document,
-    old_base: &str,
-    new_base: &str,
-) -> Result<Option<Document>, String> {
+/// Rewrites the active assembly's source paths for a save ([`Relinker`]),
+/// so each still leads to the file it led to. Not an undo step of its
+/// own: part of the save. An error naming the instance where a source
+/// cannot be written so (2026-11-18: before, such a source kept its path,
+/// which then led elsewhere from the new folder): the save is refused
+/// rather than write a path that leads to another file.
+pub(crate) fn rebased(doc: &Document, relinker: &Relinker) -> Result<Option<Document>, String> {
     let Some(assembly) = doc.assembly.as_ref() else {
         return Ok(None);
     };
-    if old_base == new_base {
-        return Ok(None);
-    }
     let mut doc = doc.clone();
     let mut changed = false;
     if let Some(a) = doc.assembly.as_mut() {
@@ -1914,10 +2008,11 @@ pub(crate) fn rebased(
             if let (Source::File { path, .. }, Source::File { path: old, .. }) =
                 (&mut instance.source, &before.source)
             {
-                let new = crate::asm_paths::relink(old_base, old, new_base).map_err(|why| {
+                let new = relinker.link(old).map_err(|why| {
                     format!(
-                        "the source `{old}` of instance `{}` cannot be written relative to the folder `{new_base}`: {why}",
-                        before.name
+                        "the source `{old}` of instance `{}` cannot be written relative to the folder `{}`: {why}",
+                        before.name,
+                        relinker.new_folder.as_ref().unwrap_or(&relinker.new_base)
                     )
                 })?;
                 if new != *path {

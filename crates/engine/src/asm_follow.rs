@@ -46,9 +46,9 @@ pub(crate) struct SourcesRead {
     /// The sources that changed but could not be read again, with why;
     /// they keep the last bytes read.
     pub failed: Vec<(String, String)>,
-    /// The folder on disk the last relative source read was read beneath
-    /// (`Session::read_source_at`).
-    pub folder: Option<String>,
+    /// The relative source paths read, each with the folder on disk it
+    /// was read beneath (`Session::read_source_at`).
+    pub folders: Vec<(String, String)>,
 }
 
 impl Session {
@@ -134,8 +134,8 @@ impl Session {
             .get_mut(index)
             .ok_or_else(|| CommandError::new("no document is open"))?;
         open.asm.stamps = stamps;
-        if let Some(folder) = &out.folder {
-            open.asm.read_folder = Some(folder.clone());
+        for (key, folder) in &out.folders {
+            open.asm.read_from.insert(key.clone(), folder.clone());
         }
         let mut again = false;
         // Without a file, its sources are placed from where they were
@@ -189,8 +189,8 @@ impl Session {
             return before.and_then(Result::ok);
         }
         let now = self.read_source_at(full).map(|(blob, folder)| {
-            if folder.is_some() {
-                out.folder = folder;
+            if let Some(folder) = folder {
+                out.folders.push((full.to_string(), folder));
             }
             blob
         });

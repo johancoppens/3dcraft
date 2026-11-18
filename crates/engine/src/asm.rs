@@ -123,15 +123,16 @@ pub(crate) struct AsmState {
     /// every file, the read root's top otherwise): its sources are
     /// placed from there until it is saved, as they were read.
     pub unsaved_base: String,
-    /// The folder on disk the relative source paths were last read
-    /// beneath (`Session::read_source_at`: the folder `resolve_read` put
-    /// them in, absolute), so that an assembly without a file, saved by a
-    /// session that cannot place that folder itself (the person's Save As
-    /// at the window, which has no read root) or under an absolute path,
-    /// still writes paths to the files it read (2026-11-18). Session
-    /// state beside the document, never in it: kept through undo and
-    /// redo and tab switches, gone when the document is closed.
-    pub read_folder: Option<String>,
+    /// Per source path relative to the root (a key of `files`), the
+    /// folder on disk it was last read beneath (`Session::read_source_at`:
+    /// the folder `resolve_read` put it in, absolute), so that a save
+    /// (`asm_cmds::Relinker`) by a session that cannot place it itself
+    /// (the person's Save As at the window, which has no read root), under
+    /// an absolute path, or after the agent's folder changed between two
+    /// sources, writes paths to the files read (2026-11-18). Session
+    /// state beside the document, never in it: kept through undo and redo
+    /// and tab switches, gone when the document is closed.
+    pub read_from: BTreeMap<String, String>,
     /// The last rest solves, by their exact problem.
     solves: solver::SolveMemo,
 }

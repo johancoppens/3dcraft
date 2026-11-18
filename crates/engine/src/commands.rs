@@ -1192,12 +1192,13 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     // An assembly's source paths stay relative to its file: saved into
     // another folder, they are rewritten for it. The rewritten document is
     // what is written; the open one takes it (with every undo state) only
-    // once the file is written, together with its new path. The two
-    // folders are compared as folders of one kind (`save_bases`).
+    // once the file is written, together with its new path. Each source
+    // is followed to its file and written from the new folder
+    // (`asm_cmds::Relinker`).
     let rebase = if is_assembly {
         let kept = crate::workspace::kept_path(&access, &path, &resolved);
-        match session.save_bases(&kept, &resolved) {
-            Ok(bases) => Some(bases),
+        match session.relinker(&kept, &resolved) {
+            Ok(relinker) => Some(relinker),
             // Only a source in a file needs its folder: an assembly whose
             // sources are all packed (an example) is saved anywhere.
             Err(why)
@@ -1240,8 +1241,8 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     };
     let open = session.document_mut()?;
     let mut document = std::sync::Arc::clone(open.history.current());
-    if let Some(bases) = &rebase {
-        match crate::asm_cmds::rebased(&document, &bases.old, &bases.new) {
+    if let Some(relinker) = &rebase {
+        match crate::asm_cmds::rebased(&document, relinker) {
             Ok(Some(rebased)) => document = std::sync::Arc::new(rebased),
             Ok(None) => {}
             Err(why) => {
@@ -1262,20 +1263,15 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         save_to_disk(&resolved, &document, png.as_deref().map(Vec::as_slice)).map_err(cannot)?;
     }
     let open = session.document_mut()?;
-    if let Some(bases) = &rebase {
+    if let Some(relinker) = &rebase {
         // The state written was rewritten whole above. A state undo or
         // redo reaches whose sources cannot be (an instance deleted since,
         // whose source is on another drive) keeps its paths.
-        open.history.rewrite_all(|doc| {
-            crate::asm_cmds::rebased(doc, &bases.old, &bases.new)
-                .ok()
-                .flatten()
-        });
+        open.history
+            .rewrite_all(|doc| crate::asm_cmds::rebased(doc, relinker).ok().flatten());
         // The files read stay the files read, under the paths the
         // rewritten sources name them by.
-        if let Some(frame) = &bases.frame {
-            crate::asm_cmds::carry_sources(&mut open.asm, frame);
-        }
+        relinker.carry(&mut open.asm);
     }
     open.mark_saved();
     let kept = crate::workspace::kept_path(&access, &path, &resolved);
