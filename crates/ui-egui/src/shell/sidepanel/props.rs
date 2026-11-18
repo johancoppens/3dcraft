@@ -1696,13 +1696,18 @@ impl Shell {
         }
     }
 
-    /// *Wall thickness* (quiet), where it can run, and *Copy name*.
-    fn thing_buttons(&mut self, ui: &mut egui::Ui, props: &Props) -> (bool, bool) {
+    /// *Wall thickness* (quiet), where it can run, and *Copy name*; by
+    /// their short words *Wall* and *Copy* on the short card (`short`),
+    /// their hovers the same.
+    fn thing_buttons(&mut self, ui: &mut egui::Ui, props: &Props, short: bool) -> (bool, bool) {
         let kit = Kit::panel(&self.tokens);
         let mut measure = false;
         if props.measure.is_some() {
             let m = kit
-                .button(ui, Button::secondary("Wall thickness"))
+                .button(
+                    ui,
+                    Button::secondary(if short { "Wall" } else { "Wall thickness" }),
+                )
                 .on_hover_text(if props.kind == "Body" {
                     "The thinnest wall of this part"
                 } else {
@@ -1725,7 +1730,11 @@ impl Shell {
         }
         let c = kit.button(
             ui,
-            Button::secondary(if copied { "Copied" } else { "Copy name" }),
+            Button::secondary(match (copied, short) {
+                (true, _) => "Copied",
+                (false, true) => "Copy",
+                (false, false) => "Copy name",
+            }),
         );
         self.side
             .hits
@@ -1749,9 +1758,9 @@ impl Shell {
 
     /// The card short, where the Features tab has no room for it (a short
     /// window: the review of 2026-11-17 found the relation and Keep out of
-    /// reach there): what is selected and its number on one line with the
-    /// target that flies to it, and Keep as a check for two things; for one
-    /// thing Wall thickness and Copy name on a second line.
+    /// reach there): one line of what is selected and its number, the
+    /// target that flies to it, and Keep as a check for two things or
+    /// Wall (thickness) and Copy for one.
     pub(super) fn props_compact_ui(&mut self, ui: &mut egui::Ui) {
         let Some(props) = self.side.props.clone() else {
             return;
@@ -1771,11 +1780,15 @@ impl Shell {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(30));
         }
-        let (mut keep, mut fly) = (false, false);
-        // The line, and against its right edge Keep (for two things) and
-        // the target that flies to it, laid from the right so that the
-        // line is cut to what is left and nothing passes the panel's edge
-        // (the review of 2026-11-18: Keep reached 8 points past it).
+        let (mut keep, mut fly, mut measure, mut copy) = (false, false, false, false);
+        // One line, as high as it was before its buttons came (a taller
+        // foot moved the list under a selected row: views.rs): against its
+        // right edge Keep for two things, or Copy and Wall (thickness, where
+        // it can run) for one, by their short words (the notes' review of
+        // 2026-11-18: they were not drawn at all), and the target that
+        // flies to it, laid from the right so that the line is cut to what
+        // is left and nothing passes the panel's edge (the review of
+        // 2026-11-18: Keep reached 8 points past it).
         let width = ui.available_width();
         ui.allocate_ui_with_layout(
             vec2(width, kit.hit(t.control_height)),
@@ -1783,6 +1796,8 @@ impl Shell {
             |ui| {
                 if let Some(m) = &props.measurement {
                     keep = self.keep_button(ui, m);
+                } else {
+                    (measure, copy) = self.thing_buttons(ui, &props, true);
                 }
                 let target = kit.icon_button(
                     ui,
@@ -1809,15 +1824,6 @@ impl Shell {
                 line.on_hover_text(text.clone());
             },
         );
-        // One thing: its buttons on a second line, as the whole card has
-        // them (the notes' review of 2026-11-18: in a short window Fly,
-        // Measure and Copy name were not drawn at all).
-        let (mut measure, mut copy) = (false, false);
-        if props.measurement.is_none() {
-            ui.horizontal(|ui| {
-                (measure, copy) = self.thing_buttons(ui, &props);
-            });
-        }
         if keep && let Some(m) = &props.measurement {
             self.keep(m);
         }
@@ -1827,22 +1833,10 @@ impl Shell {
         }
     }
 
-    /// How high the short card is: one line for two things (their
-    /// relation and Keep), two for one (its line, then Wall thickness and
-    /// Copy name).
+    /// How high the short card is: one line.
     pub(super) fn props_compact_height(&self) -> f32 {
         let kit = Kit::panel(&self.tokens);
-        let lines = if self
-            .side
-            .props
-            .as_ref()
-            .is_some_and(|p| p.measurement.is_some())
-        {
-            1.0
-        } else {
-            2.0
-        };
-        lines * kit.hit(kit.t.control_height) + 2.0 * kit.t.nav_spacing
+        kit.hit(kit.t.control_height) + 2.0 * kit.t.nav_spacing
     }
 
     /// The card of what is selected: its heading, the number the view
@@ -2009,7 +2003,7 @@ impl Shell {
                 keep = self.keep_button(ui, m);
                 return;
             }
-            (measure, copy) = self.thing_buttons(ui, &props);
+            (measure, copy) = self.thing_buttons(ui, &props, false);
         });
         if keep && let Some(m) = &props.measurement {
             self.keep(m);

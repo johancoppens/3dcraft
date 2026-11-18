@@ -635,11 +635,19 @@ two sources read beneath two folders (the agent given another folder between the
 read root that is not the write root a relative save leads to the files read. Each path is made by
 `asm_paths::relink`, which compares two folders only from the same start (the root, one Windows drive in either case,
 one share `\\server\share`) and refuses, never writes another path, where none leads to the file: two drives or
-shares, a source that climbs above the start of the file system, a path longer than a source may have. Then two
-checks, string work only: the last line of defence, that the folder written into joined with the new path is the file
-the old folder joined with the old path was (both written by `asm::join`; in memory, where every path is a name in one
-store, the two names), and that this session, reading a path kept relative beneath its read root, would not read
-another file by it (one that climbs out of the root is not read at all: the root refuses it, the bytes read stay). A
+shares, a source that climbs above the start of the file system, a path longer than a source may have. Every path is
+made from the texts given; a document keeps the path it was given, as before. The file system's spelling of a folder
+(`workspace::canonical`, links followed) is used only to decide whether two folder texts name one place, and only
+where it is a plain Unix or drive path (`asm_paths::plain_spelling`; a share, a verbatim `\\?\` path and the browser
+fall back to the texts as given): a source read beneath a root spelled one way (`alias`) is written as the write root
+spells it where the two are one place. Then the checks: the last line of defence, that the folder written into
+joined with the new path is the file the old folder joined with the old path was (both written by `asm::join`; in
+memory, where every path is a name in one store, the two names); that from the folder written into as the file
+system spells it the new path leads to that file too (a folder reached through a link one level deeper or higher
+would make `..` climb elsewhere on disk: refused in words, saying the folder's own path); and that this session,
+reading a path kept relative beneath its read root, would not read another file by it. A path whose first part is
+`..` (not one that starts with two dots, `..x`) climbs out of the root and is not read at all: the root refuses it,
+the bytes read stay, and the save's answer says so (`notFollowed`, and a warning the status bar counts). A
 refused source refuses the save, naming the instance and the ways out (another folder, `instance.edit` with a
 `source`, `assembly.pack`), with nothing written; a source that climbs above the start of the file system is kept as it
 is only in a save into the assembly's own folder. An assembly without a file whose sources were never read in this
@@ -918,7 +926,19 @@ alone at another leg scale (four parts' poses, two joints back at the values the
   (`craft3d-cli serve --read-root a --write-root b`, paths written as if the file were beneath the read root). Both
   lead to their files now (a folder per source; the folder written into on disk), and a last check by text before the
   write refuses any path that would not. After the second, the open assembly holds a path that climbs out of its
-  read root: it keeps showing the part, read before, but cannot follow it until opened again by its full path. Still
+  read root: it keeps showing the part, read before, but cannot follow it until opened again by its full path, and
+  the save says so (`notFollowed`). The second round of that review (`review_asm_save_2.rs`) found the check's text
+  comparison wrong in three places: a folder named `..x` taken for one that climbs out of the root (the session then
+  followed one part while the file named another), a save into a folder reached through a link (the path led there by
+  the link's spelling, not on disk), and a root spelled two ways (`alias` and its target: the agent's own session
+  refused the path written, and the reverse refused an honest save). A path now climbs only when its first part is
+  `..`; two folder texts are one place where the file system spells both as one plain path; and a save into a folder
+  reached through a link, where the path written would not lead to the file on disk, is refused in words. Its third
+  round found that keeping a document's path in the file system's spelling (as a first answer did) broke Windows:
+  `asm::join` writes a share (a mapped drive's) or a verbatim path as another path, which was then kept, shown and read
+  from; that was taken out, and no resolved spelling is kept, shown or written. Open, as on main: an assembly opened
+  by an absolute path through a link to a folder at another depth joins its source paths with the link's text, so it
+  does not find them (it never did); saving it there is refused, saving it by the folder's own path works. Still
   refused, where the folder is truly not known: an assembly without a file whose sources were never read in this
   session (opened from bytes, or recovered where they cannot be read) saved where there is no read root. A recovered
   assembly without a file reads its sources beneath the first read root of the session it is recovered in (the

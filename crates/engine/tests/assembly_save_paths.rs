@@ -131,6 +131,7 @@ fn the_five_steps_of_the_report_keep_the_rod_found() {
     // 4: beneath the root, by its absolute path.
     let absolute = dir.join("work/abs/c.3dcraftasm");
     let saved = run(&mut s, "file.save", json!({ "path": text(&absolute) }));
+    // Kept exactly as given.
     assert_eq!(saved["path"], text(&absolute), "{saved}");
     assert_eq!(stored(&absolute), want);
     placed(&mut s, want, "the absolute save");

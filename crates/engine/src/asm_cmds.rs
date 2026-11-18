@@ -1830,13 +1830,22 @@ impl Relinker {
         if crate::asm_paths::is_absolute(key) {
             return Ok(key.to_string());
         }
-        let folder = self
+        let mut folder = self
             .read_from
             .get(key)
             .or(self.default_folder.as_ref())
             .ok_or_else(|| {
                 "it was not read in this session and the assembly has no file, so the folder it is relative to is not known here (there is no read root); read the sources first (assembly.reload where they can be read)".to_string()
             })?;
+        // Read beneath a root spelled another way than the write root
+        // (`alias` and the folder it is a link to): written as the write
+        // root spells it, where the two are one place.
+        if let Some(frame) = &self.write_frame
+            && folder != frame
+            && same_place(folder, frame)
+        {
+            folder = frame;
+        }
         asm::join(folder, key)
     }
 
@@ -1862,7 +1871,7 @@ impl Relinker {
                 self.old_base, self.new_base
             )
         };
-        let Some(folder) = &self.new_folder else {
+        if self.new_folder.is_none() {
             // In memory: names in one store, as text.
             let new = crate::asm_paths::relink(&self.old_base, old, &self.new_base)?;
             let now = asm::join(&self.new_base, &new)?;
@@ -1871,33 +1880,80 @@ impl Relinker {
             } else {
                 Err(lost(&new, &now, &key))
             };
-        };
-        let file = self.file_of(&key)?;
-        let name = file.rsplit(['/', '\\']).next().unwrap_or(&file);
-        let new = crate::asm_paths::relink(&asm::dir_of(&file), name, folder)?;
+        }
+        let (file, new, now) = self.written(&key)?;
         // The last line of defence: from the folder the file is written
-        // into, the new path names the file the old one named, by the
-        // text of both written the same way. Only string work.
-        let now = asm::join(folder, &new)?;
+        // into, the new path names the file the old one named, both
+        // written by `asm::join` from the texts as given.
         if now != file {
             return Err(lost(&new, &now, &file));
+        }
+        // On disk too: from a folder reached through a link, `..` climbs
+        // from where the link leads, not from the text (compared only
+        // where the file system spells both as plain paths).
+        if let Some(folder) = &self.new_folder
+            && let Some(real) = plain_real(folder)
+            && asm::join(folder, "").ok().as_deref() != Some(real.as_str())
+            && let Ok(there) = asm::join(&real, &new)
+            && !same_file(&there, &file)
+        {
+            return Err(format!(
+                "the folder `{folder}` is reached through a symbolic link (it is `{real}` on disk), from where `{new}` leads to `{there}`, not to `{file}`; save it by the folder's own path, `{real}`"
+            ));
         }
         // And this session never reads another file by it: a path kept
         // relative to the root is read beneath the read root, which may
         // not be the folder the file was written beneath (a read root that
-        // is not the write root). One that climbs out of the root is not
-        // read at all (the root refuses it; the bytes read stay).
+        // is not the write root). One that climbs out of the root (its
+        // first part `..`) is not read at all: the root refuses it, the
+        // bytes read stay, and the save says so (`not_followed`).
         let new_key = asm::join(&self.new_base, &new)?;
         if !crate::asm_paths::is_absolute(&new_key)
-            && !new_key.starts_with("..")
+            && !climbs(&new_key)
             && let Some(root) = &self.read_root
-            && asm::join(root, &new_key).ok().as_deref() != Some(file.as_str())
+            && !asm::join(root, &new_key).is_ok_and(|read| same_file(&read, &file))
         {
             return Err(format!(
                 "it is `{file}`, and this session, which reads beneath the read root `{root}`, would read another file by `{new_key}` (the file is written beneath another folder than the read root); give the path in full"
             ));
         }
         Ok(new)
+    }
+
+    /// The file the session's path `key` names, the path written for it
+    /// from the folder written into, and that folder joined with that
+    /// path: all from the texts as given. Not in memory.
+    fn written(&self, key: &str) -> Result<(String, String, String), String> {
+        let folder = self
+            .new_folder
+            .as_ref()
+            .ok_or_else(|| "files in memory have no folder".to_string())?;
+        let file = self.file_of(key)?;
+        let name = file.rsplit(['/', '\\']).next().unwrap_or(&file);
+        let new = crate::asm_paths::relink(&asm::dir_of(&file), name, folder)?;
+        let now = asm::join(folder, &new)?;
+        Ok((file, new, now))
+    }
+
+    /// The sources of `doc` (saved) the open assembly can no longer follow:
+    /// their path, joined with its folder, climbs out of the read root (a
+    /// read root that is not the write root), so the root refuses to read
+    /// them again; it shows the version read. Per instance: its name, its
+    /// source path, the path the session would read.
+    pub(crate) fn not_followed(&self, doc: &Document) -> Vec<(String, String, String)> {
+        let base = &self.new_base;
+        doc.assembly
+            .iter()
+            .flat_map(|a| a.instances.iter())
+            .filter_map(|instance| {
+                let Source::File { path, .. } = &instance.source else {
+                    return None;
+                };
+                let key = asm::join(base, path).ok()?;
+                (!crate::asm_paths::is_absolute(&key) && climbs(&key))
+                    .then(|| (instance.name.clone(), path.clone(), key))
+            })
+            .collect()
     }
 
     /// Whether the file is written into the folder the assembly's own
@@ -1919,14 +1975,11 @@ impl Relinker {
     /// the save: the same file, by the path the rewritten sources name it
     /// by. `None` where it cannot be told (it is read again).
     fn new_key(&self, key: &str) -> Option<String> {
-        let folder = self.new_folder.as_ref()?;
-        let file = self.file_of(key).ok()?;
-        if crate::asm_paths::is_absolute(&self.new_base) {
-            return Some(file);
+        let (file, new, now) = self.written(key).ok()?;
+        if now != file {
+            return None;
         }
-        let frame = self.write_frame.as_ref().unwrap_or(folder);
-        let name = file.rsplit(['/', '\\']).next().unwrap_or(&file);
-        crate::asm_paths::relink(&asm::dir_of(&file), name, frame).ok()
+        asm::join(&self.new_base, &new).ok()
     }
 
     /// The source files the open assembly read, carried over to the paths
@@ -1980,6 +2033,41 @@ impl Relinker {
         };
         state.invalidate();
     }
+}
+
+/// The folder `folder` as the file system spells it (`workspace::canonical`:
+/// its links followed), for comparing two folders only
+/// ([`crate::asm_paths::plain_spelling`]): `None` where the file system is
+/// not at hand (the browser), the folder is not there, or it is spelled as
+/// a share or a verbatim path. Never stored, shown or written.
+fn plain_real(folder: &str) -> Option<String> {
+    let real = crate::workspace::canonical(std::path::Path::new(folder)).ok()?;
+    crate::asm_paths::plain_spelling(real.to_str()?)
+}
+
+/// Whether the folders `a` and `b` are one place: the same text (written
+/// by [`asm::join`]), or the same as the file system spells both as plain
+/// paths ([`plain_real`]); anything else is two places.
+fn same_place(a: &str, b: &str) -> bool {
+    let text = |p: &str| asm::join(p, "").ok();
+    if text(a).is_some() && text(a) == text(b) {
+        return true;
+    }
+    matches!((plain_real(a), plain_real(b)), (Some(x), Some(y)) if x == y)
+}
+
+/// Whether the paths `a` and `b` name one file: the same name in folders
+/// that are one place ([`same_place`]; the file itself is not followed,
+/// so what may be read is not widened).
+fn same_file(a: &str, b: &str) -> bool {
+    let name = |p: &str| p.rsplit(['/', '\\']).next().map(str::to_string);
+    name(a) == name(b) && same_place(&asm::dir_of(a), &asm::dir_of(b))
+}
+
+/// Whether `path`'s first part is `..`, so that it climbs out of the
+/// folder it is relative to (a folder named `..x` does not).
+fn climbs(path: &str) -> bool {
+    path.split(['/', '\\']).next() == Some("..")
 }
 
 /// Whether an instance of `doc` refers to its source by a file's path.

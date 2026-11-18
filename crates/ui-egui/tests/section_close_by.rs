@@ -106,6 +106,23 @@ impl Window {
         (count(&output.shapes), took)
     }
 
+    /// One frame's shapes.
+    fn shapes(
+        &mut self,
+        shell: &mut Shell,
+        session: &mut Session,
+    ) -> Vec<egui::epaint::ClippedShape> {
+        self.time += 1.0 / 60.0;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)),
+            time: Some(self.time),
+            ..Default::default()
+        };
+        let mut output = self.ctx.run_ui(input, |ui| shell.ui(ui, session));
+        output.textures_delta.clear();
+        output.shapes
+    }
+
     /// `n` frames: the most shapes one of them painted, and the longest
     /// one took.
     fn frames(&mut self, shell: &mut Shell, session: &mut Session, n: usize) -> (usize, Duration) {
@@ -432,7 +449,7 @@ fn the_dashes_keep_their_place_however_much_of_the_line_is_cut_off() {
 #[test]
 fn a_side_of_any_length_takes_at_most_the_cap() {
     // Handed a side however long (here 1e9 points), the dashing stops at
-    // the cap, at once; nothing that is not a number is dashed.
+    // the cap, at once; a side that is not a number draws nothing.
     let side = DashedSide {
         ends: [pos2(0.0, 0.0), pos2(1e9, 0.0)],
         phase: 0.0,
@@ -454,10 +471,95 @@ fn a_side_of_any_length_takes_at_most_the_cap() {
         phase: f32::NAN,
     };
     assert!(outline_dashes(&[odd], [5.0, 4.0]).is_empty());
-    assert!(outline_dashes(&[side], [0.0, 4.0]).is_empty());
-    assert!(outline_dashes(&[side], [f32::NAN, 4.0]).is_empty());
-    // No gap: each side whole.
+    // No gap, or a pattern that is none (the review of 2026-11-18: a solid
+    // line is friendlier than no outline at all): each side whole.
+    for pattern in [
+        [0.0, 4.0],
+        [f32::NAN, 4.0],
+        [5.0, -4.0],
+        [f32::INFINITY, 4.0],
+    ] {
+        assert_eq!(
+            outline_dashes(&[side], pattern),
+            vec![side.ends],
+            "{pattern:?}"
+        );
+    }
     assert_eq!(outline_dashes(&[side], [5.0, 0.0]), vec![side.ends]);
+}
+
+#[test]
+fn close_by_nothing_is_painted_off_the_view() {
+    // The review of 2026-11-18: close by, the CPU path painted its edges
+    // whole in pieces, nearly all of them off the view (77 168 pieces,
+    // 76 909 off it, on a grid of blocks), and the cap's outline whole. A
+    // piece that cannot show is now left out: one egui's tessellator
+    // leaves out anyway (`shell.rs` ›
+    // `a_piece_left_out_is_one_the_tessellator_leaves_out`), so the
+    // picture is the same. With the section and without.
+    let mut session = machine_box();
+    let (mut shell, mut window, fitted) = sectioned(&mut session);
+    let close = [
+        face_on(8.0, ProjectionKind::Perspective),
+        CameraState {
+            target: [255.0, 205.0, 465.0],
+            distance: 8.0,
+            yaw: 70.0,
+            pitch: 55.0,
+            ..fitted
+        },
+        face_on(fitted.distance * 1e-2, ProjectionKind::Orthographic),
+    ];
+    for on in [true, false] {
+        call(
+            &mut shell,
+            &mut session,
+            "ui.set",
+            json!({"section": {"on": on}}),
+        );
+        for camera in &close {
+            call(
+                &mut shell,
+                &mut session,
+                "ui.set",
+                json!({"camera": camera_json(camera)}),
+            );
+            window.frames(&mut shell, &mut session, 2);
+            let shapes = window.shapes(&mut shell, &mut session);
+            let viewport = shell.viewport_rect().unwrap();
+            // Past the section's dashes (8 points) and a stroke.
+            let room = viewport.expand(12.0);
+            fn walk(shape: &egui::Shape, out: &mut Vec<([Pos2; 2], f32)>) {
+                match shape {
+                    egui::Shape::LineSegment { points, stroke } => {
+                        out.push((*points, stroke.width))
+                    }
+                    egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+                    _ => {}
+                }
+            }
+            let mut segments = Vec::new();
+            for clipped in shapes
+                .iter()
+                .filter(|c| viewport.contains_rect(c.clip_rect))
+            {
+                walk(&clipped.shape, &mut segments);
+            }
+            let off: Vec<_> = segments
+                .iter()
+                .filter(|([a, b], width)| {
+                    !room.intersects(Rect::from_two_pos(*a, *b).expand(*width))
+                })
+                .collect();
+            assert!(
+                off.is_empty(),
+                "section {on}, {camera:?}: {} of {} segments off the view, as {:?}",
+                off.len(),
+                segments.len(),
+                off.first()
+            );
+        }
+    }
 }
 
 #[test]

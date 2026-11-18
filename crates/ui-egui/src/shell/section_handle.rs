@@ -1267,10 +1267,13 @@ pub fn dashed_sides(
     viewport: Rect,
     [dash, gap]: [f32; 2],
 ) -> Vec<DashedSide> {
+    // A pattern that is none is drawn whole ([`outline_dashes`]): any period.
     let period = f64::from(dash) + f64::from(gap);
-    if !(dash > 0.0 && gap >= 0.0 && period.is_finite()) {
-        return Vec::new();
-    }
+    let period = if dash > 0.0 && gap >= 0.0 && period.is_finite() {
+        period
+    } else {
+        1.0
+    };
     let n = corners.len();
     let mut sides: Vec<Option<ScreenSide>> = (0..n)
         .map(|k| {
@@ -1364,14 +1367,13 @@ pub fn dashed_sides(
 /// The dashes of `sides`, `dash` on and `gap` off along each from its
 /// phase (a dash across a corner goes on round it, as along one path), at
 /// most [`MAX_OUTLINE_DASHES`] in all however long the sides are; a gap of
-/// nothing draws each side whole.
+/// nothing, or a pattern that is none (a dash of nothing, a gap below 0,
+/// not a number), draws each side whole.
 pub fn outline_dashes(sides: &[DashedSide], [dash, gap]: [f32; 2]) -> Vec<[Pos2; 2]> {
     let (dash, gap) = (f64::from(dash), f64::from(gap));
     let period = dash + gap;
+    let solid = !(dash > 0.0 && gap > 0.0 && period.is_finite());
     let mut out: Vec<[Pos2; 2]> = Vec::new();
-    if !(dash > 0.0 && gap >= 0.0 && period.is_finite()) {
-        return out;
-    }
     for side in sides {
         if out.len() >= MAX_OUTLINE_DASHES {
             break;
@@ -1387,7 +1389,7 @@ pub fn outline_dashes(sides: &[DashedSide], [dash, gap]: [f32; 2]) -> Vec<[Pos2;
         if !(long.is_finite() && long > 0.0) {
             continue;
         }
-        if gap <= 0.0 {
+        if solid {
             out.push(side.ends);
             continue;
         }

@@ -1263,6 +1263,8 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         save_to_disk(&resolved, &document, png.as_deref().map(Vec::as_slice)).map_err(cannot)?;
     }
     let open = session.document_mut()?;
+    let kept = crate::workspace::kept_path(&access, &path, &resolved);
+    let mut not_followed = Vec::new();
     if let Some(relinker) = &rebase {
         // The state written was rewritten whole above. A state undo or
         // redo reaches whose sources cannot be (an instance deleted since,
@@ -1272,9 +1274,9 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         // The files read stay the files read, under the paths the
         // rewritten sources name them by.
         relinker.carry(&mut open.asm);
+        not_followed = relinker.not_followed(&document);
     }
     open.mark_saved();
-    let kept = crate::workspace::kept_path(&access, &path, &resolved);
     open.path = Some(kept.clone());
     open.disk = file_stamp(in_memory, &resolved);
     open.file = file_on_disk(in_memory, &resolved);
@@ -1285,6 +1287,24 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     // document without one).
     open.title = None;
     let mut result = json!({ "path": kept });
+    // A source the saved assembly can no longer follow (its path climbs
+    // out of the read root: a read root that is not the write root) is
+    // said, as a field and as a warning the status bar counts.
+    let mut warnings: Vec<Value> = not_followed
+        .iter()
+        .map(|(instance, source, key)| {
+            Value::from(format!(
+                "instance `{instance}`: this session can no longer follow its source `{source}` (read as `{key}`, which leaves the read root); it shows the version read; open the assembly by its full path to follow it"
+            ))
+        })
+        .collect();
+    if let (false, Some(map)) = (not_followed.is_empty(), result.as_object_mut()) {
+        let list: Vec<Value> = not_followed
+            .iter()
+            .map(|(instance, source, key)| json!({ "instance": instance, "source": source, "path": key }))
+            .collect();
+        map.insert("notFollowed".into(), list.into());
+    }
     // The open assemblies that have this file as a source follow it
     // (`asm_follow.rs`): what an instance shows is what was saved. Not
     // the one saved, whose sources the save did not change: read again
@@ -1293,19 +1313,20 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     let active = session.active;
     let followed = session.follow_sources(None, Some(active), Some(&resolved));
     if let (false, Some(map)) = (followed.is_empty(), result.as_object_mut()) {
-        let warnings: Vec<Value> = followed
-            .iter()
-            .flat_map(|(_, read)| read.failed.iter())
-            .map(|(path, why)| {
-                Value::from(format!(
-                    "the source `{path}` of an open assembly could not be read again: {why}; it shows the last version read"
-                ))
-            })
-            .collect();
+        warnings.extend(
+            followed
+                .iter()
+                .flat_map(|(_, read)| read.failed.iter())
+                .map(|(path, why)| {
+                    Value::from(format!(
+                        "the source `{path}` of an open assembly could not be read again: {why}; it shows the last version read"
+                    ))
+                }),
+        );
         map.insert("followed".into(), session.followed_json(&followed).into());
-        if !warnings.is_empty() {
-            map.insert("warnings".into(), warnings.into());
-        }
+    }
+    if let (false, Some(map)) = (warnings.is_empty(), result.as_object_mut()) {
+        map.insert("warnings".into(), warnings.into());
     }
     if let Some(map) = result.as_object_mut()
         && wants_thumbnail
