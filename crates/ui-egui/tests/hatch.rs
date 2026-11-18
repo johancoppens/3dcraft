@@ -14,7 +14,10 @@
 )]
 
 use craft3d_engine::{Session, Workspace};
+use craft3d_math::Vec3;
 use craft3d_render::{RenderParams, SECTION_FACE};
+use craft3d_ui_egui::camera::Projector;
+use craft3d_ui_egui::viewport::{self, LineKind};
 use craft3d_ui_egui::{RendererChoice, Shell};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -293,4 +296,107 @@ fn without_a_section_the_window_draws_no_cap() {
             .count(),
         0
     );
+}
+
+/// The cut's outline is drawn at twice the edges' width (the verdict's fix
+/// 6), so parts that touch read apart on the cut: two blocks side by side,
+/// cut across both, seen from the cut's side. The outline between them is
+/// a line of `cut_outline_width` in the lines over the picture, and the
+/// picture has two pixels' worth of ink across it.
+#[test]
+fn the_cuts_outline_is_twice_the_edges_width_so_touching_parts_read_apart() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({"units": "mm"}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({"name": "Left", "size": [10, 10, 10]}),
+    );
+    run(
+        &mut session,
+        "feature.block",
+        json!({"name": "Right", "size": [10, 10, 10], "position": [10, 0, 0]}),
+    );
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let tokens = shell.tokens;
+    assert_eq!(tokens.cut_outline_width, 2.0 * tokens.edge_width);
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"camera": {"projection": "orthographic"}}),
+    );
+    call(&mut shell, &mut session, "ui.fit", json!({"view": "front"}));
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"section": {"on": true, "plane": "zx", "offset": 5}}),
+    );
+    let eye = shell.state.camera.to_render().eye;
+    let plane = shell.section().unwrap();
+    if (eye - plane.origin).dot(plane.normal) < 0.0 {
+        call(
+            &mut shell,
+            &mut session,
+            "ui.set",
+            json!({"section": {"flip": true}}),
+        );
+    }
+    let scene = session.scene_with(shell.scene_quality()).unwrap().unwrap();
+    let [width, height] = shell.viewport_size();
+    let camera = shell.state.camera;
+    let projector =
+        Projector::new(&camera.to_render(), f64::from(width), f64::from(height)).unwrap();
+    let at = |x: f64, z: f64| {
+        let p = projector.project(Vec3::new(x, 5.0, z)).unwrap();
+        [p.x, p.y]
+    };
+    // The lines: the outline between the blocks, along x = 10, at the
+    // outline's width.
+    let marks = shell.marks(Some(scene.as_ref()));
+    let overlay =
+        viewport::overlay_untested(Some(scene.as_ref()), &camera, width, height, None, &marks);
+    let column = at(10.0, 5.0)[0];
+    let between: Vec<_> = overlay
+        .lines
+        .iter()
+        .filter(|l| l.kind == LineKind::CutOutline)
+        .filter(|l| (l.from[0] - column).abs() < 1.0 && (l.to[0] - column).abs() < 1.0)
+        .collect();
+    assert!(!between.is_empty(), "no outline between the blocks");
+    for line in &between {
+        assert_eq!(line.width(&tokens), tokens.cut_outline_width);
+    }
+    // The picture: across the boundary, two pixels' worth of ink in every
+    // row of the cut's middle.
+    let shot = call(
+        &mut shell,
+        &mut session,
+        "ui.screenshot",
+        json!({"scale": 1.0}),
+    );
+    let (w, h, rgb) = decode(&shot);
+    assert_eq!([w, h], [width, height]);
+    evidence("touching-blocks-cut.png", w, h, &rgb);
+    let (top, bottom) = (at(10.0, 8.0)[1], at(10.0, 2.0)[1]);
+    let paper = f64::from(tokens.section_paper[0]);
+    let ink = f64::from(tokens.edge[0]);
+    let mut rows = 0;
+    let mut y = top.ceil() as usize;
+    while (y as f64) < bottom {
+        let x0 = column.floor() as usize;
+        let coverage: f64 = (x0 - 4..=x0 + 4)
+            .map(|x| {
+                ((paper - f64::from(rgb[(y * w as usize + x) * 3])) / (paper - ink)).clamp(0.0, 1.0)
+            })
+            .sum();
+        assert!(
+            coverage >= 1.6,
+            "row {y}: {coverage} pixels of ink across the boundary"
+        );
+        rows += 1;
+        y += 3;
+    }
+    assert!(rows > 5, "{rows} rows");
 }

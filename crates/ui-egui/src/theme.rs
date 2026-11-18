@@ -239,6 +239,14 @@ pub struct Tokens {
     pub hover_width: f32,
     pub hover_edge_width: f32,
     pub hover_radius: f32,
+    /// Under the hover's amber a dark casing, `hover_casing_width` wider on
+    /// each side, as the dimension line's: the plates' ink, opaque (the
+    /// lines over the picture have no alpha of their own).
+    pub hover_casing: Rgb,
+    pub hover_casing_width: f32,
+    /// The outline of a section's cut, in the edges' colour: twice their
+    /// width, so parts that touch read apart on the cut.
+    pub cut_outline_width: f32,
     /// The box dragged to select (Ctrl and a drag): its fill, the
     /// selection's colour (`face_highlight`) at this opacity (0 to 255),
     /// and its outline's width in points.
@@ -1036,6 +1044,9 @@ impl Tokens {
             hover_width: 1.5,
             hover_edge_width: 2.0,
             hover_radius: 2.0,
+            hover_casing: [22, 21, 20],
+            hover_casing_width: 1.0,
+            cut_outline_width: 2.0,
             select_box_opacity: 31,
             select_box_width: 1.5,
             pick_radius: 4.0,

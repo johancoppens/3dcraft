@@ -68,6 +68,14 @@ pub enum LineKind {
     /// The edge a click would select, or as a dot the vertex
     /// ([`Marks::hover_edges`], [`Marks::hover_points`]).
     HoverEdge,
+    /// The dark casing under [`LineKind::Hover`] and [`LineKind::HoverEdge`],
+    /// as the dimension line has: the amber reads on any body's colour.
+    HoverCasing,
+    HoverEdgeCasing,
+    /// Where the section's plane meets a body: the outline of the cut,
+    /// drawn thicker than the edges, so parts that touch read apart on the
+    /// cut (outline thick, hatching thin, as on a drawing).
+    CutOutline,
 }
 
 /// The surface analysis the viewport draws (`craft3d_render::analysis`),
@@ -396,6 +404,8 @@ impl LineKind {
             LineKind::Trace => tokens.trace,
             LineKind::Comb => tokens.comb,
             LineKind::Hover | LineKind::HoverEdge => tokens.face_highlight,
+            LineKind::HoverCasing | LineKind::HoverEdgeCasing => tokens.hover_casing,
+            LineKind::CutOutline => tokens.edge,
         }
     }
 
@@ -416,6 +426,9 @@ impl LineKind {
             LineKind::Comb => tokens.comb_width,
             LineKind::Hover => tokens.hover_width,
             LineKind::HoverEdge => tokens.hover_edge_width,
+            LineKind::HoverCasing => tokens.hover_width + 2.0 * tokens.hover_casing_width,
+            LineKind::HoverEdgeCasing => tokens.hover_edge_width + 2.0 * tokens.hover_casing_width,
+            LineKind::CutOutline => tokens.cut_outline_width,
         }
     }
 
@@ -435,6 +448,9 @@ impl LineKind {
         match self {
             LineKind::Highlight => tokens.highlight_radius,
             LineKind::Hover | LineKind::HoverEdge => tokens.hover_radius,
+            LineKind::HoverCasing | LineKind::HoverEdgeCasing => {
+                tokens.hover_radius + tokens.hover_casing_width
+            }
             LineKind::Datum => tokens.datum_point_radius,
             _ => tokens.point_radius,
         }
@@ -1647,7 +1663,7 @@ fn build_overlay(
         }
     }
     for &[a, b] in marks.into_iter().flat_map(Marks::outline) {
-        line_of(a, b, LineKind::Edge, true, see_through, None, 0.0);
+        line_of(a, b, LineKind::CutOutline, true, see_through, None, 0.0);
     }
     let length = camera.distance * AXIS_LENGTH;
     for (axis, direction) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
@@ -1726,8 +1742,14 @@ fn build_overlay(
             line_of(a, b, LineKind::Highlight, true, true, None, 0.0);
         }
     }
-    // What a click would select, where it is in sight.
+    // What a click would select, where it is in sight: its dark casing,
+    // then the amber over it.
     for (kind, lines) in [
+        (LineKind::HoverCasing, marks.map(|marks| &marks.hover_lines)),
+        (
+            LineKind::HoverEdgeCasing,
+            marks.map(|marks| &marks.hover_edges),
+        ),
         (LineKind::Hover, marks.map(|marks| &marks.hover_lines)),
         (LineKind::HoverEdge, marks.map(|marks| &marks.hover_edges)),
     ] {
@@ -1790,11 +1812,13 @@ fn build_overlay(
             && let Some(p) = projector.project(*point)
             && !map.is_some_and(|map| map.covers(p.x, p.y, p.depth))
         {
-            out.points.push(OverlayPoint {
-                at: [p.x, p.y],
-                kind: LineKind::HoverEdge,
-                hidden: false,
-            });
+            for kind in [LineKind::HoverEdgeCasing, LineKind::HoverEdge] {
+                out.points.push(OverlayPoint {
+                    at: [p.x, p.y],
+                    kind,
+                    hidden: false,
+                });
+            }
         }
     }
     out

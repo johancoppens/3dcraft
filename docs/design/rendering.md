@@ -2305,6 +2305,11 @@ and `view.render` show paper and ink).
   the CPU the stretches of a line are split by depth only and would have to be split by occluder. Not a
   small mend: not done.
 
+- *After the UX verdict (2026-11-18):* the cut's outline is a kind of its own (`LineKind::CutOutline`), drawn
+  at `Tokens::cut_outline_width`, twice the edges' width, on both drawing paths and in `ui.screenshot`, so parts
+  that touch read apart on the cut until the hatching has a direction per body (outline thick, hatching thin,
+  as on a drawing).
+
 ### What a click would select, under the pointer (2026-11-18)
 
 The UX round's V7 (`ui-egui/src/shell/hover.rs`). Where the mouse rests over the model with no button down
@@ -2326,6 +2331,12 @@ is down, a finger touches, the camera moves, the *select other* list is open, a 
 made for the last pick: no work grows with the zoom or a projected length. The control channel places the
 pointer without a click (`ui.pick {x, y, hover: true}`; `ui.get` › `hovered`), which stays until the mouse
 moves over the viewport, so pictures can show hover states.
+
+*After the UX verdict (2026-11-18):* the amber wears a dark casing, as the dimension line does: under it a line
+`hover_casing_width` wider on each side in `Tokens::hover_casing` (the plates' ink, opaque: the lines over the
+picture have no alpha of their own), so it reads on any body's colour. The place the pointer rests
+(`Shell::hover_point`) is kept apart from what it points at: on a note's pin `ui.get` › `hovered` is
+`{kind: "note", id, x, y, serial}`, nothing of the model is outlined, and the pin reads the place to light up.
 
 *Measured on the build server (2026-11-18,* `ui-egui/tests/hover.rs` › `hover_cost_on_thousands_of_faces`*):* 20 × 20
 drilled cubes, 2800 faces and 54 400 triangles, 121 places over the iso view twice. A pick costs 10.1 ms

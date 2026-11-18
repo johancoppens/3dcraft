@@ -528,7 +528,7 @@ fn a_pick_on_the_cut_open_viewport_is_what_is_seen_and_edges_end_at_the_plane() 
         .0
         .lines
         .iter()
-        .filter(|l| l.kind == LineKind::Edge)
+        .filter(|l| matches!(l.kind, LineKind::Edge | LineKind::CutOutline))
         .count();
 
     // Cut at 10: in the middle the wall of the cavity (below the plane),
@@ -569,12 +569,14 @@ fn a_pick_on_the_cut_open_viewport_is_what_is_seen_and_edges_end_at_the_plane() 
     for _ in 0..2 {
         window.frame(&mut shell, &mut session, Vec::new());
     }
+    // (The outline of the cut is a kind of its own since 2026-11-18,
+    // drawn thicker: still an edge here.)
     let edges_cut = shell
         .overlay()
         .0
         .lines
         .iter()
-        .filter(|l| l.kind == LineKind::Edge)
+        .filter(|l| matches!(l.kind, LineKind::Edge | LineKind::CutOutline))
         .count();
     assert!(
         edges_cut > edges_whole + 16,
@@ -588,7 +590,7 @@ fn a_pick_on_the_cut_open_viewport_is_what_is_seen_and_edges_end_at_the_plane() 
     let rows: Vec<f64> = overlay
         .lines
         .iter()
-        .filter(|l| l.kind == LineKind::Edge)
+        .filter(|l| matches!(l.kind, LineKind::Edge | LineKind::CutOutline))
         .flat_map(|l| [l.from[1], l.to[1]])
         .collect();
     let (top, bottom) = (
