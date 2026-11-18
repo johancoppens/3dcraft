@@ -1430,9 +1430,6 @@ fn listed(folder: &str, suffix: &str) -> Vec<PathBuf> {
     found
 }
 
-/// Every own body of `doc` at its tolerance and at `coarse` (when that is
-/// coarser), each surface once per tolerance; documents with a finding
-/// printed, the sums added up; and the regeneration's time.
 thread_local! {
     /// The rule as built (`craft3d_topo::folds`), per test thread: at the
     /// documents' own tolerance and at 0.01: warnings, places not proven,
