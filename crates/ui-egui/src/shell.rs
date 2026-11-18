@@ -4277,17 +4277,15 @@ impl Shell {
         }
         // The renderer's numbers only while a document is shown: the start
         // screen has no picture to speak of (2026-11-10).
-        // Not a count of 0 for a scene that has triangles: the numbers of a
-        // picture from before the scene came (the first frames after an
-        // open: the UX verdict of 2026-11-18); the next picture's come.
-        let scene_triangles = self
-            .shown_scene
-            .as_ref()
-            .map_or(0, |scene| scene.triangles());
+        // Never a count of 0: a picture of nothing says nothing worth the
+        // room, and the bar is laid out before the viewport draws, so the
+        // first frames after an open would say the empty document's 0
+        // beside the model (the UX verdict of 2026-11-18); the next
+        // picture's numbers come.
         let stats = self
             .stats
             .filter(|_| status.is_some())
-            .filter(|stats| stats.triangles > 0 || scene_triangles == 0);
+            .filter(|stats| stats.triangles > 0);
         self.status_render = status
             .is_some()
             .then(|| self.stats.as_ref().map(RenderStats::key));
