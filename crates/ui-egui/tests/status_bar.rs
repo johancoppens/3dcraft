@@ -33,7 +33,8 @@ fn items() -> Vec<StatusFit> {
         item(StatusSlot::Units, 50.0, 50.0),
         item(StatusSlot::Path, 400.0, 48.0),
         item(StatusSlot::Autosave, 120.0, 48.0),
-        item(StatusSlot::Selection, 180.0, 48.0),
+        item(StatusSlot::Selection, 180.0, 180.0),
+        item(StatusSlot::Hint, 300.0, 48.0),
         item(StatusSlot::Command, 60.0, 60.0),
         item(StatusSlot::Answer, 500.0, 48.0),
         item(StatusSlot::Work, 250.0, 48.0),
@@ -48,10 +49,10 @@ fn total(widths: &[Option<f32>], gap: f32) -> f32 {
 }
 
 /// Wide enough, every item is as wide as it wants. Narrower, never more
-/// than the room there is: the answer is elided first, then the autosave
-/// and then the path; then the answer and the command go, then the
-/// autosave, the path, the work in progress, the renderer's numbers, and
-/// the units last. An item
+/// than the room there is: the answer is elided first, then the autosave,
+/// the hint and the path; then the answer and the command go, then the
+/// renderer's numbers, the autosave, the hint, the path, the work in
+/// progress, the selection (never elided), and the units last. An item
 /// that has gone never comes back in a narrower bar, and none is narrower
 /// than its least width.
 #[test]

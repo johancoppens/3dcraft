@@ -414,6 +414,7 @@ impl Shell {
             "render": render,
             "section": self.section_report(),
             "measurement": self.measurement_json(),
+            "hint": self.status_hint(),
             "notes": self.notes_counts_json(),
             "lastCommand": self.last_command.as_ref().map(|report| json!({
                 "label": report.label, "ok": report.ok, "text": report.text,
