@@ -1006,17 +1006,16 @@ pub fn dashed_sides(
             perimeter += screen_length(*a, *b);
         }
         if perimeter > 0.0 && area.abs() / perimeter < 1.5 {
-            let mut far: (f64, Option<([f64; 2], [f64; 2])>) = (0.0, None);
+            let (mut most, mut far) = (0.0_f64, None);
             for a in &points {
                 for b in &points {
                     let d = screen_length(*a, *b);
-                    if d > far.0 {
-                        far = (d, Some((*a, *b)));
+                    if d > most {
+                        (most, far) = (d, Some((*a, *b)));
                     }
                 }
             }
             sides = far
-                .1
                 .map(|(a, b)| vec![Some((a, b, [false, false]))])
                 .unwrap_or_default();
         }
