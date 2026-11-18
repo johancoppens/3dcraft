@@ -199,8 +199,8 @@ impl Hatching {
         camera: &Camera,
         height: u32,
     ) -> Option<Hatching> {
-        let (u, v) = hatch_frame(normal)?;
         let normal = normal.normalized()?;
+        let (u, v) = hatch_frame(normal)?;
         let axes = camera.axes().ok()?;
         let pixels = f64::from(height.max(1));
         let points = hatch
@@ -333,9 +333,13 @@ impl Hatching {
     }
 
     /// The cap's colour at `p`: the paper mixed with the ink by
-    /// [`Self::coverage`], rounded per channel. Unshaded.
+    /// [`Self::coverage`], rounded per channel. Unshaded. The coverage is
+    /// taken to a whole number of 255ths first: an odd denominator, so the
+    /// mix of two whole bytes is never a half and both renderers round it
+    /// alike (the mean tone fell on halves, 221.5, which the GPU's
+    /// conversion and the CPU's rounding took to different bytes).
     pub fn color(&self, p: Vec3, distance: f64) -> [u8; 3] {
-        let c = self.coverage(p, distance);
+        let c = (self.coverage(p, distance) * 255.0).round() / 255.0;
         let mut out = self.paper;
         for (channel, ink) in out.iter_mut().zip(self.ink) {
             let paper = f64::from(*channel);

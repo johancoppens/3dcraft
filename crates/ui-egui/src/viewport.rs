@@ -1736,12 +1736,6 @@ fn build_overlay(
             }
         }
     }
-    // What is pointed at, over everything else.
-    for &[a, b] in marks.into_iter().flat_map(|marks| &marks.lines) {
-        if let Some([a, b]) = kept(a, b) {
-            line_of(a, b, LineKind::Highlight, true, true, None, 0.0);
-        }
-    }
     // What a click would select, where it is in sight: its dark casing,
     // then the amber over it.
     for (kind, lines) in [
@@ -1757,6 +1751,12 @@ fn build_overlay(
             if let Some([a, b]) = kept(a, b) {
                 line_of(a, b, kind, true, false, None, 0.0);
             }
+        }
+    }
+    // What is pointed at, over everything else.
+    for &[a, b] in marks.into_iter().flat_map(|marks| &marks.lines) {
+        if let Some([a, b]) = kept(a, b) {
+            line_of(a, b, LineKind::Highlight, true, true, None, 0.0);
         }
     }
     for sketch in shown_sketches(scene, marks) {
@@ -1796,17 +1796,6 @@ fn build_overlay(
             });
         }
     }
-    for point in marks.into_iter().flat_map(|marks| &marks.points) {
-        if kept(*point, *point).is_some()
-            && let Some(p) = projector.project(*point)
-        {
-            out.points.push(OverlayPoint {
-                at: [p.x, p.y],
-                kind: LineKind::Highlight,
-                hidden: map.is_some_and(|map| map.covers(p.x, p.y, p.depth)),
-            });
-        }
-    }
     for point in marks.into_iter().flat_map(|marks| &marks.hover_points) {
         if kept(*point, *point).is_some()
             && let Some(p) = projector.project(*point)
@@ -1819,6 +1808,17 @@ fn build_overlay(
                     hidden: false,
                 });
             }
+        }
+    }
+    for point in marks.into_iter().flat_map(|marks| &marks.points) {
+        if kept(*point, *point).is_some()
+            && let Some(p) = projector.project(*point)
+        {
+            out.points.push(OverlayPoint {
+                at: [p.x, p.y],
+                kind: LineKind::Highlight,
+                hidden: map.is_some_and(|map| map.covers(p.x, p.y, p.depth)),
+            });
         }
     }
     out

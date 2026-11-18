@@ -1775,7 +1775,10 @@ fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transpare
         assert_eq!((moving.width, moving.height, moving.ssaa), (w, h, 1));
         assert_eq!(moving.renderer, Backend::Gpu);
     }
-    assert_eq!(shell.render_count(), count + 5);
+    // And two more since the hover (2026-11-18): the pointer arriving
+    // on the model outlines the face under it, and the press takes the
+    // outline away, a picture each (`shell/hover.rs`).
+    assert_eq!(shell.render_count(), count + 5 + 2);
 
     // The screenshot is still the oracle's, on the CPU, of the same size.
     let shot = call(

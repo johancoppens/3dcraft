@@ -2309,6 +2309,9 @@ and `view.render` show paper and ink).
   at `Tokens::cut_outline_width`, twice the edges' width, on both drawing paths and in `ui.screenshot`, so parts
   that touch read apart on the cut until the hatching has a direction per body (outline thick, hatching thin,
   as on a drawing).
+- *After the code review:* the coverage is taken to a whole number of 255ths before the mix (both renderers),
+  so the mix of two whole bytes is never a half: the mean tone fell on halves (221.5) that the GPU's conversion
+  and the CPU's rounding took to different bytes. The frame is built from the normal made unit first.
 
 ### What a click would select, under the pointer (2026-11-18)
 
@@ -2337,6 +2340,15 @@ moves over the viewport, so pictures can show hover states.
 picture have no alpha of their own), so it reads on any body's colour. The place the pointer rests
 (`Shell::hover_point`) is kept apart from what it points at: on a note's pin `ui.get` › `hovered` is
 `{kind: "note", id, x, y, serial}`, nothing of the model is outlined, and the pin reads the place to light up.
+
+*After the code review (2026-11-18):* a thing already selected, or lit by the last click, is not outlined (a
+person who has just clicked it needs no outline of what a click would select there; `hovered` still names it),
+and the hover is drawn under the selection's light on both paths. Once the median pick under the pointer passes
+16 ms on the model shown (`HOVER_MAX_MS`: about 100 000 triangles today) the frames make no more picks there;
+`ui.pick` with `hover` still places one, and a model of another size (half or twice the triangles) is measured
+again. What the hover found on a scene that is no longer shown (an edit, another tab) is neither named nor drawn
+until the next frame looks again. Still owed: on the CPU drawing path a change of the outline makes a new
+picture (it is part of the picture's key); drawing it over the picture needs the shown frame's depth kept.
 
 *Measured on the build server (2026-11-18,* `ui-egui/tests/hover.rs` › `hover_cost_on_thousands_of_faces`*):* 20 × 20
 drilled cubes, 2800 faces and 54 400 triangles, 121 places over the iso view twice. A pick costs 10.1 ms

@@ -147,7 +147,9 @@ fn section_hatch_color(rel: vec3<f32>) -> vec3<f32> {
             c = clamp(mean + fade * (line - mean), 0.0, 1.0);
         }
     }
-    return mix(paper, scene.section_ink.rgb, c);
+    // A whole number of 255ths (`Hatching::color`): never a half between
+    // two bytes, so the conversion to bytes rounds it as the CPU does.
+    return mix(paper, scene.section_ink.rgb, round(c * 255.0) / 255.0);
 }
 
 struct VertexIn {
