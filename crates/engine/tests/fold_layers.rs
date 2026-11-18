@@ -153,7 +153,7 @@ struct Chart {
     sags: Vec<Vec<f64>>,
 }
 
-const PER_EDGE: usize = 96;
+const PER_EDGE: usize = 1024;
 
 fn chart(body: &Body, face: &Face) -> Chart {
     let surface = &face.surface;
