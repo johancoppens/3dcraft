@@ -1099,6 +1099,10 @@ pub struct Shell {
     hints: hints::Hints,
     /// An Escape of this frame is another part's (`selection.rs`).
     esc_elsewhere: bool,
+    /// A field had the keys at the end of the last frame: an Escape is
+    /// that field's (egui lets go of the focus on Escape before a frame's
+    /// widgets run, so this frame cannot tell).
+    keys_taken: bool,
     /// The box the camera was last fitted to automatically.
     framed: Bbox3,
     /// What the camera follows while it fits by itself: the opening
@@ -1688,6 +1692,7 @@ impl Shell {
             dimension: None,
             hints: hints::Hints::default(),
             esc_elsewhere: false,
+            keys_taken: false,
             framed: Bbox3::EMPTY,
             following: views::Following::Opening,
             themed: false,
@@ -3155,6 +3160,7 @@ impl Shell {
     /// Draws the whole shell into `ui` (the window's root) for one frame.
     pub fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session) {
         self.ui_with(ui, Some(session));
+        self.keys_taken = ui.ctx().memory(|m| m.focused().is_some());
     }
 
     /// Draws the shell for one frame while its session is away, doing work
@@ -3164,6 +3170,7 @@ impl Shell {
     /// (the recovery bar's buttons) waits.
     pub fn ui_away(&mut self, ui: &mut egui::Ui) {
         self.ui_with(ui, None);
+        self.keys_taken = ui.ctx().memory(|m| m.focused().is_some());
     }
 
     /// Lets the presentation be other than `full` (`ui.set`,
@@ -5350,6 +5357,7 @@ impl Shell {
         // the selection; never the section. A field in a panel with the
         // keys, and a menu, dialog or list of another part's, take it.
         if !ui.ctx().egui_wants_keyboard_input()
+            && !self.keys_taken
             && ui.input(|i| i.key_pressed(help::CLEAR_KEY))
             && self.escape_step(self.esc_elsewhere).is_some()
         {

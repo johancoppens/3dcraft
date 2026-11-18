@@ -611,13 +611,20 @@ impl Shell {
             // before the first), so its buttons are never out of reach;
             // at most what leaves the tab three rows (review-pins 2b: on a
             // short window Measure and Copy name ended below the panel).
-            let wanted = self
-                .side
-                .card_content
-                .filter(|h| h.is_finite() && *h > 0.0)
-                .unwrap_or_else(|| self.props_height());
             let room = ui.available_height();
             let most = (room - 3.0 * tokens.row_height).max(room * 0.5);
+            // Where the whole card has no room, its short form, as the
+            // Features tab has it (the card opens with its number since
+            // the UX round of 2026-11-18, V4, and is taller).
+            let compact = self.props_height() > most;
+            let wanted = if compact {
+                self.props_compact_height()
+            } else {
+                self.side
+                    .card_content
+                    .filter(|h| h.is_finite() && *h > 0.0)
+                    .unwrap_or_else(|| self.props_height())
+            };
             let height = wanted.min(most).max(0.0);
             let mut drawn = None;
             egui::Panel::bottom("craft3d-side-selection")
@@ -631,11 +638,15 @@ impl Shell {
                         .show(ui, |ui| {
                             ui.set_max_width((ui.available_width() - inset).max(40.0));
                             ui.spacing_mut().item_spacing.y = 0.0;
-                            self.props_ui(ui);
+                            if compact {
+                                self.props_compact_ui(ui);
+                            } else {
+                                self.props_ui(ui);
+                            }
                         });
                     drawn = Some(shown.content_size.y);
                 });
-            self.side.card_content = drawn;
+            self.side.card_content = drawn.filter(|_| !compact);
         } else {
             self.side.card_content = None;
         }
