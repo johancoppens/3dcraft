@@ -770,7 +770,7 @@ fn union_cone(cones: &[(Option<Vec3>, f64)]) -> (Option<Vec3>, f64) {
         let Some(axis) = axis else {
             return any;
         };
-        sum = sum + *axis;
+        sum += *axis;
     }
     let Some(axis) = sum.normalized() else {
         return any;
