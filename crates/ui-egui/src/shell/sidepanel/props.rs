@@ -1170,7 +1170,18 @@ pub(crate) enum Source {
     /// Asked where the bodies are: not come yet (`None`), or come, or why
     /// none came.
     Elsewhere(Option<Result<Facts, String>>),
+    /// The bodies are not here and nothing can be asked of where they are
+    /// (a host that builds them elsewhere but runs no commands there): not
+    /// measured, saying so, and nothing offered that needs them; never
+    /// read here, where it would build them all in one frame (the review of
+    /// 0.2.1).
+    Nowhere,
 }
+
+/// Why the card of a host that builds the bodies elsewhere and asks
+/// nothing there is not measured ([`Source::Nowhere`]).
+pub(crate) const NOWHERE: &str =
+    "the model is built elsewhere, and its measures cannot be asked for there";
 
 /// The job that asks where the bodies are for what the card of the
 /// selection needs of them (`{facts: {first, faces}}`, [`card_job`]);
@@ -1233,7 +1244,12 @@ pub(crate) fn read(
     };
     // What needs the bodies, and the head the card has while it is asked
     // for where they are, or where none came from there.
+    let askable = !matches!(source, Source::Nowhere);
     let (facts, waiting) = match source {
+        Source::Nowhere => (
+            Facts::default(),
+            Some(Head::not_measured(NOWHERE.to_string())),
+        ),
         Source::Here => (Facts::read(session, &first, &faces), None),
         Source::Elsewhere(None) => (Facts::default(), Some(Head::measuring())),
         Source::Elsewhere(Some(Ok(facts))) if facts.of_thing(&first) => (facts, None),
@@ -1269,10 +1285,19 @@ pub(crate) fn read(
     let measurement = match (&second, count) {
         (Some(other), 2) => {
             let things = [thing_words(&first, scene), thing_words(other, scene)];
-            relation(&first, other, &unit, things, wanted).map(|mut m| {
+            // Asked only where it can be: else not measured, saying so.
+            let mut asked = None;
+            let m = relation(&first, other, &unit, things, &mut asked).map(|mut m| {
                 m.title = craft3d_engine::selection_summary(&view.items);
+                if !askable {
+                    m = m.not_measured(NOWHERE.to_string());
+                }
                 m
-            })
+            });
+            if askable {
+                *wanted = asked;
+            }
+            m
         }
         _ => None,
     };
@@ -1334,7 +1359,7 @@ pub(crate) fn read(
         }
         made_by = Some(id.clone());
         // Wall thickness of the part, measured where the bodies are.
-        let measure = (count == 1).then(|| ("measure.thickness", json!({"of": id})));
+        let measure = (count == 1 && askable).then(|| ("measure.thickness", json!({"of": id})));
         return Some(Props {
             kind,
             heading: format!("Body {name}"),
@@ -1477,7 +1502,7 @@ pub(crate) fn read(
     });
     // Wall thickness, for one face: measured where the bodies are (beside
     // a host that builds them elsewhere, `Shell::apply_side_requests`).
-    let measure = (first.kind == SelectionKind::Face && count == 1).then(|| {
+    let measure = (first.kind == SelectionKind::Face && count == 1 && askable).then(|| {
         (
             "measure.thickness",
             json!({"of": {"kind": "face", "where": {"in": first.feature, "name": first.name}}}),

@@ -398,7 +398,13 @@ impl Shell {
                         ));
                         continue;
                     }
-                    None => {}
+                    // Nothing can be asked where the bodies are: not
+                    // measured, never built here in one frame.
+                    None => {
+                        self.side.wall =
+                            Some(props::Wall::not_measured(props::NOWHERE.to_string()));
+                        continue;
+                    }
                 }
             }
             // A check kept is made where the bodies are, as an edit the
@@ -629,13 +635,20 @@ impl Shell {
             }
             self.side.facts_came = None;
             self.side.facts_later = None;
+            // Where the bodies are not here and nothing can be asked of
+            // where they are, the card is not measured: never read here,
+            // where it would build them all in one frame.
             let source = if bodies_here || self.selection().items.is_empty() {
-                None
+                props::Source::Here
             } else {
-                props::facts_job(session, scene)
-                    .and_then(|job| self.ask_facts(session, props_key, job))
+                match props::facts_job(session, scene) {
+                    // Nothing that needs them (a feature, a sketch).
+                    None => props::Source::Here,
+                    Some(job) => self
+                        .ask_facts(session, props_key, job)
+                        .unwrap_or(props::Source::Nowhere),
+                }
             };
-            let source = source.unwrap_or(props::Source::Here);
             self.side.props = if self.selection().items.is_empty() {
                 None
             } else {
@@ -678,7 +691,12 @@ impl Shell {
             && self.side.props_for == Some(key)
             && self.ask_facts(session, key, job).is_none()
         {
-            self.read_again(session, scene, props::Source::Here);
+            let source = if bodies_here {
+                props::Source::Here
+            } else {
+                props::Source::Nowhere
+            };
+            self.read_again(session, scene, source);
         }
         // The facts asked where the bodies are, come for this card: the
         // card read again with them, its relation as it stands. Where none
@@ -783,8 +801,9 @@ impl Shell {
     /// Starts measuring `params` (`measure.between`'s) for the card of
     /// `key`: on a thread of its own, or where the bodies are when they
     /// are not here (`bodies_here` false: the browser's worker; while it
-    /// takes no more jobs for now, asked again at the next sync); refused
-    /// at once, the card says why.
+    /// takes no more jobs for now, asked again at the next sync; where it
+    /// takes none, not measured, never here); refused at once, the card
+    /// says why.
     fn start_between(
         &mut self,
         session: &mut Session,
@@ -797,14 +816,13 @@ impl Shell {
                 Some(token) => {
                     self.side.card_jobs.insert(token);
                     self.side.between_asked = Some((key, token));
-                    return;
                 }
                 None if session.commands_full() => {
                     self.side.waiting = Some((key, params.clone()));
-                    return;
                 }
-                None => {}
+                None => self.measurement_missed(props::NOWHERE.to_string()),
             }
+            return;
         }
         match session.between_later(params) {
             Ok(job) => self.side.between = Some((key, job)),
