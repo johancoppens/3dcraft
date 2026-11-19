@@ -487,3 +487,16 @@ What the face operations ask of the rolling ball to rebuild a fillet between off
 - 2026-11-13 A chamfer refused where its line is found to run through a face beside the edge by more than the tolerance (closed forms in the plan, exactly: `section::enters`, `touching` as an event of `fit`; in place in 65 planes along the edge, the segment between the feet and the foot's side, at points inside the face, standing down where a foot leaves its face: `rolling::shown`), and what the tools build held to turn as its edge did (`turns_back`): chamfers past where their line runs through a face beside the edge, built wrong since 0.1.0, are refused where they are found; a search, not a proof (2026-11-14: the segment, not its line; the tolerance itself).
 - 2026-11-14 A cut line carried across a smooth edge onto the face beyond: the chamfer face keeps the plane built (`reframe` had moved it through the plan's foot, an invalid body since 0.1.0), and the chamfer is held against both faces exactly where every section is the same (`carried`).
 - 2026-11-14 A fillet in place refused where its ball is found to take in a face beside the edge between the edge and its foot (`rolling::shown::ball`, the chamfer's planes): fillets beside a bead that reaches into the ball, built wrong since 0.1.0, are refused where they are found; a search, not a proof.
+
+## A fillet of a plain cylinder's rim refused at a coarse tolerance: owed (2026-11-19)
+
+*Found* by a prompt test of a published example (a hatch cover 60 mm across with its top edge rounded 1 mm, in a document at a tolerance of 0.02 mm) and reduced to three steps: a cylinder of radius 30 mm and height 8 mm, and `feature.fillet` of 1 mm on its top rim.
+
+    craft3d-cli run --new '{"units":"mm","tolerance":0.02}' --keep-going \
+      --cmd feature.cylinder --params '{"radius":"30 mm","height":"8 mm","name":"Disc"}' \
+      --cmd feature.fillet --params '{"edges":[["F1:face(0)","F1:face(2)"]],"radius":"1 mm","name":"Round"}'
+
+*What it does:* at a document tolerance of 0.02 mm and of 0.002 mm the fillet is refused: *"the boolean that cuts this fillet refused it: boolean does not support this: a piece of a face lies within tolerance of a face it is not coincident with (at the edge of tolerance) (face 0 of the first body)"* (at 0.002 mm with *"smaller radii tried fail the same way"*); at 1e-6 mm it builds. 0.1.3 answers the same at each of the three tolerances, so 0.2.0 changed nothing here; it is in the released versions. Tolerances of 0.01 to 0.02 mm are what the published documents use. Not traced: which piece of which face the boolean meets within the tolerance (the fillet's torus leaves the cylinder's wall and its top tangentially, so near both joins its face lies within any coarse tolerance of the face it leaves), and from which tolerance down it builds.
+
+**Owed:** the fillet of a closed rim at any document tolerance a person would set; the cut that makes a fillet must not take the fillet's own tangent joins for faces that nearly coincide. The same test's subtract where a deck crosses a torus-to-wall tangent circle ("tangent contact of higher order", at 0.02 to 0.002 mm) is likely the same nearness and was not reduced.
+
