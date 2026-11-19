@@ -103,6 +103,7 @@ The full description of any command, with every value it takes and what it refus
 | `document.check` | Every problem in one list |
 | `document.measure`, `document.edges`, `document.interference` | Volumes and areas, edges, clashes |
 | `measure.distance`, `measure.clearance`, `measure.thickness`, `measure.through`, `measure.ray`, `measure.symmetry`, `measure.below`, `measure.section`, `measure.levelFor`, `measure.floating`, `measure.continuity`, `measure.curvature`, `measure.draft` | Questions to the geometry ([Measuring and assertions](measure.md)) |
+| `measure.between` | The relation of two things, as the window shows it for two selected: a distance, an angle, a centre distance, a clearance ([Between two things](measure.md#between-two-things)) |
 | `assert.add`, `assert.edit`, `assert.delete`, `assert.list` | Checks kept in the document; their measures include the floating equilibrium (`floatingGM`, `floatingTrim`, …) and the press-brake check (`bendable`) ([Measuring and assertions](measure.md#assertions)) |
 | `variable.measure`, `variable.output`, `output.list` | Outputs: read-only variables computed after regeneration from measures and formulas, for assertions ([Measuring and assertions](measure.md#outputs-measures-in-formulas)) |
 | `select.get`, `select.set`, `select.query` | The selection, and finding things by description ([Selection and named sets](selection.md)) |

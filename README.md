@@ -74,19 +74,22 @@ owed, and it is being made better step by step.
 
 - **Works with your AI agent.** A built-in MCP server lets Claude or any other MCP client model in the
   window you are watching, once you switch on *Allow AI agents*; the agent reads what you selected, and
-  can light up faces, fly the camera and play the history for you.
+  can light up faces, fly the camera and play the history for you. You and the agent leave notes pinned to
+  places of the model and answer each other on them.
 - **Parametric.** Variables with units and formulas drive everything, with conditions, tables and parts
   switched on and off; sketches solved by 3DCraft's own constraint solver; curves drawn from formulas, such
   as a gear's involute flanks. Change one number and the model rebuilds from the feature it touches.
 - **Features.** Extrude, revolve, loft, sweep along a path, a helix or two rails; booleans, mirror and
-  patterns; fillets and chamfers; shell, draft, offset, move and delete face, thicken; ISO metric threads;
+  patterns; fillets, also fading out to a point, and chamfers; a rounded tip on a body's end; shell, draft,
+  offset, move and delete face, thicken; ISO metric threads;
   datums and sheets; text to extrude, emboss or engrave, also wrapped onto a cylinder or a cone.
 - **Stable references.** Every face, edge and vertex has a persistent name made of where it came from, so
   a fillet stays on its edge through upstream edits; a feature that loses its edge fails, names what it
   lost and can be repaired, never silently moved.
-- **Checked, not hoped.** Volumes, mass, distances, wall thickness and clearances from the exact geometry,
-  and design rules kept in the document, checked at every change. The boolean kernel is held to a reference
-  kernel on about twelve thousand booleans (four thousand pairs of solids, each united, cut and intersected)
+- **Checked, not hoped.** Volumes, mass, distances, wall thickness and clearances from the exact geometry
+  (select two things in the window and their distance or angle shows), and design rules kept in the
+  document, checked at every change. The boolean kernel is held to a reference kernel on about twelve
+  thousand booleans (four thousand pairs of solids, each united, cut and intersected)
   with none wrong; what it cannot do yet it refuses by name.
 - **Sheet metal.** A base with flanges bent by radius and K-factor, reliefs, closed corners, hems and
   louvres; the flat pattern with its bend lines; and a press-brake check that finds an order of bends in
@@ -98,8 +101,9 @@ owed, and it is being made better step by step.
   patterns folded by angles that follow variables, or folded flat with the order of the layers worked
   out, with Kawasaki's and Maekawa's checks.
 - **Freeform surfaces.** Surfaces through networks of curves and Coons patches as exact B-splines,
-  N-sided fills and trimmed faces; seams held tangent or in curvature, their continuity proven; zebra
-  stripes, a curvature map and a draft check drawn on the exact surfaces.
+  sheets through grids of points or a table of heights, N-sided fills and trimmed faces; seams held
+  tangent or in curvature, their continuity proven; zebra stripes, a curvature map and a draft check
+  drawn on the exact surfaces.
 - **Assemblies and motion.** Parts placed in a `.3dcraftasm`, by reference or packed into it, joined by
   mates, joints and couplings (gears, racks, screws) solved by 3DCraft's own solver; a mechanism plays
   over a timeline with collisions in red, and any assertion can be checked over the whole motion.
@@ -109,8 +113,9 @@ owed, and it is being made better step by step.
   one; STEP import and export, and FreeCAD documents read in; STL, 3MF and OBJ for printing; DXF and SVG
   of outlines, flat patterns, whole cut sheets for a laser, and drawings of the model with hidden lines.
 - **A native window and a web version.** egui on wgpu (Vulkan, Metal, DX12 or OpenGL) on the desktop,
-  WebGPU or WebGL2 in the browser; a start screen with twenty examples, tabs, a view cube, section and
-  see-through, a history player, colours and materials, and a studio look with soft shadows.
+  WebGPU or WebGL2 in the browser; a start screen with twenty examples, tabs, a view cube, a section plane
+  to drag or lay on a face with its cut hatched, see-through, a history player, colours and materials,
+  and a studio look with soft shadows.
 - **Errors, not crashes.** A bad file, a bad parameter or a degenerate model gives an error you can act
   on, and an autosave brings your work back after a crash.
 
