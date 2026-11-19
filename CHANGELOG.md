@@ -4,6 +4,12 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Results that changed
+
+What 3DCraft answered before can differ now: a measure, a proof, a check, a body that was built wrong while it looked right, or a body that was built and is now refused. If you relied on one of these, check it again.
+
+- **The check of an assembly is no longer ok while an instance is not placed, or a mate, a coupling or the solve failed.** `document.check` asked an assembly only whether a feature of an instance's part had failed. An instance that is not placed (a value outside its part's range, a source file that is gone or is not a 3DCraft document, a body it picks that is gone), a mate or a coupling that takes no part, mates or drivers that cannot all be met, and any of these inside a subassembly left the check `ok` with no problem, while `assembly.inspect` and `assembly.solve` said they failed (in 0.1.3 and 0.2.0 alike). Each is now a problem, with the reason those commands give: an instance (*instance `Plate` is not placed: …*), a mate or a coupling by its name, the solve (`"solve": "failed"`), and what is wrong inside a subassembly under its instance. So `document.sample` and `craft3d-cli check-range` fail such a point of an assembly too. Only assemblies that were wrong answer differently: one that is right answers as before, to the byte, as the published assemblies do. A check that measures an instance that is not placed (a clearance on it) now says that it is not placed, not that there is no feature of its name.
+
 ## [0.2.0] - 2026-11-19
 
 Notes pinned to the model, on which you and an AI agent answer each other; two things selected measured by themselves; a section you drag, lay on a face or through a hole's axis; fillets that fade to a point, rounded tips and sheets through grids of points. Results that changed come first: in most designs only last digits move, but if you checked a design with 0.1, check it again. Files saved by 0.2.0 do not open in 0.1.x.

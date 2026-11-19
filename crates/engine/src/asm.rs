@@ -310,6 +310,131 @@ pub(crate) fn failed_in(built: &Built) -> Option<String> {
     }
 }
 
+/// What a problem of an assembly's check names ([`wrong_in`]).
+pub(crate) enum Wrong {
+    /// An instance, by its name: it is not placed, a feature of its part
+    /// failed, or something inside it (a subassembly) is wrong.
+    Instance(String),
+    /// A mate that takes no part, by its name.
+    Mate(String),
+    /// A coupling that takes no part, by its name.
+    Coupling(String),
+    /// The solve failed: the mates (their drivers among them) cannot all
+    /// be met.
+    Solve,
+}
+
+/// Everything that makes `placed` other than its document says, as the
+/// assembly's own commands give it, each with what it names and the
+/// problem in words: each instance that is not placed (`assembly.inspect`
+/// › `error`), each placed although a feature of its part failed
+/// (`featureFailed`), each mate and coupling that takes no part and the
+/// solve when it failed (`assembly.solve` › `failed` and `error`); and
+/// for a subassembly what is wrong inside it, under its instance's name
+/// ([`wrong_inside`]). Empty for an assembly that is what it says. What
+/// `document.check` lists for an assembly beside a part's problems.
+pub(crate) fn wrong_in(placed: &Placed) -> Vec<(Wrong, String)> {
+    let mut out = Vec::new();
+    for st in &placed.instances {
+        // An instance of a flexible subassembly: its failed feature is its
+        // subassembly's (`failed_in`), and what is wrong in it is found
+        // inside that; only what this placement did to it is its own.
+        if st.flex_of.is_some() {
+            if let Some(why) = &st.error {
+                out.push((
+                    Wrong::Instance(st.name.clone()),
+                    format!("instance `{}` is not placed: {why}", st.name),
+                ));
+            }
+            continue;
+        }
+        if let Some(why) = &st.error {
+            out.push((
+                Wrong::Instance(st.name.clone()),
+                format!("instance `{}` is not placed: {why}", st.name),
+            ));
+            continue;
+        }
+        if let Some(why) = &st.feature_failed {
+            out.push((
+                Wrong::Instance(st.name.clone()),
+                format!("instance `{}`: {why}", st.name),
+            ));
+        }
+        if let Some(Built::Assembly(sub)) = st.built.as_deref() {
+            for why in wrong_inside(sub, st.flexed, 1) {
+                out.push((
+                    Wrong::Instance(st.name.clone()),
+                    format!("instance `{}`: {why}", st.name),
+                ));
+            }
+        }
+    }
+    for mate in &placed.mates {
+        if let Some(why) = &mate.error {
+            out.push((
+                Wrong::Mate(mate.name.clone()),
+                format!("mate `{}`: {why}", mate.name),
+            ));
+        }
+    }
+    for coupling in &placed.couplings {
+        if let Some(why) = &coupling.error {
+            out.push((
+                Wrong::Coupling(coupling.name.clone()),
+                format!("coupling `{}`: {why}", coupling.name),
+            ));
+        }
+    }
+    if let Some(why) = &placed.solve_error {
+        out.push((Wrong::Solve, format!("the assembly does not solve: {why}")));
+    }
+    out
+}
+
+/// What is wrong inside the subassembly `sub` as it is placed for its
+/// parent, each in words that start from it (`its instance `Plate` is not
+/// placed: …`, `its mate `Ground`: …`, `its coupling …`, `it does not
+/// solve: …`), deeper subassemblies' through their instances. Its first
+/// failed feature is not among them: its instance in the parent carries
+/// it (`featureFailed`, [`failed_in`]). A flexible subassembly is not
+/// solved on its own, its mates being solved with its parent's, so its
+/// own solve is not asked about.
+fn wrong_inside(sub: &Placed, flexible: bool, depth: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    if depth > MAX_DEPTH {
+        return out;
+    }
+    for st in &sub.instances {
+        if let Some(why) = &st.error {
+            out.push(format!("its instance `{}` is not placed: {why}", st.name));
+            continue;
+        }
+        if st.flex_of.is_some() {
+            continue;
+        }
+        if let Some(Built::Assembly(inner)) = st.built.as_deref() {
+            for why in wrong_inside(inner, st.flexed, depth.saturating_add(1)) {
+                out.push(format!("its instance `{}`: {why}", st.name));
+            }
+        }
+    }
+    for mate in &sub.mates {
+        if let Some(why) = &mate.error {
+            out.push(format!("its mate `{}`: {why}", mate.name));
+        }
+    }
+    for coupling in &sub.couplings {
+        if let Some(why) = &coupling.error {
+            out.push(format!("its coupling `{}`: {why}", coupling.name));
+        }
+    }
+    if let (false, Some(why)) = (flexible, &sub.solve_error) {
+        out.push(format!("it does not solve: {why}"));
+    }
+    out
+}
+
 /// A configuration built: a part regenerated with its parameters set, or
 /// a subassembly placed.
 pub(crate) enum Built {

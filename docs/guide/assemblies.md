@@ -115,6 +115,16 @@ still placed with the bodies from before that feature, as the part itself shows 
 for edges.0*; through a subassembly, *its instance `Plate`: …*), its row in the Assembly tab is marked ⚠
 with the reason in its tooltip, and the assembly's `document.check` is not ok.
 
+**When an instance is not placed.** An instance whose part cannot be built with the values given (a value
+outside a parameter's range), whose file is gone or is not a 3DCraft document, or whose picked body is gone,
+is not placed: it shows nothing, and the mates on it fail. `assembly.inspect` gives its `error`,
+`assembly.solve` lists it and its mates under `failed`, and `document.check` is not ok: it lists a problem for
+the instance (*instance `Plate` is not placed: …*) and one for each mate on it (*mate `Ground`: its instance
+`Plate` is not placed: …*), in the words of those commands. A mate or a coupling that fails by itself and
+mates that cannot all be met (*the assembly does not solve: …*) are problems of the check too, and so is any of
+these inside a subassembly, under the subassembly's instance (*instance `Sub`: its instance `Plate` is not
+placed: …*).
+
 **One body of a multi-body part.** `"body": "Gear"` shows only the body the feature `Gear` made, where the
 part puts it. This is how the bodies of an existing Jig become parts of an assembly. If the part changes
 so that `Gear` makes no body any more, the instance says so by name; it never shows another body instead.

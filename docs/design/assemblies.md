@@ -746,7 +746,10 @@ with its parent; pack and unpack equality with the source file deleted; the STEP
 the mesh exports, each imported body's box against its instance's; clearance, overlap and mass in closed form; a
 revolute driven by `joint.set`; the refusals; a subassembly following its own part and its folder; a failed save and an
 undo after Save As; couplings that fail by name; a pin through a file change, a pack and a reopen; checks through a
-rename; a mate on a hidden body; the shown scenes after the workspace narrows. `regen_elsewhere.rs` has the assembly
+rename; a mate on a hidden body; the shown scenes after the workspace narrows; the assembly's `document.check` not ok
+for an instance that is not placed (a value past its part's range, a source gone or not a document), a failed mate,
+coupling or solve, and each inside a rigid and a flexible subassembly, and answering as before for one that is right.
+`regen_elsewhere.rs` has the assembly
 built here by a host that regenerates elsewhere, `recovery.rs` the unsaved assembly that asks, is autosaved and comes
 back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an assembly (`cargo xtask freecad`).
 `crates/engine/tests/assembly_save_paths.rs` saves between folders relative to the root and absolute ones (the report of
@@ -761,7 +764,8 @@ rest solves. The format: `crates/format/tests/versions.rs` (the fixture) and `cr
 walker at six crank starts, and its leg opened alone at three leg scales) to goldens recorded on the parent of the
 assembly-trust fixes; what A-016 and A-036 change is declared there entry by entry and pinned to a second golden: the
 walker at 180° (two legs' boxes, three assertions that now pass, two measures over the motion, the note) and the leg
-alone at another leg scale (four parts' poses, two joints back at the values they were placed at).
+alone at another leg scale (four parts' poses, two joints back at the values they were placed at); and the check of
+each published assembly as 0.2.0 answered it.
 
 ### In the window (track C, phase 2)
 
@@ -898,6 +902,44 @@ alone at another leg scale (four parts' poses, two joints back at the values the
 - `.3dcraftasm` is among the extensions Open offers, on the desktop and the page.
 
 ### Findings and history (track A)
+
+- 2026-11-19 (assembly-check): an assembly's `document.check` answered `ok` with no problem while an instance was not
+  placed: one plate given a corner radius of 40 mm where its part's range ends at 30, one fixed mate on it.
+  `assembly.inspect` gave the instance `error` (*its configuration failed: nothing was changed: `corner`: its value
+  40 mm is outside its range, from 0.5 mm to 30 mm*), the mate failed (*its instance `Plate` is not placed: …*),
+  `assembly.solve` listed both under `failed`, and the check said `{"bodiesChecked": 0, "ok": true, "problems": []}`.
+  The same in 0.1.3 and 0.2.0. Cause: the check asked an assembly one question only, whether an instance was placed
+  although a feature of its part had failed (`featureFailed`, A-023); the placement's other failures, which the
+  assembly's own commands report, were never asked about, and a part's checks (its features' statuses, its bodies)
+  see nothing of them: the shown part holds only the bodies that were placed, all built. Principle broken: an agent
+  that trusts the check got a green light for an assembly that is not what it says. Rule: the check is not ok while
+  `assembly.solve` is not, nor while a subassembly's own `assembly.solve` would not be (its own solve left out when
+  it is flexible). It now lists (`asm::wrong_in`), in the form of a part's problems, each with the key that names it
+  and `problem`: each instance that is not placed, whatever the reason (its configuration failed, its source is
+  gone or holds no document, a cycle, a pinned copy missing, the body it picks gone), as `instance` with *instance
+  `Plate` is not placed: …*; each placed although a feature of its part failed, as before; each mate and coupling
+  that takes no part, as `mate` and `coupling` with *mate `Ground`: …*, a driver that does not evaluate among them;
+  the solve when it failed, as `"solve": "failed"` with *the assembly does not solve: …*, mates that contradict
+  each other or a driver past its limits; and through a subassembly each of these inside it, as `instance` with its
+  instance's name (*instance `Sub`: its instance `Plate` is not placed: …*, *… its mate `Ground`: …*, *… it does
+  not solve: …*), to any depth; a flexible one's own solve is left out, its mates being solved in its parent's, where
+  a contradiction is the parent's. Each reason is the one `assembly.inspect` and `assembly.solve` give. Not asked:
+  `held` (a pinned instance, or a source that changed and could not be read again, which keeps the version read
+  before and is said in `assembly.inspect` and the Instances panel), and `floating` (no failure in `assembly.solve`
+  either). An assembly that is right answers as before, to the byte: a rigid and a flexible subassembly, a mate into
+  one, a driven hinge and a gear coupling (`a_right_assembly_checks_as_before`), and the four published assemblies
+  the program carries, pinned to what 0.2.0 answered (`the_published_assemblies_check_ok_as_before`). The two of the
+  examples' repository the program does not carry were measured with 0.2.0: the task lamp (no subassembly) and the
+  CoreXY printer answer ok, `assembly.solve` ok with nothing failed, and each of the printer's four rigid
+  subassemblies, opened at the values its instance gives it, solves with nothing failed: nothing the check now asks
+  about is there. `document.sample` and `craft3d-cli check-range` check each point with this check, so a point of an
+  assembly where an instance is not placed fails now. A check that measures an instance that is not placed (a
+  clearance on it) said *there is no feature named `Plate`*; it now says why (*instance `Plate` is not placed: …*,
+  `Placed::pose_of` in `verify_cmds::subject`). The window does not take its verdict from the check: the Instances
+  panel draws an instance that is not placed and a failed mate as red rows with their reasons, but its heading says
+  *Solved* while the solve of what is placed succeeds, couplings are not in its outline, a flexible subassembly's
+  instance that is not placed is not listed, a subassembly's mates are not shown, and the Jig form's *Valid* weighs
+  only failed instance rows against the last good state (owed).
 
 - 2026-11-18 (asm-save-path): an assembly whose sources were relative to the working folder (the window's read root),
   saved under an absolute path, got source paths that climbed to the file system's root and then named the path from
