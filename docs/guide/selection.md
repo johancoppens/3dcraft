@@ -77,9 +77,12 @@ variables:
 
 After `tB` = 3 mm, B leaves *Cut sheet: 4 mm*; give it 4 mm again and it is back.
 
-- A value is matched within the document's tolerance (and a millionth of it); `{min, max}` takes a range,
-  its bounds matched the same way (a radius a hair under 1 mm is at `{min: 1 mm}`, so inside);
-  an expression of the variables (`tA`) is worked out again whenever the set is.
+- A value is matched within the document's tolerance (and a millionth of it). `{min, max}` takes a range,
+  and each bound takes in a millionth of itself beyond it, for rounding, but not the tolerance: a radius a
+  hair under 1 mm is at `{min: 1 mm}`, so inside, while a radius of exactly 6.35 mm is never inside
+  `{max: "6.35 mm - 0.001 mm"}`, however coarse the tolerance. So a margin you write holds, and
+  `{eq: 1 mm}` can find a radius that `{min: 1 mm}` leaves out. An expression of the variables (`tA`) is
+  worked out again whenever the set is.
 - A face has a thickness only when every line into the material from it is equally long and leaves
   through such an opposite face. A curved face, a face over a step, a pocket or a slanted back has none,
   and never fits.
