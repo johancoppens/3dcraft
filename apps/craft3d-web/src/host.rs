@@ -1818,6 +1818,9 @@ impl WebHost {
     /// that selects in the status bar only.
     pub fn answered(&mut self, answered: Vec<craft3d_engine::Answered>) -> Outcome {
         let mut outcome = Outcome::default();
+        // What the side panel's card of what is selected asked where the
+        // bodies are (its measures): the card's, never reported here.
+        let answered = self.shell.card_answered(answered);
         // A request of the page that embeds 3DCraft: its answer is the
         // page's (`crate::embed`), whichever way it came (the worker, a
         // cancel, a worker that stopped), with the files its command

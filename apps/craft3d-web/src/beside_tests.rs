@@ -20,7 +20,7 @@ use craft3d_engine::{
 use craft3d_ui_egui::FileAction;
 use craft3d_ui_egui::files::{ExportFormat, ExportWhat};
 use craft3d_ui_egui::shell::Shell;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -121,10 +121,15 @@ impl Page {
     /// One frame, as `page.rs` runs it: the File menu's work, then what
     /// the worker answered, then the checks.
     fn frame(&mut self) -> Outcome {
+        let replies = self.worker.answers();
+        self.frame_with(replies)
+    }
+
+    /// [`Self::frame`] with what the worker answered given.
+    fn frame_with(&mut self, replies: Vec<Reply>) -> Outcome {
         let mut outcome = self.host.pump();
         self.clock += 16.0;
         let quality = self.host.shell.scene_quality();
-        let replies = self.worker.answers();
         let done = self
             .scenes
             .frame_at(&mut self.host.session, quality, replies, self.clock);
@@ -994,4 +999,229 @@ fn an_example_cancelled_during_a_read_drops_it_and_names_it() {
         Some(report),
         "nothing after it"
     );
+}
+
+impl Page {
+    /// Frames until nothing waits, the shell brought up to date after
+    /// each as the page's `ui` does (the card of what is selected asks
+    /// there).
+    fn settle_card(&mut self) {
+        for _ in 0..50 {
+            self.frame();
+            self.host.shell.sync(&mut self.host.session);
+            let quality = self.host.shell.scene_quality();
+            if self.scenes.busy().is_none()
+                && !self.host.session.commands_waiting()
+                && self.host.session.scene_job(quality).is_none()
+            {
+                return;
+            }
+        }
+        panic!("the card never settled");
+    }
+
+    /// Selects `items` as a click does (handed to the worker) and goes on
+    /// until the card of it is there, its measures asked.
+    fn select(&mut self, items: &Value) {
+        self.host
+            .session
+            .execute_deferrable("select.set", &json!({ "items": items }))
+            .unwrap();
+        for _ in 0..10 {
+            self.frame();
+            self.host.shell.sync(&mut self.host.session);
+            if self.host.shell.side_props().is_some() {
+                return;
+            }
+        }
+        panic!("nothing selected");
+    }
+
+    /// The worker's answer to the command job posted to it whose work
+    /// `pick` takes, taken out of what it holds.
+    fn answer_one(&mut self, pick: impl Fn(&str) -> bool) -> Reply {
+        let mut jobs = self.worker.jobs.borrow_mut();
+        let at = jobs
+            .iter()
+            .position(|job| matches!(job, Job::Command(_, _, work) if pick(work.as_str())))
+            .unwrap();
+        let Job::Command(token, document, work) = jobs.remove(at) else {
+            panic!("not a command")
+        };
+        Reply::Command {
+            token,
+            answer: Ok(crate::jobs::run(&document, &work)),
+        }
+    }
+}
+
+/// The items of `kind` that `filter` finds in `host`'s document, as
+/// `select.set` takes them: the first `take`.
+fn found(host: &mut WebHost, kind: &str, filter: Value, take: usize) -> Value {
+    let found = host
+        .session
+        .execute("select.query", &json!({"kind": kind, "where": filter}))
+        .unwrap();
+    let items: Vec<Value> = found["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .take(take)
+        .map(|i| json!({"kind": i["kind"], "name": i["name"], "feature": i["feature"]}))
+        .collect();
+    assert_eq!(items.len(), take, "{found}");
+    Value::Array(items)
+}
+
+/// What the card of what is selected shows, as it was read, and what it
+/// says under `measurement` (`ui.get`'s).
+fn card(host: &WebHost) -> (String, Value) {
+    (
+        format!("{:?}", host.shell.side_props()),
+        host.shell.measurement_json(),
+    )
+}
+
+/// The card of `items` on a page that regenerates itself (no worker):
+/// what the page beside its worker must show.
+fn card_here(bytes: &[u8], items: &Value) -> (String, Value) {
+    let mut host = in_process(bytes);
+    host.session
+        .execute("select.set", &json!({ "items": items }))
+        .unwrap();
+    for _ in 0..5000 {
+        host.shell.sync(&mut host.session);
+        if !host.shell.measuring() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    host.shell.sync(&mut host.session);
+    card(&host)
+}
+
+/// 0.2.0 in the browser (the developer, 2026-11-19): one edge selected
+/// showed only Between and Name and nothing in the view, two things no
+/// relation, while the hint said to shift-click another to measure
+/// between. Now the card's measures are asked of the worker that has the
+/// bodies: one edge's length, two faces' distance, the card the same as
+/// on a page that regenerates itself, saying it is measuring meanwhile,
+/// and the page builds nothing.
+#[test]
+fn what_is_selected_is_measured_beside_the_page() {
+    let bytes = model();
+    let mut here = in_process(&bytes);
+    let edge = found(&mut here, "edge", json!({"in": "Plate", "length": 40}), 1);
+    let faces = found(
+        &mut here,
+        "face",
+        json!({"in": "Plate", "any": [{"normal": {"along": "z"}}, {"normal": {"along": "-z"}}]}),
+        2,
+    );
+    let mut page = opened(&bytes, false);
+    let work = page.host.session.work_here();
+    for (items, text) in [(&edge, "40 mm"), (&faces, "10 mm")] {
+        let want = card_here(&bytes, items);
+        assert_eq!(want.1["text"], text, "{}", want.1);
+        page.select(items);
+        let measuring = page.host.shell.measurement_json();
+        assert!(
+            measuring["measure"] == "measuring" || measuring["measuring"] == true,
+            "{measuring}"
+        );
+        page.settle_card();
+        assert_eq!(card(&page.host), want, "{items}");
+        assert_eq!(page.host.session.work_here(), work, "{items}");
+    }
+    // The card's own jobs are never reported as commands.
+    assert!(
+        page.host
+            .shell
+            .last_command
+            .as_ref()
+            .is_none_or(|c| c.label != crate::jobs::CARD)
+    );
+}
+
+/// An answer the worker gives for a selection that is no longer the
+/// page's is never shown: an edge's measures held by the worker while
+/// two faces are selected come back after, and the card shows the faces
+/// being measured, then their distance.
+#[test]
+fn an_answer_for_an_earlier_selection_beside_the_page_is_dropped() {
+    let bytes = model();
+    let mut here = in_process(&bytes);
+    let edge = found(&mut here, "edge", json!({"in": "Plate", "length": 40}), 1);
+    let faces = found(
+        &mut here,
+        "face",
+        json!({"in": "Plate", "any": [{"normal": {"along": "z"}}, {"normal": {"along": "-z"}}]}),
+        2,
+    );
+    let mut page = opened(&bytes, false);
+    // The edge selected; the worker holds its card's measures.
+    page.select(&edge);
+    *page.worker.hangs.borrow_mut() = true;
+    page.frame();
+    // The faces selected, the click answered by itself.
+    page.host
+        .session
+        .execute_deferrable("select.set", &json!({ "items": faces }))
+        .unwrap();
+    page.frame();
+    let click = page.answer_one(|work| work.contains("\"command\":\"select.set\""));
+    page.frame_with(vec![click]);
+    page.host.shell.sync(&mut page.host.session);
+    page.frame_with(Vec::new());
+    // The edge's measures come now.
+    let late = page.answer_one(|work| work.contains("\"kind\":\"edge\""));
+    page.frame_with(vec![late]);
+    page.host.shell.sync(&mut page.host.session);
+    let props = page.host.shell.side_props().cloned().unwrap();
+    assert_eq!(props.kind, "Face", "{props:?}");
+    assert!(props.rows.iter().all(|r| r.label != "Length"), "{props:?}");
+    let m = props.measurement.unwrap();
+    assert!(m.measuring, "{m:?}");
+    assert_eq!(Value::Array(m.items.to_vec()), faces);
+    assert!(page.host.shell.single_measure().is_none());
+    *page.worker.hangs.borrow_mut() = false;
+    page.settle_card();
+    assert_eq!(card(&page.host), card_here(&bytes, &faces));
+}
+
+/// Where the worker cannot be had the page regenerates itself, and
+/// measures what is selected itself, as before.
+#[test]
+fn without_its_worker_the_page_measures_what_is_selected_itself() {
+    let bytes = model();
+    let mut here = in_process(&bytes);
+    let faces = found(
+        &mut here,
+        "face",
+        json!({"in": "Plate", "any": [{"normal": {"along": "z"}}, {"normal": {"along": "-z"}}]}),
+        2,
+    );
+    let mut page = Page::new(false);
+    *page.worker.dies.borrow_mut() = true;
+    page.host
+        .receive("model.3dcraft", bytes.clone(), None)
+        .unwrap();
+    page.settle();
+    assert!(page.scenes.home());
+    while page.host.prepare(|| false) {}
+    page.host
+        .session
+        .execute_deferrable("select.set", &json!({ "items": faces }))
+        .unwrap();
+    for _ in 0..5000 {
+        page.host.shell.sync(&mut page.host.session);
+        if !page.host.shell.measuring() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    page.host.shell.sync(&mut page.host.session);
+    let got = card(&page.host);
+    assert_eq!(got.1["text"], "10 mm", "{}", got.1);
+    assert_eq!(got, card_here(&bytes, &faces));
 }

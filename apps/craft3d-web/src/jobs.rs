@@ -12,6 +12,10 @@
 //! - [`EXPORT_CHOICES`]: what the export dialog offers
 //!   (`craft3d_ui_egui::files::export_choices`), read there before the
 //!   dialog opens.
+//! - [`CARD`]: what the side panel's card of what is selected measures
+//!   (`craft3d_ui_egui::shell::sidepanel::props::card_job`): the facts of
+//!   one thing, the relation of two, a wall; the shell takes the answers
+//!   (`Shell::card_answered`).
 //!
 //! The page's thread never regenerates or meshes for either
 //! (docs/design/engine.md › *Commands where the bodies are*). Natively
@@ -27,6 +31,8 @@ use serde_json::{Value, json};
 pub const EXPORT: &str = "host.export";
 /// What the export dialog offers, read where the bodies are: `{}`.
 pub const EXPORT_CHOICES: &str = "host.exportChoices";
+/// What the card of what is selected measures, where the bodies are.
+pub const CARD: &str = craft3d_ui_egui::shell::sidepanel::props::CARD_JOB;
 
 /// The answer to a job written out by `Session::command_request`: one of
 /// the page's own jobs above, or a command.
@@ -53,6 +59,7 @@ fn run_job(session: &mut Session, command: &str, params: &Value) -> Result<Value
         }
         EXPORT_CHOICES => serde_json::to_value(export_choices(session))
             .map_err(|e| CommandError::new(format!("file.export: {e}"))),
+        CARD => craft3d_ui_egui::shell::sidepanel::props::card_job(session, params),
         _ => session.execute(command, params),
     }
 }
