@@ -8,6 +8,14 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-11-19: After 0.2.0: fixes for 0.2 from `release/0.2`, and the 0.1 line ends (decided by the developer; amends 2026-11-13)
+
+0.2.0 is published (2026-11-19), from the workshop's `main`.
+
+- **Fixes for 0.2 are released as 0.2.x from the maintenance branch `release/0.2`**, made at the commit 0.2.0 is tagged on (`c7cab24f`), by the rules 2026-11-13 set for `release/0.1`: a fix lands there first, on a branch of its own with a reviewer and the gate, is tagged there, and `release/0.2` is then merged forward into `main`; never `main` first and a cherry-pick. What may go into a 0.2.x is what could go into a 0.1.x: only what is wrong, crashes or spoils the first impression; no change to the file format and no new command parameters.
+- **The 0.1 line ends.** No more 0.1.x: whoever uses 0.1 updates to 0.2.0, which opens every file of 0.1 (its own files do not open in 0.1.x). `release/0.1` stays as it is, as history; it is merged into `main` and so into 0.2.0.
+- **`main` is the next version.** The public repository's `main` stays the latest release.
+
 ### 2026-11-17: Notes pinned to the model: in the document, written by agents too, never published (decided by the developer)
 
 The developer asked for notes on the model ("spelden"): a person writes at a place of the model what they want ("2 mm thicker here", "this hole can go"), an agent reads the notes, works through them and marks each done with a sentence of reply. The design was put to him with four questions, answered here.
