@@ -393,9 +393,9 @@ pub(crate) fn wrong_in(placed: &Placed) -> Vec<(Wrong, String)> {
 }
 
 /// What is wrong inside the subassembly `sub` as it is placed for its
-/// parent, each in words that start from it (`its instance `Plate` is not
-/// placed: …`, `its mate `Ground`: …`, `its coupling …`, `it does not
-/// solve: …`), deeper subassemblies' through their instances. Its first
+/// parent, each in words that start from it ("its instance `Plate` is not
+/// placed: …", "its mate `Ground`: …", "its coupling …", "it does not
+/// solve: …"), deeper subassemblies' through their instances. Its first
 /// failed feature is not among them: its instance in the parent carries
 /// it (`featureFailed`, [`failed_in`]). A flexible subassembly is not
 /// solved on its own, its mates being solved with its parent's, so its
