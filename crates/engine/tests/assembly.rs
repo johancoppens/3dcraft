@@ -1758,13 +1758,43 @@ fn an_instance_whose_part_has_a_failed_feature_says_so_and_is_still_placed() {
     assert_eq!(checked["ok"], false, "{checked}");
     assert_eq!(checked["problems"][0]["instance"], "Sub", "{checked}");
     run(&mut s, "file.close", json!({ "discard": true }));
-    // A value the part takes: nothing failed, the check is ok.
+    // A value the part takes: no feature failed.
     assemble(&mut s, "1 mm");
     let inspected = inspect(&mut s);
     let row = instance(&inspected, "Plate");
     assert_eq!(row["featureFailed"], Value::Null, "{row}");
+    // Expectation changed (2026-11-19, assembly-check): this asserted the
+    // check ok here, while the mate `Ground` had failed. With the fillet
+    // built the instance shows the fillet's body, whose faces are copies
+    // of the blank's (`F2:copy(0)/F1:face(1)`, docs/design/names.md ›
+    // copies); `F1:face(1)` names a face of the blank's body, which went
+    // into the fillet and is not shown, so the mate takes no part, as
+    // `assembly.solve` says (and said in 0.2.0) whatever the check
+    // answers. The check names that mate now; on the face the plate has,
+    // the mate holds and the check is ok.
+    let solved = run(&mut s, "assembly.solve", json!({}));
+    let why = solve_failure(&solved, "mate", "Ground");
+    assert!(why.contains("no body has a face `F1:face(1)`"), "{why}");
     let checked = run(&mut s, "document.check", json!({}));
-    assert_eq!(checked["ok"], true, "{checked}");
+    assert_eq!(
+        checked,
+        json!({
+            "bodiesChecked": 1,
+            "ok": false,
+            "problems": [{ "mate": "Ground", "problem": format!("mate `Ground`: {why}") }],
+        })
+    );
+    let m = run(
+        &mut s,
+        "mate.edit",
+        json!({ "name": "Ground", "b": "Plate/F2:copy(0)/F1:face(1)" }),
+    );
+    assert_eq!(m["status"], "ok", "{m}");
+    let checked = run(&mut s, "document.check", json!({}));
+    assert_eq!(
+        checked,
+        json!({ "bodiesChecked": 1, "ok": true, "problems": [] })
+    );
 }
 
 /// The error `assembly.solve` gives in its `failed` for the instance,
@@ -1788,7 +1818,9 @@ fn solve_failure(solved: &Value, key: &str, name: &str) -> String {
 /// those commands give. Before, the check answered ok with no problem
 /// (0.1.3 and 0.2.0 alike). An assertion that measures the instance says
 /// that it is not placed, not that no feature has its name. A value in
-/// range places it, and the check is ok again.
+/// range places it; then the mate fails by itself, on a face the shown
+/// body does not have, until it names the plate's face, and the check is
+/// ok again.
 #[test]
 fn an_instance_that_is_not_placed_makes_the_check_not_ok() {
     let dir = workdir("assembly", "not-placed");
@@ -1849,11 +1881,34 @@ fn an_instance_that_is_not_placed_makes_the_check_not_ok() {
     );
     assert!(!message.contains("no feature named"), "{solid}");
     run(&mut s, "assert.delete", json!({ "name": "solid" }));
-    // A value the part takes: placed, its mate met, the check ok.
+    // A value the part takes: placed. The mate names a face of the blank,
+    // whose body went into the fillet and is not shown (the plate's faces
+    // are `F2:copy(0)/F1:face(k)`), so it fails by itself now, and the
+    // check names it alone; on the plate's own face it holds, and the
+    // check is ok.
     run(
         &mut s,
         "instance.edit",
         json!({ "name": "Plate", "params": { "corner": "1 mm" } }),
+    );
+    let solved = run(&mut s, "assembly.solve", json!({}));
+    let mate_why = solve_failure(&solved, "mate", "Ground");
+    assert!(
+        mate_why.contains("no body has a face `F1:face(1)`"),
+        "{mate_why}"
+    );
+    assert_eq!(
+        run(&mut s, "document.check", json!({})),
+        json!({
+            "bodiesChecked": 1,
+            "ok": false,
+            "problems": [{ "mate": "Ground", "problem": format!("mate `Ground`: {mate_why}") }],
+        })
+    );
+    run(
+        &mut s,
+        "mate.edit",
+        json!({ "name": "Ground", "b": "Plate/F2:copy(0)/F1:face(1)" }),
     );
     let checked = run(&mut s, "document.check", json!({}));
     assert_eq!(

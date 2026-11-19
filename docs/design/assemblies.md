@@ -933,9 +933,14 @@ each published assembly as 0.2.0 answered it.
   CoreXY printer answer ok, `assembly.solve` ok with nothing failed, and each of the printer's four rigid
   subassemblies, opened at the values its instance gives it, solves with nothing failed: nothing the check now asks
   about is there. `document.sample` and `craft3d-cli check-range` check each point with this check, so a point of an
-  assembly where an instance is not placed fails now. A check that measures an instance that is not placed (a
-  clearance on it) said *there is no feature named `Plate`*; it now says why (*instance `Plate` is not placed: …*,
-  `Placed::pose_of` in `verify_cmds::subject`). The window does not take its verdict from the check: the Instances
+  assembly where an instance is not placed fails now. The test of A-023 held the wrong ok itself: at a corner the
+  part takes, its mate on `Plate/F1:face(1)` names a face of the blank, whose body went into the fillet and is not
+  shown (the plate's faces are `F2:copy(0)/F1:face(k)`), and fails (*no body has a face `F1:face(1)`*), while the
+  check said ok; its expectation was changed to that problem, and to ok once the mate names the plate's face. A
+  mate does not follow a short name to the face it became, as a feature that takes the body and `file.export` do
+  ([`names.md`](names.md) › *References that follow a body*): whether it should is a question, not part of this
+  fix. A check that measures an instance that is not placed (a clearance on it) said *there is no feature named
+  `Plate`*; it now says why (*instance `Plate` is not placed: …*, `Placed::pose_of` in `verify_cmds::subject`). The window does not take its verdict from the check: the Instances
   panel draws an instance that is not placed and a failed mate as red rows with their reasons, but its heading says
   *Solved* while the solve of what is placed succeeds, couplings are not in its outline, a flexible subassembly's
   instance that is not placed is not listed, a subassembly's mates are not shown, and the Jig form's *Valid* weighs
