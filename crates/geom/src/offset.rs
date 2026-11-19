@@ -479,6 +479,105 @@ pub fn regular_over(surface: &Surface, distance: f64, over: Domain) -> Result<()
     Ok(())
 }
 
+/// What [`regular_by_span`] found of one Bézier span: its offset by the
+/// distance asked proven not to fold, a border of it drawn into one point
+/// (a pole: the points, no normal there by right), a fold of the offset
+/// shown at a place (with the radius of curvature there), no normal at a
+/// place (or one that may vanish where the forms' halving ends), not
+/// proven at a place, or a span of degrees too high for the forms.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SpanRegularity {
+    Proven,
+    Pole { points: Vec<Vec3> },
+    Folds { at: (f64, f64), radius: f64 },
+    NoNormal { at: (f64, f64) },
+    Unproven { at: (f64, f64) },
+    TooHigh,
+}
+
+/// One Bézier span of a surface (its box in the surface's parameters) and
+/// what [`regular_by_span`] found of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpanVerdict {
+    pub u: (f64, f64),
+    pub v: (f64, f64),
+    pub regularity: SpanRegularity,
+}
+
+/// [`regular`] asked of each Bézier span of a Bézier or NURBS `surface` on
+/// its own (the span as a surface over its own box, its places given in
+/// the surface's parameters), so that a fold or a pole in one span does
+/// not hide what the others are: the test of the fold rule's suspects
+/// (`craft3d_topo::folds`, docs/design/verification.md › *A face folded
+/// over itself*), which asks it at half the tolerance on the side out of
+/// the material. Refused for another kind of surface, a surface without
+/// Bézier spans, or one of more than `most` spans.
+pub fn regular_by_span(
+    surface: &Surface,
+    distance: f64,
+    most: usize,
+) -> Result<Vec<SpanVerdict>, OffsetError> {
+    let nurbs = freeform(surface)?;
+    let spans = nurbs.bezier_spans_shared()?;
+    if spans.len() > most {
+        return Err(OffsetError::Invalid(GeomError::Unsupported(
+            "the surface has more Bézier spans than the fold rule asks",
+        )));
+    }
+    let mut out = Vec::with_capacity(spans.len());
+    for span in spans.iter() {
+        let (m, n) = span.patch.degrees();
+        let clamped = |d: usize| {
+            let mut k = vec![0.0; d + 1];
+            k.extend(std::iter::repeat_n(1.0, d + 1));
+            k
+        };
+        let own = NurbsSurface::new(
+            m,
+            n,
+            clamped(m),
+            clamped(n),
+            m + 1,
+            n + 1,
+            span.patch.control_points(),
+            span.patch.weights(),
+        )
+        .map(Surface::Nurbs)?;
+        let global = |at: (f64, f64)| {
+            (
+                span.u.0 + (span.u.1 - span.u.0) * at.0,
+                span.v.0 + (span.v.1 - span.v.0) * at.1,
+            )
+        };
+        let found = pole::poles(&own);
+        let regularity = if !found.is_empty() {
+            SpanRegularity::Pole {
+                points: found.iter().map(|p| p.point).collect(),
+            }
+        } else {
+            match regular(&own, distance) {
+                Ok(()) => SpanRegularity::Proven,
+                Err(OffsetError::Folds { at, radius }) => SpanRegularity::Folds {
+                    at: global(at),
+                    radius,
+                },
+                Err(OffsetError::NoNormal { at }) => SpanRegularity::NoNormal { at: global(at) },
+                Err(OffsetError::Unproven { at }) => SpanRegularity::Unproven { at: global(at) },
+                Err(OffsetError::Invalid(GeomError::Unsupported(_))) => SpanRegularity::TooHigh,
+                Err(_) => SpanRegularity::Unproven {
+                    at: global((0.5, 0.5)),
+                },
+            }
+        };
+        out.push(SpanVerdict {
+            u: span.u,
+            v: span.v,
+            regularity,
+        });
+    }
+    Ok(out)
+}
+
 /// How many times [`plainly_regular`] halves a patch (each way) before it
 /// leaves the patch to the Bernstein forms.
 const PLAIN_DEPTH: u32 = 3;

@@ -449,6 +449,7 @@ A test that renders writes its images under `target/evidence/<crate>/<test>/` (a
 | `mass_faces`, `mass_evaluations` | `craft3d_topo::mass_work` | a face integrated; an evaluation of the integrand (the `Work` the face budget counts) |
 | `meshes`, `mesh_faces`, `triangles` | `craft3d_tess::tess_work` | a body tessellated; its faces; triangles made |
 | `fold_checks` | `craft3d_tess::fold_work` | a comparison of the look for points of a face's mesh on one another (a sort of `n` points counted as `n` times the bits of `n`; since 2026-11-15) |
+| `turn_back_spans`, `turn_back_searches` | `craft3d_topo::fold_work` | a Bézier span the rule of a face folded over itself asked (each surface once, while its store keeps it); a pair of pieces of a face that rule compared in its search for two layers (asked by `document.check`; since 2026-11-19) |
 | `refusals`, `check_problems`, `commands` | the test | a measure or export refused; a problem `document.check` lists; a command of the model |
 
 The models are pinned in `crates/engine/tests/bench_models/`: the turbofan (whole, edited `mixFingers = 14`), the engine block (whole, `chSmall = 0.6 mm`), the impeller's first 82 steps (hub, one lofted blade cut by the shroud, patterned and filleted; `filletSeat = 0.2 mm`; its blades cannot be measured today, which is counted, not failed), and a plate with 250 holes cut one after another (then the hole radius and the plate's length edited). They are copies of the showcase scripts under `target/work/`, taken on 2026-10-15; a showcase that changes later does not change them.
