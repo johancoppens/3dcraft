@@ -1,3 +1,7 @@
+//! Ignored in the gate (a probe: it prints and holds nothing; fold-check
+//! 2026-11-19, after the review): run it with
+//! `cargo test -p craft3d-engine --test fold_sweep -- --ignored --nocapture`.
+//!
 //! fold-check, step 1 (a probe, printed and not held to anything): the
 //! rule the design proposes for the validity check, a face regular at the
 //! tolerance (docs/design/verification.md › *A face folded over itself*),
@@ -463,6 +467,7 @@ fn mesh_costs(name: &str, doc: &Document) {
 /// layers) and into it (convex: an edge of material thinner than the
 /// tolerance).
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn the_propeller_and_the_hull_by_side() {
     for file in [
         "docs/examples/published/ship-propeller.3dcraft",
@@ -570,6 +575,7 @@ fn the_propeller_and_the_hull_by_side() {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn what_a_mesh_that_follows_curvature_costs() {
     let dir = common::workdir("fold-sweep", "costs");
     for path in listed("crates/engine/tests/bench_models", ".steps.json") {
@@ -598,6 +604,7 @@ fn what_a_mesh_that_follows_curvature_costs() {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn published_and_showcase() {
     files(
         &[
@@ -611,6 +618,7 @@ fn published_and_showcase() {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn format_fixtures() {
     files(
         &[
@@ -622,6 +630,7 @@ fn format_fixtures() {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn examples_tasks_and_benchmarks() {
     scripts(
         &[
@@ -637,6 +646,7 @@ fn examples_tasks_and_benchmarks() {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn findings_scripts() {
     scripts(
         &[

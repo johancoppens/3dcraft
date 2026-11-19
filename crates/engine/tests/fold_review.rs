@@ -1,3 +1,7 @@
+//! Ignored in the gate (a probe: it prints and holds nothing; fold-check
+//! 2026-11-19, after the review): run it with
+//! `cargo test -p craft3d-engine --test fold_review -- --ignored --nocapture`.
+//!
 //! review-fold-design: a reviewer's probes of the design *A face folded
 //! over itself* (docs/design/verification.md), printed and held to
 //! nothing. The rule is asked here in the form the design defines it, as
@@ -773,26 +777,31 @@ fn side(part: usize) {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn side_documents_a() {
     side(0);
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn side_documents_b() {
     side(1);
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn side_documents_c() {
     side(2);
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn side_documents_d() {
     side(3);
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn the_repositorys_coarse_documents() {
     for name in [
         "docs/examples/published/ship-propeller.3dcraft",
@@ -907,6 +916,7 @@ fn narrow(e: f64) -> Vec<[f64; 2]> {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn a_profile_with_a_tight_inside_turn() {
     // At a coarse tolerance, the root's control points ten, 2.5 and one
     // tolerance apart.
@@ -926,6 +936,7 @@ fn a_profile_with_a_tight_inside_turn() {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn text_extruded() {
     for (linear, size) in [(1e-6, 10.0), (0.01, 10.0), (0.01, 2.0), (0.05, 3.0)] {
         let tag = format!("text-t{linear:e}-size{size}");
@@ -963,6 +974,7 @@ const LOOP_PATH: [[f64; 2]; 4] = [
 ];
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn a_thin_tube_meshed_with_the_angle() {
     use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
     use craft3d_kernel::sweep::sweep;
@@ -1228,6 +1240,7 @@ fn on_a_concave_edge() {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn fillets_concave_and_the_seven_fades() {
     on_a_concave_edge();
     // The seven folded fades, read from the STEP fixtures (the fillet
@@ -1462,6 +1475,7 @@ fn roof_block(l: f64, s: f64, looped: bool, degree: usize) -> Body {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn a_top_pulled_through_itself_of_degree_one_and_three() {
     let s = 1.0;
     let tol = tolerance(1e-3 * s);
@@ -1484,6 +1498,7 @@ fn a_top_pulled_through_itself_of_degree_one_and_three() {
 // prove it and the forms are built.
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn what_a_span_costs_by_its_degree() {
     let mut slow = false;
     for p in [3_usize, 5, 7, 9, 11, 13, 15, 16] {
@@ -1562,6 +1577,7 @@ fn what_a_span_costs_by_its_degree() {
 // ids and counts only, nothing of a model is printed.
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn abc_models() {
     let Some(folder) = std::env::var("CRAFT3D_FOLD_ABC")
         .ok()

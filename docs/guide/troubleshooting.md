@@ -82,6 +82,22 @@ written differently (`assert.edit`).
 *notProven* is not a failure: the value found is fine, but the proof did not reach the bound
 ([Measuring and assertions](measure.md#assertions)).
 
+### A face folds over itself
+
+`document.check` warns with kind `fold` when a face of a body folds over itself: two of its
+layers face each other through air nearer than the document's tolerance ("face 4 folds over itself
+at (5.09, -2.81, -4.74): two of its layers face each other 8.25e-3 apart with air between them,
+within the tolerance 2e-2"), or its surface has no normal at a point. The body is still built and
+`ok` stays true, but a mesh, an offset, a shell or a boolean near that place may go wrong. Look at
+the place it names (`at`): it is usually a fillet or a blend whose radius is smaller than the bend it
+runs round, a fade that turns back on itself, a loft or a sweep whose sections cross, or a spline
+surface drawn through points that double back. Make the radius larger, move the sections apart, or,
+when the layers are meant to be that close, give the document a finer tolerance.
+
+`foldsNotProven` lists faces the rule could not settle: two layers that face each other only at an
+edge of the face, loops it cannot follow, or a face too large to examine. They are not errors; look at
+the place if the face matters.
+
 ## Undo
 
 **Edit › Undo** (Ctrl+Z) undoes one change, yours or the agent's, and **Edit › Redo** (Ctrl+Shift+Z or

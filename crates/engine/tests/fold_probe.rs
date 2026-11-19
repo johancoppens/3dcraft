@@ -1,3 +1,7 @@
+//! Ignored in the gate (a probe: it prints and holds nothing; fold-check
+//! 2026-11-19, after the review): run it with
+//! `cargo test -p craft3d-engine --test fold_probe -- --ignored --nocapture`.
+//!
 //! fold-check, step 1: a probe, printed and not held to anything, of what
 //! the checks a body gets say of a face folded over itself, whatever made
 //! it (docs/design/verification.md › *A face folded over itself*). Each
@@ -669,6 +673,7 @@ fn stem(body: &Body) -> (EdgeId, bool) {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn the_hulls_sides_at_the_forefoot() {
     // How the radius of curvature of the hull's lofted sides grows with
     // the distance from the forefoot (5, 0, −8.9), the vertex where the
@@ -726,6 +731,7 @@ fn the_hulls_sides_at_the_forefoot() {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn the_fade_on_the_hulls_stem() {
     // The review's seven folded fades, as the fillet built them with its
     // own refusal of a face that turns back switched off (STEP fixtures,
@@ -954,6 +960,7 @@ fn roof_block(l: f64, s: f64, pull: Pull) -> Body {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn a_fitted_top_pulled_over_itself() {
     // The fold is the middle, 6 s wide; the bodies are 18 s (3 times the
     // fold), 600 s (100 times) and 60 000 s (10 000 times) square; one
@@ -970,6 +977,7 @@ fn a_fitted_top_pulled_over_itself() {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn an_offset_past_the_curvature_of_a_bump() {
     let s = 1.0;
     let tol = tolerance(1e-3 * s);
@@ -1018,6 +1026,7 @@ fn quarter_arcs(first: u64, radius: f64) -> Vec<SketchCurve> {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn a_loft_through_its_axis() {
     for k in [1.0, 100.0, 10_000.0] {
         let tol = tolerance(1e-6 * k);
@@ -1069,6 +1078,7 @@ const LOOP_PATH: [[f64; 2]; 4] = [
 ];
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn sweeps_along_a_path_that_crosses_itself() {
     let length = 2.195_798_812_420_925;
     for (scale, times) in [
