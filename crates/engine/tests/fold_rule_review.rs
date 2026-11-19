@@ -280,6 +280,9 @@ mod mirror {
         pub out: u64,
         pub least_in_in: f64,
         pub least_doubtful: f64,
+        /// Per search: the box's half-widths in parameters and the points
+        /// of its grid kept (within reach, outside the tips).
+        pub boxes: Vec<(f64, f64, usize)>,
     }
 
     impl Stats {
@@ -295,6 +298,7 @@ mod mirror {
                 out: 0,
                 least_in_in: f64::INFINITY,
                 least_doubtful: f64::INFINITY,
+                boxes: Vec::new(),
             }
         }
     }
@@ -960,6 +964,7 @@ mod mirror {
             told.insert(k, held(chart, *uv));
             cells.entry(cell(*p)).or_default().push(k);
         }
+        stats.boxes.push((hu, hv, told.len()));
         let room = 1e-12 * p0.length().max(t);
         let mut pairs = 0_u64;
         for (&k, &held_p) in &told {
@@ -1656,6 +1661,44 @@ fn review_slots_without_the_pair_cap() {
         bodies.push((format!("pleat reversed {reversed}"), body, true));
     }
     for (what, body, fold) in &bodies {
+        // The construction is a fold by the design's definition: two
+        // points of the face at mid-depth, one on each wall (each outer
+        // layer of the pleat), within t, their outward normals more than
+        // 154° apart and air between them, taken the way the rule takes
+        // them.
+        let face = &body.faces[0];
+        let sign = if face.reversed { -1.0 } else { 1.0 };
+        let mut best: Option<(f64, f64, f64, f64, f64)> = None;
+        for i in 0..=200 {
+            for j in 0..=200 {
+                let (a, b) = (f64::from(i) / 200.0, f64::from(j) / 200.0);
+                if (a - b).abs() < 0.2 {
+                    continue;
+                }
+                let (p, pu, pv) = face.surface.derivatives(a, 0.5);
+                let (q, qu, qv) = face.surface.derivatives(b, 0.5);
+                let (Some(m), Some(n)) = (pu.cross(pv).normalized(), qu.cross(qv).normalized())
+                else {
+                    continue;
+                };
+                let (m, n) = (m * sign, n * sign);
+                let d = q - p;
+                if d.length() < t && m.dot(n) < -0.9 && d.dot(m) > 0.0 && -d.dot(n) > 0.0 {
+                    let gap = d.length();
+                    if best.is_none_or(|x| gap < x.0) {
+                        best = Some((gap, a, b, m.dot(n), d.dot(m)));
+                    }
+                }
+            }
+        }
+        println!(
+            "REVIEW uncapped {what}: by the definition, the closest facing pair through air at mid-depth (gap, u, u', cos, along): {best:?}"
+        );
+        if *fold && best.is_none() {
+            failures.push(format!(
+                "{what}: the construction is no fold by the definition"
+            ));
+        }
         let mut capped = mirror::Stats::new();
         let with = mirror::folds(body, t, 4_000_000, &mut capped);
         let mut free = mirror::Stats::new();
@@ -1697,7 +1740,26 @@ fn review_switch_census() {
     let on = craft3d_topo::FOLDS_REFUSED;
     let mut refused_fades = 0;
     for name in SEVEN {
-        let body = fade(name);
+        // Read as `read_step` reads, the refusal kept: with the switch on
+        // the reader's own check may refuse the fold.
+        let bytes = std::fs::read(fixtures().join(format!("fades/{name}.step"))).unwrap();
+        let options = craft3d_stepread::Options {
+            metres_per_unit: 1e-3,
+            tolerance: tol(0.02),
+            loosest: 1000.0 * 0.02,
+        };
+        let body = match craft3d_stepread::parse(&bytes).and_then(|p| p.build(0, &options)) {
+            Ok(read) => read.body,
+            Err(e) => {
+                let said = format!("{e:?}");
+                println!(
+                    "REVIEW switch {on} {name}: refused as it is read: {}",
+                    said.chars().take(400).collect::<String>()
+                );
+                refused_fades += 1;
+                continue;
+            }
+        };
         let defects = check(&body, &tol(0.02));
         let folded = defects
             .iter()
