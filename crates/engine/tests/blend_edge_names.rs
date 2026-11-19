@@ -723,7 +723,6 @@ fn a_chamfer_by_name_along_the_pipe_is_the_closed_form_while_its_chord_stays_out
 }
 
 #[test]
-#[ignore = "owed: a concave chamfer next to a cylinder whose chord enters the cylinder is built (the tool's section crosses itself) and takes material away, also by the pair in 0.1.x; docs/design/blends.md"]
 fn a_concave_chamfer_whose_chord_would_enter_the_pipe_is_too_large() {
     // Past 4.4657 of arc along the pipe the chord from 1 along the plate
     // passes through the pipe; the chamfer, which fills a concave corner,
