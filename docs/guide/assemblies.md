@@ -115,8 +115,8 @@ still placed with the bodies from before that feature, as the part itself shows 
 for edges.0*; through a subassembly, *its instance `Plate`: …*), its row in the Assembly tab is marked ⚠
 with the reason in its tooltip, and the assembly's `document.check` is not ok.
 
-**When an instance is not placed.** An instance whose part cannot be built with the values given (a value
-outside a parameter's range), whose file is gone or is not a 3DCraft document, or whose picked body is gone,
+**When an instance is not placed.** An instance whose values its part refuses (a value outside a
+parameter's range), whose file is gone or is not a 3DCraft document, or whose picked body is gone,
 is not placed: it shows nothing, and the mates on it fail. `assembly.inspect` gives its `error`,
 `assembly.solve` lists it and its mates under `failed`, and `document.check` is not ok: it lists a problem for
 the instance (*instance `Plate` is not placed: …*) and one for each mate on it (*mate `Ground`: its instance

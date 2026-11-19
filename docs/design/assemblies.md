@@ -748,7 +748,9 @@ revolute driven by `joint.set`; the refusals; a subassembly following its own pa
 undo after Save As; couplings that fail by name; a pin through a file change, a pack and a reopen; checks through a
 rename; a mate on a hidden body; the shown scenes after the workspace narrows; the assembly's `document.check` not ok
 for an instance that is not placed (a value past its part's range, a source gone or not a document), a failed mate,
-coupling or solve, and each inside a rigid and a flexible subassembly, and answering as before for one that is right.
+coupling or solve, and each inside a rigid and a flexible subassembly, and two subassemblies down in each of the
+four pairs of modes, and answering as before for one that is right, also with a hinge at either end of its limits, a
+fixed mate given twice, nothing held to the world, a pinned instance whose file changed and a part without a body.
 `regen_elsewhere.rs` has the assembly
 built here by a host that regenerates elsewhere, `recovery.rs` the unsaved assembly that asks, is autosaved and comes
 back with its sources, `crates/io/tests/step_freecad.rs` FreeCAD reading an assembly (`cargo xtask freecad`).
@@ -932,8 +934,11 @@ each published assembly as 0.2.0 answered it.
   examples' repository the program does not carry were measured with 0.2.0: the task lamp (no subassembly) and the
   CoreXY printer answer ok, `assembly.solve` ok with nothing failed, and each of the printer's four rigid
   subassemblies, opened at the values its instance gives it, solves with nothing failed: nothing the check now asks
-  about is there. `document.sample` and `craft3d-cli check-range` check each point with this check, so a point of an
-  assembly where an instance is not placed fails now. The test of A-023 held the wrong ok itself: at a corner the
+  about is there. Measured since by the review on the build of the fix (Check 44622852028, from a scratch branch
+  never merged): all six, as published (format 69) and as rebuilt at 0.2.0 (format 77), at their defaults and at
+  t = 0 to 1 by a quarter, each check ok with no problem and solve with nothing failed. `document.sample` and
+  `craft3d-cli check-range` check each point with this check, so a point of an assembly where an instance is not
+  placed fails now. The test of A-023 held the wrong ok itself: at a corner the
   part takes, its mate on `Plate/F1:face(1)` names a face of the blank, whose body went into the fillet and is not
   shown (the plate's faces are `F2:copy(0)/F1:face(k)`), and fails (*no body has a face `F1:face(1)`*), while the
   check said ok; its expectation was changed to that problem, and to ok once the mate names the plate's face. A

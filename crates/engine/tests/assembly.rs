@@ -1672,7 +1672,10 @@ fn filleted_plate(s: &mut Session) {
 /// A-023: an instance whose configuration has a failed feature is placed
 /// with the bodies from before it, as the part shows them, but carries
 /// the failure by name (the part's own message) and the assembly's check
-/// is not ok, also through a subassembly. A valid value is ok.
+/// is not ok, also through a subassembly. A valid value fails no feature;
+/// its mate, on a face of the blank the fillet took, then fails, and the
+/// check is ok once the mate names the plate's face. (The mate holds at
+/// 12 mm only because the fillet failed and the blank is shown.)
 #[test]
 fn an_instance_whose_part_has_a_failed_feature_says_so_and_is_still_placed() {
     let dir = workdir("assembly", "failed-feature");
