@@ -1,6 +1,6 @@
 # Decisions
 
-> **Last updated:** 2026-11-17
+> **Last updated:** 2026-11-19
 
 This is the record of the decisions taken while 3DCraft was built, written at the time and kept as it was. "The developer" is the project's maintainer; "an agent" and "the coordinator" are the AI agents that built it (the coordinator plans the others' work and merges it). A decision made by an agent "for the developer to overturn" (some of them overnight, while nobody could be asked) stood unless it was overturned, and a later entry says so where it was; dates are when a decision was taken, ids of runs and commits are the workshop's evidence of the day. From outside the project, an open decision is raised in an issue.
 
@@ -10,11 +10,11 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ### 2026-11-19: After 0.2.0: fixes for 0.2 from `release/0.2`, and the 0.1 line ends (decided by the developer; amends 2026-11-13)
 
-0.2.0 is published (2026-11-19), from the workshop's `main`.
+0.2.0 is published (2026-11-19), from the workshop's `main`. Asked whether fixes for 0.2.0 go to a maintenance branch `release/0.2` from the tag, as for 0.1, and whether 0.1.x still gets fixes, the developer answered: yes, as for 0.1; no more 0.1.x. The rules below for `release/0.2` are those of 2026-11-13 for `release/0.1`, carried over by that answer.
 
 - **Fixes for 0.2 are released as 0.2.x from the maintenance branch `release/0.2`**, made at the commit 0.2.0 is tagged on (`c7cab24f`), by the rules 2026-11-13 set for `release/0.1`: a fix lands there first, on a branch of its own with a reviewer and the gate, is tagged there, and `release/0.2` is then merged forward into `main`; never `main` first and a cherry-pick. What may go into a 0.2.x is what could go into a 0.1.x: only what is wrong, crashes or spoils the first impression; no change to the file format and no new command parameters.
 - **The 0.1 line ends.** No more 0.1.x: whoever uses 0.1 updates to 0.2.0, which opens every file of 0.1 (its own files do not open in 0.1.x). `release/0.1` stays as it is, as history; it is merged into `main` and so into 0.2.0.
-- **`main` is the next version.** The public repository's `main` stays the latest release.
+- **`main` is the next version.** The public repository's `main` stays the latest release, and the website the guide of the latest release, so a fix to the guide reaches it with the next 0.2.x.
 
 ### 2026-11-17: Notes pinned to the model: in the document, written by agents too, never published (decided by the developer)
 

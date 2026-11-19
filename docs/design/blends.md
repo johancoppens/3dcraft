@@ -67,6 +67,20 @@ Conditions that exist for one configuration and are not (yet) a general method. 
 
 **A wrong solid, in 0.1.0 to 0.1.3** (0.1.3, by the pair of faces at 8 along the pipe and 1 along the top: 40123.44 mm³, status ok; measured 2026-11-19). A plate 60 × 40 × 10 and a pipe of radius 10 along x whose axis is at (y, z) = (20, 16), united: the concave edge where the pipe leaves the plate's top, chamfered 1 along the top and `d` of arc along the pipe. While the chord from the cut line on the top to the one on the pipe stays outside the pipe (`d` up to 4.4657, worked out by hand), the chamfer is the closed form (the triangle of the corner and the two cut lines less the pipe's segment the chord cuts off). Past it the chord runs through the pipe and the same construction is built, the deep check passing: the chamfer, which fills a concave corner, takes material away (`d` = 8 gives 40144.61 mm³, 30 gives 31981.21, against the union's 40165.78; by the pair of faces, both edges, 10 gave 39784.01 in 0.1.0). It is refused only from half a turn of the pipe on ("the largest distance that fits there is below 31.4158"). Since *A chamfer through a face beside it* (below, 2026-11-14) such a chord is refused as too large, with the largest distance that fits. Held by `crates/engine/tests/blend_edge_names.rs` › `a_concave_chamfer_whose_chord_would_enter_the_pipe_is_too_large` (ignored as owed until 2026-11-19, when it was run and passed: Check 44501216406); the sizes that are right: `a_chamfer_by_name_along_the_pipe_is_the_closed_form_while_its_chord_stays_outside_it`.
 
+## A fillet of a cylinder's rim refused at some document tolerances, fine ones too: owed (2026-11-19)
+
+*Found* by a prompt test of a published example, the RC yacht hull (its hatch cover, 60 mm across with its top edge rounded 1 mm, in a document at a tolerance of 0.02 mm; F-182 in the examples' feedback), and reduced to three steps: a new document, a cylinder of radius 30 mm and height 8 mm, and `feature.fillet` of 1 mm on its top rim.
+
+    craft3d-cli run --new '{"units":"mm","tolerance":0.02}' --keep-going \
+      --cmd feature.cylinder --params '{"radius":"30 mm","height":"8 mm","name":"Disc"}' \
+      --cmd feature.fillet --params '{"edges":[["F1:face(0)","F1:face(2)"]],"radius":"1 mm","name":"Round"}'
+
+*What it does* (measured on 0.1.3 and 0.2.0, which answer the same at every tolerance tried; 0.1.0 to 0.1.2 not tried): at document tolerances from 0.03 mm down to 0.0012 mm the fillet is refused: *"the boolean that cuts this fillet refused it: boolean does not support this: a piece of a face lies within tolerance of a face it is not coincident with (at the edge of tolerance) (face 0 of the first body)"*, from 0.01 mm down with *"; smaller radii tried fail the same way"*; at 0.0011 mm and finer it builds, to the closed form (22 579.3168 mm³), and at 0.05 mm too. The bottom rim is refused at 0.02, 0.01 and 0.002 mm and builds at 0.001 mm (at 0.02 mm naming face 1, the bottom). Other sizes are refused at other tolerances, fine ones too: on the same cylinder a 0.5 mm fillet builds at 0.03 and 0.02 mm and is refused from 0.01 mm down to 0.0002 mm, a 2 mm fillet only at 0.02 mm, a 3 mm fillet at none of 0.02 to 1e-5 mm; a 1 mm fillet on a cylinder of radius 10 mm and height 20 mm only at 0.02 mm, on one of radius 100 mm and height 8 mm at 0.03 mm and from 0.01 mm down to 0.0002 mm, on one of radius 5 mm and height 5 mm at none. Of the 65 published documents, 8 are at 0.01 mm and one (the yacht) at 0.02 mm; 46 keep the default of 1e-6 mm.
+
+*Not traced* (inferred from `boolean::classify`): the refusal is the classification's: a point taken inside a piece of one face (`Outline::interior_points`, stepped in from the middle of a boundary piece by fractions of its chord, for a circle its diameter) lies within twice the tolerance of a face of the other body. The fillet's torus leaves the wall and the top tangentially, so beside each join it lies within twice the tolerance of the face it leaves over a band about 2√(r·t) wide (r the fillet's radius, t the tolerance), at any tolerance; whether the point lands there would depend on the rim's radius, the fillet's and the tolerance, as the pattern above does. Which piece of which face it is, is not known.
+
+**Owed:** the fillet of a cylinder's rim at every document tolerance (other closed rims not tried); if the cause is the one inferred above, the boolean that cuts a fillet must not refuse at the fillet's own tangent joins. The same test's subtract where a deck crosses a torus-to-wall tangent circle (refused as *"tangent contact of higher order"*, at 0.02 to 0.002 mm) may be the same nearness; it was not reduced.
+
 ## Findings
 
 > The findings were moved from `docs/architecture.md` on 2026-10-15 (§ numbers in older text are that file's before the split; [README.md](README.md) says where each is now) and shortened to what still describes live code on 2026-10-17.
@@ -463,18 +477,6 @@ What the face operations ask of the rolling ball to rebuild a fillet between off
 - **The same `Solver`, `Spine`, `follow` and `refine`**, the spine the old border, the joints' planes the old end rows' at a chain's joints.
 - **`Solver::settle`**: how little a centre may still move per step and be settled. Zero everywhere else (rounding, as before); a hundredth of the tolerance for a rebuild, whose feet on fitted offsets of high degree are found only to about 1e-12 of the part (the saddle's rear rim jittered by 1e-8 mm).
 - **Feet on the faces** (`on_face`): past the part of the old fillet its face's edges reach, a ball is kept only while its feet lie within a thousandth of a freeform face's parameters past its border; past that the fillet would roll along a fitted offset extrapolated, or, past a smooth edge, along the wrong face.
-
-## A fillet of a plain cylinder's rim refused at a coarse tolerance: owed (2026-11-19)
-
-*Found* by a prompt test of a published example (a hatch cover 60 mm across with its top edge rounded 1 mm, in a document at a tolerance of 0.02 mm) and reduced to three steps: a cylinder of radius 30 mm and height 8 mm, and `feature.fillet` of 1 mm on its top rim.
-
-    craft3d-cli run --new '{"units":"mm","tolerance":0.02}' --keep-going \
-      --cmd feature.cylinder --params '{"radius":"30 mm","height":"8 mm","name":"Disc"}' \
-      --cmd feature.fillet --params '{"edges":[["F1:face(0)","F1:face(2)"]],"radius":"1 mm","name":"Round"}'
-
-*What it does:* at a document tolerance of 0.02 mm and of 0.002 mm the fillet is refused: *"the boolean that cuts this fillet refused it: boolean does not support this: a piece of a face lies within tolerance of a face it is not coincident with (at the edge of tolerance) (face 0 of the first body)"* (at 0.002 mm with *"smaller radii tried fail the same way"*); at 1e-6 mm it builds. 0.1.3 answers the same at each of the three tolerances, so 0.2.0 changed nothing here; it is in the released versions. Tolerances of 0.01 to 0.02 mm are what the published documents use. Not traced: which piece of which face the boolean meets within the tolerance (the fillet's torus leaves the cylinder's wall and its top tangentially, so near both joins its face lies within any coarse tolerance of the face it leaves), and from which tolerance down it builds.
-
-**Owed:** the fillet of a closed rim at any document tolerance a person would set; the cut that makes a fillet must not take the fillet's own tangent joins for faces that nearly coincide. The same test's subtract where a deck crosses a torus-to-wall tangent circle ("tangent contact of higher order", at 0.02 to 0.002 mm) is likely the same nearness and was not reduced.
 
 ## History
 
