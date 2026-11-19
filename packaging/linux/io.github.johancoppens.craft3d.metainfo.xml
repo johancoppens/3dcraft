@@ -25,6 +25,13 @@
     <mediatype>application/x-craft3d-assembly</mediatype>
   </provides>
   <releases>
+    <release version="0.2.0" date="2026-11-19">
+      <url type="details">https://github.com/johancoppens/3dcraft/releases/tag/v0.2.0</url>
+      <description>
+        <p>Notes pinned to the model, on which you and an AI agent answer each other; two things selected are measured by themselves; a section you drag, lay on a face or through a hole's axis; fillets that fade to a point, rounded tips and sheets through grids of points.</p>
+        <p>Many answers are checked harder: in most designs only last digits move, but if you checked a design with 0.1, check it again. Files saved by 0.2.0 do not open in 0.1.x.</p>
+      </description>
+    </release>
     <release version="0.1.3" date="2026-11-16">
       <url type="details">https://github.com/johancoppens/3dcraft/releases/tag/v0.1.3</url>
       <description>

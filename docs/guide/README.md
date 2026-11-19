@@ -1,6 +1,6 @@
 # Start here: the 3DCraft user guide
 
-> **For version 0.1.3**: the first release, 0.1.0, with its first fixes. A test runs this guide against
+> **For version 0.2.0.** A test runs this guide against
 > 3DCraft at every change: every command and parameter it names must exist, its example scripts must build
 > and pass their checks, and the results it quotes in several chapters must come out as written.
 
@@ -31,7 +31,7 @@ sends them, or you write them yourself. The window is there to watch, to point a
 3DCraft is open source, under the MIT licence. You do not need to know anything about programming or CAD
 to start.
 
-3DCraft is at version 0.1.3. It does not replace professional CAD today. What it cannot do yet, it refuses,
+3DCraft is at version 0.2.0. It does not replace professional CAD today. What it cannot do yet, it refuses,
 and says so.
 
 ## Three ways to use 3DCraft

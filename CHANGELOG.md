@@ -4,6 +4,8 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-19
+
 Notes pinned to the model, on which you and an AI agent answer each other; two things selected measured by themselves; a section you drag, lay on a face or through a hole's axis; fillets that fade to a point, rounded tips and sheets through grids of points. Results that changed come first: in most designs only last digits move, but if you checked a design with 0.1, check it again. Files saved by 0.2.0 do not open in 0.1.x.
 
 ### Results that changed
@@ -262,7 +264,8 @@ The first release for people outside the project. 3DCraft is a parametric 3D CAD
 - An AI agent cannot drive the web version yet.
 - Some modelling cases are refused rather than built (the message says which): among them some booleans and freeform fillets, curved sheet-metal bends along a spline and some sharp ones, curved origami creases, and text wrapped onto a surface other than a cylinder or a cone. Text is laid out glyph by glyph with kerning; shaping for complex scripts (such as Arabic or the Indic scripts) is for a later version. Every refusal reported helps.
 
-[Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/johancoppens/3dcraft/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/johancoppens/3dcraft/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/johancoppens/3dcraft/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/johancoppens/3dcraft/compare/v0.1.0...v0.1.1
