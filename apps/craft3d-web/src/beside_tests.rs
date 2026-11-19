@@ -1023,14 +1023,26 @@ impl Page {
     /// Selects `items` as a click does (handed to the worker) and goes on
     /// until the card of it is there, its measures asked.
     fn select(&mut self, items: &Value) {
-        self.host
+        let done = self
+            .host
             .session
             .execute_deferrable("select.set", &json!({ "items": items }))
             .unwrap();
+        assert_eq!(done["deferred"], true, "{done}");
         for _ in 0..10 {
             self.frame();
             self.host.shell.sync(&mut self.host.session);
-            if self.host.shell.side_props().is_some() {
+            // The window has the new selection (the card of the one before
+            // is still there until it has).
+            let shown: Vec<Value> = self
+                .host
+                .shell
+                .selection()
+                .items
+                .iter()
+                .map(|i| json!({"kind": i.kind.name(), "name": i.name, "feature": i.feature}))
+                .collect();
+            if Some(&shown) == items.as_array() && self.host.shell.side_props().is_some() {
                 return;
             }
         }
