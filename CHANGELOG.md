@@ -4,6 +4,10 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-20
+
+Three fixes. In the web version, what you select is measured, as it is in the installed 3DCraft. *Keep as a check* no longer says it kept a check that was refused. And the check of an assembly no longer says ok while an instance is not placed, or a mate, a coupling or the solve failed. Files of 0.2.0 open unchanged.
+
 ### Results that changed
 
 What 3DCraft answered before can differ now: a measure, a proof, a check, a body that was built wrong while it looked right, or a body that was built and is now refused. If you relied on one of these, check it again.
@@ -109,7 +113,7 @@ What 3DCraft answered before can differ now: a measure, a proof, a check, a body
 ### Known limitations
 
 - On the web page the Notes tab lists the notes, but the view draws no pins and a row does not fly to its note yet.
-- In the web version one thing selected shows what it is, not its size, and two things selected are not measured, although the status bar's hint says to shift-click another to measure between: measuring by selecting works in the installed 3DCraft (found on 2026-11-19, after the release; this line was added to these notes then, and the programs' own copy of the notes does not have it).
+- In the web version one thing selected shows what it is, not its size, and two things selected are not measured, although the status bar's hint says to shift-click another to measure between: measuring by selecting works in the installed 3DCraft (found on 2026-11-19, after the release; this line was added to these notes then, and 0.2.0's own copy of the notes does not have it; mended in 0.2.1).
 - A clearance whose gap is not proven above twice the document's tolerance is told by the kernel, which cannot tell every pair: there the clearance cannot be measured, and an assertion of it is in error. Over the 898 settings of the published Jigs tried, where 0.1.3 passed every assertion, this happens at 2 settings of the RC wing (its spars and ribs, found 0.05 mm apart).
 - Two parts that touch where a curve of the one lies exactly on the border of a face of the other may not be told from parts that overlap: the clearance cannot be measured ("an imprinted curve that does not fit the edges it should coincide with", or "a curve that is partly on and partly off a face boundary"). 0.1.x refuses the same bodies, but met them less often: a point held at a value was a rounding beside it, and is exactly on it now (above). Over those 898 settings this happens at 1, of the gear reducer: two wheels on their shafts, each shaft's keyway now centred exactly on its axis, which 0.1.3 answered as touching.
 - A thin shell of a freeform body can take about twice as long, and nearly three times as long on a computer with few cores: the check that no shell has turned inside out measures the result (a freeform tank shelled to a wall of 1.2 mm, on a laptop: 83 s where it took 44 s; on two of its cores, 146 s where it took 52 s).
@@ -276,7 +280,8 @@ The first release for people outside the project. 3DCraft is a parametric 3D CAD
 - An AI agent cannot drive the web version yet.
 - Some modelling cases are refused rather than built (the message says which): among them some booleans and freeform fillets, curved sheet-metal bends along a spline and some sharp ones, curved origami creases, and text wrapped onto a surface other than a cylinder or a cone. Text is laid out glyph by glyph with kerning; shaping for complex scripts (such as Arabic or the Indic scripts) is for a later version. Every refusal reported helps.
 
-[Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/johancoppens/3dcraft/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/johancoppens/3dcraft/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/johancoppens/3dcraft/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/johancoppens/3dcraft/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/johancoppens/3dcraft/compare/v0.1.1...v0.1.2

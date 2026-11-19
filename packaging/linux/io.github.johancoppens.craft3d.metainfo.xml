@@ -25,6 +25,12 @@
     <mediatype>application/x-craft3d-assembly</mediatype>
   </provides>
   <releases>
+    <release version="0.2.1" date="2026-11-20">
+      <url type="details">https://github.com/johancoppens/3dcraft/releases/tag/v0.2.1</url>
+      <description>
+        <p>In the web version, what you select is measured, as in the installed 3DCraft. Keep as a check no longer says it kept a check that was refused. The check of an assembly no longer says ok while an instance is not placed, or a mate, a coupling or the solve failed.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-11-19">
       <url type="details">https://github.com/johancoppens/3dcraft/releases/tag/v0.2.0</url>
       <description>
