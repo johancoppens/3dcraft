@@ -1269,3 +1269,54 @@ fn the_requests_of_one_frame_take_at_most_its_share_and_the_rest_wait() {
     assert!(frames > 3, "over several frames: {frames}");
     assert!(!page.embed.goes_on_next_frame(&page.host));
 }
+
+/// The review of 0.2.1: the page's own jobs where the bodies are (the
+/// side panel's card of what is selected, `host.card`; the export and
+/// what its dialog offers) are no commands. A page that embeds 3DCraft
+/// asking for one by name is told it is unknown, at once, and nothing is
+/// handed to the worker; and none is in the registry by which the control
+/// channel, MCP and the CLI dispatch.
+#[test]
+fn the_pages_own_jobs_are_no_commands_anyone_can_ask_for() {
+    let mut page = opened_block();
+    let ran = page.worker.commands.get();
+    let work = page.host.session.work_here();
+    let first = json!({"kind": "body", "name": "Block", "feature": "F1"});
+    for job in [
+        crate::jobs::CARD,
+        crate::jobs::EXPORT,
+        crate::jobs::EXPORT_CHOICES,
+    ] {
+        assert!(Session::command(job).is_none(), "{job} is a command");
+        for (n, params) in [
+            json!({}),
+            json!({"facts": {"first": first, "faces": []}}),
+            json!({"between": {"from": first, "to": first}}),
+            json!({"wall": {"of": "Block"}}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let reply = page.ask(&execute(format!("{job}-{n}"), job, params));
+            assert_eq!(reply["ok"], false, "{job}: {reply}");
+            let error = reply["error"].as_str().unwrap();
+            assert!(
+                error.contains(&format!("unknown command `{job}`")),
+                "{job}: {error}"
+            );
+            page.frames(2);
+            let later = page.replies();
+            assert!(
+                later.iter().all(|r| r.get("event").is_some()),
+                "{job}: answered once: {later:?}"
+            );
+            assert!(!page.host.session.commands_waiting(), "{job}");
+        }
+    }
+    assert_eq!(
+        page.worker.commands.get(),
+        ran,
+        "nothing went to the worker"
+    );
+    assert_eq!(page.host.session.work_here(), work);
+}

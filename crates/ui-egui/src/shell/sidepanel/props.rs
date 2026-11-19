@@ -18,6 +18,12 @@
 //! 2026-11-18, V4): for one thing its length, diameter, radius, area,
 //! position or volume ([`Head`]), for two their relation; every number
 //! written by `shell/shown.rs`, so the view and the card say one text.
+//!
+//! What of this needs the bodies ([`Facts`], the relation, the wall) is
+//! read where they are: here in the window; beside a host that builds
+//! them elsewhere (the browser's worker), by the card's own job there
+//! ([`CARD_JOB`], [`card_job`]), the card saying *Measuring…* until it
+//! comes, and *Not measured* with why where nothing came (0.2.1).
 
 use super::{Shell, grouped};
 use crate::kit::{Button, Glyph, Kit, ValueStyle};
@@ -89,7 +95,9 @@ pub struct Props {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Head {
     /// `length`, `diameter`, `radius`, `area`, `position`, `volume`,
-    /// `box`; `none` where three things or more give no number.
+    /// `box`; `none` where three things or more give no number;
+    /// `measuring` while its measures are read where the bodies are (the
+    /// browser's worker), `notMeasured` where none came from there.
     pub measure: &'static str,
     /// In the document's unit (squared, cubed), where it is one number.
     pub value: Option<f64>,
@@ -101,6 +109,8 @@ pub struct Head {
     pub words: String,
     /// Written smaller than a number (a position, a box: three numbers).
     pub small: bool,
+    /// Why it was not measured (`notMeasured`): the hover of its words.
+    pub why: Option<String>,
 }
 
 impl Head {
@@ -112,7 +122,27 @@ impl Head {
             text,
             words: words.to_string(),
             small: false,
+            why: None,
         }
+    }
+
+    /// Its measures being read where the bodies are.
+    fn measuring() -> Self {
+        Head::of("measuring", None, "…".to_string(), "Measuring…")
+    }
+
+    /// No measures came from where the bodies are: `why`, for the hover.
+    fn not_measured(why: String) -> Self {
+        Head {
+            why: Some(why),
+            ..Head::of("notMeasured", None, "—".to_string(), "Not measured")
+        }
+    }
+
+    /// A number a click copies: not the marks of one being measured or
+    /// not measured.
+    pub fn copies(&self) -> bool {
+        !matches!(self.measure, "measuring" | "notMeasured")
     }
 
     /// What `ui.get` says under `measurement` for one thing.
@@ -215,6 +245,21 @@ impl Wall {
                 from: None,
                 to: None,
             },
+        }
+    }
+
+    /// Asked where the bodies are, and no answer came from there: `why`,
+    /// for the hover.
+    pub fn not_measured(why: String) -> Self {
+        Wall {
+            measuring: false,
+            value: None,
+            text: "—".to_string(),
+            whole: "—".to_string(),
+            words: "Not measured".to_string(),
+            refused: Some(why),
+            from: None,
+            to: None,
         }
     }
 
@@ -607,29 +652,39 @@ impl Measurement {
                 );
                 m
             }
-            Err(why) => {
-                let mut m = self.clone();
-                m.measuring = false;
-                // Nothing of an answer shown before (the same two things
-                // measured again) stays.
-                m.relation = String::new();
-                m.value = None;
-                m.parts = None;
-                m.at_least = None;
-                m.answer = Value::Null;
-                m.text = "—".to_string();
-                m.whole = "—".to_string();
-                // For people; the command's own sentence is the hover
-                // (`refused`).
-                m.words = "These two cannot be measured against each other".to_string();
-                m.refused = Some(
-                    why.strip_prefix("measure.between: ")
-                        .unwrap_or(&why)
-                        .to_string(),
-                );
-                m
-            }
+            // For people; the command's own sentence is the hover
+            // (`refused`).
+            Err(why) => self.without_answer(
+                "These two cannot be measured against each other",
+                why.strip_prefix("measure.between: ")
+                    .unwrap_or(&why)
+                    .to_string(),
+            ),
         }
+    }
+
+    /// This, asked where the bodies are, and no answer came from there:
+    /// `why`, for the hover.
+    pub fn not_measured(&self, why: String) -> Self {
+        self.without_answer("Not measured", why)
+    }
+
+    /// This settled without a value: `words`, and `why` for their hover.
+    fn without_answer(&self, words: &str, why: String) -> Self {
+        let mut m = self.clone();
+        m.measuring = false;
+        // Nothing of an answer shown before (the same two things
+        // measured again) stays.
+        m.relation = String::new();
+        m.value = None;
+        m.parts = None;
+        m.at_least = None;
+        m.answer = Value::Null;
+        m.text = "—".to_string();
+        m.whole = "—".to_string();
+        m.words = words.to_string();
+        m.refused = Some(why);
+        m
     }
 
     /// What `ui.get` says under `measurement`.
@@ -923,13 +978,241 @@ pub fn props_glyph(kind: &str, shape: Option<&str>) -> Glyph {
     }
 }
 
+/// The side panel's own job where the bodies are: a host that builds them
+/// elsewhere (the browser's worker) hands it over (`Session::hand_over`)
+/// and has it run there by [`card_job`]. Not a command: no script or
+/// agent can ask for it.
+pub const CARD_JOB: &str = "host.card";
+
+/// What the card of what is selected needs of the bodies, read where they
+/// are: the session there has the document state and the selection the
+/// job was handed over with (`craft3d_engine::run_on_state`). `params` is
+/// one of
+///
+/// - `{facts: {first, faces}}`: [`Facts`] of the selection's first thing
+///   (`first` as the host has it, `faces` the edge's two faces by the
+///   host's scene), answered `{facts}`;
+/// - `{between: params}`: `measure.between`, the relation of two things;
+/// - `{wall: params}`: `measure.thickness`, *Wall thickness*;
+///
+/// each of the last two answered `{ok: result}` or `{error: why}`, the
+/// command's own refusal; an error of the job itself means that none was
+/// read.
+pub fn card_job(
+    session: &mut Session,
+    params: &Value,
+) -> Result<Value, craft3d_engine::CommandError> {
+    let answered = |result: Result<Value, craft3d_engine::CommandError>| match result {
+        Ok(value) => json!({ "ok": value }),
+        Err(e) => json!({ "error": e.message() }),
+    };
+    if let Some(ask) = params.get("facts") {
+        let first = ask.get("first").and_then(item_of).ok_or_else(|| {
+            craft3d_engine::CommandError::new("the card's job names no thing selected")
+        })?;
+        let faces: Vec<String> = ask
+            .get("faces")
+            .and_then(Value::as_array)
+            .map(|faces| {
+                faces
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .take(2)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        return Ok(json!({ "facts": Facts::read(session, &first, &faces).json() }));
+    }
+    if let Some(between) = params.get("between") {
+        return Ok(answered(session.execute("measure.between", between)));
+    }
+    if let Some(wall) = params.get("wall") {
+        return Ok(answered(session.execute("measure.thickness", wall)));
+    }
+    Err(craft3d_engine::CommandError::new(
+        "the card's job asks for nothing it knows",
+    ))
+}
+
+/// An item `{kind, name, feature}` as [`item_json`] writes it.
+fn item_of(value: &Value) -> Option<craft3d_engine::SelectionItem> {
+    Some(craft3d_engine::SelectionItem {
+        kind: SelectionKind::parse(value.get("kind")?.as_str()?)?,
+        name: value.get("name")?.as_str()?.to_string(),
+        feature: value.get("feature")?.as_str()?.to_string(),
+    })
+}
+
+/// What the card of the selection's first thing needs of the bodies: the
+/// session's answers, read where the bodies are.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Facts {
+    /// A body's `document.measure` (without the inertia).
+    pub measure: Option<Value>,
+    /// A face's, an edge's or a vertex's `select.get` with context and
+    /// measures: the selection's first item.
+    pub described: Option<Value>,
+    /// The angle between the faces an edge lies between, in radians.
+    pub angle: Option<f64>,
+}
+
+impl Facts {
+    /// Read from `session`, which has the bodies (or builds them), for
+    /// the selection's first item `first` (an edge lying between `faces`):
+    /// what the window reads.
+    fn read(
+        session: &mut Session,
+        first: &craft3d_engine::SelectionItem,
+        faces: &[String],
+    ) -> Self {
+        if first.kind == SelectionKind::Body {
+            return Facts {
+                measure: session
+                    .execute(
+                        "document.measure",
+                        &json!({"feature": first.feature, "inertia": false}),
+                    )
+                    .ok(),
+                ..Facts::default()
+            };
+        }
+        let described = session
+            .execute("select.get", &json!({"context": true, "measures": true}))
+            .ok()
+            .and_then(|v| v.get("items").and_then(Value::as_array)?.first().cloned());
+        let angle = (first.kind == SelectionKind::Edge)
+            .then(|| edge_angle(session, &first.name, &first.feature, faces))
+            .flatten();
+        Facts {
+            measure: None,
+            described,
+            angle,
+        }
+    }
+
+    /// As it crosses to the host (every number read back the same `f64`:
+    /// `serde_json`'s `float_roundtrip`).
+    fn json(&self) -> Value {
+        json!({"measure": self.measure, "described": self.described, "angle": self.angle})
+    }
+
+    /// The card job's answer `{facts}`, read back.
+    fn of(answer: &Value) -> Option<Self> {
+        let facts = answer.get("facts")?;
+        let given = |key: &str| facts.get(key).filter(|v| !v.is_null()).cloned();
+        Some(Facts {
+            measure: given("measure"),
+            described: given("described"),
+            angle: facts.get("angle").and_then(Value::as_f64),
+        })
+    }
+
+    /// Whether these are the facts of `first`: what was described there
+    /// is the thing selected here (a body's measure is asked by its
+    /// feature).
+    fn of_thing(&self, first: &craft3d_engine::SelectionItem) -> bool {
+        first.kind == SelectionKind::Body
+            || self
+                .described
+                .as_ref()
+                .and_then(item_of)
+                .is_some_and(|d| d.same(first))
+    }
+}
+
+/// What answered a job of the card handed over ([`CARD_JOB`]): the facts,
+/// or why none came from where the bodies are.
+pub(crate) fn facts_answered(result: Result<Value, String>) -> Result<Facts, String> {
+    let read = result.map_err(|why| plain_why(&why))?;
+    Facts::of(&read).ok_or_else(|| "its answer cannot be read".to_string())
+}
+
+/// What answered a relation's or a wall's job of the card: the command's
+/// own answer, or why none came from where the bodies are.
+pub(crate) enum Away {
+    Answer(Result<Value, String>),
+    Missed(String),
+}
+
+impl Away {
+    pub(crate) fn of(result: Result<Value, String>) -> Self {
+        match result {
+            Ok(read) => match (read.get("ok"), read.get("error").and_then(Value::as_str)) {
+                (Some(ok), None) => Away::Answer(Ok(ok.clone())),
+                (None, Some(error)) => Away::Answer(Err(error.to_string())),
+                _ => Away::Missed("its answer cannot be read".to_string()),
+            },
+            Err(why) => Away::Missed(plain_why(&why)),
+        }
+    }
+}
+
+/// Why a job handed over brought nothing, without the job's own name.
+fn plain_why(why: &str) -> String {
+    why.strip_prefix(CARD_JOB)
+        .and_then(|rest| rest.strip_prefix(": "))
+        .unwrap_or(why)
+        .to_string()
+}
+
+/// What the card says where the facts of the thing it shows came from
+/// where the bodies are, but of another thing (the selection there,
+/// checked against the document, no longer begins with it).
+const ANOTHER_THING: &str =
+    "what was measured beside the page is no longer what is selected here; select it again";
+
+/// Where the card's facts that need the bodies come from.
+pub(crate) enum Source {
+    /// Read here, from the session (which has the bodies, or builds them):
+    /// the window.
+    Here,
+    /// Asked where the bodies are: not come yet (`None`), or come, or why
+    /// none came.
+    Elsewhere(Option<Result<Facts, String>>),
+    /// The bodies are not here and nothing can be asked of where they are
+    /// (a host that builds them elsewhere but runs no commands there): not
+    /// measured, saying so, and nothing offered that needs them; never
+    /// read here, where it would build them all in one frame (the review of
+    /// 0.2.1).
+    Nowhere,
+}
+
+/// Why the card of a host that builds the bodies elsewhere and asks
+/// nothing there is not measured ([`Source::Nowhere`]).
+pub(crate) const NOWHERE: &str =
+    "the model is built elsewhere, and its measures cannot be asked for there";
+
+/// The job that asks where the bodies are for what the card of the
+/// selection needs of them (`{facts: {first, faces}}`, [`card_job`]);
+/// `None` where it shows nothing that needs them (nothing selected, a
+/// feature, a sketch, a datum).
+pub(crate) fn facts_job(session: &mut Session, scene: Option<&Scene>) -> Option<Value> {
+    let view = session.selection();
+    let first = view.items.first()?;
+    if !matches!(
+        first.kind,
+        SelectionKind::Face | SelectionKind::Edge | SelectionKind::Vertex | SelectionKind::Body
+    ) {
+        return None;
+    }
+    let faces = if first.kind == SelectionKind::Edge {
+        between(&first.name, scene, &first.feature)
+    } else {
+        Vec::new()
+    };
+    Some(json!({"facts": {"first": item_json(first), "faces": faces}}))
+}
+
 /// The selection's first item described, from the session; `None` for
-/// a selection of features (their rows show them). Without the bodies
-/// here (`bodies_here` false) only what the names say.
+/// a selection of features (their rows show them). What needs the bodies
+/// comes from `source`: read here, or asked where they are; while it has
+/// not come, the card says it is being measured, and where none came, why.
+/// The relation of two things to be measured goes to `wanted`.
 pub(crate) fn read(
     session: &mut Session,
     scene: Option<&Scene>,
-    bodies_here: bool,
+    source: Source,
     wanted: &mut Option<Value>,
 ) -> Option<Props> {
     let view = session.selection();
@@ -953,6 +1236,29 @@ pub(crate) fn read(
         SelectionKind::Body => "Body",
         _ => return None,
     };
+    // The faces an edge lies between, by its name or the scene.
+    let faces = if first.kind == SelectionKind::Edge {
+        between(&first.name, scene, &first.feature)
+    } else {
+        Vec::new()
+    };
+    // What needs the bodies, and the head the card has while it is asked
+    // for where they are, or where none came from there.
+    let askable = !matches!(source, Source::Nowhere);
+    let (facts, waiting) = match source {
+        Source::Nowhere => (
+            Facts::default(),
+            Some(Head::not_measured(NOWHERE.to_string())),
+        ),
+        Source::Here => (Facts::read(session, &first, &faces), None),
+        Source::Elsewhere(None) => (Facts::default(), Some(Head::measuring())),
+        Source::Elsewhere(Some(Ok(facts))) if facts.of_thing(&first) => (facts, None),
+        Source::Elsewhere(Some(Ok(_))) => (
+            Facts::default(),
+            Some(Head::not_measured(ANOTHER_THING.to_string())),
+        ),
+        Source::Elsewhere(Some(Err(why))) => (Facts::default(), Some(Head::not_measured(why))),
+    };
     // Lengths in the facts as everywhere else (`shell/shown.rs`), to the
     // document's tolerance at most.
     let tolerance = session.linear_tolerance().unwrap_or(1e-6);
@@ -970,31 +1276,38 @@ pub(crate) fn read(
         ),
         words: MANY_WORDS.to_string(),
         small: false,
+        why: None,
     });
     let mut rows = Vec::new();
     let mut made_by = None;
     // Two things: their relation, by itself (Wall thickness stays for one
-    // face's or one body's wall).
+    // face's or one body's wall), measured where the bodies are.
     let measurement = match (&second, count) {
-        (Some(other), 2) if bodies_here => {
+        (Some(other), 2) => {
             let things = [thing_words(&first, scene), thing_words(other, scene)];
-            relation(&first, other, &unit, things, wanted).map(|mut m| {
+            // Asked only where it can be: else not measured, saying so.
+            let mut asked = None;
+            let m = relation(&first, other, &unit, things, &mut asked).map(|mut m| {
                 m.title = craft3d_engine::selection_summary(&view.items);
+                if !askable {
+                    m = m.not_measured(NOWHERE.to_string());
+                }
                 m
-            })
+            });
+            if askable {
+                *wanted = asked;
+            }
+            m
         }
         _ => None,
     };
     if first.kind == SelectionKind::Body {
         let id = first.feature.clone();
         let name = name_of(&id);
-        let mut head = None;
-        if bodies_here
-            && let Ok(m) = session.execute(
-                "document.measure",
-                &json!({"feature": id, "inertia": false}),
-            )
-        {
+        // Being measured where the bodies are, or not measured there: its
+        // box a row below.
+        let mut head = waiting;
+        if let Some(m) = &facts.measure {
             let mass = m.get("mass").and_then(Value::as_f64).map(mass_text);
             if let Some(v) = m.get("volume").and_then(Value::as_f64) {
                 let text = shown::volume(v, &unit);
@@ -1045,8 +1358,8 @@ pub(crate) fn read(
             }
         }
         made_by = Some(id.clone());
-        // Wall thickness of the part, where the bodies are here.
-        let measure = (bodies_here && count == 1).then(|| ("measure.thickness", json!({"of": id})));
+        // Wall thickness of the part, measured where the bodies are.
+        let measure = (count == 1 && askable).then(|| ("measure.thickness", json!({"of": id})));
         return Some(Props {
             kind,
             heading: format!("Body {name}"),
@@ -1062,14 +1375,7 @@ pub(crate) fn read(
             single: None,
         });
     }
-    let described = if bodies_here {
-        session
-            .execute("select.get", &json!({"context": true, "measures": true}))
-            .ok()
-            .and_then(|v| v.get("items").and_then(Value::as_array)?.first().cloned())
-    } else {
-        None
-    };
+    let described = facts.described;
     // The first thing's measure: the view shows it beside it for one thing
     // alone; its Type row says it in the same words whatever the count (a
     // whole cylinder Ø, part of one R: the UX verdict of 2026-11-18).
@@ -1096,6 +1402,11 @@ pub(crate) fn read(
             )
         }
     });
+    // Being measured where the bodies are, or not measured there (then
+    // nothing was described).
+    if head.is_none() {
+        head = waiting;
+    }
     if let Some(item) = &described {
         if let Some(origin) = item.get("origin") {
             let id = origin.get("feature").and_then(Value::as_str).unwrap_or("");
@@ -1164,15 +1475,13 @@ pub(crate) fn read(
         }
     }
     if first.kind == SelectionKind::Edge {
-        let faces = between(&first.name, scene, &first.feature);
         if let [a, b] = faces.as_slice() {
             rows.push(plain(
                 "Between",
                 format!("{} · {}", face_words(a, scene), face_words(b, scene)),
             ));
         }
-        if bodies_here && let Some(angle) = edge_angle(session, &first.name, &first.feature, &faces)
-        {
+        if let Some(angle) = facts.angle {
             rows.push(plain(
                 "Angle",
                 shown::angle(angle.to_degrees(), angular).text,
@@ -1191,16 +1500,14 @@ pub(crate) fn read(
         value: first.name.clone(),
         style: PropStyle::Name,
     });
-    // Wall thickness runs here: not while the bodies are built elsewhere
-    // (a command there would answer later, deferred), and for one face.
-    let measure = (first.kind == SelectionKind::Face && count == 1)
-        .then(|| {
-            (
-                "measure.thickness",
-                json!({"of": {"kind": "face", "where": {"in": first.feature, "name": first.name}}}),
-            )
-        })
-        .filter(|_| bodies_here);
+    // Wall thickness, for one face: measured where the bodies are (beside
+    // a host that builds them elsewhere, `Shell::apply_side_requests`).
+    let measure = (first.kind == SelectionKind::Face && count == 1 && askable).then(|| {
+        (
+            "measure.thickness",
+            json!({"of": {"kind": "face", "where": {"in": first.feature, "name": first.name}}}),
+        )
+    });
     let shape = described.as_ref().and_then(|item| {
         item.get("surface")
             .or_else(|| item.get("curve"))
@@ -1704,9 +2011,41 @@ impl Shell {
     /// revision, not that), while the check is there (undone, it can be
     /// kept again: the review of 2026-11-17).
     fn kept_now(&self) -> bool {
-        self.side.kept.as_ref().is_some_and(|(key, name)| {
-            Some(*key) == self.side.kept_key()
-                && self.assertion_rows().iter().any(|a| a.name == *name)
+        self.keeping_now()
+            || self.side.kept.as_ref().is_some_and(|(key, name)| {
+                Some(*key) == self.side.kept_key()
+                    && self.assertion_rows().iter().any(|a| a.name == *name)
+            })
+    }
+
+    /// Whether the relation of the two things selected is being kept: its
+    /// `assert.add` asked for and not answered yet (waiting behind an edit
+    /// made where the bodies are, or made there itself).
+    fn keeping_now(&self) -> bool {
+        self.side
+            .keeping
+            .as_ref()
+            .is_some_and(|k| Some(k.key) == self.side.kept_key())
+    }
+
+    /// Why the document shown takes no new check, in plain words: a Jig in
+    /// use, which changes only through its parameters (`assert.add` is
+    /// refused there, as every other edit), or a document that holds as
+    /// many checks as one may. `None` where it takes one; what else can
+    /// refuse a check (its measure, all the checks' text together) is said
+    /// in the status bar when it is refused (`Shell::keep_failed`).
+    pub fn new_check_refused(&self) -> Option<String> {
+        if self.shown_status.as_ref().is_some_and(|s| s.jig_in_use) {
+            return Some(
+                "A Jig in use takes no new checks: only its parameters change. Open it for editing to keep one"
+                    .to_string(),
+            );
+        }
+        (self.assertion_rows().len() >= craft3d_engine::MAX_ASSERTIONS).then(|| {
+            format!(
+                "The document holds {} checks, as many as one may",
+                craft3d_engine::MAX_ASSERTIONS
+            )
         })
     }
 
@@ -1717,6 +2056,7 @@ impl Shell {
         let kit = Kit::panel(&self.tokens);
         let kept = self.kept_now();
         let keepable = m.check("").is_some();
+        let refused = self.new_check_refused();
         let k = kit.button(
             ui,
             Button::secondary(if kept {
@@ -1724,17 +2064,23 @@ impl Shell {
             } else {
                 "Keep as a check"
             })
-            .enabled(keepable && !kept),
+            .enabled(keepable && !kept && refused.is_none()),
         );
         self.side.hits.targets.push(("keep".to_string(), k.rect));
         let why = if m.measuring {
-            Some("Still measuring")
+            Some("Still measuring".to_string())
+        } else if self.keeping_now() {
+            // Asked for, not answered yet (made where the bodies are, or
+            // waiting behind an edit made there).
+            Some("Being kept as a check…".to_string())
         } else if kept {
-            Some("Kept: Ctrl+Z takes it back")
+            Some("Kept: Ctrl+Z takes it back".to_string())
+        } else if let Some(refused) = refused {
+            Some(refused)
         } else if m.answer.get("overlap").and_then(Value::as_bool) == Some(true) {
-            Some("Nothing to keep: the two overlap")
+            Some("Nothing to keep: the two overlap".to_string())
         } else if !keepable {
-            Some("Nothing to keep: not measured")
+            Some("Nothing to keep: not measured".to_string())
         } else {
             None
         };
@@ -1746,19 +2092,52 @@ impl Shell {
     }
 
     /// Keeps the relation `m` as a check of the document, under a name of
-    /// its own: the Checks unfold with its row tinted, and the status bar
-    /// says it until the next click, key or command.
+    /// its own: `assert.add` asked for; once it is made
+    /// ([`Shell::kept_done`]) the Checks unfold with its row tinted, and
+    /// the status bar says it until the next click, key or command; where
+    /// it is refused, the status bar says why ([`Shell::keep_failed`]).
     fn keep(&mut self, m: &Measurement) {
+        if self.new_check_refused().is_some() || self.keeping_now() {
+            return;
+        }
         let name = self.free_check_name(&m.check_name);
         if let (Some(params), Some(key)) = (m.check(&name), self.side.kept_key()) {
             self.side_queue("assert.add", params, None);
-            self.side.kept = Some((key, name.clone()));
-            self.state.side_panel.checks_open = true;
-            self.side.checks_asked = true;
-            self.side.kept_tint =
-                Some((name.clone(), Timed::seconds("", KEPT_TINT_SECONDS), false));
-            self.hint_until_next(format!("Kept as the check {name} · Ctrl+Z takes it back"));
+            // Queued (the panel takes so many requests at most).
+            if self
+                .side
+                .pending
+                .last()
+                .is_some_and(|r| r.command == "assert.add")
+            {
+                self.side.keeping = Some(super::Keeping {
+                    key,
+                    name,
+                    job: None,
+                });
+            }
         }
+    }
+
+    /// The check `name` was kept for the selection of `key`: the Checks
+    /// unfold with its row tinted, and the status bar says so until the
+    /// next click, key or command.
+    pub(super) fn kept_done(&mut self, key: (u64, u64), name: String) {
+        self.side.kept = Some((key, name.clone()));
+        self.state.side_panel.checks_open = true;
+        self.side.checks_asked = true;
+        self.side.kept_tint = Some((name.clone(), Timed::seconds("", KEPT_TINT_SECONDS), false));
+        self.hint_until_next(format!("Kept as the check {name} · Ctrl+Z takes it back"));
+    }
+
+    /// The check asked for was not made: the status bar says why for a
+    /// while (it said nothing was kept before it was).
+    pub(super) fn keep_failed(&mut self, why: &str) {
+        let why = why.strip_prefix("assert.add: ").unwrap_or(why);
+        self.hint(
+            format!("Not kept as a check: {why}"),
+            crate::shell::hints::HINT_SECONDS,
+        );
     }
 
     /// *Wall thickness* (quiet), where it can run, and *Copy name*; by
@@ -1835,6 +2214,10 @@ impl Shell {
         let text = match self.headline(&props) {
             Headline::Relation(m) => format!("{} {}", m.words, m.text),
             Headline::Wall(wall) => format!("{} · {} {}", props.heading, wall.words, wall.text),
+            // Being measured where the bodies are, or not measured: said.
+            Headline::Thing(head) if !head.copies() => {
+                format!("{} · {}", props.heading, head.words)
+            }
             Headline::Thing(head) if !head.text.is_empty() => {
                 format!("{} · {}", props.heading, head.text)
             }
@@ -2007,12 +2390,12 @@ impl Shell {
                     } else {
                         t.measure_font
                     };
-                    self.number_ui(ui, &head.text, &head.whole, size, true);
+                    self.number_ui(ui, &head.text, &head.whole, size, head.copies());
                 }
                 if head.text.is_empty() {
                     self.words_wrapped_ui(ui, &head.words);
                 } else {
-                    self.words_ui(ui, &head.words, None);
+                    self.words_ui(ui, &head.words, head.why.as_deref());
                 }
             }
             Headline::None => {}

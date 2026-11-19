@@ -22,7 +22,10 @@
 //! (`Session::history_view`, nothing regenerated), the bodies' measures
 //! (`document.inspect`) only while the Bodies tab shows, and what is
 //! selected (`select.get`, `measure.continuity`, `document.measure`)
-//! only while something is.
+//! only while something is. Beside a host that builds the bodies
+//! elsewhere (the browser's worker) what is selected is measured there
+//! (`props::CARD_JOB`, its answers taken by [`Shell::card_answered`]),
+//! never on the host's one thread.
 
 pub mod agent;
 pub mod bodies;
@@ -46,6 +49,23 @@ pub use props::{PropRow, Props};
 
 /// The document and revision a read of the panel was for.
 pub(crate) type ViewKey = Option<(u64, u64)>;
+
+/// The card of what is selected a read was for: the document, its
+/// revision and the selection's serial.
+type CardKey = (u64, u64, u64);
+
+/// A check asked for by *Keep as a check*, not answered yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Keeping {
+    /// The document and the selection it is kept for
+    /// ([`SideMemory::kept_key`]).
+    pub(crate) key: (u64, u64),
+    /// The check's name.
+    pub(crate) name: String,
+    /// Its `assert.add` made where the bodies are, by its job's number;
+    /// `None` while it waits in the panel's queue.
+    pub(crate) job: Option<u64>,
+}
 
 /// Most commands the panel keeps waiting for the session.
 const MAX_PENDING: usize = 64;
@@ -165,6 +185,28 @@ pub(crate) struct SideMemory {
     /// the last frame: the list's room ends there.
     pub(crate) foot_top: Option<f32>,
     waiting: Option<((u64, u64, u64), Value)>,
+    /// Beside a host that builds the bodies elsewhere (the browser's
+    /// worker), what the card asked there (`props::CARD_JOB`), each for
+    /// the card of `props_for` it was asked for, by its job's number: the
+    /// facts of the first thing, the relation of two (one at a time, as
+    /// [`SideMemory::between`]), the wall; and what came of the first two,
+    /// taken at the next sync (an answer for another card is dropped).
+    facts_asked: Option<(CardKey, u64)>,
+    facts_came: Option<(CardKey, Result<props::Facts, String>)>,
+    /// The facts' job, while the host takes no more jobs for now.
+    facts_later: Option<(CardKey, Value)>,
+    between_asked: Option<(CardKey, u64)>,
+    between_came: Option<(CardKey, props::Away)>,
+    /// The wall's card and job, whether it is a body's, and the tolerance
+    /// its answer is written to.
+    wall_asked: Option<(CardKey, u64, bool, f64)>,
+    /// Every job the card handed over whose answer has not come: an
+    /// answer for an earlier card is the card's to drop, never the host's
+    /// to report.
+    card_jobs: std::collections::BTreeSet<u64>,
+    /// *Keep as a check* asked for and not answered yet: it says so, and
+    /// the status bar says it was kept only once it was.
+    pub(crate) keeping: Option<Keeping>,
     /// Commands waiting for the session.
     pending: Vec<SideRequest>,
     /// Errors at fields, by their key.
@@ -306,14 +348,77 @@ impl Shell {
     }
 
     /// Runs what the panel asked for, in order. True when there was
-    /// anything; the caller syncs.
+    /// anything; the caller syncs. While an edit made where the bodies are
+    /// waits for its answer (the page's worker: a check being kept, an
+    /// edit that needs the bodies), what is left waits too, in its order,
+    /// and runs on the document that edit leaves, as the timeline's and
+    /// the clicks' requests do: run now, a variable or a note set after a
+    /// check was kept would change the document under the check, whose
+    /// answer would then be refused (the review of 0.2.1, F1).
     pub(crate) fn apply_side_requests(&mut self, session: &mut Session) -> bool {
         let pending = std::mem::take(&mut self.side.pending);
         let tolerance = session.linear_tolerance().unwrap_or(1e-6);
         let wall_of_body = self.side.props.as_ref().is_some_and(|p| p.kind == "Body");
-        for request in &pending {
+        // The bodies are built elsewhere and are not here (the browser's
+        // worker): what needs them is made there, not here on the host's
+        // one thread.
+        let away = session.regen_elsewhere() && !session.regenerated_here();
+        let mut ran = false;
+        for (at, request) in pending.iter().enumerate() {
+            if session.edits_waiting() {
+                let mut rest = pending.get(at..).map(<[_]>::to_vec).unwrap_or_default();
+                rest.append(&mut self.side.pending);
+                self.side.pending = rest;
+                break;
+            }
+            ran = true;
+            // The check *Keep as a check* asked for.
+            let keep = request.command == "assert.add"
+                && self.side.keeping.as_ref().is_some_and(|k| {
+                    k.job.is_none()
+                        && request.params.get("name").and_then(Value::as_str)
+                            == Some(k.name.as_str())
+                });
+            // Wall thickness, measured where the bodies are: its answer
+            // heads the card when it comes, for the card it was asked for.
+            if away
+                && request.command == "measure.thickness"
+                && let Some(key) = self.side.props_for
+            {
+                match session.hand_over(props::CARD_JOB, &json!({ "wall": request.params })) {
+                    Some(token) => {
+                        self.side.card_jobs.insert(token);
+                        self.side.wall_asked = Some((key, token, wall_of_body, tolerance));
+                        continue;
+                    }
+                    None if session.commands_full() => {
+                        self.side.wall = Some(props::Wall::not_measured(
+                            "as many measures wait beside the page as may; ask again in a moment"
+                                .to_string(),
+                        ));
+                        continue;
+                    }
+                    // Nothing can be asked where the bodies are: not
+                    // measured, never built here in one frame.
+                    None => {
+                        self.side.wall =
+                            Some(props::Wall::not_measured(props::NOWHERE.to_string()));
+                        continue;
+                    }
+                }
+            }
+            // A check kept is made where the bodies are, as an edit the
+            // person asked for (adding it measures every check of the
+            // document): handed over, applied here from its answer.
+            let deferrable = away && request.command == "assert.add";
             // The notes the window writes are the person's: typed here.
-            let run = |session: &mut Session| session.execute(request.command, &request.params);
+            let run = |session: &mut Session| {
+                if deferrable {
+                    session.execute_deferrable(request.command, &request.params)
+                } else {
+                    session.execute(request.command, &request.params)
+                }
+            };
             let done = if request.command.starts_with("note.") {
                 session.by_person(run)
             } else {
@@ -322,6 +427,24 @@ impl Shell {
             match done {
                 Ok(result) => {
                     self.side.problem = None;
+                    // The check kept: said once it is made, here or where
+                    // the bodies are (`Shell::card_answered`).
+                    if keep {
+                        let deferred = result.get("deferred") == Some(&Value::Bool(true));
+                        match (deferred, result.get("job").and_then(Value::as_u64)) {
+                            (true, Some(token)) => {
+                                if let Some(k) = &mut self.side.keeping {
+                                    k.job = Some(token);
+                                }
+                            }
+                            (true, None) => self.side.keeping = None,
+                            (false, _) => {
+                                if let Some(k) = self.side.keeping.take() {
+                                    self.kept_done(k.key, k.name);
+                                }
+                            }
+                        }
+                    }
                     // Wall thickness: its answer heads the card.
                     if request.command == "measure.thickness" {
                         self.side.wall =
@@ -344,6 +467,12 @@ impl Shell {
                             Some(props::Wall::answered(Err(why), wall_of_body, tolerance));
                         continue;
                     }
+                    // Not kept: the status bar says why (it said nothing
+                    // was kept before it was).
+                    if keep {
+                        self.side.keeping = None;
+                        self.keep_failed(&why);
+                    }
                     match &request.key {
                         Some(key) if self.side.errors.len() < MAX_ERRORS => {
                             self.side.errors.insert(key.clone(), why);
@@ -353,7 +482,7 @@ impl Shell {
                 }
             }
         }
-        !pending.is_empty()
+        ran
     }
 
     /// Reads what the panel shows from the session, when what it was read
@@ -494,10 +623,36 @@ impl Shell {
                 .and_then(|p| p.measurement.clone())
                 .filter(|m| !m.measuring);
             let mut wanted = None;
+            // What the card needs of the bodies: read here where they are;
+            // else asked where they are, and said to be measured until it
+            // comes (an answer asked for another card is dropped; an ask
+            // not posted yet is let go, so the worker never runs it).
+            if let Some((_, token)) = self.side.facts_asked.take()
+                && !session.command_posted(token)
+                && session.command_dropped(token, "asked again").is_some()
+            {
+                self.side.card_jobs.remove(&token);
+            }
+            self.side.facts_came = None;
+            self.side.facts_later = None;
+            // Where the bodies are not here and nothing can be asked of
+            // where they are, the card is not measured: never read here,
+            // where it would build them all in one frame.
+            let source = if bodies_here || self.selection().items.is_empty() {
+                props::Source::Here
+            } else {
+                match props::facts_job(session, scene) {
+                    // Nothing that needs them (a feature, a sketch).
+                    None => props::Source::Here,
+                    Some(job) => self
+                        .ask_facts(session, props_key, job)
+                        .unwrap_or(props::Source::Nowhere),
+                }
+            };
             self.side.props = if self.selection().items.is_empty() {
                 None
             } else {
-                props::read(session, scene, bodies_here, &mut wanted)
+                props::read(session, scene, source, &mut wanted)
             };
             if let (Some(before), Some(m)) = (
                 before,
@@ -520,41 +675,249 @@ impl Shell {
                     .side
                     .between
                     .as_ref()
-                    .is_some_and(|(_, job)| job.answer().is_none());
+                    .is_some_and(|(_, job)| job.answer().is_none())
+                    || self.side.between_asked.is_some();
                 if busy {
                     self.side.waiting = Some((props_key, params));
                 } else {
-                    self.start_between(session, props_key, &params);
+                    self.start_between(session, props_key, &params, bodies_here);
                 }
             }
         }
+        // The facts the host could not take when they were asked for (as
+        // many jobs waited as may): asked again; read here where it takes
+        // none any more (the page regenerates itself now).
+        if let Some((key, job)) = self.side.facts_later.take()
+            && self.side.props_for == Some(key)
+            && self.ask_facts(session, key, job).is_none()
+        {
+            let source = if bodies_here {
+                props::Source::Here
+            } else {
+                props::Source::Nowhere
+            };
+            self.read_again(session, scene, source);
+        }
+        // The facts asked where the bodies are, come for this card: the
+        // card read again with them, its relation as it stands. Where none
+        // came and the bodies are here now (the page regenerates itself:
+        // its worker could not be had), read here.
+        if let Some((key, came)) = self.side.facts_came.take()
+            && self.side.props_for == Some(key)
+        {
+            let source = match came {
+                Err(_) if bodies_here => props::Source::Here,
+                came => props::Source::Elsewhere(Some(came)),
+            };
+            self.read_again(session, scene, source);
+        }
         // The relation being measured: its answer, once it is there, for
-        // the card it was asked for only; then the one waiting.
-        if let Some((key, answer)) = self
+        // the card it was asked for only; then the one waiting. One asked
+        // where the bodies are that brought nothing is measured here when
+        // they are here now.
+        let came = match self
             .side
             .between
             .as_ref()
             .and_then(|(key, job)| Some((*key, job.answer()?)))
         {
-            self.side.between = None;
+            Some((key, answer)) => {
+                self.side.between = None;
+                Some((key, props::Away::Answer(answer)))
+            }
+            None => self.side.between_came.take(),
+        };
+        if let Some((key, answer)) = came {
             if self.side.props_for == Some(key) {
-                self.settle_measurement(answer);
+                match answer {
+                    props::Away::Answer(answer) => self.settle_measurement(answer),
+                    props::Away::Missed(_) if bodies_here => {
+                        if let Some(params) = self.between_params() {
+                            self.side.waiting = Some((key, params));
+                        }
+                    }
+                    props::Away::Missed(why) => self.measurement_missed(why),
+                }
             }
             if let Some((key, params)) = self.side.waiting.take()
                 && self.side.props_for == Some(key)
             {
-                self.start_between(session, key, &params);
+                self.start_between(session, key, &params, bodies_here);
             }
+        }
+        // The relation the host could not take yet (as many jobs waited as
+        // may), while none is measured: asked again.
+        if self.side.between.is_none()
+            && self.side.between_asked.is_none()
+            && let Some((key, params)) = self.side.waiting.take()
+            && self.side.props_for == Some(key)
+        {
+            self.start_between(session, key, &params, bodies_here);
+        }
+        // A check kept where the bodies are whose answer never reached the
+        // card (`Shell::card_answered` takes it): it no longer waits.
+        if self.side.keeping.as_ref().is_some_and(|k| k.job.is_some()) && !session.edits_waiting() {
+            self.side.keeping = None;
         }
     }
 
+    /// Hands the card's facts `job` for the card of `key` over to where the
+    /// bodies are: the card says they are measured (`Some`), also while
+    /// the host takes no more jobs for now (as many wait as may: asked
+    /// again at the next sync); `None` where it takes none (read here).
+    fn ask_facts(
+        &mut self,
+        session: &mut Session,
+        key: (u64, u64, u64),
+        job: Value,
+    ) -> Option<props::Source> {
+        match session.hand_over(props::CARD_JOB, &job) {
+            Some(token) => {
+                self.side.card_jobs.insert(token);
+                self.side.facts_asked = Some((key, token));
+            }
+            None if session.commands_full() => self.side.facts_later = Some((key, job)),
+            None => return None,
+        }
+        Some(props::Source::Elsewhere(None))
+    }
+
+    /// The card read again with its facts from `source`, its relation as
+    /// it stands.
+    fn read_again(
+        &mut self,
+        session: &mut Session,
+        scene: Option<&craft3d_engine::Scene>,
+        source: props::Source,
+    ) {
+        let measurement = self.side.props.as_ref().and_then(|p| p.measurement.clone());
+        let mut wanted = None;
+        self.side.props = props::read(session, scene, source, &mut wanted).map(|mut p| {
+            p.measurement = measurement;
+            p
+        });
+    }
+
     /// Starts measuring `params` (`measure.between`'s) for the card of
-    /// `key` on a thread of its own; refused at once, the card says why.
-    fn start_between(&mut self, session: &mut Session, key: (u64, u64, u64), params: &Value) {
+    /// `key`: on a thread of its own, or where the bodies are when they
+    /// are not here (`bodies_here` false: the browser's worker; while it
+    /// takes no more jobs for now, asked again at the next sync; where it
+    /// takes none, not measured, never here); refused at once, the card
+    /// says why.
+    fn start_between(
+        &mut self,
+        session: &mut Session,
+        key: (u64, u64, u64),
+        params: &Value,
+        bodies_here: bool,
+    ) {
+        if !bodies_here {
+            match session.hand_over(props::CARD_JOB, &json!({ "between": params })) {
+                Some(token) => {
+                    self.side.card_jobs.insert(token);
+                    self.side.between_asked = Some((key, token));
+                }
+                None if session.commands_full() => {
+                    self.side.waiting = Some((key, params.clone()));
+                }
+                None => self.measurement_missed(props::NOWHERE.to_string()),
+            }
+            return;
+        }
         match session.between_later(params) {
             Ok(job) => self.side.between = Some((key, job)),
             Err(e) => self.settle_measurement(Err(e.message().to_string())),
         }
+    }
+
+    /// The parameters the card's relation is measured with, while it is
+    /// being measured.
+    fn between_params(&self) -> Option<Value> {
+        let m = self.side.props.as_ref()?.measurement.as_ref()?;
+        let [from, to] = &m.items;
+        Some(json!({"from": from, "to": to}))
+    }
+
+    /// The card's relation, asked where the bodies are, brought nothing
+    /// from there: `why`.
+    fn measurement_missed(&mut self, why: String) {
+        if let Some(m) = self
+            .side
+            .props
+            .as_mut()
+            .and_then(|p| p.measurement.as_mut())
+            && m.measuring
+        {
+            *m = m.not_measured(why);
+        }
+    }
+
+    /// Takes the answers of the jobs the card handed over to be run where
+    /// the bodies are ([`props::CARD_JOB`]: what is selected, measured in
+    /// the browser's worker), each for the card it was asked for, and
+    /// gives back the others for the host to report as before. The answer
+    /// of a check kept there (*Keep as a check*, an edit) is given back
+    /// too, once the card has said whether it was kept.
+    pub fn card_answered(
+        &mut self,
+        answered: Vec<craft3d_engine::Answered>,
+    ) -> Vec<craft3d_engine::Answered> {
+        let mut others = Vec::new();
+        for answer in answered {
+            let token = answer.token;
+            if self
+                .side
+                .keeping
+                .as_ref()
+                .is_some_and(|k| k.job == Some(token))
+                && let Some(k) = self.side.keeping.take()
+            {
+                match &answer.result {
+                    Ok(_) => self.kept_done(k.key, k.name),
+                    Err(why) => self.keep_failed(why),
+                }
+                others.push(answer);
+                continue;
+            }
+            if !self.side.card_jobs.remove(&token) {
+                others.push(answer);
+                continue;
+            }
+            match (
+                self.side.facts_asked,
+                self.side.between_asked,
+                self.side.wall_asked,
+            ) {
+                (Some((key, asked)), ..) if asked == token => {
+                    self.side.facts_asked = None;
+                    self.side.facts_came = Some((key, props::facts_answered(answer.result)));
+                }
+                (_, Some((key, asked)), _) if asked == token => {
+                    self.side.between_asked = None;
+                    self.side.between_came = Some((key, props::Away::of(answer.result)));
+                }
+                (.., Some((key, asked, body, tolerance))) if asked == token => {
+                    self.side.wall_asked = None;
+                    // For the card it was asked for, while it is measured.
+                    if self.side.props_for == Some(key)
+                        && self.side.wall.as_ref().is_some_and(|w| w.measuring)
+                    {
+                        self.side.wall = Some(match props::Away::of(answer.result) {
+                            props::Away::Answer(Ok(result)) => {
+                                props::Wall::answered(Ok(&result), body, tolerance)
+                            }
+                            props::Away::Answer(Err(why)) => {
+                                props::Wall::answered(Err(why), body, tolerance)
+                            }
+                            props::Away::Missed(why) => props::Wall::not_measured(why),
+                        });
+                    }
+                }
+                // Asked for a card shown no longer: dropped.
+                _ => {}
+            }
+        }
+        others
     }
 
     /// The card's relation, measured.
@@ -939,5 +1302,113 @@ mod tests {
             tab_shown(Parameters, &tabs_for(false, false, false)),
             Features
         );
+    }
+
+    /// The review of 0.2.1, F1: while a check kept beside the page is made
+    /// where the bodies are (the page's worker), a variable set in the
+    /// panel waits for it and is set after it, on the document it leaves:
+    /// run at once, it changed the document under the check, whose answer
+    /// was then refused ("the document changed before its answer came").
+    /// The panel's requests run in the order they were asked for.
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn the_panels_edits_wait_for_a_check_kept_where_the_bodies_are() {
+        use craft3d_engine::{Workspace, run_command, scene_begin, scene_next};
+        let mut session = Session::new(Workspace::memory());
+        session.set_stepwise(true);
+        session.set_checks_elsewhere(true);
+        session.set_regen_elsewhere(true);
+        session.set_commands_elsewhere(true);
+        for (id, params) in [
+            ("file.new", json!({"units": "mm"})),
+            ("variable.set", json!({"name": "k", "expr": "1"})),
+            (
+                "variable.publish",
+                json!({"name": "k", "min": "0", "max": "2"}),
+            ),
+            (
+                "feature.block",
+                json!({"size": [10, 10, 10], "name": "Box"}),
+            ),
+        ] {
+            session.execute(id, &params).unwrap();
+        }
+        // Answers what waits for the worker, as it does: the commands'
+        // answers.
+        let settle = |session: &mut Session| {
+            let quality = craft3d_engine::SceneQuality::display();
+            while let Some(token) = session.scene_job(quality) {
+                let request = session.scene_request(token).unwrap();
+                scene_begin(&request.document, &request.work);
+                while let Some(part) = scene_next() {
+                    session.scene_answered(token, Ok(&part));
+                }
+                session.scene_done(token);
+            }
+            let mut answered = Vec::new();
+            for token in session.command_jobs() {
+                let request = session.command_request(token).unwrap();
+                let answer = run_command(&request.document, &request.work);
+                answered.extend(session.command_answered(token, Ok(answer)));
+            }
+            answered
+        };
+        // A state the page has not regenerated (a slider moved).
+        session
+            .execute("param.set", &json!({"values": {"k": "2"}}))
+            .unwrap();
+        settle(&mut session);
+        assert!(!session.regenerated_here());
+        let mut shell = Shell::new();
+        let keep = json!({"name": "box", "measure": "volume", "of": "Box",
+            "eq": "1000 * (1 mm)^3", "tol": "1e-6 * (1 mm)^3"});
+        shell.side_queue("assert.add", keep, None);
+        assert!(shell.apply_side_requests(&mut session));
+        assert!(session.edits_waiting(), "made where the bodies are");
+        // A variable set in the panel meanwhile, and a second one: both
+        // wait, in their order.
+        shell.side_queue(
+            "variable.set",
+            json!({"name": "a", "expr": "3 mm"}),
+            Some("var:a".to_string()),
+        );
+        shell.side_queue(
+            "variable.set",
+            json!({"name": "a", "expr": "4 mm"}),
+            Some("var:a".to_string()),
+        );
+        let revision = session.document_revision();
+        assert!(!shell.apply_side_requests(&mut session));
+        assert_eq!(session.document_revision(), revision, "ran under the check");
+        assert!(shell.side_waiting());
+        // The check's answer: applied; then the variables.
+        let answered = settle(&mut session);
+        assert!(answered.iter().all(|a| a.result.is_ok()), "{answered:?}");
+        assert!(!session.edits_waiting());
+        assert_eq!(
+            session.document_status().unwrap().undo.as_deref(),
+            Some("Add assertion box")
+        );
+        assert!(shell.apply_side_requests(&mut session));
+        assert!(!shell.side_waiting());
+        assert!(
+            shell.side_errors().0.is_empty(),
+            "{:?}",
+            shell.side_errors()
+        );
+        let a = session
+            .history_view()
+            .unwrap()
+            .variables
+            .into_iter()
+            .find(|v| v.name == "a")
+            .unwrap();
+        assert_eq!(a.expr, "4 mm");
+        let names: Vec<String> = session
+            .assertion_states()
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        assert_eq!(names, ["box"]);
     }
 }

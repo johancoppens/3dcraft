@@ -155,6 +155,9 @@ pub use commands_elsewhere::{Answered, CommandAnswer, CommandRequest};
 /// entries (`craft3d-changelog`), for the hosts and the shell that show
 /// the release notes.
 pub use craft3d_changelog as changelog;
+/// Most checks (assertions) a document holds: the window offers no new one
+/// past it.
+pub use craft3d_doc::MAX_ASSERTIONS;
 /// The longest text of a note, in code points (the window's field stops there).
 pub use craft3d_doc::MAX_NOTE_CHARS;
 pub use craft3d_regen::progress::Progress;

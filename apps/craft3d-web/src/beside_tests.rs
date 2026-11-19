@@ -20,7 +20,7 @@ use craft3d_engine::{
 use craft3d_ui_egui::FileAction;
 use craft3d_ui_egui::files::{ExportFormat, ExportWhat};
 use craft3d_ui_egui::shell::Shell;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -121,10 +121,15 @@ impl Page {
     /// One frame, as `page.rs` runs it: the File menu's work, then what
     /// the worker answered, then the checks.
     fn frame(&mut self) -> Outcome {
+        let replies = self.worker.answers();
+        self.frame_with(replies)
+    }
+
+    /// [`Self::frame`] with what the worker answered given.
+    fn frame_with(&mut self, replies: Vec<Reply>) -> Outcome {
         let mut outcome = self.host.pump();
         self.clock += 16.0;
         let quality = self.host.shell.scene_quality();
-        let replies = self.worker.answers();
         let done = self
             .scenes
             .frame_at(&mut self.host.session, quality, replies, self.clock);
@@ -993,5 +998,542 @@ fn an_example_cancelled_during_a_read_drops_it_and_names_it() {
         page.host.shell.last_command,
         Some(report),
         "nothing after it"
+    );
+}
+
+impl Page {
+    /// The shell brought up to date as the page's `ui` does once the scene
+    /// to show is there (the card of what is selected asks there); while
+    /// it is not, the page draws the window as it was (`Shell::ui_away`),
+    /// and a sync would build the scene here.
+    fn sync(&mut self) {
+        if !self.host.away() {
+            self.host.shell.sync(&mut self.host.session);
+        }
+    }
+
+    /// Frames until nothing waits, the shell brought up to date after
+    /// each as the page's `ui` does.
+    fn settle_card(&mut self) {
+        for _ in 0..50 {
+            self.frame();
+            self.sync();
+            let quality = self.host.shell.scene_quality();
+            if self.scenes.busy().is_none()
+                && !self.host.session.commands_waiting()
+                && self.host.session.scene_job(quality).is_none()
+            {
+                return;
+            }
+        }
+        panic!("the card never settled");
+    }
+
+    /// Selects `items` as a click does (handed to the worker) and goes on
+    /// until the card of it is there, its measures asked.
+    fn select(&mut self, items: &Value) {
+        let done = self
+            .host
+            .session
+            .execute_deferrable("select.set", &json!({ "items": items }))
+            .unwrap();
+        assert_eq!(done["deferred"], true, "{done}");
+        for _ in 0..10 {
+            self.frame();
+            self.sync();
+            // The window has the new selection (the card of the one before
+            // is still there until it has).
+            let shown: Vec<Value> = self
+                .host
+                .shell
+                .selection()
+                .items
+                .iter()
+                .map(|i| json!({"kind": i.kind.name(), "name": i.name, "feature": i.feature}))
+                .collect();
+            if Some(&shown) == items.as_array() && self.host.shell.side_props().is_some() {
+                return;
+            }
+        }
+        panic!("nothing selected");
+    }
+
+    /// The worker's answer to the command job posted to it whose work
+    /// `pick` takes, taken out of what it holds.
+    fn answer_one(&mut self, pick: impl Fn(&str) -> bool) -> Reply {
+        let mut jobs = self.worker.jobs.borrow_mut();
+        let at = jobs
+            .iter()
+            .position(|job| matches!(job, Job::Command(_, _, work) if pick(work.as_str())))
+            .unwrap();
+        let Job::Command(token, document, work) = jobs.remove(at) else {
+            panic!("not a command")
+        };
+        Reply::Command {
+            token,
+            answer: Ok(crate::jobs::run(&document, &work)),
+        }
+    }
+}
+
+/// The items of `kind` that `filter` finds in `host`'s document, as
+/// `select.set` takes them: the first `take`.
+fn found(host: &mut WebHost, kind: &str, filter: Value, take: usize) -> Value {
+    let found = host
+        .session
+        .execute("select.query", &json!({"kind": kind, "where": filter}))
+        .unwrap();
+    let items: Vec<Value> = found["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .take(take)
+        .map(|i| json!({"kind": i["kind"], "name": i["name"], "feature": i["feature"]}))
+        .collect();
+    assert_eq!(items.len(), take, "{found}");
+    Value::Array(items)
+}
+
+/// What the card of what is selected shows, as it was read, and what it
+/// says under `measurement` (`ui.get`'s).
+fn card(host: &WebHost) -> (String, Value) {
+    (
+        format!("{:?}", host.shell.side_props()),
+        host.shell.measurement_json(),
+    )
+}
+
+/// The card of `items` on a page that regenerates itself (no worker):
+/// what the page beside its worker must show.
+fn card_here(bytes: &[u8], items: &Value) -> (String, Value) {
+    let mut host = in_process(bytes);
+    host.session
+        .execute("select.set", &json!({ "items": items }))
+        .unwrap();
+    for _ in 0..5000 {
+        host.shell.sync(&mut host.session);
+        if !host.shell.measuring() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    host.shell.sync(&mut host.session);
+    card(&host)
+}
+
+/// 0.2.0 in the browser (the developer, 2026-11-19): one edge selected
+/// showed only Between and Name and nothing in the view, two things no
+/// relation, while the hint said to shift-click another to measure
+/// between. Now the card's measures are asked of the worker that has the
+/// bodies: one edge's length, two faces' distance, the card the same as
+/// on a page that regenerates itself, saying it is measuring meanwhile,
+/// and the page builds nothing.
+#[test]
+fn what_is_selected_is_measured_beside_the_page() {
+    let bytes = model();
+    let mut here = in_process(&bytes);
+    let edge = found(&mut here, "edge", json!({"in": "Plate", "length": 40}), 1);
+    let faces = found(
+        &mut here,
+        "face",
+        json!({"in": "Plate", "any": [{"normal": {"along": "z"}}, {"normal": {"along": "-z"}}]}),
+        2,
+    );
+    let mut page = opened(&bytes, false);
+    let work = page.host.session.work_here();
+    for (items, text) in [(&edge, "40 mm"), (&faces, "10 mm")] {
+        let want = card_here(&bytes, items);
+        assert_eq!(want.1["text"], text, "{}", want.1);
+        page.select(items);
+        let measuring = page.host.shell.measurement_json();
+        assert!(
+            measuring["measure"] == "measuring" || measuring["measuring"] == true,
+            "{measuring}"
+        );
+        page.settle_card();
+        assert_eq!(card(&page.host), want, "{items}");
+        assert_eq!(page.host.session.work_here(), work, "{items}");
+    }
+    // The card's own jobs are never reported as commands.
+    assert!(
+        page.host
+            .shell
+            .last_command
+            .as_ref()
+            .is_none_or(|c| c.label != crate::jobs::CARD)
+    );
+}
+
+/// An answer the worker gives for a selection that is no longer the
+/// page's is never shown: an edge's measures held by the worker while a
+/// face is selected come back after, and the card shows the face being
+/// measured, then its area. One face, as `regen_elsewhere.rs` has it: its
+/// card's head says *Measuring…*, which an edge's facts taken for it would
+/// turn into *Not measured* (`Facts::of_thing`), so only the card's key
+/// keeps them off (with two things selected the head is not shown; the
+/// review of 0.2.1).
+#[test]
+fn an_answer_for_an_earlier_selection_beside_the_page_is_dropped() {
+    let bytes = model();
+    let mut here = in_process(&bytes);
+    let edge = found(&mut here, "edge", json!({"in": "Plate", "length": 40}), 1);
+    let face = found(
+        &mut here,
+        "face",
+        json!({"in": "Plate", "normal": {"along": "z"}}),
+        1,
+    );
+    let mut page = opened(&bytes, false);
+    // The edge selected; the worker holds its card's measures.
+    page.select(&edge);
+    *page.worker.hangs.borrow_mut() = true;
+    page.frame();
+    // The face selected, the click answered by itself.
+    page.host
+        .session
+        .execute_deferrable("select.set", &json!({ "items": face }))
+        .unwrap();
+    page.frame();
+    let click = page.answer_one(|work| work.contains("\"command\":\"select.set\""));
+    page.frame_with(vec![click]);
+    page.host.shell.sync(&mut page.host.session);
+    page.frame_with(Vec::new());
+    // The edge's measures come now.
+    let late = page.answer_one(|work| work.contains("\"kind\":\"edge\""));
+    page.frame_with(vec![late]);
+    page.host.shell.sync(&mut page.host.session);
+    let props = page.host.shell.side_props().cloned().unwrap();
+    assert_eq!(props.kind, "Face", "{props:?}");
+    assert_eq!(
+        props.head.as_ref().map(|h| h.measure),
+        Some("measuring"),
+        "{props:?}"
+    );
+    assert!(props.rows.iter().all(|r| r.label != "Length"), "{props:?}");
+    assert_eq!(page.host.shell.measurement_json()["measure"], "measuring");
+    assert!(page.host.shell.single_measure().is_none());
+    *page.worker.hangs.borrow_mut() = false;
+    page.settle_card();
+    let want = card_here(&bytes, &face);
+    assert_eq!(want.1["measure"], "area", "{}", want.1);
+    assert_eq!(card(&page.host), want);
+}
+
+/// Where the worker cannot be had the page regenerates itself, and
+/// measures what is selected itself, as before.
+#[test]
+fn without_its_worker_the_page_measures_what_is_selected_itself() {
+    let bytes = model();
+    let mut here = in_process(&bytes);
+    let faces = found(
+        &mut here,
+        "face",
+        json!({"in": "Plate", "any": [{"normal": {"along": "z"}}, {"normal": {"along": "-z"}}]}),
+        2,
+    );
+    let mut page = Page::new(false);
+    *page.worker.dies.borrow_mut() = true;
+    page.host
+        .receive("model.3dcraft", bytes.clone(), None)
+        .unwrap();
+    page.settle();
+    assert!(page.scenes.home());
+    while page.host.prepare(|| false) {}
+    page.host
+        .session
+        .execute_deferrable("select.set", &json!({ "items": faces }))
+        .unwrap();
+    for _ in 0..5000 {
+        page.host.shell.sync(&mut page.host.session);
+        if !page.host.shell.measuring() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    page.host.shell.sync(&mut page.host.session);
+    let got = card(&page.host);
+    assert_eq!(got.1["text"], "10 mm", "{}", got.1);
+    assert_eq!(got, card_here(&bytes, &faces));
+}
+
+/// The review of 0.2.1: the card's measures are never waited for without
+/// end. A worker that dies while they are out (it answered before) leaves
+/// the card *Not measured*, why in its hover, and one that hangs is given
+/// up at the deadline the same way, the relation of two things alike; the
+/// card's own jobs bring no error dialog (nothing the person asked for
+/// failed); and the next selection is measured by the next worker, the
+/// relation that never came not left in the way of the next one.
+#[test]
+fn the_cards_measures_a_worker_never_brings_are_not_measured_and_the_next_are() {
+    let bytes = model();
+    let mut here = in_process(&bytes);
+    let edge = found(&mut here, "edge", json!({"in": "Plate", "length": 40}), 1);
+    let faces = found(
+        &mut here,
+        "face",
+        json!({"in": "Plate", "any": [{"normal": {"along": "z"}}, {"normal": {"along": "-z"}}]}),
+        2,
+    );
+    let mut page = opened(&bytes, false);
+    let work = page.host.session.work_here();
+    // One edge: its facts asked; the worker dies before it answers them.
+    page.select(&edge);
+    *page.worker.dies.borrow_mut() = true;
+    for _ in 0..3 {
+        page.frame();
+        page.host.shell.sync(&mut page.host.session);
+    }
+    assert!(!page.host.session.commands_waiting());
+    let head = page
+        .host
+        .shell
+        .side_props()
+        .and_then(|p| p.head.clone())
+        .unwrap();
+    assert_eq!(head.measure, "notMeasured", "{head:?}");
+    assert_eq!(head.words, "Not measured");
+    assert!(
+        head.why
+            .as_deref()
+            .is_some_and(|why| why.contains("stopped") && !why.contains(crate::jobs::CARD)),
+        "{head:?}"
+    );
+    assert!(page.host.shell.single_measure().is_none());
+    // Two faces: their relation asked; the worker hangs and is given up at
+    // the deadline.
+    page.select(&faces);
+    *page.worker.hangs.borrow_mut() = true;
+    page.frame();
+    page.host.shell.sync(&mut page.host.session);
+    assert!(page.host.shell.measuring());
+    page.clock += DEADLINE_MS + 1.0;
+    page.frame();
+    page.host.shell.sync(&mut page.host.session);
+    *page.worker.hangs.borrow_mut() = false;
+    assert!(!page.host.session.commands_waiting());
+    let m = page.host.shell.measurement().cloned().unwrap();
+    assert!(!m.measuring, "{m:?}");
+    assert_eq!(m.words, "Not measured");
+    assert!(
+        m.refused
+            .as_deref()
+            .is_some_and(|why| why.contains(&COMMAND_TOO_LONG[1..40])),
+        "{m:?}"
+    );
+    assert!(page.host.shell.error_dialog().is_none());
+    // The next selection is measured: the relation that never came is not
+    // in the way.
+    page.select(&edge);
+    page.settle_card();
+    assert_eq!(card(&page.host), card_here(&bytes, &edge));
+    page.select(&faces);
+    page.settle_card();
+    assert_eq!(card(&page.host), card_here(&bytes, &faces));
+    assert_eq!(page.host.session.work_here(), work);
+}
+
+impl Page {
+    /// A frame of the page drawn, as `page.rs`'s `ui` draws it: the shell
+    /// over the session, or as it was while the scene is not there.
+    fn draw(&mut self, ctx: &egui::Context, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 760.0),
+            )),
+            time: Some(self.clock / 1000.0),
+            events,
+            ..Default::default()
+        };
+        let away = self.host.away();
+        let WebHost { session, shell, .. } = &mut self.host;
+        let mut output = ctx.run_ui(input, |ui| {
+            if away {
+                shell.ui_away(ui);
+            } else {
+                shell.ui(ui, session);
+            }
+        });
+        output.textures_delta.clear();
+        self.clock += 16.0;
+    }
+
+    /// A click on the side panel's target `name`, as drawn last.
+    fn click_target(&mut self, ctx: &egui::Context, name: &str) {
+        let at = self
+            .host
+            .shell
+            .side_hits()
+            .targets
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("no {name}: {:?}", self.host.shell.side_hits().targets))
+            .1
+            .center();
+        self.draw(ctx, vec![egui::Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            self.draw(
+                ctx,
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+    }
+
+    /// What the status bar's hint says, as drawn last.
+    fn said(&self) -> String {
+        self.host
+            .shell
+            .status_hint()
+            .unwrap_or_default()
+            .to_string()
+    }
+}
+
+/// A plate whose width is a public parameter: the model, and the Jig
+/// published from it.
+fn plate_and_jig() -> (Vec<u8>, Vec<u8>) {
+    let mut s = Session::new(Workspace::memory());
+    for (id, params) in [
+        ("file.new", json!({"units": "mm"})),
+        ("variable.set", json!({"name": "w", "expr": "40 mm"})),
+        (
+            "variable.publish",
+            json!({"name": "w", "min": "20 mm", "max": "80 mm"}),
+        ),
+        (
+            "feature.block",
+            json!({"size": ["w", 20, 10], "name": "Plate"}),
+        ),
+        ("file.save", json!({"path": "plate.3dcraft"})),
+        ("jig.export", json!({"path": "plate.3dcraftjig"})),
+    ] {
+        s.execute(id, &params)
+            .unwrap_or_else(|e| panic!("{id}: {}", e.message()));
+    }
+    (
+        s.take_file("plate.3dcraft").unwrap(),
+        s.take_file("plate.3dcraftjig").unwrap(),
+    )
+}
+
+/// The review of 0.2.1, F2, beside the worker: on the model *Keep as a
+/// check* is made in the worker, and the status bar says it was kept
+/// only once its answer came (0.2.0 said so at the click); on the Jig in
+/// use, opened from its .3dcraftjig file, the button is not offered (it
+/// is shown disabled with why) and a click asks for nothing and says
+/// nothing was kept (0.2.0 said "Kept" while `assert.add` was refused).
+#[test]
+fn keep_as_a_check_beside_the_page_is_said_kept_once_made_and_never_on_a_jig_in_use() {
+    let (model, jig) = plate_and_jig();
+    let faces = found(
+        &mut in_process(&model),
+        "face",
+        json!({"in": "Plate", "any": [{"normal": {"along": "z"}}, {"normal": {"along": "-z"}}]}),
+        2,
+    );
+    let ctx = egui::Context::default();
+    let mut page = opened(&model, false);
+    let work = page.host.session.work_here();
+    page.select(&faces);
+    page.settle_card();
+    page.draw(&ctx, Vec::new());
+    page.draw(&ctx, Vec::new());
+    assert_eq!(page.host.shell.new_check_refused(), None);
+    page.click_target(&ctx, "keep");
+    assert!(page.host.session.edits_waiting(), "made in the worker");
+    assert!(!page.said().starts_with("Kept"), "{}", page.said());
+    page.settle_card();
+    page.draw(&ctx, Vec::new());
+    assert!(!page.host.session.edits_waiting());
+    assert!(
+        page.said().starts_with("Kept as the check Distance"),
+        "{}",
+        page.said()
+    );
+    let kept: Vec<String> = page
+        .host
+        .session
+        .assertion_states()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(page.host.session.work_here(), work);
+
+    let ctx = egui::Context::default();
+    let mut page = Page::new(false);
+    page.host.receive("plate.3dcraftjig", jig, None).unwrap();
+    page.settle();
+    assert!(page.host.session.document_status().unwrap().jig_in_use);
+    page.select(&faces);
+    page.settle_card();
+    page.draw(&ctx, Vec::new());
+    page.draw(&ctx, Vec::new());
+    assert_eq!(page.host.shell.measurement_json()["text"], "10 mm");
+    let refused = page.host.shell.new_check_refused().unwrap();
+    assert!(
+        refused.starts_with("A Jig in use takes no new checks"),
+        "{refused}"
+    );
+    page.click_target(&ctx, "keep");
+    page.settle_card();
+    page.draw(&ctx, Vec::new());
+    assert!(!page.host.session.edits_waiting());
+    assert!(page.host.session.assertion_states().is_empty());
+    assert!(!page.said().starts_with("Kept"), "{}", page.said());
+    assert!(page.host.shell.error_dialog().is_none());
+}
+
+/// The review of 0.2.1: a check kept beside the page whose answer never
+/// comes (the worker died with it) is said not kept, with why, through
+/// `Shell::card_answered` and `Shell::keep_failed`; the document has no
+/// new check, and the button offers it again, which keeps it.
+#[test]
+fn a_check_kept_beside_the_page_that_never_comes_back_is_said_not_kept() {
+    let (model, _) = plate_and_jig();
+    let faces = found(
+        &mut in_process(&model),
+        "face",
+        json!({"in": "Plate", "any": [{"normal": {"along": "z"}}, {"normal": {"along": "-z"}}]}),
+        2,
+    );
+    let ctx = egui::Context::default();
+    let mut page = opened(&model, false);
+    page.select(&faces);
+    page.settle_card();
+    page.draw(&ctx, Vec::new());
+    page.draw(&ctx, Vec::new());
+    page.click_target(&ctx, "keep");
+    assert!(page.host.session.edits_waiting(), "made in the worker");
+    *page.worker.dies.borrow_mut() = true;
+    for _ in 0..3 {
+        page.frame();
+        page.draw(&ctx, Vec::new());
+    }
+    assert!(!page.host.session.edits_waiting());
+    assert!(page.host.session.assertion_states().is_empty());
+    let said = page.said();
+    assert!(
+        said.starts_with("Not kept as a check: ") && said.contains("stopped"),
+        "{said}"
+    );
+    if page.host.shell.error_dialog().is_some() {
+        page.host.shell.close_error_dialog();
+    }
+    // Offered again, and kept this time.
+    page.draw(&ctx, Vec::new());
+    page.click_target(&ctx, "keep");
+    page.settle_card();
+    page.draw(&ctx, Vec::new());
+    assert_eq!(page.host.session.assertion_states().len(), 1);
+    assert!(
+        page.said().starts_with("Kept as the check Distance"),
+        "{}",
+        page.said()
     );
 }

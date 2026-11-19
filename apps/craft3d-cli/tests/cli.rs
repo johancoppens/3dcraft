@@ -2026,6 +2026,64 @@ fn check_range_reads_the_parts_of_an_assembly_that_is_not_packed() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// `info` is `document.inspect`: its `ok` says that nothing failed to
+/// build or, in an assembly, to be placed. An assembly saved with its one
+/// instance given a value past its part's range (the instance is not
+/// placed, its mate fails with it) answers ok false, where it answered
+/// true before; given a value the part takes, ok true.
+#[test]
+fn info_of_an_assembly_whose_instance_is_not_placed_is_not_ok() {
+    let dir = workdir("info-not-placed");
+    let plate = json!([
+        ["variable.set", {"name": "corner", "expr": "1 mm"}],
+        ["variable.publish", {"name": "corner", "min": "0.5 mm", "max": "30 mm"}],
+        ["feature.block", {"name": "Blank", "size": ["30 mm", "20 mm", "4 mm"]}],
+        ["feature.fillet", {"name": "Plate", "edges": [["F1:face(0)", "F1:face(2)"]], "radius": "corner"}],
+    ]);
+    std::fs::write(dir.join("plate.json"), plate.to_string()).unwrap();
+    let new = r#"{"units": "mm"}"#;
+    cli_in(
+        &dir,
+        &[
+            "run",
+            "--new",
+            new,
+            "--script",
+            "plate.json",
+            "--out",
+            "plate.3dcraft",
+        ],
+        None,
+    )
+    .ok();
+    for (corner, ok) in [("40 mm", false), ("1 mm", true)] {
+        let rig = json!([
+            ["assembly.new", {"units": "mm"}],
+            ["instance.add", {"source": "plate.3dcraft", "name": "Plate", "params": {"corner": corner}}],
+            ["mate.add", {"kind": "fixed", "name": "Ground", "a": "world/xy", "b": "Plate/F2:copy(0)/F1:face(1)", "flip": true}],
+        ]);
+        std::fs::write(dir.join("rig.json"), rig.to_string()).unwrap();
+        cli_in(
+            &dir,
+            &[
+                "run",
+                "--new",
+                new,
+                "--script",
+                "rig.json",
+                "--out",
+                "rig.3dcraftasm",
+            ],
+            None,
+        )
+        .ok();
+        let ran = cli(&["info", &path(&dir, "rig.3dcraftasm")]).ok();
+        let info: Value = serde_json::from_str(&ran.stdout).unwrap();
+        assert_eq!(info["ok"], ok, "{corner}: {info}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `check-range` counts an inactive assertion (its `when` is 0 there) as
 /// neither passed nor failed nor unproven: the ring of
 /// [`check_range_counts_unproven_points_apart_and_fails_them_when_strict`]

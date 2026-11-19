@@ -36,7 +36,12 @@ fn call(shell: &mut Shell, session: &mut Session, method: &str, params: Value) -
 /// A block of 60 × 40 × 20 with holes of radius 3 along z through
 /// (15, 20) and (45, 20), its top's edge along y at x = 60 chamfered by 8.
 fn part() -> Session {
-    let mut s = Session::new(Workspace::none());
+    part_in(Workspace::none())
+}
+
+/// [`part`] in a session over `workspace`.
+fn part_in(workspace: Workspace) -> Session {
+    let mut s = Session::new(workspace);
     run(&mut s, "file.new", json!({"units": "mm"}));
     run(
         &mut s,
@@ -1233,4 +1238,159 @@ fn wall_thickness_heads_the_card_and_draws_the_wall() {
     );
     window.frames(&mut shell, &mut session, 3);
     assert!(shell.side_wall().is_none());
+}
+
+/// The review of 0.2.1, F2 (a fault of 0.2.0): on a Jig in use (opened
+/// from its .3dcraftjig file: only its parameters change) *Keep as a
+/// check* was offered and, pressed, the status bar said "Kept as the
+/// check …" while `assert.add` was refused, the refusal only on the
+/// Features tab. Now the button is disabled, its hover saying why; a click
+/// keeps nothing and says nothing was kept.
+#[test]
+fn a_jig_in_use_offers_no_check_to_keep_and_says_nothing_was_kept() {
+    let mut model = part_in(Workspace::memory());
+    run(
+        &mut model,
+        "variable.set",
+        json!({"name": "w", "expr": "60 mm"}),
+    );
+    run(
+        &mut model,
+        "variable.publish",
+        json!({"name": "w", "min": "40 mm", "max": "80 mm"}),
+    );
+    run(
+        &mut model,
+        "jig.export",
+        json!({"path": "plate.3dcraftjig"}),
+    );
+    let bytes = model.take_file("plate.3dcraftjig").unwrap();
+    let mut session = Session::new(Workspace::memory());
+    session.put_file("plate.3dcraftjig", bytes).unwrap();
+    let opened = run(
+        &mut session,
+        "file.open",
+        json!({"path": "plate.3dcraftjig"}),
+    );
+    assert_eq!(opened["jigInUse"], true, "{opened}");
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    select(
+        &mut session,
+        "face",
+        json!({"in": "Bevel", "hole": true}),
+        2,
+    );
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(shell.measurement().map(|m| m.text.as_str()), Some("30 mm"));
+    let refused = shell
+        .new_check_refused()
+        .expect("a Jig in use takes no new check");
+    assert!(
+        refused.starts_with("A Jig in use takes no new checks"),
+        "{refused}"
+    );
+    let keep = target(&shell, "keep").center();
+    window.click(&mut shell, &mut session, keep);
+    window.frames(&mut shell, &mut session, 3);
+    assert!(session.assertion_states().is_empty());
+    let said = shell.status_hint().unwrap_or_default().to_string();
+    assert!(!said.starts_with("Kept"), "{said}");
+    assert_eq!(shell.side_errors().1, None, "nothing was asked");
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert!(
+        !got["hint"].as_str().unwrap_or_default().starts_with("Kept"),
+        "{}",
+        got["hint"]
+    );
+    // The same part as a model: kept, and said so once it is.
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    select(
+        &mut session,
+        "face",
+        json!({"in": "Bevel", "hole": true}),
+        2,
+    );
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(shell.new_check_refused(), None);
+    let keep = target(&shell, "keep").center();
+    window.click(&mut shell, &mut session, keep);
+    window.frames(&mut shell, &mut session, 3);
+    assert_eq!(session.assertion_states().len(), 1);
+    let said = shell.status_hint().unwrap_or_default().to_string();
+    assert!(said.starts_with("Kept as the check"), "{said}");
+}
+
+/// The review of 0.2.1: F2 moved what a kept check sets (the Checks
+/// opened, its row tinted, the status bar's words) from the click to
+/// `Shell::kept_done`, once `assert.add` returned. In the window a check
+/// that is made is made and said in the frames 0.2.0 made and said it in:
+/// nothing at the press; at the end of the frame of the click it is
+/// listed, one step to undo, and the Checks are open (`ui.get` says so;
+/// open by default, so this only shows that nothing closed them);
+/// the status bar, drawn before the side panel, says *Kept as the check …*
+/// from the next frame on, the first that draws it, as when the click set
+/// it itself.
+#[test]
+fn a_check_kept_in_the_window_is_made_and_said_in_the_frames_it_was_in_0_2_0() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    select(
+        &mut session,
+        "face",
+        json!({"in": "Bevel", "hole": true}),
+        2,
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let keep = target(&shell, "keep").center();
+    let button = |pressed: bool| {
+        vec![Event::PointerButton {
+            pos: keep,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }]
+    };
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(keep)]);
+    window.frame(&mut shell, &mut session, button(true));
+    assert!(session.assertion_states().is_empty(), "made at the press");
+    // The click: made at the end of its frame.
+    window.frame(&mut shell, &mut session, button(false));
+    let name = "Centre distance Left face – Right face";
+    let kept: Vec<String> = session
+        .assertion_states()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(kept, [name]);
+    assert_eq!(
+        session.document_status().unwrap().undo.as_deref(),
+        Some(format!("Add assertion {name}").as_str())
+    );
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(
+        got["state"]["sidePanel"]["checksOpen"], true,
+        "{}",
+        got["state"]
+    );
+    assert_eq!(shell.side_errors().1, None);
+    // Said from the next frame on.
+    window.frame(&mut shell, &mut session, Vec::new());
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(
+        got["hint"],
+        format!("Kept as the check {name} · Ctrl+Z takes it back"),
+        "{}",
+        got["hint"]
+    );
+    assert_eq!(
+        shell.status_hint(),
+        Some(format!("Kept as the check {name} · Ctrl+Z takes it back").as_str())
+    );
 }
