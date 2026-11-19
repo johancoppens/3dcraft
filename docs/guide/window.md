@@ -303,7 +303,10 @@ panel or on the line, to copy it with its unit. Another selection, or Escape, ta
 distance Left face – Right face*), its value now, within the document's tolerance. The **Checks** unfold
 with the new row tinted for a moment, and the status bar says *Kept as the check … · Ctrl+Z takes it back*
 until your next click or key; the number and the line stay as they are meanwhile. A check is measured again
-after every change, and is one step to undo; while there is nothing to keep, the button's hover says why. A least distance shown as a
+after every change, and is one step to undo; while there is nothing to keep, the button's hover says why. A
+Jig in use takes no new checks (only its parameters change): there the button is greyed, and **Open for
+editing** makes a model of it that does. Where a check is refused, the status bar says *Not kept as a
+check* and why. A least distance shown as a
 range (*0.098 – 0.1 mm*: the least found between real places, and no less than the first number, proven)
 or as *about* a number (found on samples of a freeform curve or face, or with no bound) is not proven within
 the tolerance; it is kept as what is proven, at most the number and no less than the bound, and fails when the

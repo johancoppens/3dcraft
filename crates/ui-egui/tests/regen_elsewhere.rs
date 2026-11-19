@@ -603,12 +603,21 @@ fn wall_thickness_and_keep_as_a_check_are_made_where_the_bodies_are() {
         drawn.click("keep");
     }
     // Made where the bodies are: an edit that waits; Keep cannot be
-    // clicked twice meanwhile.
+    // clicked twice meanwhile, and the status bar does not say it was
+    // kept before it was (the review of 0.2.1, F2).
     assert!(page.session.edits_waiting());
     page.click("keep");
+    let said = |drawn: &Drawn| drawn.shell.status_hint().unwrap_or_default().to_string();
+    assert!(!said(&page).starts_with("Kept"), "{}", said(&page));
     window.settle();
     page.settle();
     assert!(!page.session.edits_waiting());
+    assert!(
+        said(&page).starts_with("Kept as the check Centre distance"),
+        "{}",
+        said(&page)
+    );
+    assert_eq!(said(&page), said(&window));
     let names = |drawn: &mut Drawn| -> Vec<String> {
         drawn
             .session

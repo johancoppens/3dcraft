@@ -1986,9 +1986,41 @@ impl Shell {
     /// revision, not that), while the check is there (undone, it can be
     /// kept again: the review of 2026-11-17).
     fn kept_now(&self) -> bool {
-        self.side.kept.as_ref().is_some_and(|(key, name)| {
-            Some(*key) == self.side.kept_key()
-                && (self.side.keeping || self.assertion_rows().iter().any(|a| a.name == *name))
+        self.keeping_now()
+            || self.side.kept.as_ref().is_some_and(|(key, name)| {
+                Some(*key) == self.side.kept_key()
+                    && self.assertion_rows().iter().any(|a| a.name == *name)
+            })
+    }
+
+    /// Whether the relation of the two things selected is being kept: its
+    /// `assert.add` asked for and not answered yet (waiting behind an edit
+    /// made where the bodies are, or made there itself).
+    fn keeping_now(&self) -> bool {
+        self.side
+            .keeping
+            .as_ref()
+            .is_some_and(|k| Some(k.key) == self.side.kept_key())
+    }
+
+    /// Why the document shown takes no new check, in plain words: a Jig in
+    /// use, which changes only through its parameters (`assert.add` is
+    /// refused there, as every other edit), or a document that holds as
+    /// many checks as one may. `None` where it takes one; what else can
+    /// refuse a check (its measure, all the checks' text together) is said
+    /// in the status bar when it is refused (`Shell::keep_failed`).
+    pub fn new_check_refused(&self) -> Option<String> {
+        if self.shown_status.as_ref().is_some_and(|s| s.jig_in_use) {
+            return Some(
+                "A Jig in use takes no new checks: only its parameters change. Open it for editing to keep one"
+                    .to_string(),
+            );
+        }
+        (self.assertion_rows().len() >= craft3d_engine::MAX_ASSERTIONS).then(|| {
+            format!(
+                "The document holds {} checks, as many as one may",
+                craft3d_engine::MAX_ASSERTIONS
+            )
         })
     }
 
@@ -1999,6 +2031,7 @@ impl Shell {
         let kit = Kit::panel(&self.tokens);
         let kept = self.kept_now();
         let keepable = m.check("").is_some();
+        let refused = self.new_check_refused();
         let k = kit.button(
             ui,
             Button::secondary(if kept {
@@ -2006,20 +2039,23 @@ impl Shell {
             } else {
                 "Keep as a check"
             })
-            .enabled(keepable && !kept),
+            .enabled(keepable && !kept && refused.is_none()),
         );
         self.side.hits.targets.push(("keep".to_string(), k.rect));
         let why = if m.measuring {
-            Some("Still measuring")
-        } else if kept && self.side.keeping {
-            // Made where the bodies are (beside the page): not yet back.
-            Some("Being kept as a check…")
+            Some("Still measuring".to_string())
+        } else if self.keeping_now() {
+            // Asked for, not answered yet (made where the bodies are, or
+            // waiting behind an edit made there).
+            Some("Being kept as a check…".to_string())
         } else if kept {
-            Some("Kept: Ctrl+Z takes it back")
+            Some("Kept: Ctrl+Z takes it back".to_string())
+        } else if let Some(refused) = refused {
+            Some(refused)
         } else if m.answer.get("overlap").and_then(Value::as_bool) == Some(true) {
-            Some("Nothing to keep: the two overlap")
+            Some("Nothing to keep: the two overlap".to_string())
         } else if !keepable {
-            Some("Nothing to keep: not measured")
+            Some("Nothing to keep: not measured".to_string())
         } else {
             None
         };
@@ -2031,19 +2067,52 @@ impl Shell {
     }
 
     /// Keeps the relation `m` as a check of the document, under a name of
-    /// its own: the Checks unfold with its row tinted, and the status bar
-    /// says it until the next click, key or command.
+    /// its own: `assert.add` asked for; once it is made
+    /// ([`Shell::kept_done`]) the Checks unfold with its row tinted, and
+    /// the status bar says it until the next click, key or command; where
+    /// it is refused, the status bar says why ([`Shell::keep_failed`]).
     fn keep(&mut self, m: &Measurement) {
+        if self.new_check_refused().is_some() || self.keeping_now() {
+            return;
+        }
         let name = self.free_check_name(&m.check_name);
         if let (Some(params), Some(key)) = (m.check(&name), self.side.kept_key()) {
             self.side_queue("assert.add", params, None);
-            self.side.kept = Some((key, name.clone()));
-            self.state.side_panel.checks_open = true;
-            self.side.checks_asked = true;
-            self.side.kept_tint =
-                Some((name.clone(), Timed::seconds("", KEPT_TINT_SECONDS), false));
-            self.hint_until_next(format!("Kept as the check {name} · Ctrl+Z takes it back"));
+            // Queued (the panel takes so many requests at most).
+            if self
+                .side
+                .pending
+                .last()
+                .is_some_and(|r| r.command == "assert.add")
+            {
+                self.side.keeping = Some(super::Keeping {
+                    key,
+                    name,
+                    job: None,
+                });
+            }
         }
+    }
+
+    /// The check `name` was kept for the selection of `key`: the Checks
+    /// unfold with its row tinted, and the status bar says so until the
+    /// next click, key or command.
+    pub(super) fn kept_done(&mut self, key: (u64, u64), name: String) {
+        self.side.kept = Some((key, name.clone()));
+        self.state.side_panel.checks_open = true;
+        self.side.checks_asked = true;
+        self.side.kept_tint = Some((name.clone(), Timed::seconds("", KEPT_TINT_SECONDS), false));
+        self.hint_until_next(format!("Kept as the check {name} · Ctrl+Z takes it back"));
+    }
+
+    /// The check asked for was not made: the status bar says why for a
+    /// while (it said nothing was kept before it was).
+    pub(super) fn keep_failed(&mut self, why: &str) {
+        let why = why.strip_prefix("assert.add: ").unwrap_or(why);
+        self.hint(
+            format!("Not kept as a check: {why}"),
+            crate::shell::hints::HINT_SECONDS,
+        );
     }
 
     /// *Wall thickness* (quiet), where it can run, and *Copy name*; by
