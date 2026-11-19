@@ -98,6 +98,11 @@ when the layers are meant to be that close, give the document a finer tolerance.
 edge of the face, loops it cannot follow, or a face too large to examine. They are not errors; look at
 the place if the face matters.
 
+The rule can also stay silent on a fold. It searches a face only where some part of it bends sharply
+(tighter than half the tolerance), so two layers of a smoothly curved face that close in on each other
+(a hem, a neck above a wider hollow) are not reported. An answer without a `fold` warning is not a
+proof that no face folds.
+
 ## Undo
 
 **Edit › Undo** (Ctrl+Z) undoes one change, yours or the agent's, and **Edit › Redo** (Ctrl+Shift+Z or
