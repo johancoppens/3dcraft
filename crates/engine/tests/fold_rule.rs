@@ -94,8 +94,10 @@ fn loft_through_its_axis(k: f64) -> Body {
 #[test]
 fn the_rule_shows_the_folds_and_check_refuses_none_of_them_yet() {
     const { assert!(!craft3d_topo::FOLDS_REFUSED) };
-    // Each of the seven shows two layers facing each other through air,
-    // one line for the face, at the least gap.
+    // Each of the seven shows a fold, one line for the face: two layers
+    // facing each other through air at the least gap, or (fade 5/10/1,
+    // whose face also has such layers) a point without a normal, which
+    // the rule asks first and which settles the face.
     for name in SEVEN {
         let body = read_step(&fixtures().join(format!("fades/{name}.step")), 0.02).unwrap();
         forget_folds();
@@ -107,11 +109,14 @@ fn the_rule_shows_the_folds_and_check_refuses_none_of_them_yet() {
             after.1 - before.1
         );
         assert!(
-            found
-                .iter()
-                .any(|f| matches!(f.kind, FoldKind::Layers { gap } if gap < 0.02)),
+            found.iter().any(|f| match f.kind {
+                FoldKind::Layers { gap } => gap < 0.02,
+                FoldKind::NoNormal => true,
+                FoldKind::NotProven { .. } => false,
+            }),
             "{name}: {found:?}"
         );
+        assert_eq!(found.len(), 1, "{name}: one line a face");
         assert!(check(&body, &tolerance(0.02)).is_empty(), "{name}");
     }
     for times in [3.0, 100.0, 10_000.0] {
