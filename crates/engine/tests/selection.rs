@@ -868,20 +868,24 @@ fn count(s: &mut Session, kind: &str, filter: Value) -> u64 {
     found["count"].as_u64().unwrap()
 }
 
-/// A bound of `{min, max}` is matched as `eq` matches a value: a measure
-/// within the tolerance `eq` gives (a millionth of the value plus the
-/// document's tolerance, to the power of the dimension) of a bound is at
-/// it, and a range holds its bounds. Before, `eq` had that tolerance and
-/// `{min, max}` compared exactly, so `{eq: b}` found a face that `{min: b}`
-/// and `{max: b}` both missed whenever the measure lay a unit in the last
+/// A bound of `{min, max}` takes in what rounding leaves beyond it, a
+/// millionth of the bound, and not the document's tolerance. Before
+/// 2026-11-14 `eq` had a tolerance (a millionth of the value plus the
+/// document's tolerance, to the power of the dimension) and `{min, max}`
+/// compared exactly, so `{eq: b}` found a face that `{min: b}` and
+/// `{max: b}` both missed whenever the measure lay a unit in the last
 /// place on the wrong side of `b`, which rounding decides (J-024: corner
 /// arcs a few units in the last place under 1 mm fell out of `radius:
-/// {min: 1 mm}`). The bounds are built from the measured radius and volume
-/// themselves, so the oracle is the definition of the tolerance, not a
-/// number the code printed; a bound farther out than the tolerance still
-/// leaves a measure out, at the default tolerance and at a coarse one.
+/// {min: 1 mm}`). From 2026-11-14 a bound took in the whole tolerance `eq`
+/// gives, which also took in a measure an author's margin of a tolerance
+/// or less was written to leave out (2026-11-19: the guitar body's corners
+/// and the solar cooker's holes, below). The bounds are built from the
+/// measured radius and volume themselves, so the oracle is the definition
+/// of the widening, not a number the code printed; a bound farther out
+/// than it still leaves a measure out, at the default tolerance and at a
+/// coarse one.
 #[test]
-fn a_bound_is_matched_as_eq_matches_it() {
+fn a_bound_takes_in_rounding_and_not_the_tolerance() {
     for linear in [1e-6, 1e-3] {
         let mut s = Session::new(Workspace::none());
         run(
@@ -944,9 +948,28 @@ fn a_bound_is_matched_as_eq_matches_it() {
             assert_eq!(found(json!({"min": up})), 1, "{what}");
             assert_eq!(found(json!({"max": down})), 1, "{what}");
             assert_eq!(found(json!({"min": up, "max": up})), 1, "{what}");
-            // Within the tolerance: at the bound; beyond it: outside.
-            assert_eq!(found(json!({"min": at + 0.5 * tol})), 1, "{what}");
-            assert_eq!(found(json!({"max": at - 0.5 * tol})), 1, "{what}");
+            // Within the rounding a bound takes in, a millionth of it: at
+            // the bound; beyond twice that: outside. (Until 2026-11-19 half
+            // the tolerance `eq` gives was inside here: for the radius that
+            // is mostly the document's tolerance, a margin, below.)
+            let rounding = 1e-6 * at;
+            assert_eq!(found(json!({"min": at + 0.5 * rounding})), 1, "{what}");
+            assert_eq!(found(json!({"max": at - 0.5 * rounding})), 1, "{what}");
+            assert_eq!(found(json!({"min": at + 2.0 * rounding})), 0, "{what}");
+            assert_eq!(found(json!({"max": at - 2.0 * rounding})), 0, "{what}");
+            // A bound the document's tolerance beyond the radius (three
+            // and three thousand times its rounding here) is a margin an
+            // author writes: it leaves the wall out, while `eq` at the same
+            // value, with its tolerance, takes the wall in. For the volume a
+            // tolerance cubed is far below its rounding, so the lines above
+            // are its margin.
+            if key == "radius" {
+                assert_eq!(found(json!({"min": at + linear})), 0, "{what}");
+                assert_eq!(found(json!({"max": at - linear})), 0, "{what}");
+                assert_eq!(found(json!({"eq": at + linear})), 1, "{what}");
+                assert_eq!(found(json!({"eq": at - linear})), 1, "{what}");
+            }
+            // Beyond the tolerance `eq` gives: outside.
             assert_eq!(found(json!({"min": at + 2.0 * tol})), 0, "{what}");
             assert_eq!(found(json!({"max": at - 2.0 * tol})), 0, "{what}");
             assert_eq!(
@@ -956,6 +979,159 @@ fn a_bound_is_matched_as_eq_matches_it() {
             );
         }
     }
+}
+
+/// The status of the assertion `name` as `assert.list` gives it.
+fn status(s: &mut Session, name: &str) -> String {
+    let listed = run(s, "assert.list", json!({}));
+    let found = listed["assertions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == name)
+        .unwrap_or_else(|| panic!("no assertion {name}: {listed}"))
+        .clone();
+    found["status"].as_str().unwrap().to_string()
+}
+
+/// A corner exactly at the router bit's radius is not under it, by a
+/// margin of a tenth of the document's tolerance (2026-11-19, the guitar
+/// body of the side examples: "No corner face of a radius under the bit",
+/// a count of the cylinder faces of radius `{min: 0, max: router_radius -
+/// 0.001 mm}`, expected 0, at a tolerance of 0.01 mm). A bound that took in
+/// the whole tolerance `eq` gives took in its 18 corners of exactly
+/// `router_radius` (6.35 mm) and failed the assertion. A block's four
+/// upright edges rounded by the bit's radius: the rounds are cylinders of
+/// that radius by construction (the rolling ball's surface, its radius the
+/// value given), which `eq`, `min` and `max` at the radius all find; a
+/// bound a thousandth or a tolerance under it finds none, in a query and in
+/// an assertion's subject, and `document.check` is ok. `eq` at the bound,
+/// with its tolerance, still finds them: the two forms are not alike.
+#[test]
+fn a_corner_at_the_bits_radius_is_not_under_it() {
+    let mut s = Session::new(Workspace::none());
+    run(
+        &mut s,
+        "file.new",
+        json!({"units": "mm", "tolerance": 0.01}),
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "router_radius", "expr": "6.35 mm"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Body", "size": [120, 80, 20]}),
+    );
+    run(
+        &mut s,
+        "feature.fillet",
+        json!({"name": "Corners", "radius": "router_radius", "edges": [
+            ["F1:face(2)", "F1:face(4)"],
+            ["F1:face(2)", "F1:face(5)"],
+            ["F1:face(3)", "F1:face(4)"],
+            ["F1:face(3)", "F1:face(5)"]
+        ]}),
+    );
+    let mut corners = |radius: Value| {
+        count(
+            &mut s,
+            "face",
+            json!({"surface": "cylinder", "hole": false, "radius": radius}),
+        )
+    };
+    // At the radius: found by a value, and inside bounds at it.
+    assert_eq!(corners(json!("router_radius")), 4);
+    assert_eq!(corners(json!({"min": "router_radius"})), 4);
+    assert_eq!(corners(json!({"max": "router_radius"})), 4);
+    // Under it by the author's margin, or by a tolerance: none.
+    assert_eq!(
+        corners(json!({"min": 0, "max": "router_radius - 0.001 mm"})),
+        0
+    );
+    assert_eq!(corners(json!({"max": "router_radius - 0.01 mm"})), 0);
+    assert_eq!(corners(json!({"min": "router_radius + 0.001 mm"})), 0);
+    // `eq` a thousandth under it is within its tolerance (0.01 mm).
+    assert_eq!(corners(json!({"eq": "router_radius - 0.001 mm"})), 4);
+    // The same through the subject of an assertion.
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "No corner under the bit", "measure": "count", "of": {"kind": "face", "where": {"surface": "cylinder", "hole": false, "radius": {"min": 0, "max": "router_radius - 0.001 mm"}}}, "eq": 0}),
+    );
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "Every corner at the bit", "measure": "count", "of": {"kind": "face", "where": {"surface": "cylinder", "hole": false, "radius": {"min": "router_radius", "max": "router_radius"}}}, "eq": 4}),
+    );
+    assert_eq!(status(&mut s, "No corner under the bit"), "passed");
+    assert_eq!(status(&mut s, "Every corner at the bit"), "passed");
+    let check = run(&mut s, "document.check", json!({}));
+    assert_eq!(check["ok"], true, "{check}");
+}
+
+/// A hole as wide as its plate is thick is not smaller than that, by a
+/// margin of one tolerance (2026-11-19, the solar cooker of the side Jigs:
+/// "No hole smaller than its plate is thick", holes of radius `{max:
+/// thickness / 2 - 0.01 mm}`, expected none, at a tolerance of 0.01 mm). A
+/// bound that took in the whole tolerance `eq` gives took in its 26 hub
+/// holes of exactly `thickness / 2` and failed the assertion at every
+/// point of the Jig's range. A plate drilled by three cylinders of radius
+/// `thickness / 2`: the holes' walls have that radius by construction.
+#[test]
+fn a_hole_as_wide_as_its_plate_is_thick_is_not_smaller() {
+    let mut s = Session::new(Workspace::none());
+    run(
+        &mut s,
+        "file.new",
+        json!({"units": "mm", "tolerance": 0.01}),
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "thickness", "expr": "3 mm"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Hub", "size": [60, 40, "thickness"]}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Drill", "radius": "thickness / 2", "height": 20, "position": [10, 20, -5]}),
+    );
+    run(
+        &mut s,
+        "feature.pattern",
+        json!({"name": "Drills", "source": "Drill", "count": 3, "step": [20, 0, 0]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Hub", "tool": "Drills", "name": "Drilled"}),
+    );
+    let mut holes = |radius: Value| count(&mut s, "face", json!({"hole": true, "radius": radius}));
+    assert_eq!(holes(json!("thickness / 2")), 3);
+    assert_eq!(holes(json!({"min": "thickness / 2"})), 3);
+    assert_eq!(holes(json!({"max": "thickness / 2"})), 3);
+    // The author's margin is the tolerance: none is under it by that.
+    assert_eq!(holes(json!({"max": "thickness / 2 - 0.01 mm"})), 0);
+    assert_eq!(holes(json!({"min": "thickness / 2 + 0.01 mm"})), 0);
+    assert_eq!(holes(json!({"eq": "thickness / 2 - 0.01 mm"})), 3);
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "No hole smaller than its plate is thick", "measure": "count", "of": {"kind": "face", "where": {"hole": true, "radius": {"max": "thickness / 2 - 0.01 mm"}}}, "eq": 0}),
+    );
+    assert_eq!(
+        status(&mut s, "No hole smaller than its plate is thick"),
+        "passed"
+    );
+    let check = run(&mut s, "document.check", json!({}));
+    assert_eq!(check["ok"], true, "{check}");
 }
 
 /// `normal` and `axis` at `tol: 0` find what is parallel or square to the
