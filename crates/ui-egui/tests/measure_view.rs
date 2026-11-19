@@ -1324,3 +1324,73 @@ fn a_jig_in_use_offers_no_check_to_keep_and_says_nothing_was_kept() {
     let said = shell.status_hint().unwrap_or_default().to_string();
     assert!(said.starts_with("Kept as the check"), "{said}");
 }
+
+/// The review of 0.2.1: F2 moved what a kept check sets (the Checks
+/// opened, its row tinted, the status bar's words) from the click to
+/// `Shell::kept_done`, once `assert.add` returned. In the window a check
+/// that is made is made and said in the frames 0.2.0 made and said it in:
+/// nothing at the press; at the end of the frame of the click it is
+/// listed, one step to undo, and the Checks are open (`ui.get` says so;
+/// open by default, so this only shows that nothing closed them);
+/// the status bar, drawn before the side panel, says *Kept as the check …*
+/// from the next frame on, the first that draws it, as when the click set
+/// it itself.
+#[test]
+fn a_check_kept_in_the_window_is_made_and_said_in_the_frames_it_was_in_0_2_0() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let mut window = Window::new(1280.0, 800.0);
+    window.frames(&mut shell, &mut session, 3);
+    select(
+        &mut session,
+        "face",
+        json!({"in": "Bevel", "hole": true}),
+        2,
+    );
+    window.frames(&mut shell, &mut session, 3);
+    let keep = target(&shell, "keep").center();
+    let button = |pressed: bool| {
+        vec![Event::PointerButton {
+            pos: keep,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }]
+    };
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(keep)]);
+    window.frame(&mut shell, &mut session, button(true));
+    assert!(session.assertion_states().is_empty(), "made at the press");
+    // The click: made at the end of its frame.
+    window.frame(&mut shell, &mut session, button(false));
+    let name = "Centre distance Left face – Right face";
+    let kept: Vec<String> = session
+        .assertion_states()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(kept, [name]);
+    assert_eq!(
+        session.document_status().unwrap().undo.as_deref(),
+        Some(format!("Add assertion {name}").as_str())
+    );
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(
+        got["state"]["sidePanel"]["checksOpen"], true,
+        "{}",
+        got["state"]
+    );
+    assert_eq!(shell.side_errors().1, None);
+    // Said from the next frame on.
+    window.frame(&mut shell, &mut session, Vec::new());
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(
+        got["hint"],
+        format!("Kept as the check {name} · Ctrl+Z takes it back"),
+        "{}",
+        got["hint"]
+    );
+    assert_eq!(
+        shell.status_hint(),
+        Some(format!("Kept as the check {name} · Ctrl+Z takes it back").as_str())
+    );
+}

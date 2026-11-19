@@ -1488,3 +1488,52 @@ fn keep_as_a_check_beside_the_page_is_said_kept_once_made_and_never_on_a_jig_in_
     assert!(!page.said().starts_with("Kept"), "{}", page.said());
     assert!(page.host.shell.error_dialog().is_none());
 }
+
+/// The review of 0.2.1: a check kept beside the page whose answer never
+/// comes (the worker died with it) is said not kept, with why, through
+/// `Shell::card_answered` and `Shell::keep_failed`; the document has no
+/// new check, and the button offers it again, which keeps it.
+#[test]
+fn a_check_kept_beside_the_page_that_never_comes_back_is_said_not_kept() {
+    let (model, _) = plate_and_jig();
+    let faces = found(
+        &mut in_process(&model),
+        "face",
+        json!({"in": "Plate", "any": [{"normal": {"along": "z"}}, {"normal": {"along": "-z"}}]}),
+        2,
+    );
+    let ctx = egui::Context::default();
+    let mut page = opened(&model, false);
+    page.select(&faces);
+    page.settle_card();
+    page.draw(&ctx, Vec::new());
+    page.draw(&ctx, Vec::new());
+    page.click_target(&ctx, "keep");
+    assert!(page.host.session.edits_waiting(), "made in the worker");
+    *page.worker.dies.borrow_mut() = true;
+    for _ in 0..3 {
+        page.frame();
+        page.draw(&ctx, Vec::new());
+    }
+    assert!(!page.host.session.edits_waiting());
+    assert!(page.host.session.assertion_states().is_empty());
+    let said = page.said();
+    assert!(
+        said.starts_with("Not kept as a check: ") && said.contains("stopped"),
+        "{said}"
+    );
+    if page.host.shell.error_dialog().is_some() {
+        page.host.shell.close_error_dialog();
+    }
+    // Offered again, and kept this time.
+    page.draw(&ctx, Vec::new());
+    page.click_target(&ctx, "keep");
+    page.settle_card();
+    page.draw(&ctx, Vec::new());
+    assert_eq!(page.host.session.assertion_states().len(), 1);
+    assert!(
+        page.said().starts_with("Kept as the check Distance"),
+        "{}",
+        page.said()
+    );
+}
