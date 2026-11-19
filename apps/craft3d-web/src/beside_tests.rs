@@ -1237,3 +1237,79 @@ fn without_its_worker_the_page_measures_what_is_selected_itself() {
     assert_eq!(got.1["text"], "10 mm", "{}", got.1);
     assert_eq!(got, card_here(&bytes, &faces));
 }
+
+/// The review of 0.2.1: the card's measures are never waited for without
+/// end. A worker that dies while they are out (it answered before) leaves
+/// the card *Not measured*, why in its hover, and one that hangs is given
+/// up at the deadline the same way, the relation of two things alike; the
+/// card's own jobs bring no error dialog (nothing the person asked for
+/// failed); and the next selection is measured by the next worker, the
+/// relation that never came not left in the way of the next one.
+#[test]
+fn the_cards_measures_a_worker_never_brings_are_not_measured_and_the_next_are() {
+    let bytes = model();
+    let mut here = in_process(&bytes);
+    let edge = found(&mut here, "edge", json!({"in": "Plate", "length": 40}), 1);
+    let faces = found(
+        &mut here,
+        "face",
+        json!({"in": "Plate", "any": [{"normal": {"along": "z"}}, {"normal": {"along": "-z"}}]}),
+        2,
+    );
+    let mut page = opened(&bytes, false);
+    let work = page.host.session.work_here();
+    // One edge: its facts asked; the worker dies before it answers them.
+    page.select(&edge);
+    *page.worker.dies.borrow_mut() = true;
+    for _ in 0..3 {
+        page.frame();
+        page.host.shell.sync(&mut page.host.session);
+    }
+    assert!(!page.host.session.commands_waiting());
+    let head = page
+        .host
+        .shell
+        .side_props()
+        .and_then(|p| p.head.clone())
+        .unwrap();
+    assert_eq!(head.measure, "notMeasured", "{head:?}");
+    assert_eq!(head.words, "Not measured");
+    assert!(
+        head.why
+            .as_deref()
+            .is_some_and(|why| why.contains("stopped") && !why.contains(crate::jobs::CARD)),
+        "{head:?}"
+    );
+    assert!(page.host.shell.single_measure().is_none());
+    // Two faces: their relation asked; the worker hangs and is given up at
+    // the deadline.
+    page.select(&faces);
+    *page.worker.hangs.borrow_mut() = true;
+    page.frame();
+    page.host.shell.sync(&mut page.host.session);
+    assert!(page.host.shell.measuring());
+    page.clock += DEADLINE_MS + 1.0;
+    page.frame();
+    page.host.shell.sync(&mut page.host.session);
+    *page.worker.hangs.borrow_mut() = false;
+    assert!(!page.host.session.commands_waiting());
+    let m = page.host.shell.measurement().cloned().unwrap();
+    assert!(!m.measuring, "{m:?}");
+    assert_eq!(m.words, "Not measured");
+    assert!(
+        m.refused
+            .as_deref()
+            .is_some_and(|why| why.contains(&COMMAND_TOO_LONG[1..40])),
+        "{m:?}"
+    );
+    assert!(page.host.shell.error_dialog().is_none());
+    // The next selection is measured: the relation that never came is not
+    // in the way.
+    page.select(&edge);
+    page.settle_card();
+    assert_eq!(card(&page.host), card_here(&bytes, &edge));
+    page.select(&faces);
+    page.settle_card();
+    assert_eq!(card(&page.host), card_here(&bytes, &faces));
+    assert_eq!(page.host.session.work_here(), work);
+}

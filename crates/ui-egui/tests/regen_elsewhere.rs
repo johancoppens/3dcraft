@@ -624,3 +624,76 @@ fn wall_thickness_and_keep_as_a_check_are_made_where_the_bodies_are() {
     assert_eq!(undo(&page), undo(&window));
     assert!(!page.session.regenerated_here());
 }
+
+/// The review of 0.2.1: an answer asked for an earlier revision of the
+/// same thing is never shown either. The edge stays selected and keeps
+/// its name while a parameter makes it longer, so what the worker
+/// describes is the thing selected (`Facts::of_thing` lets it through):
+/// only the card's key and job number keep the old length off the card.
+#[test]
+fn an_answer_asked_for_an_earlier_revision_is_never_shown() {
+    let mut s = Session::new(Workspace::memory());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "60 mm"}),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({"name": "w", "min": "10 mm", "max": "200 mm"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": ["w", 40, 20], "name": "Block"}),
+    );
+    run(&mut s, "file.save", json!({"path": "part.3dcraft"}));
+    let bytes = s.take_file("part.3dcraft").unwrap();
+    let mut window = Drawn::window(&bytes);
+    let mut page = Drawn::page(&bytes);
+    let edge = first(
+        &items(
+            &mut window,
+            "edge",
+            json!({"in": "Block", "length": 60}),
+            None,
+        ),
+        1,
+    );
+    // The edge's facts asked at 60 mm and held by the worker; the
+    // parameter set to 80 mm meanwhile, as the Parameters form sets it.
+    page.select(&edge);
+    let held = posted(&mut page.session);
+    assert_eq!(held.len(), 1);
+    assert!(the_cards(&held[0]));
+    let longer = json!({"values": {"w": "80 mm"}});
+    run(&mut page.session, "param.set", longer.clone());
+    page.draw(Vec::new());
+    assert_eq!(
+        page.shell.selection().items.len(),
+        1,
+        "still selected, by the same name"
+    );
+    // The answer for 60 mm comes now: dropped, the card still measuring.
+    page.reply(held);
+    page.draw(Vec::new());
+    let props = page.shell.side_props().cloned().unwrap();
+    assert_eq!(
+        props.head.as_ref().map(|h| h.measure),
+        Some("measuring"),
+        "{props:?}"
+    );
+    assert!(page.shell.single_measure().is_none(), "{props:?}");
+    assert!(page.shell.dimension_place().is_none());
+    page.settle();
+    window.select(&edge);
+    window.settle();
+    run(&mut window.session, "param.set", longer);
+    window.settle();
+    let want = window.shown();
+    assert_eq!(want.1.as_deref(), Some("80 mm"), "{want:?}");
+    assert_eq!(page.shown(), want);
+    assert!(!page.session.regenerated_here());
+}
