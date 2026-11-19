@@ -442,5 +442,15 @@ fn the_published_assemblies_check_ok_as_before() {
             }),
             "{file}"
         );
+        // `document.inspect` (`craft3d-cli info`, MCP's `doc_inspect`)
+        // ok, as 0.2.0 answered it (measured on its build), its placed
+        // bodies as its features: nothing failed to build or be placed.
+        let described = run(&mut s, "document.inspect", json!({ "measures": false }));
+        assert_eq!(described["ok"], true, "{file}");
+        assert_eq!(
+            described["features"].as_array().unwrap().len(),
+            bodies,
+            "{file}"
+        );
     }
 }

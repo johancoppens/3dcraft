@@ -938,7 +938,16 @@ each published assembly as 0.2.0 answered it.
   never merged): all six, as published (format 69) and as rebuilt at 0.2.0 (format 77), at their defaults and at
   t = 0 to 1 by a quarter, each check ok with no problem and solve with nothing failed. `document.sample` and
   `craft3d-cli check-range` check each point with this check, so a point of an assembly where an instance is not
-  placed fails now. The test of A-023 held the wrong ok itself: at a corner the
+  placed fails now. `document.inspect` (`craft3d-cli info`, MCP's `doc_inspect`) gave the same green light by
+  another door: its `ok` is `Regen::is_ok`, nothing failed to build (no variable, no feature), and an assembly's
+  regeneration is the placed part, whose features are the placed bodies, all built, so only a failed variable of
+  the assembly made it false. It keeps that meaning and reads it for an assembly as its placement: false also when
+  `wrong_in` finds anything (all of it a failure to build or to be placed), so it agrees with the check on an
+  assembly; a part's answer and a right assembly's are unchanged, and a part with a broken assertion still answers
+  ok there, whether the checks pass being `document.check`'s to say (the command's summary, the MCP tool, `info
+  --help` and `control-protocol.md` now say what `ok` means; the protocol's example had a failed feature beside
+  `"ok": true`). It lists no reasons of its own for an assembly: `document.check`, `assembly.inspect` and
+  `assembly.solve` give them. The test of A-023 held the wrong ok itself: at a corner the
   part takes, its mate on `Plate/F1:face(1)` names a face of the blank, whose body went into the fillet and is not
   shown (the plate's faces are `F2:copy(0)/F1:face(k)`), and fails (*no body has a face `F1:face(1)`*), while the
   check said ok; its expectation was changed to that problem, and to ok once the mate names the plate's face. A

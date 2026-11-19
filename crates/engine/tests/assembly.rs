@@ -1814,6 +1814,12 @@ fn solve_failure(solved: &Value, key: &str, name: &str) -> String {
         .to_string()
 }
 
+/// `document.inspect`'s `ok`: nothing failed to build or, in an assembly,
+/// to be placed (its bodies left unmeasured, which does not change it).
+fn inspect_ok(s: &mut Session) -> Value {
+    run(s, "document.inspect", json!({ "measures": false }))["ok"].clone()
+}
+
 /// An instance whose configuration fails (a value past its parameter's
 /// range) is not placed, and the mate on it fails with it:
 /// `assembly.inspect` and `assembly.solve` say so, and the assembly's
@@ -1871,6 +1877,10 @@ fn an_instance_that_is_not_placed_makes_the_check_not_ok() {
             ],
         })
     );
+    // `document.inspect` (`craft3d-cli info`, MCP's `doc_inspect`) says
+    // that something failed to be placed: ok was true before, nothing of
+    // the placement being asked; it lists no reasons of its own.
+    assert_eq!(inspect_ok(&mut s), false);
     // A measure of the instance says why there is nothing to measure.
     let solid = run(
         &mut s,
@@ -1908,6 +1918,7 @@ fn an_instance_that_is_not_placed_makes_the_check_not_ok() {
             "problems": [{ "mate": "Ground", "problem": format!("mate `Ground`: {mate_why}") }],
         })
     );
+    assert_eq!(inspect_ok(&mut s), false);
     run(
         &mut s,
         "mate.edit",
@@ -1918,6 +1929,36 @@ fn an_instance_that_is_not_placed_makes_the_check_not_ok() {
         checked,
         json!({ "bodiesChecked": 1, "ok": true, "problems": [] })
     );
+    assert_eq!(inspect_ok(&mut s), true);
+}
+
+/// `document.inspect`'s `ok` keeps its meaning for a part, nothing failed
+/// to build: a broken assertion leaves it true, where the check is not ok
+/// (whether the checks pass is `document.check`'s to say); a feature that
+/// fails makes it false.
+#[test]
+fn a_parts_inspect_is_ok_with_a_broken_assertion_and_not_with_a_failed_feature() {
+    let dir = workdir("assembly", "part-inspect");
+    let mut s = session_in(&dir);
+    filleted_plate(&mut s);
+    run(&mut s, "file.open", json!({ "path": "plate.3dcraft" }));
+    let a = run(
+        &mut s,
+        "assert.add",
+        json!({ "name": "tiny", "measure": "volume", "of": "Plate", "max": 1 }),
+    );
+    assert_eq!(a["status"], "failed", "{a}");
+    assert_eq!(inspect_ok(&mut s), true);
+    let checked = run(&mut s, "document.check", json!({}));
+    assert_eq!(checked["ok"], false, "{checked}");
+    run(&mut s, "assert.delete", json!({ "name": "tiny" }));
+    // A radius of 12 mm on a plate 4 mm thick: the fillet fails.
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "corner", "expr": "12 mm" }),
+    );
+    assert_eq!(inspect_ok(&mut s), false);
 }
 
 /// An instance whose source file is gone, or holds no document, is not
@@ -1981,6 +2022,7 @@ fn an_instance_whose_source_cannot_be_read_makes_the_check_not_ok() {
             }),
             "{case}"
         );
+        assert_eq!(inspect_ok(&mut s), false, "{case}");
     }
 }
 
@@ -2019,6 +2061,7 @@ fn a_failed_mate_coupling_or_solve_makes_the_check_not_ok() {
     assert_eq!(bodies, 2);
     let right = json!({ "bodiesChecked": bodies, "ok": true, "problems": [] });
     assert_eq!(run(&mut s, "document.check", json!({})), right);
+    assert_eq!(inspect_ok(&mut s), true);
 
     // A mate on a face B does not have: kept, failed by its name.
     let m = run(
@@ -2037,6 +2080,7 @@ fn a_failed_mate_coupling_or_solve_makes_the_check_not_ok() {
             "problems": [{ "mate": "Lost", "problem": format!("mate `Lost`: {why}") }],
         })
     );
+    assert_eq!(inspect_ok(&mut s), false);
     run(&mut s, "mate.delete", json!({ "name": "Lost" }));
     assert_eq!(run(&mut s, "document.check", json!({})), right);
 
@@ -2057,6 +2101,7 @@ fn a_failed_mate_coupling_or_solve_makes_the_check_not_ok() {
             "problems": [{ "coupling": "NoSlide", "problem": format!("coupling `NoSlide`: {why}") }],
         })
     );
+    assert_eq!(inspect_ok(&mut s), false);
     run(&mut s, "coupling.delete", json!({ "name": "NoSlide" }));
     assert_eq!(run(&mut s, "document.check", json!({})), right);
 
@@ -2082,8 +2127,10 @@ fn a_failed_mate_coupling_or_solve_makes_the_check_not_ok() {
             "problems": [{ "solve": "failed", "problem": format!("the assembly does not solve: {why}") }],
         })
     );
+    assert_eq!(inspect_ok(&mut s), false);
     run(&mut s, "mate.delete", json!({ "name": "Lifted" }));
     assert_eq!(run(&mut s, "document.check", json!({})), right);
+    assert_eq!(inspect_ok(&mut s), true);
 }
 
 /// What is wrong inside a subassembly is wrong in the assembly that holds
@@ -2166,6 +2213,7 @@ fn what_is_wrong_inside_a_subassembly_makes_the_check_not_ok() {
             }),
             "{mode}"
         );
+        assert_eq!(inspect_ok(&mut s), false, "{mode}");
         run(&mut s, "file.close", json!({ "discard": true }));
 
         run(&mut s, "assembly.new", json!({ "units": "mm" }));
@@ -2176,6 +2224,7 @@ fn what_is_wrong_inside_a_subassembly_makes_the_check_not_ok() {
         );
         let checked = run(&mut s, "document.check", json!({}));
         assert_eq!(checked["ok"], false, "{mode}: {checked}");
+        assert_eq!(inspect_ok(&mut s), false, "{mode}");
         let problems = checked["problems"].as_array().unwrap();
         if mode == "rigid" {
             // Its own solve failed: its instance stays where it is placed.
@@ -2301,6 +2350,38 @@ fn a_right_assembly_checks_as_before() {
         run(&mut s, "document.check", json!({})),
         json!({ "bodiesChecked": 7, "ok": true, "problems": [] })
     );
+    // `document.inspect` as before: ok, its placed bodies as features,
+    // each ok, and the keys an assembly's answer had in 0.2.0 (measured on
+    // its build), no other; only how `ok` is worked out changed.
+    let described = run(&mut s, "document.inspect", json!({ "measures": false }));
+    assert_eq!(described["ok"], true, "{described}");
+    let mut keys: Vec<&str> = described
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "bodies",
+            "dirty",
+            "document",
+            "features",
+            "history",
+            "ok",
+            "path",
+            "rollback",
+            "tolerance",
+            "units",
+            "variables"
+        ],
+        "{described}"
+    );
+    let features = described["features"].as_array().unwrap();
+    assert_eq!(features.len(), 7, "{described}");
+    assert!(features.iter().all(|f| f["status"] == "ok"), "{described}");
 }
 
 /// What the assembly's check leaves alone, because nothing is wrong: a
