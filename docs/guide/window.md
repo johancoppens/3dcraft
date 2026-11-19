@@ -283,7 +283,9 @@ decimals in millimetres (four in inches), no trailing zeros, below a hundredth t
 significant digits (`1450 mm²`, `39.9 cm³`). Point at a number that was shortened for its whole value
 (*25.980762 mm*); a click copies it as shown, and its hover says *Copied* for a moment. A number too long for
 the card is drawn smaller, down to half the size, and past that a range is broken after its dash. While two
-things are being measured the card says *Measuring…*; the window goes on meanwhile. Three things or more
+things are being measured the card says *Measuring…*; the window goes on meanwhile. In the web version the
+measures are taken beside the page, where it builds the model: the card says *Measuring…* for one thing too
+until they come, and *Not measured* where none came (point at it for why). Three things or more
 give no number: the card says so. In a short window the Features tab shows the card as one line, with
 **Keep as a check**.
 

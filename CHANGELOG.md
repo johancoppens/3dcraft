@@ -4,6 +4,10 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- **In the web version, what is selected is measured.** One thing selected showed only what its name says (an edge the two faces it lies between, and its name), with no number in the card or in the view, and two things selected were not measured at all, although the status bar's hint said to shift-click another to measure between; *Wall thickness* and *Keep as a check* were not offered. The web version builds the model beside the page, and these measures were taken only where the page had built the model itself. They are now taken beside the page too: the card says *Measuring…* until they come, then shows what the installed 3DCraft shows (the number with what it is and the facts under it, the dimension in the view, the relation of two things with *Keep as a check*), and *Not measured*, with why when you point at it, where none came. The installed 3DCraft is unchanged.
+
 ## [0.2.0] - 2026-11-19
 
 Notes pinned to the model, on which you and an AI agent answer each other; two things selected measured by themselves; a section you drag, lay on a face or through a hole's axis; fillets that fade to a point, rounded tips and sheets through grids of points. Results that changed come first: in most designs only last digits move, but if you checked a design with 0.1, check it again. Files saved by 0.2.0 do not open in 0.1.x.
@@ -98,6 +102,7 @@ What 3DCraft answered before can differ now: a measure, a proof, a check, a body
 ### Known limitations
 
 - On the web page the Notes tab lists the notes, but the view draws no pins and a row does not fly to its note yet.
+- In the web version one thing selected shows what it is, not its size, and two things selected are not measured, although the status bar's hint says to shift-click another to measure between: measuring by selecting works in the installed 3DCraft (found on 2026-11-19, after the release; this line was added to these notes then, and the programs' own copy of the notes does not have it).
 - A clearance whose gap is not proven above twice the document's tolerance is told by the kernel, which cannot tell every pair: there the clearance cannot be measured, and an assertion of it is in error. Over the 898 settings of the published Jigs tried, where 0.1.3 passed every assertion, this happens at 2 settings of the RC wing (its spars and ribs, found 0.05 mm apart).
 - Two parts that touch where a curve of the one lies exactly on the border of a face of the other may not be told from parts that overlap: the clearance cannot be measured ("an imprinted curve that does not fit the edges it should coincide with", or "a curve that is partly on and partly off a face boundary"). 0.1.x refuses the same bodies, but met them less often: a point held at a value was a rounding beside it, and is exactly on it now (above). Over those 898 settings this happens at 1, of the gear reducer: two wheels on their shafts, each shaft's keyway now centred exactly on its axis, which 0.1.3 answered as touching.
 - A thin shell of a freeform body can take about twice as long, and nearly three times as long on a computer with few cores: the check that no shell has turned inside out measures the result (a freeform tank shelled to a wall of 1.2 mm, on a laptop: 83 s where it took 44 s; on two of its cores, 146 s where it took 52 s).
