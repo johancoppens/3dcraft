@@ -2300,6 +2300,211 @@ fn a_right_assembly_checks_as_before() {
     );
 }
 
+/// What the assembly's check leaves alone, because nothing is wrong: a
+/// hinge driven to either end of its limits, a fixed mate given twice
+/// (redundant and consistent: the solver holds it), an assembly no mate
+/// holds to the world (floating), an instance pinned to the version its
+/// file no longer holds (held), one that follows its changed file, and
+/// one of a part without a body, held by its datum plane. Each answers
+/// ok with no problem. A hinge driven past its limit does not solve, as
+/// `assembly.solve` says, and the check names the solve.
+#[test]
+fn limits_redundant_floating_held_and_bodiless_assemblies_check_ok() {
+    let dir = workdir("assembly", "check-states");
+    let mut s = session_in(&dir);
+    block_part(&mut s, "block.3dcraft", [10.0, 2.0, 2.0], 1e-6);
+    block_part(&mut s, "big.3dcraft", [12.0, 3.0, 3.0], 1e-6);
+    run(&mut s, "file.new", json!({}));
+    run(
+        &mut s,
+        "datum.plane",
+        json!({ "from": "xy", "distance": 0, "name": "Mount" }),
+    );
+    run(&mut s, "file.save", json!({ "path": "datum.3dcraft" }));
+    run(&mut s, "file.close", json!({}));
+
+    run(&mut s, "assembly.new", json!({}));
+    for name in ["Base", "Arm"] {
+        run(
+            &mut s,
+            "instance.add",
+            json!({ "source": "block.3dcraft", "name": name }),
+        );
+    }
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "world/xy", "b": "Base/F1:face(0)", "name": "Ground" }),
+    );
+    let m = run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "revolute", "a": "Base/F1:face(1)", "b": "Arm/F1:face(0)", "name": "Hinge", "limits": ["0 deg", "90 deg"] }),
+    );
+    assert_eq!(m["status"], "ok", "{m}");
+    let right = json!({ "bodiesChecked": 2, "ok": true, "problems": [] });
+    for at in ["90 deg", "0 deg"] {
+        run(&mut s, "joint.set", json!({ "mate": "Hinge", "value": at }));
+        let solved = run(&mut s, "assembly.solve", json!({}));
+        assert_eq!(solved["ok"], true, "{at}: {solved}");
+        assert_eq!(run(&mut s, "document.check", json!({})), right, "{at}");
+    }
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Hinge", "value": "120 deg" }),
+    );
+    let solved = run(&mut s, "assembly.solve", json!({}));
+    assert_eq!(solved["ok"], false, "{solved}");
+    assert_eq!(solved["failed"], json!([]), "{solved}");
+    let why = solved["error"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{solved}"))
+        .to_string();
+    assert!(why.contains("outside its limits"), "{why}");
+    assert_eq!(
+        run(&mut s, "document.check", json!({})),
+        json!({
+            "bodiesChecked": 2,
+            "ok": false,
+            "problems": [{ "solve": "failed", "problem": format!("the assembly does not solve: {why}") }],
+        })
+    );
+    run(
+        &mut s,
+        "joint.set",
+        json!({ "mate": "Hinge", "value": "45 deg" }),
+    );
+    let m = run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "world/xy", "b": "Base/F1:face(0)", "name": "Again" }),
+    );
+    assert_eq!(m["status"], "ok", "{m}");
+    let solved = run(&mut s, "assembly.solve", json!({}));
+    assert_eq!(solved["ok"], true, "{solved}");
+    assert_eq!(run(&mut s, "document.check", json!({})), right);
+    run(&mut s, "file.close", json!({ "discard": true }));
+
+    // Floating: nothing reaches the world.
+    run(&mut s, "assembly.new", json!({}));
+    for name in ["A", "B"] {
+        run(
+            &mut s,
+            "instance.add",
+            json!({ "source": "block.3dcraft", "name": name }),
+        );
+    }
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "revolute", "a": "A/F1:face(1)", "b": "B/F1:face(0)", "name": "Turn" }),
+    );
+    let solved = run(&mut s, "assembly.solve", json!({}));
+    assert_eq!(solved["ok"], true, "{solved}");
+    assert_eq!(solved["floating"], true, "{solved}");
+    assert_eq!(
+        run(&mut s, "document.check", json!({})),
+        json!({ "bodiesChecked": 2, "ok": true, "problems": [] })
+    );
+    // Held, followed and without a body.
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Pinned", "pinned": true, "position": [30, 0, 0] }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "datum.3dcraft", "name": "Empty" }),
+    );
+    let m = run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "world/xy", "b": "Empty/Mount", "name": "Datum" }),
+    );
+    assert_eq!(m["status"], "ok", "{m}");
+    std::fs::copy(dir.join("big.3dcraft"), dir.join("block.3dcraft")).unwrap();
+    let reloaded = run(&mut s, "assembly.reload", json!({}));
+    assert_eq!(reloaded["failed"], json!([]), "{reloaded}");
+    let inspected = inspect(&mut s);
+    assert!(
+        instance(&inspected, "Pinned")["held"].is_string(),
+        "{inspected}"
+    );
+    assert_eq!(instance(&inspected, "A")["changed"], true, "{inspected}");
+    let empty = instance(&inspected, "Empty");
+    assert_eq!(empty["status"], "ok", "{empty}");
+    assert_eq!(empty["bodies"], json!([]), "{empty}");
+    let solved = run(&mut s, "assembly.solve", json!({}));
+    assert_eq!(solved["ok"], true, "{solved}");
+    assert_eq!(
+        run(&mut s, "document.check", json!({})),
+        json!({ "bodiesChecked": 3, "ok": true, "problems": [] })
+    );
+}
+
+/// What is wrong two subassemblies down is named through both, whichever
+/// of the two is rigid or flexible: the plate that is not placed and its
+/// mate, inside `Sub`, inside `Mid`, under the top's instance `Mid`.
+#[test]
+fn what_is_wrong_two_subassemblies_down_is_named_through_both() {
+    let dir = workdir("assembly", "check-two-deep");
+    let mut s = session_in(&dir);
+    filleted_plate(&mut s);
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "plate.3dcraft", "name": "Plate", "params": { "corner": "40 mm" } }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "name": "Ground", "a": "world/xy", "b": "Plate/F1:face(1)", "flip": true }),
+    );
+    let solved = run(&mut s, "assembly.solve", json!({}));
+    let why = solve_failure(&solved, "instance", "Plate");
+    let mate_why = solve_failure(&solved, "mate", "Ground");
+    run(&mut s, "file.save", json!({ "path": "inner.3dcraftasm" }));
+    run(&mut s, "file.close", json!({}));
+    for (outer, inner) in [
+        ("rigid", "rigid"),
+        ("rigid", "flexible"),
+        ("flexible", "rigid"),
+        ("flexible", "flexible"),
+    ] {
+        let mid = format!("mid-{outer}-{inner}.3dcraftasm");
+        run(&mut s, "assembly.new", json!({ "units": "mm" }));
+        run(
+            &mut s,
+            "instance.add",
+            json!({ "source": "inner.3dcraftasm", "name": "Sub", "mode": inner }),
+        );
+        run(&mut s, "file.save", json!({ "path": mid }));
+        run(&mut s, "file.close", json!({}));
+        run(&mut s, "assembly.new", json!({ "units": "mm" }));
+        run(
+            &mut s,
+            "instance.add",
+            json!({ "source": mid, "name": "Mid", "mode": outer }),
+        );
+        assert_eq!(
+            run(&mut s, "document.check", json!({})),
+            json!({
+                "bodiesChecked": 0,
+                "ok": false,
+                "problems": [
+                    { "instance": "Mid", "problem": format!("instance `Mid`: its instance `Sub`: its instance `Plate` is not placed: {why}") },
+                    { "instance": "Mid", "problem": format!("instance `Mid`: its instance `Sub`: its mate `Ground`: {mate_why}") },
+                ],
+            }),
+            "{outer} {inner}"
+        );
+        run(&mut s, "file.close", json!({ "discard": true }));
+    }
+}
+
 /// A-011: a value an assembly gives an instance is held to the part's
 /// range, not to its step: 7√2 mm on a step of 0.1 mm places the bar at
 /// that length; 20 mm, past its maximum of 15, is still refused; and
