@@ -24,6 +24,12 @@ by its sizes may only need to be a Jig ([Making Jigs](making-jigs.md)).
 All four run the same commands, with the same parameters and the same results. The full description of
 the protocols, every method and every limit is in [`control-protocol.md`](../control-protocol.md).
 
+A web page can also hold the web version and drive it with the same requests: the page has its own
+controls (sliders, a price, an order button) and 3DCraft is the engine and the 3D view, with no window
+around it. This is experimental: the names and the events may still change between versions. What the
+page must have is in [Hosting 3DCraft for the web › Embedding](../../packaging/web/HOSTING.md#embedding-3dcraft-in-a-web-page-experimental),
+the requests and events in [`control-protocol.md`](../control-protocol.md) › *The page as a transport*.
+
 ## `serve`: JSON lines
 
 `craft3d-cli serve` reads one request per line on its standard input and writes one reply per line on its

@@ -49,6 +49,7 @@ Things that help:
 |---|---|
 | "Round the outside edges of the top by 2 mm." | adds a fillet on the edges it finds by their shape and place |
 | "Make the hole I selected 6.5 mm." | reads your selection, finds the size that drives that hole and changes it |
+| "How far apart are the two holes I selected? Keep it at 30 mm." | measures between the two (`measure.between`), as the window does for two things selected, and keeps the relation as a check ([Between two things](measure.md#between-two-things)) |
 | "Work through my notes." | reads the notes pinned to the model, makes the changes to the model they ask for, reports anything else to you, and closes each with a reply ([Notes on the model](#notes-on-the-model)) |
 | "Why did the fillet fail?" | reads the reason 3DCraft gave (often with the largest size that fits) and proposes a fix |
 | "Show me the history step by step." | plays the history in your window |
@@ -176,9 +177,10 @@ Do not take "done" on trust. 3DCraft gives you the means to check, without readi
    under the filter says *N rebuilt · M checks pass*.
 2. **The checks** (assertions): they are the agent's claims about the part, written as numbers you can
    read ("volume = π((d/2)² − …) t"). `assert.list` shows them; ask for the ones you care about.
-3. **Your own numbers**: ask for `measure.distance`, `measure.thickness` or `measure.through` between
-   the faces you point at, or for the volume and bounding box `document.inspect` gives, and compare them
-   with what you expect.
+3. **Your own numbers**: select two things in the window and read their distance or angle at the foot
+   of the side panel ([Between two things](measure.md#between-two-things)); or ask for
+   `measure.distance`, `measure.thickness` or `measure.through` between the faces you point at, or for
+   the volume and bounding box `document.inspect` gives, and compare them with what you expect.
 4. **Change a variable** and see that the part follows, and the checks still pass.
 5. **Look**: the window, or `doc_render_preview` with `projection: "orthographic"` and a `view` such as
    `top` for a picture to scale, or `mode: "ids"` (one colour per face) to see which face is which.

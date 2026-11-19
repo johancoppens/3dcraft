@@ -207,7 +207,7 @@ The **Help** menu:
 
 The left panel has tabs, chosen by the kind of document:
 
-- a part has **Features**, **Variables** and **Bodies**, and **Agent** (below);
+- a part has **Features**, **Variables** and **Bodies**, and **Agent** and **Notes** (below);
 - an assembly has **Assembly** (its instances, mates and checks), **Variables** and **Agent**;
 - a document with public parameters, such as a Jig, has **Parameters** first.
 

@@ -59,7 +59,9 @@ craft3d-cli render bracket.3dcraft --out bracket.png --size 800x600 --view iso
 Draws the bodies into a PNG, on the window's light background (`--background dark` for a dark one), on
 the graphics card when there is one (`--renderer cpu` for the CPU renderer).
 `--view` is `iso`, `front`, `back`, `left`, `right`, `top` or `bottom`; `--mode ids` gives every face its
-own flat colour, to see which face is which.
+own flat colour, to see which face is which. `--sketches on` draws the sketches' lines and points over the
+picture, as the window's Sketches toggle shows them, the grid a sheet through a grid of points was made
+through among them.
 
 ## Converting files: `convert`
 
