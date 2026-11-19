@@ -86,7 +86,7 @@ written differently (`assert.edit`).
 
 `document.check` warns with kind `fold` when a face of a body folds over itself: two of its
 layers face each other through air nearer than the document's tolerance ("face 4 folds over itself
-at (5.09, -2.81, -4.74): two of its layers face each other 8.25e-3 apart with air between them,
+at (5.12, -2.84, -4.73): two of its layers face each other 4.57e-7 apart with air between them,
 within the tolerance 2e-2"), or its surface has no normal at a point. The body is still built and
 `ok` stays true, but a mesh, an offset, a shell or a boolean near that place may go wrong. Look at
 the place it names (`at`): it is usually a fillet or a blend whose radius is smaller than the bend it

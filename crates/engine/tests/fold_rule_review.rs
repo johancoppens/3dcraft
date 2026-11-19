@@ -568,9 +568,9 @@ fn review_slots_at_three_scales_and_two_tolerances() {
                 ("0.5 t", 0.25 * t, true),
                 ("0.9 t", 0.45 * t, true),
                 // By the definition a fold: drawn with control points on a
-                // circle of 0.55 t, its walls narrow at the root to 0.9999 t
-                // (at 1e-6 of the size; 0.995 t at 1e-2), facing each other
-                // through air (taken in by fold-check, 2026-11-19; it was
+                // circle of 0.55 t, its walls narrow at the root to within
+                // t (0.998 t at 1e-2 of the size, 0.981 t at 1e-6), facing
+                // each other through air (taken in by fold-check, 2026-11-19; it was
                 // `false`, "valid").
                 ("1.1 t", 0.55 * t, true),
                 ("2 t", t, false),
