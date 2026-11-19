@@ -227,6 +227,18 @@ fn facing(mut body: Body, probe: f64, towards: Vec3) -> Body {
     body
 }
 
+/// The sheet's loop run the other way (so that it runs anticlockwise
+/// about the outward normal of a face whose sense `facing` turned, as
+/// the validity check wants; the fold rule reads either way alike).
+fn turned(mut body: Body) -> Body {
+    let coedges = &mut body.loops[0].coedges;
+    coedges.reverse();
+    for c in coedges.iter_mut() {
+        c.reversed = !c.reversed;
+    }
+    body
+}
+
 /// The rule of `crates/topo/src/fold.rs` (c94ccc7d) copied as it is,
 /// its store left out, with the pairs of a search counted and their cap a
 /// parameter: what the review reads the pair cap and the in-face test by.
@@ -1617,6 +1629,64 @@ fn review_the_words_agents_read() {
 }
 
 // ---------------------------------------------------------------------
+// 2 and 3. The slots and the pleat without the pair cap.
+
+/// The slots and the pleat of `review_slots_at_three_scales_and_two_tolerances`
+/// (size 1, t = 0.01) asked through the copy of the rule with and without
+/// its pair cap: without it, the slots 0.5 t and 0.9 t and the pleat are
+/// shown and the slots 1.1 t and 2 t pass without a line, so that what
+/// the rule says of them is the cap's.
+#[test]
+fn review_slots_without_the_pair_cap() {
+    let t = 0.01;
+    let mut failures: Vec<String> = Vec::new();
+    let mut bodies: Vec<(String, Body, bool)> = Vec::new();
+    for (what, r, fold) in [
+        ("slot 0.5 t", 0.25 * t, true),
+        ("slot 0.9 t", 0.45 * t, true),
+        ("slot 1.1 t", 0.55 * t, false),
+        ("slot 2 t", t, false),
+    ] {
+        let body = facing(sheet(&slot(r, 10.0), 10.0, (0.0, 1.0)), 0.05, Vec3::X);
+        bodies.push((what.to_string(), body, fold));
+    }
+    for reversed in [false, true] {
+        let mut body = sheet(&pleat(0.25 * t, 10.0), 10.0, (0.0, 1.0));
+        body.faces[0].reversed = reversed;
+        bodies.push((format!("pleat reversed {reversed}"), body, true));
+    }
+    for (what, body, fold) in &bodies {
+        let mut capped = mirror::Stats::new();
+        let with = mirror::folds(body, t, 4_000_000, &mut capped);
+        let mut free = mirror::Stats::new();
+        let start = Instant::now();
+        let without = mirror::folds(body, t, u64::MAX, &mut free);
+        let spent = secs(start);
+        let shown_free = without
+            .iter()
+            .filter(|(_, _, k)| !matches!(k, FoldKind::NotProven { .. }))
+            .count();
+        println!(
+            "REVIEW uncapped {what}: capped {capped:?} says {} places",
+            with.len()
+        );
+        println!(
+            "REVIEW uncapped {what}: no cap ({spent:.2} s) {free:?} says {shown_free} shown of {}: {without:?}",
+            without.len()
+        );
+        if *fold && shown_free == 0 {
+            failures.push(format!(
+                "{what}: not shown even without the cap: {without:?}"
+            ));
+        }
+        if !*fold && !without.is_empty() {
+            failures.push(format!("{what}: said even without the cap: {without:?}"));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+// ---------------------------------------------------------------------
 // 7. The switch.
 
 /// With `FOLDS_REFUSED` as built (off) this counts what fails; on the
@@ -1645,6 +1715,11 @@ fn review_switch_census() {
     let t = 0.01;
     for (what, r) in [("slot 0.5 t", 0.25 * t), ("slot 2 t", t)] {
         let body = facing(sheet(&slot(r, 10.0), 10.0, (0.0, 1.0)), 0.05, Vec3::X);
+        let body = if body.faces[0].reversed {
+            turned(body)
+        } else {
+            body
+        };
         let defects = check(&body, &tol(t));
         println!(
             "REVIEW switch {on} {what}: {:?}",
