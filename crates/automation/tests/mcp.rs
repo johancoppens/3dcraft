@@ -738,6 +738,76 @@ fn doc_inspect_returns_the_document_or_null() {
     );
 }
 
+/// `doc_inspect`'s ok says that nothing failed to build or, in an
+/// assembly, to be placed: an assembly whose one instance is not placed
+/// (a value past its part's range, its mate failing with it) answers ok
+/// false, as `document.check` does, where it answered true before; with a
+/// value the part takes, ok true. A part with a broken assertion stays ok
+/// (whether the checks pass is `document.check`'s to say).
+#[test]
+fn doc_inspect_is_not_ok_for_an_assembly_whose_instance_is_not_placed() {
+    let dir = std::env::temp_dir().join(format!("craft3d-mcp-not-placed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = craft3d_engine::canonical(&dir).unwrap();
+    let mut s = Session::new(Workspace {
+        read: craft3d_engine::Access::Root(dir.clone()),
+        write: craft3d_engine::Access::Root(dir.clone()),
+    });
+    let steps = [
+        ("file.new", json!({"units": "mm"})),
+        ("variable.set", json!({"name": "corner", "expr": "1 mm"})),
+        (
+            "variable.publish",
+            json!({"name": "corner", "min": "0.5 mm", "max": "30 mm"}),
+        ),
+        (
+            "feature.block",
+            json!({"name": "Blank", "size": ["30 mm", "20 mm", "4 mm"]}),
+        ),
+        (
+            "feature.fillet",
+            json!({"name": "Plate", "edges": [["F1:face(0)", "F1:face(2)"]], "radius": "corner"}),
+        ),
+        ("file.save", json!({"path": "plate.3dcraft"})),
+        ("assembly.new", json!({"units": "mm"})),
+        (
+            "instance.add",
+            json!({"source": "plate.3dcraft", "name": "Plate", "params": {"corner": "40 mm"}}),
+        ),
+        (
+            "mate.add",
+            json!({"kind": "fixed", "name": "Ground", "a": "world/xy", "b": "Plate/F2:copy(0)/F1:face(1)", "flip": true}),
+        ),
+    ];
+    for (id, params) in steps {
+        run(&mut s, id, params);
+    }
+    let inspect = tool_json(&mut s, "doc_inspect", json!({}));
+    assert_eq!(inspect, run(&mut s, "document.inspect", json!({})));
+    assert_eq!(inspect["ok"], false, "{inspect}");
+    assert_eq!(run(&mut s, "document.check", json!({}))["ok"], false);
+    run(
+        &mut s,
+        "instance.edit",
+        json!({"name": "Plate", "params": {"corner": "1 mm"}}),
+    );
+    let inspect = tool_json(&mut s, "doc_inspect", json!({}));
+    assert_eq!(inspect["ok"], true, "{inspect}");
+    assert_eq!(run(&mut s, "document.check", json!({}))["ok"], true);
+    // The part, open in its own tab, with a check it fails.
+    run(&mut s, "file.activate", json!({"document": 0}));
+    run(
+        &mut s,
+        "assert.add",
+        json!({"name": "tiny", "measure": "volume", "of": "Plate", "max": 1}),
+    );
+    let inspect = tool_json(&mut s, "doc_inspect", json!({}));
+    assert_eq!(inspect["ok"], true, "{inspect}");
+    assert_eq!(run(&mut s, "document.check", json!({}))["ok"], false);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn doc_render_preview_returns_a_png_image_block_and_the_rest_as_text() {
     let mut s = session();

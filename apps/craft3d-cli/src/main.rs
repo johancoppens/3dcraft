@@ -133,7 +133,9 @@ Usage: craft3d-cli info FILE
 
 Prints the state of a .3dcraft file as JSON (the command document.inspect):
 units, variables with values, features with status, bodies with counts,
-volume, area and centroid.";
+volume, area and centroid. ok says that nothing failed to build or, in an
+assembly, to be placed; whether its checks pass and its bodies are valid,
+and what failed, is document.check's to say.";
 
 const HELP_RENDER: &str = "\
 Usage: craft3d-cli render FILE --out PNG [--size WxH] [--view V] [--mode M]

@@ -406,3 +406,51 @@ fn the_walkers_leg_opened_alone_is_as_pinned_at_its_leg_scales() {
         }
     }
 }
+
+/// Each published assembly is what it says, and its check answers as the
+/// release 0.2.0 answered it (`craft3d-cli run <file> --cmd
+/// document.check`, measured on its build): every placed body checked, no
+/// problem, its assertions as they stand. The check asks about the
+/// instances, mates, couplings, solve and subassemblies of an assembly
+/// since it gave a wrong ok for one with an instance that was not placed;
+/// an assembly that is right answers the same, to the byte.
+#[test]
+fn the_published_assemblies_check_ok_as_before() {
+    for (file, count, inactive, passed, bodies) in [
+        ("toggle-clamp", 20, 4, 16, 15),
+        ("jansen-walker", 38, 5, 33, 250),
+        ("scissor-jack", 26, 11, 15, 24),
+        ("radial-engine", 140, 4, 136, 237),
+    ] {
+        let mut s = session_in(&published());
+        run(
+            &mut s,
+            "file.open",
+            json!({ "path": format!("{file}.3dcraftasm") }),
+        );
+        let checked = run(&mut s, "document.check", json!({}));
+        assert_eq!(
+            checked,
+            json!({
+                "assertionSummary": {
+                    "broken": [], "count": count, "inactive": inactive,
+                    "passed": passed, "pending": 0, "unproven": [],
+                },
+                "bodiesChecked": bodies,
+                "ok": true,
+                "problems": [],
+            }),
+            "{file}"
+        );
+        // `document.inspect` (`craft3d-cli info`, MCP's `doc_inspect`)
+        // ok, as 0.2.0 answered it (measured on its build), its placed
+        // bodies as its features: nothing failed to build or be placed.
+        let described = run(&mut s, "document.inspect", json!({ "measures": false }));
+        assert_eq!(described["ok"], true, "{file}");
+        assert_eq!(
+            described["features"].as_array().unwrap().len(),
+            bodies,
+            "{file}"
+        );
+    }
+}

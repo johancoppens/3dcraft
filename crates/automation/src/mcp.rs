@@ -584,7 +584,7 @@ fn tools() -> Value {
         },
         {
             "name": "doc_inspect",
-            "description": "Returns the active document: units, variables with values, features with status, bodies with face/edge/vertex counts, volume, area and centroid, the notes pinned to the model counted (notes: count, open, fromAgents; note.list lists them) when there are any, and the undo history. Returns {\"document\": null} when no document is open.",
+            "description": "Returns the active document: units, variables with values, features with status, bodies with face/edge/vertex counts, volume, area and centroid, the notes pinned to the model counted (notes: count, open, fromAgents; note.list lists them) when there are any, and the undo history; ok: nothing failed to build or, in an assembly, to be placed (whether the checks pass and the bodies are valid, and what failed, document.check says; assembly.inspect and assembly.solve too). Returns {\"document\": null} when no document is open.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},

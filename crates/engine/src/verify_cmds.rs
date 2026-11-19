@@ -518,6 +518,11 @@ pub(crate) fn subject(ctx: &Ctx<'_>, value: &Value, kind: &[&str]) -> Result<Vec
             (None, None) => Vec::new(),
         };
         let ids = if ids.is_empty() {
+            // An instance that is not placed shows no body: say why,
+            // rather than that no feature has its name.
+            if let Some(Err(why)) = ctx.placed.and_then(|p| p.pose_of(text)) {
+                return Err(why);
+            }
             vec![feature_of(ctx.doc, text)?]
         } else {
             ids
