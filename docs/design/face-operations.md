@@ -406,7 +406,7 @@ A review of the change above on cases of its own (walls of 24 spans, lopsided kn
 
 ### What the inside-out check costs on a thin freeform skin: owed (2026-11-19, `tweak::passes::inside_out`)
 
-*Found* by the same measurement: of the 112 documents and scripts opened and regenerated on 0.1.3 and on the coming 0.2.0, one got slower beyond the noise, the tank script, 76.1 s to 93.3 s. Of its 114 steps only the shell did: 43.6 s to 82.8 s on a laptop, 52.4 s to 146 s pinned to two cores.
+*Found* by the same measurement: of the 112 documents and scripts opened and regenerated on 0.1.3 and on the coming 0.2.0, one got slower beyond the noise, the tank script, 76.1 s to 93.3 s to open and regenerate (medians of three). Timed step by step in runs of their own (99 s to 145 s in all), the shell carries most of it: 43.6 s to 82.8 s on a laptop, 52.4 s to 146 s pinned to two cores; the measure of the shell's area after it went from 42.0 s to 51.1 s (the measure's own change, not traced), and the clearance assertion of the cap from 2.5 s to 0.3 s.
 
 *Where the time goes* (stack samples of the shell step, both programs): 583 of 709 busy samples are in the volume integrals (`craft3d_topo::mass`), 294 of them under `inside_out`, which 0.1.3 does not have; the check of 2026-11-14 above (*A body turned inside out*) measures the shells wherever a face that shares no vertex with a moved face lies in the box the moved face went through, and on a skin 1.2 mm thick round a freeform tank that is every face, so the check costs about what measuring the body costs. It is the one check not counted against the work bound. The integrals run in parallel, which hides most of it on a machine of many cores. The commit is the one that added the function; it was not bisected.
 
