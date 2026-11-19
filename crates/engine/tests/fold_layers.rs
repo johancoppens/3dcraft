@@ -1,3 +1,7 @@
+//! Ignored in the gate (a probe: it prints and holds nothing; fold-check
+//! 2026-11-19, after the review): run it with
+//! `cargo test -p craft3d-engine --test fold_layers -- --ignored --nocapture`.
+//!
 //! fold-check, round 2: a probe (printed, held to nothing) of the revised
 //! definition of a face folded over itself (docs/design/verification.md ›
 //! *A face folded over itself*). Per freeform face, at a tolerance `t`
@@ -967,6 +971,7 @@ fn read_step(path: &Path, t: f64) -> Option<Body> {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn the_seven_folded_fades() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fold_probe/fades");
     for name in [
@@ -1150,6 +1155,7 @@ fn roof_block(l: f64, s: f64, looped: bool, degree: usize) -> Body {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn tops_pulled_through_themselves_and_an_overhang() {
     for (looped, degree) in [(true, 3), (true, 1), (false, 3), (false, 1)] {
         for times in [3.0, 100.0, 10_000.0] {
@@ -1262,6 +1268,7 @@ fn narrow(e: f64) -> Vec<[f64; 2]> {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn notches_that_must_pass() {
     for e in [0.2, 0.05, 0.02] {
         notch(&format!("notch-90 e{e}"), 0.02, &right_angle(e), 1.0);
@@ -1276,6 +1283,7 @@ fn notches_that_must_pass() {
 /// The review's L with its inside edge rounded by fades the kernel
 /// builds (its own refusal on): must pass.
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn fades_on_a_concave_edge_that_must_pass() {
     use craft3d_kernel::fillet::{Fade, FilletLawEdge, RadiusLaw, fillet_by_law};
     let linear = 0.02;
@@ -1340,6 +1348,7 @@ fn fades_on_a_concave_edge_that_must_pass() {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn a_loft_through_its_axis() {
     use craft3d_kernel::loft::{Options as LoftOptions, Section, loft};
     use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
@@ -1433,9 +1442,9 @@ fn listed(folder: &str, suffix: &str) -> Vec<PathBuf> {
 thread_local! {
     /// The rule as built (`craft3d_topo::folds`), per test thread: at the
     /// documents' own tolerance and at 0.01: warnings, places not proven,
-    /// milliseconds, bodies.
-    static RULE: std::cell::RefCell<[(usize, usize, f64, usize); 2]> =
-        const { std::cell::RefCell::new([(0, 0, 0.0, 0); 2]) };
+    /// milliseconds cold, bodies, milliseconds warm (asked again at once).
+    static RULE: std::cell::RefCell<[(usize, usize, f64, usize, f64); 2]> =
+        const { std::cell::RefCell::new([(0, 0, 0.0, 0, 0.0); 2]) };
 }
 
 /// Every own body of `doc` asked by the rule as built, at its tolerance
@@ -1462,6 +1471,11 @@ fn document(name: &str, doc: &Document, coarse: f64, totals: &mut [Sum; 2], rege
             found.extend(craft3d_topo::folds(body, &tol));
         }
         let spent = ms(start);
+        let start = Instant::now();
+        for (_, body) in regen.bodies() {
+            let _ = craft3d_topo::folds(body, &tol);
+        }
+        let warm = ms(start);
         let warnings = found.iter().filter(|f| f.is_fold()).count();
         let unproven = found.len() - warnings;
         RULE.with(|r| {
@@ -1470,10 +1484,11 @@ fn document(name: &str, doc: &Document, coarse: f64, totals: &mut [Sum; 2], rege
             r[k].1 += unproven;
             r[k].2 += spent;
             r[k].3 += bodies;
+            r[k].4 += warm;
         });
-        if !found.is_empty() || spent > 0.05 * regenerated.max(20.0) {
+        if !found.is_empty() || spent > 50.0 || spent > 0.05 * regenerated.max(20.0) {
             println!(
-                "LAYERS rule {name} | t {t:e} | {warnings} warnings, {unproven} not proven | rule {spent:.1} ms, regeneration {regenerated:.1} ms, {bodies} bodies | first: {}",
+                "LAYERS rule {name} | t {t:e} | {warnings} warnings, {unproven} not proven | rule {spent:.1} ms cold, {warm:.2} ms warm, regeneration {regenerated:.1} ms, {bodies} bodies | first: {}",
                 found.first().map(ToString::to_string).unwrap_or_default()
             );
         }
@@ -1533,12 +1548,13 @@ fn corpus(tag: &str, files: &[&str], scripts: &[(&str, &str)]) {
         for (k, what) in [(0, "own tolerance"), (1, "0.01 where coarser")] {
             let _ = write!(
                 line,
-                " | rule at {what}: {} warnings, {} not proven, {:.0} ms over {} bodies ({:.2} % of the regeneration)",
+                " | rule at {what}: {} warnings, {} not proven, {:.0} ms cold over {} bodies ({:.2} % of the regeneration), {:.1} ms warm",
                 r[k].0,
                 r[k].1,
                 r[k].2,
                 r[k].3,
-                100.0 * r[k].2 / regen_ms.max(1e-9)
+                100.0 * r[k].2 / regen_ms.max(1e-9),
+                r[k].4
             );
         }
     });
@@ -1546,6 +1562,7 @@ fn corpus(tag: &str, files: &[&str], scripts: &[(&str, &str)]) {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn corpus_files() {
     corpus(
         "files",
@@ -1562,6 +1579,7 @@ fn corpus_files() {
 }
 
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn corpus_scripts() {
     corpus(
         "scripts",
@@ -1584,6 +1602,7 @@ fn corpus_scripts() {
 /// The repository's documents whose own tolerance is coarse (the
 /// review's four), each body with detail.
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn coarse_documents_in_detail() {
     for name in [
         "docs/examples/published/ship-propeller.3dcraft",
@@ -1610,6 +1629,7 @@ fn coarse_documents_in_detail() {
 /// Every 40th model of the ABC cache on the build server, at 1e-6 and at
 /// its working tolerance (the review's way of reading them).
 #[test]
+#[ignore = "a probe: run with --ignored --nocapture"]
 fn abc_models() {
     let Some(folder) = std::env::var("HOME")
         .ok()

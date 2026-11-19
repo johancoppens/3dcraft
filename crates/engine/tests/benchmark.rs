@@ -23,7 +23,7 @@
 //!   as `n` times the bits of `n`;
 //! - the rule of a face folded over itself (`craft3d_topo::fold_work`,
 //!   asked by `document.check`): Bézier spans asked (each surface once)
-//!   and searches for two layers or a missing normal.
+//!   and pairs of pieces of a face compared in its search for two layers.
 //!
 //! Each count may not exceed its baseline in `bench_models/baseline.txt`
 //! by more than [`MARGIN`]. A count that grows past it is a slowdown (or

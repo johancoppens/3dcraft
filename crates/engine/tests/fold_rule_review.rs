@@ -22,7 +22,10 @@
     clippy::many_single_char_names,
     clippy::needless_range_loop,
     clippy::type_complexity,
-    clippy::neg_cmp_op_on_partial_ord
+    clippy::neg_cmp_op_on_partial_ord,
+    clippy::approx_constant,
+    clippy::manual_range_contains,
+    clippy::excessive_precision
 )]
 
 mod common;
@@ -239,35 +242,22 @@ fn turned(mut body: Body) -> Body {
     body
 }
 
-/// The rule of `crates/topo/src/fold.rs` (c94ccc7d) copied as it is,
-/// its store left out, with the pairs of a search counted and their cap a
-/// parameter: what the review reads the pair cap and the in-face test by.
+/// The rule with its bound on pairs of pieces a parameter
+/// (`craft3d_topo::folds_examined`, without the store of faces), and what
+/// its search did: what the review reads the bound and the in-face test by.
+/// (At c94ccc7d this was a copy of the rule as it was then, its pair cap a
+/// parameter; the rule's search was rebuilt after the review, so the copy
+/// is now the rule itself, asked with its bound.)
 mod mirror {
-    #![allow(
-        clippy::neg_cmp_op_on_partial_ord,
-        dead_code,
-        clippy::too_many_arguments
-    )]
+    #![allow(dead_code, clippy::new_without_default)]
 
-    use craft3d_geom::Surface;
-    use craft3d_geom::offset::{SpanRegularity, SpanVerdict, regular_by_span};
-    use craft3d_math::Vec3;
-    use craft3d_topo::{Body, Face, FoldKind};
-    use std::collections::BTreeMap;
+    use craft3d_math::{Tolerance, Vec3};
+    use craft3d_topo::{Body, FoldKind};
 
-    const TIP: f64 = 4.0;
-    const REACH: f64 = 8.0;
-    const OPPOSITE: f64 = -0.9;
-    const GRID: usize = 120;
-    const PER_EDGE: usize = 1024;
-    const MOST_SEARCHES: usize = 32;
-    const MOST_SPANS: usize = 1 << 16;
-
-    type Found = Vec<(Vec3, FoldKind)>;
-
-    /// What the searches met: candidate pairs looked at, searches cut by
-    /// the cap, and the pairs facing each other through air within the
-    /// tolerance by how their points are told.
+    /// What the searches met: faces searched, pairs of pieces compared
+    /// (in all and on the face that took most), faces whose search
+    /// reached the bound, and the pairs meeting the definition by how
+    /// their points are told.
     #[derive(Clone, Debug)]
     pub struct Stats {
         pub searches: u64,
@@ -280,8 +270,8 @@ mod mirror {
         pub out: u64,
         pub least_in_in: f64,
         pub least_doubtful: f64,
-        /// Per search: the box's half-widths in parameters and the points
-        /// of its grid kept (within reach, outside the tips).
+        /// Not kept by the rule's own search (its pieces are not boxes in
+        /// parameters about a place).
         pub boxes: Vec<(f64, f64, usize)>,
     }
 
@@ -303,730 +293,28 @@ mod mirror {
         }
     }
 
-    /// `craft3d_topo::folds` without its store, the pair cap `cap`.
+    /// `craft3d_topo::folds` without its store, its bound `cap` pairs of
+    /// pieces a face.
     pub fn folds(body: &Body, t: f64, cap: u64, stats: &mut Stats) -> Vec<(u32, Vec3, FoldKind)> {
-        let mut out = Vec::new();
-        if !(t.is_finite() && t > 0.0) {
-            return out;
-        }
-        for (index, face) in body.faces.iter().enumerate() {
-            if !matches!(face.surface, Surface::Nurbs(_) | Surface::Bezier(_)) {
-                continue;
-            }
-            let id = u32::try_from(index).unwrap_or(u32::MAX);
-            for (at, kind) in face_folds(body, face, t, cap, stats) {
-                out.push((id, at, kind));
-            }
-        }
-        out
-    }
-
-    /// The point a border of the box `u × v` of `surface` is drawn into, for
-    /// each border that is one.
-    fn collapsed(surface: &Surface, u: (f64, f64), v: (f64, f64)) -> Vec<(usize, Vec3)> {
-        let at = |a: f64, b: f64| surface.eval(a, b);
-        let size = at(u.0, v.0)
-            .distance(at(u.1, v.1))
-            .max(at(u.0, v.1).distance(at(u.1, v.0)));
-        let fine = 1e-9 * size.max(f64::MIN_POSITIVE);
-        let mut found = Vec::new();
-        for (k, a, b) in [
-            (0, (u.0, v.0), (u.0, v.1)),
-            (1, (u.1, v.0), (u.1, v.1)),
-            (2, (u.0, v.0), (u.1, v.0)),
-            (3, (u.0, v.1), (u.1, v.1)),
-        ] {
-            let p = at(a.0, a.1);
-            let all = (0..=8).all(|i| {
-                let s = f64::from(i) / 8.0;
-                at(a.0 + (b.0 - a.0) * s, a.1 + (b.1 - a.1) * s).distance(p) <= fine
-            });
-            if all {
-                found.push((k, p));
-            }
-        }
+        let tol = Tolerance {
+            linear: t,
+            angular: 1e-9,
+        };
+        let (found, work) = craft3d_topo::folds_examined(body, &tol, cap);
+        stats.searches += work.faces;
+        stats.pairs += work.pairs;
+        stats.most_pairs = stats.most_pairs.max(work.most_pairs);
+        stats.capped += work.spent;
+        stats.in_in += work.in_in;
+        stats.near += work.near;
+        stats.not_told += work.not_told;
+        stats.out += work.out;
+        stats.least_in_in = stats.least_in_in.min(work.least_in_in);
+        stats.least_doubtful = stats.least_doubtful.min(work.least_doubtful);
         found
-    }
-
-    /// A place to search about, and the span it was found in.
-    #[derive(Clone, Copy)]
-    struct Suspect {
-        uv: (f64, f64),
-        span: ((f64, f64), (f64, f64)),
-        no_normal: bool,
-    }
-
-    fn face_folds(body: &Body, face: &Face, t: f64, cap: u64, stats: &mut Stats) -> Found {
-        let surface = &face.surface;
-        let outward = if face.reversed { -1.0 } else { 1.0 };
-        let mut out: Found = Vec::new();
-        let spans = match regular_by_span(surface, 0.5 * t * outward, MOST_SPANS) {
-            Ok(spans) => spans,
-            Err(_) => {
-                let why = "its surface has more spans than the rule asks, or none";
-                let ((u0, u1), (v0, v1)) = surface.domain();
-                out.push((
-                    surface.eval(0.5 * (u0 + u1), 0.5 * (v0 + v1)),
-                    FoldKind::NotProven { why },
-                ));
-                return out;
-            }
-        };
-        // Tip balls: the face's vertices and its surface's poles.
-        let mut tips: Vec<(Vec3, f64)> = Vec::new();
-        for id in &face.loops {
-            let Some(lp) = body.loop_(*id) else {
-                continue;
-            };
-            for coedge in &lp.coedges {
-                let Some(edge) = body.edge(coedge.edge) else {
-                    continue;
-                };
-                for v in [edge.start, edge.end] {
-                    if let Some(vertex) = body.vertex(v) {
-                        tips.push((vertex.point, TIP * body.vertex_tolerance_at(v, t)));
-                    }
-                }
-            }
-        }
-        let mut suspects: Vec<Suspect> = Vec::new();
-        let mut too_high: Vec<(f64, f64)> = Vec::new();
-        for span in &spans {
-            let middle = (0.5 * (span.u.0 + span.u.1), 0.5 * (span.v.0 + span.v.1));
-            let boxed = (span.u, span.v);
-            match &span.regularity {
-                SpanRegularity::Proven => {}
-                SpanRegularity::Pole { points } => {
-                    tips.extend(points.iter().map(|p| (*p, TIP * t)));
-                }
-                SpanRegularity::Folds { at, .. } | SpanRegularity::Unproven { at } => {
-                    suspects.push(Suspect {
-                        uv: *at,
-                        span: boxed,
-                        no_normal: false,
-                    });
-                }
-                SpanRegularity::NoNormal { at } => suspects.push(Suspect {
-                    uv: *at,
-                    span: boxed,
-                    no_normal: true,
-                }),
-                SpanRegularity::TooHigh => too_high.push(middle),
-            }
-        }
-        creases(surface, outward, &spans, &mut suspects);
-        let in_tip = |p: Vec3| tips.iter().any(|(q, r)| q.distance(p) <= *r);
-        for uv in too_high {
-            let p = surface.eval(uv.0, uv.1);
-            if !in_tip(p) {
-                out.push((
-                    p,
-                    FoldKind::NotProven {
-                        why: "a span of its surface is of degrees too high for the proof",
-                    },
-                ));
-            }
-        }
-        if suspects.is_empty() {
-            return out;
-        }
-        let chart = walk(body, face);
-        let mut searched: Vec<Vec3> = Vec::new();
-        let mut spent = false;
-        for suspect in &suspects {
-            let p = surface.eval(suspect.uv.0, suspect.uv.1);
-            // Where to search: the suspect's place, unless a tip ball holds it,
-            // and its span's least concave radius (which keeps out of the tip
-            // balls), each not within two tolerances of a place searched.
-            let mut starts: Vec<((f64, f64), Vec3)> = Vec::new();
-            if !in_tip(p) {
-                starts.push((suspect.uv, p));
-            }
-            if let Some(uv) = least_concave(surface, outward, suspect.span, &tips, t) {
-                starts.push((uv, surface.eval(uv.0, uv.1)));
-            }
-            starts.retain(|(_, q)| !searched.iter().any(|s| s.distance(*q) <= 2.0 * t));
-            let Some(&(_, first)) = starts.first() else {
-                continue;
-            };
-            if searched.len() >= MOST_SEARCHES {
-                spent = true;
-                break;
-            }
-            searched.extend(starts.iter().map(|(_, q)| *q));
-            stats.searches += 1;
-            if suspect.no_normal && !in_tip(p) {
-                let places: Vec<((f64, f64), Vec3)> = no_normal(surface, suspect.uv, suspect.span)
-                    .into_iter()
-                    .filter(|(_, q)| !in_tip(*q))
-                    .collect();
-                if let Some(&(_, q)) = places.first() {
-                    match places.iter().find(|(uv, _)| held(&chart, *uv) == Held::In) {
-                        Some(&(_, at)) => out.push((at, FoldKind::NoNormal)),
-                        None => out.push((
-                            q,
-                            FoldKind::NotProven {
-                                why: "its surface has no normal at a place not told in or out of the face",
-                            },
-                        )),
-                    }
-                    continue;
-                }
-            }
-            let mut shown: Option<(Vec3, f64)> = None;
-            let mut doubtful = false;
-            for (start, _) in starts {
-                let found = layers(surface, outward, start, t, &tips, &chart, cap, stats);
-                if let Some((at, gap)) = found.shown
-                    && shown.is_none_or(|s| gap < s.1)
-                {
-                    shown = Some((at, gap));
-                }
-                doubtful |= found.doubtful;
-            }
-            match shown {
-                Some((at, gap)) => out.push((at, FoldKind::Layers { gap })),
-                None if doubtful => out.push((
-                    first,
-                    FoldKind::NotProven {
-                        why: "two of its layers come within the tolerance of each other near an edge, or where its loops cannot be followed",
-                    },
-                )),
-                None => {}
-            }
-        }
-        if spent && let Some(p) = suspects.last().map(|s| surface.eval(s.uv.0, s.uv.1)) {
-            out.push((
-                p,
-                FoldKind::NotProven {
-                    why: "the search ran out of its work on this face",
-                },
-            ));
-        }
-        out
-    }
-
-    /// On a surface of degree one across: the places on its knot lines where
-    /// the outward normal turns by more than a right angle.
-    fn creases(surface: &Surface, outward: f64, spans: &[SpanVerdict], out: &mut Vec<Suspect>) {
-        let (pu, pv) = match surface {
-            Surface::Nurbs(n) => n.degrees(),
-            Surface::Bezier(_) => return,
-            _ => return,
-        };
-        if pu != 1 && pv != 1 {
-            return;
-        }
-        let ((u0, u1), (v0, v1)) = surface.domain();
-        let normal = |u: f64, v: f64| {
-            let (_, a, b) = surface.derivatives(u, v);
-            a.cross(b).normalized().map(|n| n * outward)
-        };
-        let mut lines_u: Vec<f64> = spans.iter().map(|s| s.u.0).filter(|u| *u > u0).collect();
-        lines_u.sort_by(f64::total_cmp);
-        lines_u.dedup();
-        let mut lines_v: Vec<f64> = spans.iter().map(|s| s.v.0).filter(|v| *v > v0).collect();
-        lines_v.sort_by(f64::total_cmp);
-        lines_v.dedup();
-        let (eu, ev) = (1e-7 * (u1 - u0), 1e-7 * (v1 - v0));
-        let place = |uv: (f64, f64), span: ((f64, f64), (f64, f64))| Suspect {
-            uv,
-            span,
-            no_normal: false,
-        };
-        if pu == 1 {
-            for &u in &lines_u {
-                for i in 0..=64 {
-                    let v = v0 + (v1 - v0) * f64::from(i) / 64.0;
-                    if let (Some(a), Some(b)) = (normal(u - eu, v), normal(u + eu, v))
-                        && a.dot(b) < 0.0
-                    {
-                        out.push(place((u, v), ((u, u), (v, v))));
-                    }
-                }
-            }
-        }
-        if pv == 1 {
-            for &v in &lines_v {
-                for i in 0..=64 {
-                    let u = u0 + (u1 - u0) * f64::from(i) / 64.0;
-                    if let (Some(a), Some(b)) = (normal(u, v - ev), normal(u, v + ev))
-                        && a.dot(b) < 0.0
-                    {
-                        out.push(place((u, v), ((u, u), (v, v))));
-                    }
-                }
-            }
-        }
-    }
-
-    /// The least concave radius over a span, away from the tips: a grid of
-    /// 24 × 24 over the span, then four rounds of a finer one about the best
-    /// place; where it is below `t`.
-    fn least_concave(
-        surface: &Surface,
-        outward: f64,
-        span: ((f64, f64), (f64, f64)),
-        tips: &[(Vec3, f64)],
-        t: f64,
-    ) -> Option<(f64, f64)> {
-        let ((u0, u1), (v0, v1)) = span;
-        if !(u1 > u0 && v1 > v0) {
-            return None;
-        }
-        let concave = |u: f64, v: f64| -> Option<f64> {
-            let (k, h) = craft3d_geom::curvature::curvatures(surface, u, v)?;
-            let root = (h * h - k).max(0.0).sqrt();
-            let towards = (outward * (h + root)).max(outward * (h - root));
-            Some(if towards > 0.0 {
-                1.0 / towards
-            } else {
-                f64::INFINITY
-            })
-        };
-        let mut best: Option<(f64, (f64, f64))> = None;
-        let (mut cu, mut cv) = (0.5 * (u0 + u1), 0.5 * (v0 + v1));
-        let (mut hu, mut hv) = (0.5 * (u1 - u0), 0.5 * (v1 - v0));
-        for _ in 0..5 {
-            let n = 24_u32;
-            for i in 0..=n {
-                for j in 0..=n {
-                    let u = (cu + hu * (2.0 * f64::from(i) / f64::from(n) - 1.0))
-                        .max(u0)
-                        .min(u1);
-                    let v = (cv + hv * (2.0 * f64::from(j) / f64::from(n) - 1.0))
-                        .max(v0)
-                        .min(v1);
-                    let Some(r) = concave(u, v) else {
-                        continue;
-                    };
-                    if best.is_some_and(|b| !(r < b.0)) {
-                        continue;
-                    }
-                    let p = surface.eval(u, v);
-                    if tips.iter().any(|(q, radius)| q.distance(p) <= *radius) {
-                        continue;
-                    }
-                    best = Some((r, (u, v)));
-                }
-            }
-            if let Some((_, (u, v))) = best {
-                cu = u;
-                cv = v;
-            }
-            hu /= 6.0;
-            hv /= 6.0;
-        }
-        best.filter(|b| b.0 < t).map(|b| b.1)
-    }
-
-    /// A point of the span near `start` where the surface has no normal: a
-    /// pattern search on `|S_u × S_v|` (eight directions, the step halved
-    /// when none is better), shown where it is below 1e-12 of the span's own
-    /// at its middle.
-    fn no_normal(
-        surface: &Surface,
-        start: (f64, f64),
-        span: ((f64, f64), (f64, f64)),
-    ) -> Vec<((f64, f64), Vec3)> {
-        let ((u0, u1), (v0, v1)) = span;
-        let size = |u: f64, v: f64| {
-            let (_, a, b) = surface.derivatives(u, v);
-            (a.cross(b).length(), a.length() * b.length())
-        };
-        let (_, reference) = size(0.5 * (u0 + u1), 0.5 * (v0 + v1));
-        if !(reference > 0.0 && reference.is_finite()) {
-            return Vec::new();
-        }
-        let mut at = (start.0.max(u0).min(u1), start.1.max(v0).min(v1));
-        let mut value = size(at.0, at.1).0;
-        let (mut su, mut sv) = (0.25 * (u1 - u0), 0.25 * (v1 - v0));
-        for _ in 0..400 {
-            if !(value > 1e-12 * reference) {
-                break;
-            }
-            let mut moved = false;
-            for (du, dv) in [
-                (1.0, 0.0),
-                (-1.0, 0.0),
-                (0.0, 1.0),
-                (0.0, -1.0),
-                (1.0, 1.0),
-                (1.0, -1.0),
-                (-1.0, 1.0),
-                (-1.0, -1.0),
-            ] {
-                let next = (
-                    (at.0 + du * su).max(u0).min(u1),
-                    (at.1 + dv * sv).max(v0).min(v1),
-                );
-                let there = size(next.0, next.1).0;
-                if there < value {
-                    at = next;
-                    value = there;
-                    moved = true;
-                }
-            }
-            if !moved {
-                su *= 0.5;
-                sv *= 0.5;
-                if su <= 1e-16 * (u1 - u0).abs() && sv <= 1e-16 * (v1 - v0).abs() {
-                    break;
-                }
-            }
-        }
-        // Where a whole row has no normal (a loft through its axis) the
-        // search may run along it to the face's edge: the row's place across
-        // from the start is tried too.
-        if !(value <= 1e-12 * reference) {
-            return Vec::new();
-        }
-        [
-            at,
-            (start.0.max(u0).min(u1), at.1),
-            (at.0, start.1.max(v0).min(v1)),
-        ]
-        .into_iter()
-        .filter(|c| size(c.0, c.1).0 <= 1e-12 * reference)
-        .map(|c| (c, surface.eval(c.0, c.1)))
-        .collect()
-    }
-
-    // ---------------------------------------------------------------------
-    // In the face.
-
-    /// The face's loops in its surface's parameters.
-    struct Chart {
-        rings: Vec<Vec<(f64, f64)>>,
-        /// Per ring, per chord: how far it strays from the edge's feet at its
-        /// middle.
-        sags: Vec<Vec<f64>>,
-        followed: bool,
-    }
-
-    fn walk(body: &Body, face: &Face) -> Chart {
-        let surface = &face.surface;
-        let ((u0, u1), (v0, v1)) = surface.domain();
-        let poles = collapsed(surface, (u0, u1), (v0, v1));
-        let border = |k: usize| match k {
-            0 => u0,
-            1 => u1,
-            2 => v0,
-            _ => v1,
-        };
-        let size = surface
-            .eval(u0, v0)
-            .distance(surface.eval(u1, v1))
-            .max(surface.eval(u0, v1).distance(surface.eval(u1, v0)));
-        let at_pole = |p: Vec3| {
-            poles
-                .iter()
-                .find(|(_, q)| q.distance(p) <= 1e-9 * size.max(f64::MIN_POSITIVE))
-                .map(|(k, _)| *k)
-        };
-        let mut out = Chart {
-            rings: Vec::new(),
-            sags: Vec::new(),
-            followed: true,
-        };
-        let steps = f64::from(u32::try_from(PER_EDGE).unwrap_or(1024));
-        for id in &face.loops {
-            let Some(lp) = body.loop_(*id) else {
-                out.followed = false;
-                return out;
-            };
-            let mut ring: Vec<(f64, f64)> = Vec::new();
-            let mut sags: Vec<f64> = Vec::new();
-            for coedge in &lp.coedges {
-                let Some(edge) = body.edge(coedge.edge) else {
-                    out.followed = false;
-                    return out;
-                };
-                let (t0, t1) = edge.range;
-                let along = |i: f64| {
-                    let s = i / steps;
-                    let s = if coedge.reversed { 1.0 - s } else { s };
-                    edge.curve.eval(t0 + (t1 - t0) * s)
-                };
-                let points: Vec<Vec3> = (0..=PER_EDGE).map(|i| along(i as f64)).collect();
-                let mut uvs: Vec<Option<(f64, f64)>> = Vec::with_capacity(points.len());
-                for p in &points {
-                    let before = uvs
-                        .iter()
-                        .rev()
-                        .find_map(|x| *x)
-                        .or_else(|| ring.last().copied());
-                    uvs.push(match before {
-                        Some(start) => surface
-                            .project_from(*p, start)
-                            .ok()
-                            .or_else(|| surface.project(*p).ok()),
-                        None => surface.project(*p).ok(),
-                    });
-                }
-                // A point at a pole: the border's parameter, its
-                // neighbour's other one.
-                for i in 0..points.len() {
-                    let Some(k) = points.get(i).and_then(|p| at_pole(*p)) else {
-                        continue;
-                    };
-                    let neighbour = (1..points.len()).find_map(|d| {
-                        [i.checked_sub(d), i.checked_add(d)]
-                            .into_iter()
-                            .flatten()
-                            .find(|&j| points.get(j).is_some_and(|q| at_pole(*q).is_none()))
-                            .and_then(|j| uvs.get(j).copied().flatten())
-                    });
-                    if let (Some((nu, nv)), Some(slot)) = (neighbour, uvs.get_mut(i)) {
-                        *slot = Some(if k < 2 {
-                            (border(k), nv)
-                        } else {
-                            (nu, border(k))
-                        });
-                    }
-                }
-                let Some(firm) = uvs.into_iter().collect::<Option<Vec<(f64, f64)>>>() else {
-                    out.followed = false;
-                    return out;
-                };
-                let mut own = vec![0.0_f64; firm.len()];
-                for i in 0..PER_EDGE {
-                    let middle = along(i as f64 + 0.5);
-                    if at_pole(middle).is_some() {
-                        continue;
-                    }
-                    let (Some(a), Some(b)) = (firm.get(i), firm.get(i + 1)) else {
-                        continue;
-                    };
-                    if let (Ok(m), Some(slot)) = (surface.project_from(middle, *a), own.get_mut(i))
-                    {
-                        let chord = (0.5 * (a.0 + b.0), 0.5 * (a.1 + b.1));
-                        let off = ((m.0 - chord.0) * (m.0 - chord.0)
-                            + (m.1 - chord.1) * (m.1 - chord.1))
-                            .sqrt();
-                        if off.is_finite() {
-                            *slot = off;
-                        }
-                    }
-                }
-                sags.extend(own);
-                ring.extend(firm);
-            }
-            out.rings.push(ring);
-            out.sags.push(sags);
-        }
-        out
-    }
-
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    enum Held {
-        In,
-        Near,
-        Out,
-        NotTold,
-    }
-
-    fn winding(p: (f64, f64), ring: &[(f64, f64)]) -> i64 {
-        let mut w = 0_i64;
-        let n = ring.len();
-        for i in 0..n {
-            let (Some(a), Some(b)) = (ring.get(i), ring.get((i + 1) % n)) else {
-                continue;
-            };
-            let side = (b.0 - a.0) * (p.1 - a.1) - (p.0 - a.0) * (b.1 - a.1);
-            if a.1 <= p.1 {
-                if b.1 > p.1 && side > 0.0 {
-                    w += 1;
-                }
-            } else if b.1 <= p.1 && side < 0.0 {
-                w -= 1;
-            }
-        }
-        w
-    }
-
-    fn to_chord(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
-        let d = (b.0 - a.0, b.1 - a.1);
-        let l = d.0 * d.0 + d.1 * d.1;
-        let s = if l > 0.0 {
-            (((p.0 - a.0) * d.0 + (p.1 - a.1) * d.1) / l).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let (x, y) = (p.0 - a.0 - d.0 * s, p.1 - a.1 - d.1 * s);
-        (x * x + y * y).sqrt()
-    }
-
-    fn held(chart: &Chart, uv: (f64, f64)) -> Held {
-        if !chart.followed {
-            return Held::NotTold;
-        }
-        for (ring, sags) in chart.rings.iter().zip(&chart.sags) {
-            let n = ring.len();
-            for i in 0..n {
-                let (Some(a), Some(b)) = (ring.get(i), ring.get((i + 1) % n)) else {
-                    continue;
-                };
-                let room = 2.0 * sags.get(i).copied().unwrap_or(0.0) + 1e-12;
-                if to_chord(uv, *a, *b) <= room {
-                    return Held::Near;
-                }
-            }
-        }
-        let total: i64 = chart.rings.iter().map(|r| winding(uv, r)).sum();
-        match total {
-            0 => Held::Out,
-            1 | -1 => Held::In,
-            _ => Held::NotTold,
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // Two layers through air.
-
-    struct Layers {
-        /// The least gap of two layers shown, and its middle.
-        shown: Option<(Vec3, f64)>,
-        /// Pairs near an edge, not told, or past the work.
-        doubtful: bool,
-    }
-
-    type Sample = ((f64, f64), Vec3, Option<Vec3>);
-
-    fn layers(
-        surface: &Surface,
-        outward: f64,
-        at: (f64, f64),
-        t: f64,
-        tips: &[(Vec3, f64)],
-        chart: &Chart,
-        cap: u64,
-        stats: &mut Stats,
-    ) -> Layers {
-        let ((u0, u1), (v0, v1)) = surface.domain();
-        let p0 = surface.eval(at.0, at.1);
-        let reach = REACH * t;
-        let grid = |hu: f64, hv: f64, n: usize| -> Vec<Sample> {
-            let mut found = Vec::with_capacity((n + 1) * (n + 1));
-            let steps = n as f64;
-            for i in 0..=n {
-                for j in 0..=n {
-                    let u = (at.0 + hu * (2.0 * i as f64 / steps - 1.0)).max(u0).min(u1);
-                    let v = (at.1 + hv * (2.0 * j as f64 / steps - 1.0)).max(v0).min(v1);
-                    let (p, a, b) = surface.derivatives(u, v);
-                    found.push(((u, v), p, a.cross(b).normalized().map(|m| m * outward)));
-                }
-            }
-            found
-        };
-        let far = |hu: f64, hv: f64| -> f64 {
-            grid(hu, hv, 6)
-                .iter()
-                .map(|(_, p, _)| p.distance(p0))
-                .fold(0.0_f64, f64::max)
-        };
-        let (mut hu, mut hv) = (0.25 * (u1 - u0), 0.25 * (v1 - v0));
-        for _ in 0..80 {
-            let (along_u, along_v) = (far(hu, 0.0), far(0.0, hv));
-            if along_u <= reach && along_v <= reach {
-                break;
-            }
-            if along_u > reach {
-                hu *= 0.5;
-            }
-            if along_v > reach {
-                hv *= 0.5;
-            }
-        }
-        let all = grid(hu, hv, GRID);
-        let mut out = Layers {
-            shown: None,
-            doubtful: false,
-        };
-        // The points near the place, outside the tip balls, with a normal,
-        // each told in or out of the face once.
-        let mut told: BTreeMap<usize, Held> = BTreeMap::new();
-        let mut cells: BTreeMap<(i64, i64, i64), Vec<usize>> = BTreeMap::new();
-        let cell = |p: Vec3| {
-            (
-                (p.x / t).floor() as i64,
-                (p.y / t).floor() as i64,
-                (p.z / t).floor() as i64,
-            )
-        };
-        for (k, (uv, p, m)) in all.iter().enumerate() {
-            if m.is_none()
-                || p.distance(p0) > reach
-                || tips.iter().any(|(q, r)| q.distance(*p) <= *r)
-            {
-                continue;
-            }
-            told.insert(k, held(chart, *uv));
-            cells.entry(cell(*p)).or_default().push(k);
-        }
-        stats.boxes.push((hu, hv, told.len()));
-        let room = 1e-12 * p0.length().max(t);
-        let mut pairs = 0_u64;
-        for (&k, &held_p) in &told {
-            let Some(&(_, p, Some(m))) = all.get(k) else {
-                continue;
-            };
-            let c = cell(p);
-            for dx in -1..=1_i64 {
-                for dy in -1..=1_i64 {
-                    for dz in -1..=1_i64 {
-                        let Some(list) = cells.get(&(c.0 + dx, c.1 + dy, c.2 + dz)) else {
-                            continue;
-                        };
-                        for &l in list {
-                            if l <= k {
-                                continue;
-                            }
-                            pairs += 1;
-                            if pairs > cap {
-                                stats.capped += 1;
-                                stats.pairs += pairs;
-                                stats.most_pairs = stats.most_pairs.max(pairs);
-                                out.doubtful = true;
-                                return out;
-                            }
-                            let Some(&(_, q, Some(other))) = all.get(l) else {
-                                continue;
-                            };
-                            let d = q - p;
-                            let gap = d.length();
-                            if !(gap < t - room) || !(m.dot(other) < OPPOSITE) {
-                                continue;
-                            }
-                            if !(d.dot(m) > room && -d.dot(other) > room) {
-                                continue;
-                            }
-                            let held_q = told.get(&l).copied().unwrap_or(Held::NotTold);
-                            if held_p == Held::In && held_q == Held::In {
-                                stats.in_in += 1;
-                                stats.least_in_in = stats.least_in_in.min(gap);
-                                if out.shown.is_none_or(|s| gap < s.1) {
-                                    out.shown = Some(((p + q) * 0.5, gap));
-                                }
-                            } else if held_p != Held::Out && held_q != Held::Out {
-                                if held_p == Held::NotTold || held_q == Held::NotTold {
-                                    stats.not_told += 1;
-                                } else {
-                                    stats.near += 1;
-                                }
-                                stats.least_doubtful = stats.least_doubtful.min(gap);
-                                out.doubtful = true;
-                            } else {
-                                stats.out += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        stats.pairs += pairs;
-        stats.most_pairs = stats.most_pairs.max(pairs);
-        out
+            .iter()
+            .map(|f| (f.face.0, f.at, f.kind.clone()))
+            .collect()
     }
 }
 
@@ -1279,7 +567,12 @@ fn review_slots_at_three_scales_and_two_tolerances() {
             for (what, r, fold) in [
                 ("0.5 t", 0.25 * t, true),
                 ("0.9 t", 0.45 * t, true),
-                ("1.1 t", 0.55 * t, false),
+                // By the definition a fold: drawn with control points on a
+                // circle of 0.55 t, its walls narrow at the root to within
+                // t (0.998 t at 1e-2 of the size, 0.981 t at 1e-6), facing
+                // each other through air (taken in by fold-check, 2026-11-19; it was
+                // `false`, "valid").
+                ("1.1 t", 0.55 * t, true),
                 ("2 t", t, false),
             ] {
                 let body = facing(sheet(&slot(r, l), l, (0.0, 1.0)), 0.05, Vec3::X);
@@ -1649,7 +942,8 @@ fn review_slots_without_the_pair_cap() {
     for (what, r, fold) in [
         ("slot 0.5 t", 0.25 * t, true),
         ("slot 0.9 t", 0.45 * t, true),
-        ("slot 1.1 t", 0.55 * t, false),
+        // By the definition a fold (see the test above).
+        ("slot 1.1 t", 0.55 * t, true),
         ("slot 2 t", t, false),
     ] {
         let body = facing(sheet(&slot(r, 10.0), 10.0, (0.0, 1.0)), 0.05, Vec3::X);

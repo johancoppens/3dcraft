@@ -94,25 +94,31 @@ fn loft_through_its_axis(k: f64) -> Body {
 #[test]
 fn the_rule_shows_the_folds_and_check_refuses_none_of_them_yet() {
     const { assert!(!craft3d_topo::FOLDS_REFUSED) };
-    // Six of the seven show two layers facing each other through air; on
-    // the seventh (radius 4 over 8, back 1) every pair the search finds
-    // lies near the rail, which turns back there too, so the rule says it
-    // could not settle it ("not proven", the quiet line), never "sound".
-    let mut shown_on = 0;
+    // Each of the seven shows a fold, one line for the face: two layers
+    // facing each other through air at the least gap, or (fade 5/10/1,
+    // whose face also has such layers) a point without a normal, which
+    // the rule asks first and which settles the face.
     for name in SEVEN {
         let body = read_step(&fixtures().join(format!("fades/{name}.step")), 0.02).unwrap();
+        forget_folds();
+        let before = craft3d_topo::fold_work();
         let found = folds(&body, &tolerance(0.02));
-        println!("FOLDRULE {name}: {found:?}");
-        assert!(!found.is_empty(), "{name}: nothing said");
-        if found
-            .iter()
-            .any(|f| matches!(f.kind, FoldKind::Layers { gap } if gap < 0.02))
-        {
-            shown_on += 1;
-        }
+        let after = craft3d_topo::fold_work();
+        println!(
+            "FOLDRULE {name}: {found:?} ({} pairs of pieces)",
+            after.1 - before.1
+        );
+        assert!(
+            found.iter().any(|f| match f.kind {
+                FoldKind::Layers { gap } => gap < 0.02,
+                FoldKind::NoNormal => true,
+                FoldKind::NotProven { .. } => false,
+            }),
+            "{name}: {found:?}"
+        );
+        assert_eq!(found.len(), 1, "{name}: one line a face");
         assert!(check(&body, &tolerance(0.02)).is_empty(), "{name}");
     }
-    assert!(shown_on >= 6, "{shown_on} of the seven shown");
     for times in [3.0, 100.0, 10_000.0] {
         let body = roof_block(times * 6.0, 1.0, true, 3);
         let found = folds(&body, &tolerance(1e-3));
@@ -240,7 +246,7 @@ fn the_rule_passes_the_bodies_that_are_valid() {
             found.len(),
             shown(&found).len()
         );
-        assert!(shown(&found).is_empty(), "{name}: {found:?}");
+        assert!(found.is_empty(), "{name}: {found:?}");
     }
 }
 
