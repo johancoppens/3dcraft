@@ -50,6 +50,10 @@ pub use props::{PropRow, Props};
 /// The document and revision a read of the panel was for.
 pub(crate) type ViewKey = Option<(u64, u64)>;
 
+/// The card of what is selected a read was for: the document, its
+/// revision and the selection's serial.
+type CardKey = (u64, u64, u64);
+
 /// Most commands the panel keeps waiting for the session.
 const MAX_PENDING: usize = 64;
 /// Most errors kept at fields.
@@ -174,15 +178,15 @@ pub(crate) struct SideMemory {
     /// facts of the first thing, the relation of two (one at a time, as
     /// [`SideMemory::between`]), the wall; and what came of the first two,
     /// taken at the next sync (an answer for another card is dropped).
-    facts_asked: Option<((u64, u64, u64), u64)>,
-    facts_came: Option<((u64, u64, u64), Result<props::Facts, String>)>,
+    facts_asked: Option<(CardKey, u64)>,
+    facts_came: Option<(CardKey, Result<props::Facts, String>)>,
     /// The facts' job, while the host takes no more jobs for now.
-    facts_later: Option<((u64, u64, u64), Value)>,
-    between_asked: Option<((u64, u64, u64), u64)>,
-    between_came: Option<((u64, u64, u64), props::Away)>,
+    facts_later: Option<(CardKey, Value)>,
+    between_asked: Option<(CardKey, u64)>,
+    between_came: Option<(CardKey, props::Away)>,
     /// The wall's card and job, whether it is a body's, and the tolerance
     /// its answer is written to.
-    wall_asked: Option<((u64, u64, u64), u64, bool, f64)>,
+    wall_asked: Option<(CardKey, u64, bool, f64)>,
     /// Every job the card handed over whose answer has not come: an
     /// answer for an earlier card is the card's to drop, never the host's
     /// to report.
