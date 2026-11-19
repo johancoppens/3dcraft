@@ -1002,13 +1002,22 @@ fn an_example_cancelled_during_a_read_drops_it_and_names_it() {
 }
 
 impl Page {
+    /// The shell brought up to date as the page's `ui` does once the scene
+    /// to show is there (the card of what is selected asks there); while
+    /// it is not, the page draws the window as it was (`Shell::ui_away`),
+    /// and a sync would build the scene here.
+    fn sync(&mut self) {
+        if !self.host.away() {
+            self.host.shell.sync(&mut self.host.session);
+        }
+    }
+
     /// Frames until nothing waits, the shell brought up to date after
-    /// each as the page's `ui` does (the card of what is selected asks
-    /// there).
+    /// each as the page's `ui` does.
     fn settle_card(&mut self) {
         for _ in 0..50 {
             self.frame();
-            self.host.shell.sync(&mut self.host.session);
+            self.sync();
             let quality = self.host.shell.scene_quality();
             if self.scenes.busy().is_none()
                 && !self.host.session.commands_waiting()
@@ -1031,7 +1040,7 @@ impl Page {
         assert_eq!(done["deferred"], true, "{done}");
         for _ in 0..10 {
             self.frame();
-            self.host.shell.sync(&mut self.host.session);
+            self.sync();
             // The window has the new selection (the card of the one before
             // is still there until it has).
             let shown: Vec<Value> = self
@@ -1324,8 +1333,8 @@ fn the_cards_measures_a_worker_never_brings_are_not_measured_and_the_next_are() 
 }
 
 impl Page {
-    /// A frame of the page drawn, as `page.rs`'s `ui` draws it once the
-    /// scene is there: the shell over the session.
+    /// A frame of the page drawn, as `page.rs`'s `ui` draws it: the shell
+    /// over the session, or as it was while the scene is not there.
     fn draw(&mut self, ctx: &egui::Context, events: Vec<egui::Event>) {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -1336,8 +1345,15 @@ impl Page {
             events,
             ..Default::default()
         };
+        let away = self.host.away();
         let WebHost { session, shell, .. } = &mut self.host;
-        let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
+        let mut output = ctx.run_ui(input, |ui| {
+            if away {
+                shell.ui_away(ui);
+            } else {
+                shell.ui(ui, session);
+            }
+        });
         output.textures_delta.clear();
         self.clock += 16.0;
     }
