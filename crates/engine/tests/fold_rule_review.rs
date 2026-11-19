@@ -1029,7 +1029,10 @@ fn review_slots_without_the_pair_cap() {
 /// With `FOLDS_REFUSED` as built (off) this counts what fails; on the
 /// reviewer's branch with it on (never merged), what `check` and the
 /// regeneration of the repository's documents would refuse for a fold.
+/// With the switch off it asserts nothing and regenerates 118 documents
+/// (215 s of the Gate): run on demand, on a build with the switch on.
 #[test]
+#[ignore = "a census for a build with FOLDS_REFUSED on: run with --ignored --nocapture"]
 fn review_switch_census() {
     let on = craft3d_topo::FOLDS_REFUSED;
     let mut refused_fades = 0;
