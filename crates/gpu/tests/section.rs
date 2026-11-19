@@ -645,21 +645,22 @@ fn parts_in_a_row(scale: f64, origin: Vec3, apart: bool) -> (Mesh, Vec<u32>) {
     (mesh, firsts)
 }
 
-/// Whether a scene of [`parts_in_a_row`] stands its blocks apart: every
-/// see-through framing of it. With blocks that truly touch the renderers
-/// differ there, with classes and with every part of class 0 alike (Strix
-/// run 44423776124: `round0-x1-seethrough-highlight` 217 pixels on RADV and
-/// radeonsi, 222 on llvmpipe, the same at class 0; the viewport's
-/// `z0-seethrough-highlight` 88, 111 and 88 pixels over its tolerance, the
-/// same at class 0; run 44424100573, the others then: `round0-y1-…` 215, the
-/// viewport's `oblique-…` 234), because two faces that touch in one plane
-/// lie behind the see-through front and the renderers break that tie
-/// differently: a fault older than the classes (docs/design/rendering.md ›
-/// *A direction per part*, the open finding).
+/// Whether a scene of [`parts_in_a_row`] stands its blocks apart: the
+/// see-through framings with a highlight, where the two faces that touch in
+/// one plane behind the see-through front look different (a highlighted
+/// one against a plain one). With blocks that truly touch the renderers
+/// differ there, with classes and with every part of class 0 alike, and
+/// nowhere else (Strix run 44424783353, the reproducer below: every
+/// see-through framing of the row without a highlight 0 pixels; with one,
+/// `round0-x1-…` 217 pixels on RADV, `round1-oblique-…` 963 with classes
+/// and 962 at class 0, the viewport's `oblique-…` 234 and 234), because the
+/// renderers break the tie of those two faces differently: a fault older
+/// than the classes (docs/design/rendering.md › *A direction per part*, the
+/// open finding).
 /// [`the_see_through_tie_of_touching_parts_with_and_without_classes`]
 /// shows it on blocks that truly touch.
 fn stands_apart(name: &str) -> bool {
-    name.contains("seethrough")
+    name.contains("seethrough-highlight")
 }
 
 /// The scenes of [`parts_in_a_row`] with each part of the class of its

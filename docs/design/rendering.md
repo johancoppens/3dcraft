@@ -2377,9 +2377,11 @@ cut.**
   readback renderer 217 pixels apart on RADV and radeonsi, 222 on llvmpipe, in one box; the viewport 88, 111
   and 88 pixels over its tolerance; **the same with every part of class 0**, so it is not the classes'. The
   review of 2026-11-19 found the same on the published models' see-through cuts (up to 843 interior pixels on
-  the toggle clamp across y). Not mended here; the see-through framings of `hatch_classes_of_parts_…` and of
-  the viewport's comparison stand their blocks a fiftieth apart (`stands_apart`; the run 44424100573 found two
-  more of them apart by 215 and 234 pixels), and every opaque framing and the fade have blocks that touch. A mend would make the tie the same in both: the first face in the mesh's order
+  the toggle clamp across y). It needs the two faces to look different (a highlighted face against a plain
+  one): every see-through framing without a highlight agrees with blocks that touch (run 44424783353). Not
+  mended here; the see-through framings with a highlight of `hatch_classes_of_parts_…` and of the viewport's
+  comparison stand their blocks a fiftieth apart (`stands_apart`; up to 963 pixels with classes and 962 at
+  class 0 when they touch), and every other framing has blocks that touch. A mend would make the tie the same in both: the first face in the mesh's order
   behind the front, which the GPU's peel pass would have to keep by its own test where two depths are equal
   to rounding.
 - *Unchanged:* a mesh without classes, and every body of class 0, is drawn byte for byte as before (pinned by
