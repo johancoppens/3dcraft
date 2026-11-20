@@ -1034,14 +1034,59 @@ fn clip(
         if heres.contains(&Side::Out) {
             continue;
         }
+        // Where an edge of one body meets an edge of the other, the place
+        // is found twice: as the first edge's crossing of the other face's
+        // surface, and as the second's crossing of the first face's. Each
+        // edge is only within the tolerance of the curve it stands for,
+        // so where they run onto a surface at a shallow angle the two
+        // places may be further apart than points that are merged. Each
+        // is within the tolerance of both edges: it is one vertex.
+        let edge_meets_edge = |cut: Cut| {
+            move |q: Vec3, known: &Meeting| {
+                one_meeting(
+                    (a, b),
+                    (cut.point, (cut.a_edge, cut.b_edge)),
+                    (q, (known.a_edge, known.b_edge)),
+                    tol,
+                )
+            }
+        };
         let mut inside = [false, false];
         let mut keep = true;
-        for ((outline, inside), here) in [oa, ob].into_iter().zip(inside.iter_mut()).zip(heres) {
+        for (((solid, face, outline), inside), here) in [(a, fa, oa), (b, fb, ob)]
+            .into_iter()
+            .zip(inside.iter_mut())
+            .zip(heres)
+        {
             let side = |p: Vec3| outline.side(p, tol).map_err(|r| Stop::of(r).at(&named));
             if here == Side::Out {
                 keep = false;
                 break;
             }
+            // A stretch that touches the face's boundary without crossing
+            // it (it leaves the boundary tangentially, or ends on it) is
+            // within the tolerance of the boundary for a while, on the
+            // side it is on. Whether a stretch with no sample on the
+            // other side is on `towards` (inside or outside) all its
+            // length, at seven places: clear of the boundary on that
+            // side, within half the tolerance of it (which is on it: the
+            // distance at which points are one, and what a traced curve
+            // is within of the curve it stands for), or on that side by
+            // the sign of its offset from the nearest edge. Never a
+            // refusal of its own: what cannot be told is not so.
+            let all_along = |towards: Side| {
+                (1..8).all(|k| {
+                    let p = at(f64::from(k) / 8.0);
+                    match outline.side(p, tol) {
+                        Ok(found) if found == towards => true,
+                        Ok(Side::On) => {
+                            outline.within(p, 0.5 * tol)
+                                || outline.inside_by_sign(p, tol) == Some(towards == Side::In)
+                        }
+                        _ => false,
+                    }
+                })
+            };
             let quarters = [side(at(0.25))?, side(at(0.75))?];
             let mixed = quarters.iter().any(|&q| q != here);
             if quarters.contains(&Side::Out) || (mixed && meeting.tangent) {
@@ -1051,6 +1096,19 @@ fn clip(
                 // well past where it leaves it), it is left out. A
                 // crossing that leaves the face in that state is refused.
                 if meeting.tangent {
+                    keep = false;
+                    break;
+                }
+                // Between its cuts a stretch crosses no edge of the face,
+                // so one that is clear outside the face somewhere and
+                // inside it nowhere is outside it: it leaves the boundary
+                // without crossing it (a curve tangent to the boundary
+                // where the stretch begins, with a vertex of the other
+                // body a few tolerances further on), and is no part of
+                // the imprint, like a stretch that is outside at its
+                // middle. One that is inside the face somewhere crossed
+                // the boundary without a cut, and is refused.
+                if here == Side::On && !quarters.contains(&Side::In) && all_along(Side::Out) {
                     keep = false;
                     break;
                 }
@@ -1082,6 +1140,58 @@ fn clip(
                     }
                 }
                 *inside = true;
+            } else {
+                // Within the tolerance of the boundary at the middle and
+                // at both quarter points: along the boundary, when it
+                // ends on it. A stretch along the boundary is a piece of
+                // an edge of the face between two vertices of that edge;
+                // one that ends at a vertex clear of the boundary is not
+                // (it left the boundary on the way, without crossing it),
+                // and that end is a sample like the three: outside there
+                // is outside, as above; inside there is inside, held to
+                // the band as a stretch with a sample inside is. Where
+                // the surfaces only touch along the curve such a stretch
+                // is left out, as one with mixed samples is.
+                let end = |cut: &Cut| -> Option<Side> {
+                    // The vertex the end will be, and where it is.
+                    let (vertex, point) = match vertices.find_with(cut.point, edge_meets_edge(*cut))
+                    {
+                        Ok(Some(vertex)) => (Some(vertex), *vertices.points.get(vertex)?),
+                        Ok(None) => (None, cut.point),
+                        Err(_) => return None,
+                    };
+                    let clear = match outline.side(point, tol) {
+                        Ok(Side::On) | Err(_) => return None,
+                        Ok(clear) => clear,
+                    };
+                    // (A vertex of an edge of the face is on its boundary
+                    // wherever it was merged to.)
+                    let of_the_face = vertex.is_some_and(|vertex| {
+                        solid.edges_of(face).into_iter().any(|edge| {
+                            solid
+                                .ends(edge)
+                                .is_some_and(|(start, end)| start == vertex || end == vertex)
+                        })
+                    });
+                    (!of_the_face).then_some(clear)
+                };
+                let leaves = match (end(&from), end(&to)) {
+                    (Some(side), None) | (None, Some(side)) => Some(side),
+                    (Some(side), Some(other)) if side == other => Some(side),
+                    _ => None,
+                };
+                match leaves {
+                    Some(_) if meeting.tangent => {
+                        keep = false;
+                        break;
+                    }
+                    Some(Side::Out) if all_along(Side::Out) => {
+                        keep = false;
+                        break;
+                    }
+                    Some(Side::In) if all_along(Side::In) => *inside = true,
+                    _ => {}
+                }
             }
         }
         if !keep {
@@ -1129,23 +1239,6 @@ fn clip(
                 return Err(Stop::of(NEARLY_TOUCHING).at(&named));
             }
         }
-        // Where an edge of one body meets an edge of the other, the place
-        // is found twice: as the first edge's crossing of the other face's
-        // surface, and as the second's crossing of the first face's. Each
-        // edge is only within the tolerance of the curve it stands for,
-        // so where they run onto a surface at a shallow angle the two
-        // places may be further apart than points that are merged. Each
-        // is within the tolerance of both edges: it is one vertex.
-        let edge_meets_edge = |cut: Cut| {
-            move |q: Vec3, known: &Meeting| {
-                one_meeting(
-                    (a, b),
-                    (cut.point, (cut.a_edge, cut.b_edge)),
-                    (q, (known.a_edge, known.b_edge)),
-                    tol,
-                )
-            }
-        };
         let start = vertices
             .find_or_add_with(from.point, edge_meets_edge(from))
             .map_err(|s| s.at(&named))?;
