@@ -403,4 +403,6 @@ Off a plane (61,001 of the faces: on a cylinder, a cone, a sphere, a torus, a sp
 
 *Not the boolean's, and not that change's:* the first of the three is refused on the commit before that change as well, where the test stopped at it.
 
+*Thinner lenses, at 1 as well* (the review of that change, 2026-11-20; through commands on the released 0.2.1 and on a build of the change, alike). The same cylinder 2.5 and 6 tolerances over the edge and sunk 50, at a millionth of the unit, lines, the world's axes, the middle of the edge, the rim's vertex at four places: of the eight intersections a scale, `document.check {deep}` says of 6 at 1, of 7 at 1e-3 and of 5 at 1e6 that they cannot be measured, in the same words (*"a boundary integral that does not settle"*, face 2), and none of those turned by half a radian. So it is the thin lens that is not measured, at every scale; which of them differs with the scale, and with the lens.
+
 **Owed:** the trace (no build was at hand: which face is face 2, and what in the integral's settling reads a size), and a measure of such a lens at every scale. The test holds the three places as a list per scale, so one that joins it or leaves it fails.
