@@ -303,8 +303,16 @@ fn ui_get_reports_the_state_the_scene_and_the_tree() {
                "held": null,
                // Added with an instance whose part has a failed feature
                // (2026-11-10, A-023): null for a feature.
-               "featureFailed": null})
+               "featureFailed": null,
+               // Added with what is wrong in a subassembly itself shown
+               // under its row (2026-11-20): empty for a feature.
+               "inside": [],
+               // Added with the dot after a row a failure is on or under
+               // (2026-11-20, round two): false for a feature.
+               "marked": false})
     );
+    // A part has no assembly's verdict.
+    assert_eq!(got["assembly"], Value::Null);
     assert_eq!(features[2]["state"], "failed");
     assert_eq!(
         features[2]["zoomable"], false,

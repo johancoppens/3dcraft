@@ -306,7 +306,9 @@ An agent gets the same report from the command `session.report`, so you can also
 wrong; give me the bug report"*. When the agent works in the window, the report names the graphics card
 too.
 
-**Where to report.** Open an issue in 3DCraft's public repository:
+**Where to report.** A question (does it read my file, how do I connect my agent, how was it built) goes to
+[Discussions, in Q&A](https://github.com/johancoppens/3dcraft/discussions/categories/q-a); a problem, a
+refusal included, stays an issue. Open an issue in 3DCraft's public repository:
 [github.com/johancoppens/3dcraft/issues](https://github.com/johancoppens/3dcraft/issues), *Report a
 problem*. Write down:
 

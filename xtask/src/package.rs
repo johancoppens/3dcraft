@@ -10,7 +10,12 @@
 //! - macOS: `3DCraft.app` in a `.dmg`;
 //! - Windows: a zip and an `.msi`;
 //! - everywhere: `--formats web`, the browser build as a static site in
-//!   `3dcraft-web-<version>.zip` with `SHA256SUMS.txt` (`crate::web`).
+//!   `3dcraft-web-<version>.zip` with `SHA256SUMS.txt` (`crate::web`);
+//! - everywhere: `--formats mcpb`, the MCP bundle `3dcraft-<version>.mcpb`
+//!   with the `craft3d-cli` of Linux, macOS and Windows given by
+//!   `--cli-linux`, `--cli-macos` and `--cli-windows` (built by the Release
+//!   workflow's package jobs, not here), and `server.json`, its entry for
+//!   the official MCP registry (`crate::mcpb`).
 //!
 //! Each package carries `LICENSE`, `THIRD-PARTY-NOTICES.txt` (the
 //! licences of the crates the programs are built from, made here from
@@ -91,8 +96,8 @@ fn desktop_files() -> Vec<(String, String)> {
 /// The account and repository on GitHub whose releases carry the
 /// packages: the public repository, the workspace's `repository` (a test
 /// holds them to it). The AppImage's update information names them.
-const RELEASES_OWNER: &str = "johancoppens";
-const RELEASES_REPOSITORY: &str = "3dcraft";
+pub(crate) const RELEASES_OWNER: &str = "johancoppens";
+pub(crate) const RELEASES_REPOSITORY: &str = "3dcraft";
 
 /// The AppImage's file name for `version` and `arch`.
 fn appimage_name(version: &str, arch: &str) -> String {
@@ -248,6 +253,9 @@ struct Options {
     appimage_runtime: Option<PathBuf>,
     wasm_bindgen: Option<PathBuf>,
     wasm_opt: Option<PathBuf>,
+    /// The `craft3d-cli` of Linux, macOS and Windows for `--formats mcpb`,
+    /// in the order of `crate::mcpb::PLATFORMS`.
+    cli: [Option<PathBuf>; 3],
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -281,12 +289,20 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--wasm-bindgen" => o.wasm_bindgen = Some(PathBuf::from(value()?)),
             "--wasm-opt" => o.wasm_opt = Some(PathBuf::from(value()?)),
             other => {
-                return Err(format!(
-                    "package: unknown argument `{other}`; usage: cargo xtask package \
-                     [--target TRIPLE] [--out DIR] [--formats LIST] [-j N] [--no-build] \
-                     [--appimagetool PATH] [--appimage-runtime PATH] \
-                     [--wasm-bindgen PATH] [--wasm-opt PATH]"
-                ));
+                let platform = crate::mcpb::PLATFORMS
+                    .iter()
+                    .position(|p| p.option == other);
+                let slot = platform.and_then(|at| o.cli.get_mut(at));
+                let Some(slot) = slot else {
+                    return Err(format!(
+                        "package: unknown argument `{other}`; usage: cargo xtask package \
+                         [--target TRIPLE] [--out DIR] [--formats LIST] [-j N] [--no-build] \
+                         [--appimagetool PATH] [--appimage-runtime PATH] \
+                         [--wasm-bindgen PATH] [--wasm-opt PATH] \
+                         [--cli-linux PATH --cli-macos PATH --cli-windows PATH]"
+                    ));
+                };
+                *slot = Some(PathBuf::from(value()?));
             }
         }
     }
@@ -305,15 +321,22 @@ fn default_formats() -> Vec<String> {
     names.iter().map(|s| (*s).to_string()).collect()
 }
 
-/// The formats made on this platform: its own, and the browser build.
+/// The formats made on this platform: its own, the browser build, and the
+/// MCP bundle of programs given.
 fn known_formats() -> &'static [&'static str] {
     if cfg!(target_os = "macos") {
-        &["app", "dmg", "web"]
+        &["app", "dmg", "web", "mcpb"]
     } else if cfg!(windows) {
-        &["zip", "msi", "web"]
+        &["zip", "msi", "web", "mcpb"]
     } else {
-        &["tar", "appimage", "web"]
+        &["tar", "appimage", "web", "mcpb"]
     }
+}
+
+/// Whether `format` packs the programs this run builds: not the browser
+/// build (built apart) nor the MCP bundle (programs given).
+fn builds_programs(format: &str) -> bool {
+    !matches!(format, "web" | "mcpb")
 }
 
 pub(crate) fn repo_root() -> PathBuf {
@@ -381,7 +404,22 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
     }
     let repo = repo_root();
-    let desktop = formats.iter().any(|f| f != "web");
+    let desktop = formats.iter().any(|f| builds_programs(f));
+    // The bundle's programs, all three, checked before anything is built.
+    let cli: Option<[&Path; 3]> = match &options.cli {
+        [Some(linux), Some(macos), Some(windows)] => {
+            Some([linux.as_path(), macos.as_path(), windows.as_path()])
+        }
+        _ => None,
+    };
+    if formats.iter().any(|f| f == "mcpb") && cli.is_none() {
+        return Err(
+            "package: the format mcpb needs --cli-linux, --cli-macos and --cli-windows, the \
+             craft3d-cli of each platform (the Release workflow's job `package (mcpb)` passes \
+             those its package jobs built)"
+                .to_string(),
+        );
+    }
     if options.build && desktop {
         let mut cargo = vec!["build", "--release", "--locked"];
         if let Some(t) = &options.target {
@@ -469,6 +507,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     },
                     options.build.then_some(jobs.as_slice()),
                 )?
+            }
+            "mcpb" => {
+                let programs = cli.ok_or("package: the format mcpb needs the three programs")?;
+                made.extend(crate::mcpb::package(&crate::mcpb::Job {
+                    repo: &p.repo,
+                    notices: &p.notices,
+                    out: &p.out,
+                    version: &p.version,
+                    programs,
+                })?);
+                continue;
             }
             other => return Err(format!("package: unknown format `{other}`")),
         };
@@ -558,7 +607,7 @@ pub(crate) fn copy_fonts(dir: &Path) -> Result<(), String> {
 
 /// The files of the shipped fonts (the built-in ones and the interface's),
 /// each with its licence.
-fn font_files() -> impl Iterator<Item = &'static str> {
+pub(crate) fn font_files() -> impl Iterator<Item = &'static str> {
     craft3d_font::shipped().flat_map(|font| [font.file, font.licence])
 }
 
@@ -774,7 +823,7 @@ fn windows_program_line(name: &str, image: &crate::pe::Image) -> String {
 /// includes a runtime of [`REFUSED_RUNTIMES`], saying for each whether a
 /// fresh Windows lacks it or it shows that the static link did not take
 /// effect.
-fn check_windows_program(name: &str, file: &[u8]) -> Result<(), String> {
+pub(crate) fn check_windows_program(name: &str, file: &[u8]) -> Result<(), String> {
     let image = crate::pe::read(file).map_err(|e| format!("{name}: {e}"))?;
     eprintln!("package: {}", windows_program_line(name, &image));
     let refused: Vec<(&String, &'static str)> = image
@@ -822,7 +871,11 @@ fn check_windows_program(name: &str, file: &[u8]) -> Result<(), String> {
 /// Refuses the Windows program `file`, packed as `name`, when it is not
 /// built for `subsystem`: the launcher must open no console window, and
 /// the window and the command line must stay console programs.
-fn check_windows_subsystem(name: &str, file: &[u8], subsystem: u16) -> Result<(), String> {
+pub(crate) fn check_windows_subsystem(
+    name: &str,
+    file: &[u8],
+    subsystem: u16,
+) -> Result<(), String> {
     let image = crate::pe::read(file).map_err(|e| format!("{name}: {e}"))?;
     if image.subsystem == subsystem {
         return Ok(());
@@ -1402,6 +1455,48 @@ mod tests {
         assert_eq!(o.formats, Some(vec!["web".to_string()]));
         assert_eq!(o.wasm_bindgen, Some(PathBuf::from("wb")));
         assert_eq!(o.wasm_opt, Some(PathBuf::from("wo")));
+    }
+
+    /// The MCP bundle is made anywhere, of the three programs given, and
+    /// builds nothing; without all three it is refused before anything
+    /// is done.
+    #[test]
+    fn the_mcp_bundle_takes_its_three_programs() {
+        assert!(known_formats().contains(&"mcpb"));
+        assert!(!default_formats().contains(&"mcpb".to_string()));
+        assert!(!builds_programs("mcpb") && !builds_programs("web") && builds_programs("tar"));
+        let args: Vec<String> = [
+            "--formats",
+            "mcpb",
+            "--cli-linux",
+            "l",
+            "--cli-macos",
+            "m",
+            "--cli-windows",
+            "w.exe",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let o = parse(&args).unwrap();
+        assert_eq!(
+            o.cli,
+            [
+                Some(PathBuf::from("l")),
+                Some(PathBuf::from("m")),
+                Some(PathBuf::from("w.exe"))
+            ]
+        );
+        assert!(parse(&["--cli-macos".to_string()]).is_err());
+        let two: Vec<String> = ["--formats", "mcpb", "--cli-linux", "l", "--cli-macos", "m"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let error = run(&two).unwrap_err();
+        assert!(
+            error.contains("needs --cli-linux, --cli-macos and --cli-windows"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ mod fonts;
 mod fuzz;
 mod health;
 mod layers;
+mod mcpb;
 mod notices;
 mod package;
 mod pe;

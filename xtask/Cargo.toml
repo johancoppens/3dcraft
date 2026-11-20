@@ -25,7 +25,11 @@ craft3d-font.workspace = true
 # bundled examples, read and written as indexed PNGs (`thumbs.rs`,
 # `bundle.rs`).
 png.workspace = true
+# Also the MCP bundle's deflate streams (`mcpb.rs`).
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+# `cargo xtask package --formats mcpb`: the MCP bundle is a ZIP archive,
+# written and read back by the workspace's own (`mcpb.rs`).
+craft3d-zipstore.workspace = true
 
 # The test that the programs read CHANGELOG.md as the Release workflow
 # does (`package.rs`).

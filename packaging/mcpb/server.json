@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.johancoppens/3dcraft",
+  "title": "3DCraft",
+  "description": "Open-source parametric 3D CAD built with and for AI: every action a command, every result checked.",
+  "version": "@VERSION@",
+  "websiteUrl": "https://3dcraft.dev",
+  "repository": {
+    "url": "https://github.com/johancoppens/3dcraft",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "@URL@",
+      "version": "@VERSION@",
+      "fileSha256": "@SHA256@",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

@@ -67,8 +67,8 @@ pub use shell::{
     moving_size, run_edit, window_title,
 };
 pub use state::{
-    AgentClient, AgentPrompt, AgentRoot, AgentsStatus, CameraState, Closing, DocTab, Panels,
-    ParametersView, PlayQuality, Playback, ProjectionKind, PromptAnswer, Show, SidePanelView,
-    SideTab, TabView, UiState, Work,
+    AgentClient, AgentPrompt, AgentRoot, AgentsStatus, AssemblyVerdict, CameraState, Closing,
+    DocTab, Panels, ParametersView, PlayQuality, Playback, ProjectionKind, PromptAnswer, Show,
+    SidePanelView, SideTab, TabView, UiState, Work,
 };
 pub use theme::Tokens;

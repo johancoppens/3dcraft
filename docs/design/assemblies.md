@@ -778,7 +778,35 @@ each published assembly as 0.2.0 answered it.
   value and `driven`, and the degrees of freedom left (or why the solve failed). Marks, a click to select, a double
   click to fly and an eye per row work as for features; the eye issues `instance.edit {visible}` and *Open* issues
   `instance.open` (the source in a tab of its own). It is read from the placement the view shows: a moment of the
-  motion when one is shown.
+  motion when one is shown. **Its verdict is the check's** (2026-11-20): the outline carries what `document.check`
+  lists for the assembly (`AssemblyOutline::problems`, `asm::wrong_in` of the placement shown), and the heading
+  (`AssemblyVerdict`, `ui.get` › `assembly`) says *Solved* with the degrees of freedom left only while that is
+  empty; else *Not solved* when the solve failed (*Not solved · n failed* with others beside it), or how many
+  problems it lists (*n failed*), the first six on hover and how many more; the headers *Instances* and *Mates*
+  carry the count of theirs (`instancesFailed`, `matesFailed`: what names an instance, what names a mate or a
+  coupling), which add up to the heading's, also folded; the assembly's checks stand beside it as the Features
+  tab's line says them (`features::checks_part`). Each problem is on the row it names: an instance that is not
+  placed is red with why (a flexible subassembly's too, from the subassembly's own placement, and a flexible
+  subassembly inside a flexible one is a row of its own with its instances under it); one placed although a
+  feature of its part failed has why under the part's own row (not under the subassemblies above it); a
+  subassembly with something wrong in itself (its mates, its couplings, its own solve unless it is flexible:
+  `asm::wrong_within`, the tail of what `wrong_inside` lists) has those lines under its row
+  (`OutlineInstance::inside`), each up to *is not placed* where it ends in an instance's own reason
+  (`short_cause`), whose row says why; such rows and every row above a problem of any kind carry a dot in the
+  failure colour after the name (`TreeRow::marked`, `RowMark::Dot`), which a long file name never cuts; the dim
+  ⚠ after the source says *held* only. A failed mate is red, its reason likewise up to *is not placed*; a
+  coupling that takes no part is a red row after the mates, with why (one that takes part is not listed).
+  Everything the panel paints of the check's text is written plainly at paint time (`readable_problem`: the
+  backticks gone, numbers as the banner writes them); `ui.get` keeps the check's own text. A form of the
+  assembly's public parameters weighs the assembly at rest (`Session::assembly_at_rest`, what `document.check`
+  reads, whatever moment or held joint the view shows), says what the heading would say then in the place of
+  *Valid*, with the first problem under it and *and n more on the Assembly tab*, and weighs a commit by those
+  problems ([`document.md`](document.md) › *Good and broken are sets*); where that verdict is not known (the
+  page, until the worker said it for the state shown) it says *Regenerating…*, and where it cannot be had (the
+  worker stopped with the view's job) *Not checked*, why on hover; never *Valid*. The heading is never wider
+  than the panel: the checks go on a line of their own when both do not fit, each line wrapped (the form's
+  header is cut with *…*, whole on hover). Over an assembly none of whose own instances is placed the view says
+  *Nothing is placed.*
 - **Joints** (`ui-egui/src/shell/joints.rs`): a mate whose main free motion can be set by hand and leaves the
   assembly solved (`OutlineMate::settable`) is a slider on the Parameters tab, between its limits or a turn either
   way (a distance: the model's size either way). Settable means: it has a free motion, no formula of other
@@ -905,6 +933,109 @@ each published assembly as 0.2.0 answered it.
 
 ### Findings and history (track A)
 
+- 2026-11-20 (window-verdict): the window told a person *Solved* and *Valid* while `document.check` on the same
+  assembly said not ok (since 0.2.1, below). The Assembly tab's heading read the solve of what was placed alone, so
+  an assembly whose plate its part refused (a corner of 40 mm past its range of 30) and whose mate on it failed was
+  *Solved · 0 DOF*, with two red rows under it; a coupling that takes no part (a linear one on a motion its revolute
+  lacks) was in no outline, so the heading said *Solved · 1 DOF* and nothing anywhere said why `assembly.solve` was
+  not ok; a flexible subassembly listed only what its parent placed, so its instance that was not placed showed
+  nowhere; a subassembly's own mates and solve were shown nowhere (*instance `Sub`: its mate `Ground`: …*); and a
+  form of the assembly's public parameters weighed only red instance rows against the last good state, so a value
+  that failed a feature of an instance's part (the row is ⚠, not red) or past a hinge's limit (the solve) left it
+  *Valid*, as did an assembly that opened unsolved. Principle broken: one truth; the window had a second, weaker
+  rule. Rule: the window's verdict on an assembly is what the check lists for it, and each problem is shown where
+  the person looks for the thing it names. Built: `AssemblyOutline::problems` is `asm::wrong_in` of the placement the
+  view shows (at rest the document's, which the check reads; a moment of a motion or a held joint while one
+  is shown, which the check does not see); `AssemblyVerdict::of` makes the heading from it (*Solved*,
+  *Solved · n DOF* only while it is empty; *Not solved* when the solve failed; else *n failed*, the check's words one
+  per line on hover), and `ui.get` › `assembly` gives it (`{ok, text, problems}`, `null` for a part). The outline
+  carries the couplings (`OutlineCoupling`), and the Mates section draws one that takes no part as a red row after
+  the mates with why (`Shell::coupling_row_hits`); one that takes part is not listed, so no assembly that is right
+  looks different. A row of a placed subassembly carries `inside`, `asm::wrong_within` (split out of `wrong_inside`,
+  which lists the same in the same order: its mates, its couplings, its solve unless flexible), shown under the row
+  in the failure colour and on hover, the row's source marked ⚠ (`ui.get` › `features[].inside`); its instances'
+  problems are on their own rows. A flexible subassembly's rows are its own instances in its order (`push_flexed`):
+  each placed in the parent as the parent holds it, one it could not place from its own placement with why (before,
+  not listed), and a flexible subassembly of its own as a row (before, the list went from the outer one straight to
+  the inner one's instances) with its instances under it; any placed in the parent that this walk misses are still
+  listed after. A form of the assembly's parameters weighs a commit by those problems, each keyed by what it names
+  (`instance Sub`, `instance Sub 2` for a second one of the same instance, `mate Ground`, `solve`), so a value that
+  adds one *Breaks the model* and one that only changes a reason does not; and its header says the heading's words
+  in the place of *Valid* while the check lists anything, whatever the last good state (`ui.get` › `parameters` ›
+  `status`). Not changed: what a command answers, the file format, a part's form (still weighed against its last
+  good state alone, so a part that opens with a failed feature says *Valid*: whether it should not is a question
+  for parts, open), and the Checks section, which says a broken assertion of the assembly itself while the heading
+  may say *Solved* (the heading speaks of the placement; whether it should also weigh the assertions, which
+  `document.check` does, is open). The outline crosses to the page with its new
+  lists (`view_elsewhere`, bit for bit). Tests: `crates/ui-egui/tests/assembly_verdict.rs` (each case as it is
+  now, what it was before in its comment, the problems in `ui.get` equal to the check's, a right, a floating, a
+  redundant and a limited assembly still *Solved* and *Valid*, the last assembly closed leaving no verdict),
+  `state::tests::an_assembly_is_solved_only_while_its_check_lists_nothing`, the crossing in `view_elsewhere::tests`
+  and, beside the page, `crates/engine/tests/view_elsewhere.rs` ›
+  `what_the_check_finds_wrong_crosses_to_the_page`. The review brought each old rule back alone (the heading from
+  the solve, the form's *Valid* unless broke, its faults from red rows, nothing under a subassembly, a flexible one
+  listing only what its parent placed, no coupling row) on a throwaway branch: each failed the tests of its cases
+  and only those, the right assemblies' test passing under all six (Check 44714207531).
+  *Round two* (the review's R1 to R3 and the UX pass, same day). The form read the placement shown, so a hinge
+  past its limit at rest, shown at a moment of its motion inside it, was *Valid* while the check said not ok:
+  the form now weighs `Session::assembly_at_rest`, the check's problems for the document's own placement
+  (`Known`); on the page the worker's facts carry it as `rest`, apart from the outline, so it crosses also when
+  the outline is more than crosses (cut to 4096, still not ok), and the page keeps it per state below the view,
+  never an older state's (`OpenDocument::remote_rest`). Where it is not known (facts pending) the form says
+  *Regenerating…*, what it says while it works, never *Valid*, and judges a commit once it is known, as it does a
+  check being measured (round three below changed when it is known). In the form's words: what the heading would say at rest, the first
+  problem under the header in the trouble line's look, then *and n more on the Assembly tab*
+  (`ui.get` › `parameters` › `why`). A failed feature's row was marked only by the dim ⚠ after its file name,
+  the first thing cut in a narrow panel, its reason on hover: its reason is now under the part's own row (once,
+  not under each subassembly above it), and such a row, a subassembly with something wrong in itself and every
+  row above a problem carry the kit's dot after the name (`TreeRow::marked`, `ui.get` › `features[].marked`); the
+  ⚠ says *held* only (the expectation of A-023's window test changed with it). The section headers *Instances*
+  and *Mates* carry *n failed* (`instancesFailed`, `matesFailed`), which add up to the heading's count; the solve
+  beside other problems is *Not solved · n failed*; the heading's text is in the failure colour when not ok, with
+  the solve's reason under it without a second *Not solved:*; its hover lists six and *and n more*; the
+  assembly's checks stand beside it as on the Features tab. The check's text is painted plainly
+  (`readable_problem`: no backticks, numbers as the banner writes them, so 2.0943951023931953 is 2.0944) and a
+  mate's or a subassembly's reason that ends in an instance's own is cut after *is not placed*
+  (`short_cause`); `ui.get` keeps the check's own text. Over an assembly none of whose own instances is placed
+  the view says *Nothing is placed.* What a part's form does with a failing check is unchanged and the
+  assembly's form does the same: a check that fails is weighed against the last good state only (a commit that
+  breaks one *Breaks the model*; one failing as the document opened leaves *Valid*), the absolute verdict being
+  the placement's alone. Not done: the reason's failed fill grouped with its row as the Features tab draws it
+  (SHOULD 7 of the UX pass: the instance rows would need the Features tab's own painting). Tests: four more in
+  `assembly_verdict.rs` (the form's line, a failed solve beside others, the form at rest during a moment, the
+  rows' dots and the sections' counts in the existing cases), the verdict's words in `state::tests`, the rest
+  crossing and its cap in `view_elsewhere::tests`, and the page's form before the worker said and after it died in
+  `apps/craft3d-web/src/beside_tests.rs`.
+  *Round three* (the UX pass's and the review's MUST of round two, same day). The heading was one line that
+  neither wrapped nor was cut: *Not solved · 2 failed · 1 of 3 checks fails* at the default 260 points, or even
+  *Solved · 0 DOF · 15 checks pass* at 200, made the panel's content wider than the panel, and every row under it
+  was laid out to that width and cut at its edge (sources *block.3dcra*, notes *1 fai*, reasons without their last
+  words). The heading is now measured against its room: the checks on a line of their own when both do not fit,
+  each line wrapped; the form's header is cut with *…*, whole on hover. On the page the form could say
+  *Regenerating…* with nothing left to wait for, proven by the review's two probes: (a) a value set while a
+  moment of the motion was shown left it so until the moment was let go of, the page keeping the verdict at rest
+  only from views without a moment, on the belief that the worker's document for a moment was the moment's own
+  state; it is not: the worker holds the state below the view (`state_bytes` of `view.base`) and shows the
+  moment beside it (`show_view`), so the facts of any view of a state say its verdict at rest, and the page now
+  keeps them from any view. The worker places the state at rest for it when it is not placed yet (once per state,
+  what the check would place; a moment is placed apart, `place_moment`, and leaves it), and so does the window.
+  The window was not stuck: the review's native probe (a source followed during a moment, Check 44723852412)
+  found the form saying *1 failed*: the state at rest was placed again within the window's frames already (by
+  what, the probe did not look); the test of that case is a guard. (b) After the worker stopped with the view's job the form stayed on *Regenerating…*
+  until the next edit: the page now tells a view whose facts came without the verdict (`view_failed_here`'s
+  error) from one whose facts have not come (`AssemblyAtRest::Unavailable`), and the form says *Not checked*,
+  neither valid nor failed (the info glyph, dim), why on hover (*the model is built elsewhere, and how it is
+  placed could not be had there: …*, as the web's *Not measured* says it), never *Valid*, judging a commit made
+  meanwhile once a verdict is known. Also: `short_cause` cuts on the instance's whole name (the mate's two sides,
+  a subassembly's own instances), as a name may hold "is not placed: " itself; `readable_problem` writes what
+  stands between backticks as it is (a name such as `1e3` is not a number); the line under the form's header
+  leads with the solve's problem when the solve failed, as its words do; `ui.get` › `features[].status` ends in ⚠
+  for a failed feature as since 0.2.0, the panel painting it for held only (`painted_status`; A-023's window test asserts the report as before, and the dot), and `ui.get` ›
+  `assembly.checks` says the checks beside the heading. Tests: in `assembly_verdict.rs` the rows' width under the
+  longest heading at 200 and 260 points, a source followed during a moment; in `beside_tests.rs` a value set
+  during a moment on the page (*Valid*, `Known`, the moment still shown) and the worker's death (*Not checked*
+  after the page settled and thirty frames, *Valid* again with the next state); in `shell::verdict_tests` the
+  hostile names, the hover's six and the view's *Nothing is placed.*
 - 2026-11-19 (assembly-check): an assembly's `document.check` answered `ok` with no problem while an instance was not
   placed: one plate given a corner radius of 40 mm where its part's range ends at 30, one fixed mate on it.
   `assembly.inspect` gave the instance `error` (*its configuration failed: nothing was changed: `corner`: its value
@@ -954,11 +1085,8 @@ each published assembly as 0.2.0 answered it.
   mate does not follow a short name to the face it became, as a feature that takes the body and `file.export` do
   ([`names.md`](names.md) › *References that follow a body*): whether it should is a question, not part of this
   fix. A check that measures an instance that is not placed (a clearance on it) said *there is no feature named
-  `Plate`*; it now says why (*instance `Plate` is not placed: …*, `Placed::pose_of` in `verify_cmds::subject`). The window does not take its verdict from the check: the Instances
-  panel draws an instance that is not placed and a failed mate as red rows with their reasons, but its heading says
-  *Solved* while the solve of what is placed succeeds, couplings are not in its outline, a flexible subassembly's
-  instance that is not placed is not listed, a subassembly's mates are not shown, and the Jig form's *Valid* weighs
-  only failed instance rows against the last good state (owed).
+  `Plate`*; it now says why (*instance `Plate` is not placed: …*, `Placed::pose_of` in `verify_cmds::subject`). The
+  window did not take its verdict from the check; it does since 2026-11-20 (window-verdict, above).
 
 - 2026-11-18 (asm-save-path): an assembly whose sources were relative to the working folder (the window's read root),
   saved under an absolute path, got source paths that climbed to the file system's root and then named the path from
