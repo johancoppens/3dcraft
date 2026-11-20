@@ -1189,15 +1189,15 @@ fn below_params(action: &Action) -> Option<Value> {
     Some(json!({"of": target, "plane": plane, "offset": offset}))
 }
 
+/// What `measure.below` said of a plane cut's plane: the volume below it
+/// and the area of its section of the body, or why there are none.
+type Below = Result<(f64, f64), String>;
+
 /// What `measure.below` gives for a plane cut's plane, asked before the
 /// cut is made (it changes nothing, so nothing is undone): `Ok(None)` for
-/// any other action; the volume below and the section's area, or why
-/// there are none; `Err` with the outcome when the call found a bug, a
+/// any other action; `Err` with the outcome when the call found a bug, a
 /// crash or ran out of time.
-fn below_before<F>(
-    call: &mut F,
-    action: &Action,
-) -> Result<Option<Result<(f64, f64), String>>, Outcome>
+fn below_before<F>(call: &mut F, action: &Action) -> Result<Option<Below>, Outcome>
 where
     F: FnMut(&str, &Value) -> Result<Value, CallError>,
 {
@@ -1834,12 +1834,7 @@ where
     verdict
 }
 
-fn judge<F>(
-    call: &mut F,
-    action: &Action,
-    result: &Value,
-    below: Option<Result<(f64, f64), String>>,
-) -> Outcome
+fn judge<F>(call: &mut F, action: &Action, result: &Value, below: Option<Below>) -> Outcome
 where
     F: FnMut(&str, &Value) -> Result<Value, CallError>,
 {

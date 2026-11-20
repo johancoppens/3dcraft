@@ -1070,7 +1070,11 @@ fn a_plane_cut_is_held_to_the_volume_below_its_plane() {
         .into_iter()
         .find(|b| b.solid)
         .unwrap();
-    assert_eq!(body.tolerance, 1e-6, "file.new's default");
+    assert!(
+        (body.tolerance - 1e-6).abs() < 1e-18,
+        "file.new's default, not {}",
+        body.tolerance
+    );
     let edges = plan::edges(
         &session
             .execute("document.edges", &json!({"feature": body.feature}))
