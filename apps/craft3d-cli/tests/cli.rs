@@ -1334,6 +1334,9 @@ fn a_root_must_be_a_directory() {
     let dir = workdir("bad-roots");
     std::fs::write(dir.join("file.txt"), "x").unwrap();
     for subcommand in ["serve", "mcp"] {
+        // A missing folder whose parent exists is refused as a read root
+        // only: as a write root it is made, as the help and
+        // docs/control-protocol.md say since 2026-11-20 (the next test).
         let ran = cli_in(
             &dir,
             &[subcommand, "--automation-read-root", "no-such-dir"],
