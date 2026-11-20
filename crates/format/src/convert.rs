@@ -1961,6 +1961,17 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 }),
                 fullness: fullness.as_ref().map(expr_to_manifest),
             },
+            doc::FeatureKind::PlaneCut(doc::PlaneCut {
+                target: doc::FeatureId(target),
+                planes,
+                next_plane,
+                keep,
+            }) => manifest::FeatureKind::PlaneCut {
+                target: *target,
+                planes: planes.iter().map(cut_plane_to_manifest).collect(),
+                next_plane: *next_plane,
+                keep: *keep,
+            },
             doc::FeatureKind::Shell(doc::Shell {
                 source: doc::FeatureId(source),
                 thickness,
@@ -2255,6 +2266,7 @@ fn role_to_manifest(role: doc::NameRole) -> manifest::NameRole {
         D::Thread => M::Thread,
         D::Rim => M::Rim,
         D::Tip => M::Tip,
+        D::Cut => M::Cut,
     }
 }
 
@@ -2284,6 +2296,59 @@ fn role_to_doc(role: manifest::NameRole) -> doc::NameRole {
         M::Thread => D::Thread,
         M::Rim => D::Rim,
         M::Tip => D::Tip,
+        M::Cut => D::Cut,
+    }
+}
+
+fn cut_plane_to_manifest(plane: &doc::CutPlane) -> manifest::CutPlane {
+    let doc::CutPlane {
+        id,
+        by,
+        offset,
+        side,
+    } = plane;
+    manifest::CutPlane {
+        id: *id,
+        by: match by {
+            doc::CutPlaneBy::Plane { plane } => manifest::CutPlaneBy::Plane {
+                plane: plane_ref_to_manifest(plane),
+            },
+            doc::CutPlaneBy::PointNormal { point, normal } => manifest::CutPlaneBy::PointNormal {
+                point: exprs_to_manifest(point),
+                normal: exprs_to_manifest(normal),
+            },
+        },
+        offset: expr_to_manifest(offset),
+        side: match side {
+            doc::CutSide::Below => manifest::CutSide::Below,
+            doc::CutSide::Above => manifest::CutSide::Above,
+        },
+    }
+}
+
+fn cut_plane_to_doc(plane: manifest::CutPlane) -> doc::CutPlane {
+    let manifest::CutPlane {
+        id,
+        by,
+        offset,
+        side,
+    } = plane;
+    doc::CutPlane {
+        id,
+        by: match by {
+            manifest::CutPlaneBy::Plane { plane } => doc::CutPlaneBy::Plane {
+                plane: plane_ref_to_doc(plane),
+            },
+            manifest::CutPlaneBy::PointNormal { point, normal } => doc::CutPlaneBy::PointNormal {
+                point: exprs_to_doc(point),
+                normal: exprs_to_doc(normal),
+            },
+        },
+        offset: doc::Expr(offset),
+        side: match side {
+            manifest::CutSide::Below => doc::CutSide::Below,
+            manifest::CutSide::Above => doc::CutSide::Above,
+        },
     }
 }
 
@@ -4110,6 +4175,17 @@ fn feature_to_doc(feature: manifest::Feature, blobs: &Blobs) -> doc::Feature {
                     }
                 }),
                 fullness: fullness.map(doc::Expr),
+            }),
+            manifest::FeatureKind::PlaneCut {
+                target,
+                planes,
+                next_plane,
+                keep,
+            } => doc::FeatureKind::PlaneCut(doc::PlaneCut {
+                target: doc::FeatureId(target),
+                planes: planes.into_iter().map(cut_plane_to_doc).collect(),
+                next_plane,
+                keep,
             }),
             manifest::FeatureKind::Shell {
                 source,

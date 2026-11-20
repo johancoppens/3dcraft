@@ -62,6 +62,7 @@ mod jig_cmds;
 mod loft_cmds;
 pub mod look;
 mod mass;
+mod plane_cut_cmds;
 mod tip_cmds;
 /// How many times this thread integrated a body's inertia (tests).
 pub use mass::fresh_inertias;
@@ -994,6 +995,7 @@ impl Session {
                 datum_cmds::SPECS,
                 helix_cmds::SPECS,
                 tip_cmds::SPECS,
+                plane_cut_cmds::SPECS,
                 offset_cmds::SPECS,
                 sheet_cmds::SPECS,
                 fold_cmds::SPECS,

@@ -48,6 +48,7 @@ pub use trimfill::{Filled, FilledEdge, FilledSeam, Trimmed};
 mod offset_face;
 mod offset_profile;
 mod pass;
+mod plane_cut;
 mod plate;
 pub mod progress;
 mod query;
@@ -965,6 +966,17 @@ pub struct ThreadReport {
     pub tap_drill: Option<f64>,
 }
 
+/// What one plane of a plane cut left (`craft3d_doc::CutPlane`), as built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CutReport {
+    /// The plane's id in its feature: its face is `F9:cut(id)`.
+    pub id: u32,
+    /// How many faces of the cut body are pieces of this plane (named by
+    /// it, or answering to its name as an alias). None: the plane cuts
+    /// nothing, or what it cut was cut away by the other planes.
+    pub faces: usize,
+}
+
 /// Where a fillet fades, as built (`craft3d_doc::FilletFade`): the point
 /// its face closes in, and the lengths it was built with.
 #[derive(Clone, Debug, PartialEq)]
@@ -1017,6 +1029,9 @@ pub struct FeatureResult {
     pub offset: Option<Arc<OffsetResult>>,
     /// For a fillet that fades and was built: where each fade ends.
     pub fades: Option<Arc<Vec<FadeReport>>>,
+    /// For a plane cut that was built: per plane, in the order of its
+    /// list, what it left.
+    pub cut: Option<Arc<Vec<CutReport>>>,
     /// The later feature this feature's body went into. The body is then
     /// no longer one of the document's bodies; it stays here because names
     /// are resolved against it.
@@ -1373,6 +1388,7 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         | FeatureKind::DeleteFace(_)
         | FeatureKind::Thread(_)
         | FeatureKind::Tip(_)
+        | FeatureKind::PlaneCut(_)
         | FeatureKind::Split(_)
         | FeatureKind::Unfold(_) => {
             return Err(format!(
@@ -1694,6 +1710,7 @@ fn build_feature(
     let mut developed = None;
     let mut outline = None;
     let mut fades = None;
+    let mut cut_planes = None;
     let mut passed = None;
     let switch = if rolled_back {
         Ok(None)
@@ -2100,6 +2117,20 @@ fn build_feature(
             }
             Err(reason) => (Status::Failed(reason), None),
         }
+    } else if let FeatureKind::PlaneCut(cut) = &feature.kind {
+        match plane_cut::build(doc, variables, feature.id, cut, earlier).and_then(
+            |(body, names, reports)| checked(doc, body).map(|body| (body, names, reports)),
+        ) {
+            Ok((body, made_names, reports)) => {
+                names = made_names.map(Arc::new);
+                cut_planes = Some(Arc::new(reports));
+                // Nothing moves: a face of the target lies where it lay,
+                // a cut face in its plane.
+                instances = Some(Arc::new(vec![Transform::IDENTITY]));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
     } else if let FeatureKind::Shell(hollowed) = &feature.kind {
         match shell::build(doc, variables, feature.id, hollowed, earlier)
             .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
@@ -2166,6 +2197,7 @@ fn build_feature(
             developed,
             offset: outline,
             fades,
+            cut: cut_planes,
             consumed_by: None,
             followed: None,
             passed,

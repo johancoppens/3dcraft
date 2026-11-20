@@ -947,6 +947,7 @@ pub(crate) fn features(
                                 developed: None,
                                 offset: None,
                                 fades: None,
+                                cut: None,
                                 consumed_by: None,
                                 followed: None,
                                 passed: None,

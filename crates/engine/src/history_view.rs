@@ -444,6 +444,13 @@ fn key_value(shown: &Shown<'_>, kind: &FeatureKind) -> (String, Option<KeyEdit>)
             ),
             None => ("Tip".to_string(), None),
         },
+        FeatureKind::PlaneCut(c) => (
+            match c.planes.len() {
+                1 => "1 plane".to_string(),
+                n => format!("{n} planes"),
+            },
+            None,
+        ),
         FeatureKind::Loft(l) => (format!("{} sections", l.sections.len()), None),
         FeatureKind::Sweep(s) => match s.rail {
             Some(rail) => (

@@ -202,6 +202,7 @@ fn lump_chosen_unproven(doc: &Document, kind: &FeatureKind) -> bool {
         | FeatureKind::DeleteFace(_)
         | FeatureKind::Thread(_)
         | FeatureKind::Tip(_)
+        | FeatureKind::PlaneCut(_)
         | FeatureKind::OffsetProfile(_)
         | FeatureKind::Fill(_) => false,
     }
@@ -219,6 +220,11 @@ fn link_proven(doc: &Document, link: &PersistentName) -> bool {
         NameRole::Copy => true,
         // The root and the two flanks of a thread's groove.
         NameRole::Thread => true,
+        // The face a plane of a plane cut leaves, by the plane's id: stored
+        // with the plane and never given to another plane of the feature,
+        // so an edit can take the face away but cannot give its name to
+        // another.
+        NameRole::Cut => true,
         // By the faces it lies on and near, each looked at in turn; a
         // number after them is a place in space.
         NameRole::Between | NameRole::Corner => link.sources.is_empty(),
@@ -319,6 +325,7 @@ fn entity_numbered_by_origin(kind: &FeatureKind, link: &PersistentName) -> bool 
         | FeatureKind::DeleteFace(_)
         | FeatureKind::Thread(_)
         | FeatureKind::Tip(_)
+        | FeatureKind::PlaneCut(_)
         | FeatureKind::OffsetProfile(_)
         | FeatureKind::Fill(_)
         | FeatureKind::Split(_) => false,
@@ -388,6 +395,7 @@ fn swept_by_curves(kind: &FeatureKind, link: &PersistentName) -> bool {
         | FeatureKind::DeleteFace(_)
         | FeatureKind::Thread(_)
         | FeatureKind::Tip(_)
+        | FeatureKind::PlaneCut(_)
         | FeatureKind::OffsetProfile(_)
         | FeatureKind::Split(_) => false,
     }
@@ -434,7 +442,9 @@ fn unproven_kind(doc: &Document, part: &PersistentName) -> &'static str {
         | NameRole::EndVertex => {
             "a face, an edge or a vertex swept by a curve named by its place in a list or a text (a glyph's place, a rail's place, a hash of an edge's name), not by a sketch entity"
         }
-        NameRole::Copy | NameRole::Thread => "a part past the depth a name may have",
+        NameRole::Copy | NameRole::Thread | NameRole::Cut => {
+            "a part past the depth a name may have"
+        }
     }
 }
 
@@ -528,6 +538,9 @@ mod tests {
             "F7:copy(1,3)/F1:face(2)",
             "F7:between[F7:copy(0)/F1:face(1),F7:copy(1)/F1:face(0)|F7:copy(0)/F1:face(4)]",
             "F9:thread(1)",
+            "F9:cut(3)",
+            "F8:between[F8:cut(1),F8:cut(2)]",
+            "F8:corner[F8:copy(0)/F1:face(1),F8:cut(1),F8:cut(2)]",
             "F7:lateralEdge(e5,e6)",
             "F7:side(e5)",
             "F8:lateralEdge(e5,e6)",

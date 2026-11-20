@@ -1630,7 +1630,11 @@ fn made_face(
             .then(|| names.faces.iter().position(|face| face.role == link.role))
             .flatten()
     };
-    let Some(index) = exact.or_else(same_plane) else {
+    // A face a plane cut merged with a face of its target that lies in the
+    // plane keeps the target's name and answers to the plane's (`F9:cut(3)`)
+    // as an alias: found by it too.
+    let alias = || (0..names.faces.len()).find(|&face| names.aliases_of(face).contains(link));
+    let Some(index) = exact.or_else(same_plane).or_else(alias) else {
         if let Some(why) = crate::pass::absent_name(doc, earlier, whole) {
             return Err(format!(
                 "plane: `{made_by}`, which makes the face {whole}, does not have it: {why}"
