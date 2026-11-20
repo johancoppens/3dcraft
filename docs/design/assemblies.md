@@ -951,10 +951,15 @@ each published assembly as 0.2.0 answered it.
   for parts, open), and the Checks section, which says a broken assertion of the assembly itself while the heading
   may say *Solved* (the heading speaks of the placement; whether it should also weigh the assertions, which
   `document.check` does, is open). The outline crosses to the page with its new
-  lists (`view_elsewhere`, bit for bit). Tests: `crates/ui-egui/tests/assembly_verdict.rs` (each case before and
-  after, the problems in `ui.get` equal to the check's, a right, a floating, a redundant and a limited assembly still
-  *Solved* and *Valid*), `state::tests::an_assembly_is_solved_only_while_its_check_lists_nothing`, and the crossing
-  in `view_elsewhere::tests`.
+  lists (`view_elsewhere`, bit for bit). Tests: `crates/ui-egui/tests/assembly_verdict.rs` (each case as it is
+  now, what it was before in its comment, the problems in `ui.get` equal to the check's, a right, a floating, a
+  redundant and a limited assembly still *Solved* and *Valid*, the last assembly closed leaving no verdict),
+  `state::tests::an_assembly_is_solved_only_while_its_check_lists_nothing`, the crossing in `view_elsewhere::tests`
+  and, beside the page, `crates/engine/tests/view_elsewhere.rs` ›
+  `what_the_check_finds_wrong_crosses_to_the_page`. The review brought each old rule back alone (the heading from
+  the solve, the form's *Valid* unless broke, its faults from red rows, nothing under a subassembly, a flexible one
+  listing only what its parent placed, no coupling row) on a throwaway branch: each failed the tests of its cases
+  and only those, the right assemblies' test passing under all six (Check 44714207531).
 - 2026-11-19 (assembly-check): an assembly's `document.check` answered `ok` with no problem while an instance was not
   placed: one plate given a corner radius of 40 mm where its part's range ends at 30, one fixed mate on it.
   `assembly.inspect` gave the instance `error` (*its configuration failed: nothing was changed: `corner`: its value
