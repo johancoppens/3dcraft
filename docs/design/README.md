@@ -10,6 +10,7 @@ The findings were written while the work was done and are kept as written. Where
 | [`topology.md`](topology.md) | the B-rep, `topo::check`, genus, the self-intersection check, mass properties, transforms |
 | [`kernel.md`](kernel.md) | what every kernel operation promises, and the list of operations |
 | [`booleans.md`](booleans.md) | imprint, classify, assemble; freeform operands; what is refused; speed; the corpus |
+| [`plane-cut.md`](plane-cut.md) | *(planned: a design of 2026-11-20, not built)* a body cut by planes in one feature, one side of each kept: the command, the names by a plane's id, the boolean with a block made from the body's bounds, what is refused, the oracles, the slices |
 | [`blends.md`](blends.md) | chamfers and fillets: closed-form tools, rolling-ball blends, chains, meets, ends |
 | [`sweeps.md`](sweeps.md) | profiles with splines, extrude and its ends, revolve, loft, sweep, helix, thread |
 | [`face-operations.md`](face-operations.md) | offset face, shell, move face, draft, thicken, delete face |
