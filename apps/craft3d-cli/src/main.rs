@@ -201,6 +201,7 @@ Options:
 
 const HELP_CONVERT: &str = "\
 Usage: craft3d-cli convert IN OUT [--quality Q] [--tolerance T] [--angle A]
+                           [--primitives P]
                            [--sketch S | --face F [--feature B]
                             | --set S [--width W] [--gap G]
                             | --view V [--projection P] [--hidden H]]
@@ -225,6 +226,9 @@ Options:
                   Default: chosen from the size of the model. For .svg:
                   how far the Béziers written for a spline of a degree
                   above 3 may lie from it. Default: the document's
+  --primitives P  For .glb: faces (default: a primitive per face name, the
+                  names in the file) or looks (a primitive per look of a
+                  body: far fewer draw calls for a viewer, no face names)
   --sketch S      For .dxf and .svg: the sketch to draw, by id or name
   --face F        For .dxf and .svg: the flat face to draw, by its name
                   from `info` (faceNames), e.g. 'F2:endCap(e1,e2,e3,e4)'

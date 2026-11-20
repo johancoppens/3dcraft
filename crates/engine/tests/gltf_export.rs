@@ -187,6 +187,9 @@ fn the_triangles_box_and_volume_are_the_stls() {
             ("bodies", json!(2)),
             ("closed", json!(2)),
             ("faceGroups", json!(9)),
+            ("primitives", json!("faces")),
+            ("drawCalls", json!(9)),
+            ("faceNames", json!(true)),
             ("materials", json!(1)),
             ("extensions", json!([])),
             ("leftOut", json!([])),
@@ -423,7 +426,152 @@ fn metres_and_y_up_in_every_unit() {
             .find(|p| p.positions.iter().all(|q| q[1] == f(3.0 * metres)))
             .unwrap();
         assert!(top.normals.iter().all(|n| *n == [0.0, 1.0, 0.0]), "{unit}");
+        // The file alone says how to give the document's coordinates back.
+        let extras = file.json.at(&["asset", "extras"]).unwrap();
+        assert_eq!(text(extras, "documentUnit"), unit);
+        assert_eq!(number(extras, &["scale"]), metres);
+        let axes: Vec<&str> = extras
+            .get("documentAxes")
+            .and_then(Json::as_array)
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap())
+            .collect();
+        assert_eq!(axes, ["X", "-Z", "Y"]);
+        let back = triangles(&file, number(extras, &["scale"]));
+        let far = back.iter().flatten().fold([0.0_f64; 3], |m, p| {
+            [m[0].max(p[0]), m[1].max(p[1]), m[2].max(p[2])]
+        });
+        for (got, want) in far.iter().zip([1.0, 2.0, 3.0]) {
+            assert!((got - want).abs() <= 1e-6 * want, "{unit}: {far:?}");
+        }
     }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A primitive per look (`primitives` looks), for viewers: one primitive
+/// per look of each body, no face names and no extras on them; the same
+/// triangles, volume and materials as a primitive per face group; the
+/// result says so.
+#[test]
+fn a_primitive_per_look_has_the_same_triangles() {
+    let dir = workdir("gltf-export", "looks");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 20, 30], "name": "Block"}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": ["F1:face(1)"], "color": BLUE}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"position": [40, 0, 0], "radius": 5, "height": 10, "name": "Pin"}),
+    );
+    let (named_out, named) = export(&mut s, &dir, "named.glb", json!({}));
+    let (out, merged) = export(&mut s, &dir, "merged.glb", json!({"primitives": "looks"}));
+    for (key, want) in [
+        ("primitives", json!("looks")),
+        ("faceNames", json!(false)),
+        // The block grey and blue, the pin grey.
+        ("drawCalls", json!(3)),
+        ("triangles", named_out["triangles"].clone()),
+        ("materials", named_out["materials"].clone()),
+    ] {
+        assert_eq!(out[key], want, "{key}: {out}");
+    }
+    assert!(out.get("faceGroups").is_none(), "{out}");
+    assert!(
+        out["bytes"].as_u64() < named_out["bytes"].as_u64(),
+        "{out} {named_out}"
+    );
+    assert_eq!(merged.materials, named.materials);
+    assert!(
+        merged
+            .nodes
+            .iter()
+            .flat_map(|n| &n.primitives)
+            .all(|p| p.extras == Json::Null)
+    );
+    let (a, b) = (triangles(&named, 1e-3), triangles(&merged, 1e-3));
+    assert_eq!(a.len(), b.len());
+    assert!((volume(&a) - volume(&b)).abs() <= 1e-12 * volume(&a));
+    // A primitive's material is what the named form gives the same
+    // triangles: the blue ones are the block's top.
+    let blue = linear(BLUE);
+    let tops: Vec<usize> = [&named, &merged]
+        .iter()
+        .map(|file| {
+            file.nodes[0]
+                .primitives
+                .iter()
+                .filter(|p| file.materials[p.material.unwrap()].base_color == blue)
+                .map(|p| {
+                    assert!(p.positions.iter().all(|q| q[1] == f64::from(0.03_f32)));
+                    p.triangles.len()
+                })
+                .sum()
+        })
+        .collect();
+    assert_eq!(tops, [2, 2]);
+    // `primitives` belongs to glTF alone, and is one of two.
+    for (params, why) in [
+        (
+            json!({"path": "x.stl", "primitives": "looks"}),
+            "is for glTF",
+        ),
+        (
+            json!({"path": "x.step", "primitives": "faces"}),
+            "is for glTF",
+        ),
+        (
+            json!({"path": "x.glb", "primitives": "named"}),
+            "unknown primitives",
+        ),
+    ] {
+        let message = error(&mut s, "file.export", params.clone());
+        assert!(message.contains(why), "{params}: {message}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A model far from the origin loses precision in the file's 32-bit
+/// floats: the points that fall on others are counted and the body named,
+/// as binary STL's are; near the origin nothing is said.
+#[test]
+fn points_that_fall_together_in_32_bits_are_said() {
+    let dir = workdir("gltf-export", "far");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        // Ten kilometres out, where 32-bit floats are about a millimetre
+        // apart in metres: a block of 0.2 mm is one place along x.
+        json!({"size": [0.2, 0.2, 0.2], "position": [10000000, 0, 0], "name": "Far"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [0.2, 0.2, 0.2], "name": "Near"}),
+    );
+    let (out, _) = export(&mut s, &dir, "far.glb", json!({}));
+    assert!(out["mergedPoints"].as_u64().unwrap() > 0, "{out}");
+    assert!(out["foldedTriangles"].as_u64().unwrap() > 0, "{out}");
+    let warnings = out["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{out}");
+    assert!(warnings[0].as_str().unwrap().starts_with("Far: "), "{out}");
+    run(&mut s, "feature.delete", json!({"feature": "Far"}));
+    let (out, _) = export(&mut s, &dir, "near.glb", json!({}));
+    assert!(
+        out.get("mergedPoints").is_none() && out.get("warnings").is_none(),
+        "{out}"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -465,6 +613,9 @@ fn names_formats_and_refusals() {
     for (params, why) in [
         (json!({"path": "x.gltf"}), ".glb"),
         (json!({"path": "x.glb", "format": "gltf"}), ".glb"),
+        // GLB bytes under the text form's name.
+        (json!({"path": "x.gltf", "format": "glb"}), ".glb"),
+        (json!({"path": "x.GLTF", "format": "glb"}), ".glb"),
         (json!({"path": "x.glb", "sketch": "S"}), "is for a drawing"),
         (json!({"path": "x.glb", "view": "iso"}), "is for a drawing"),
         (
@@ -482,14 +633,60 @@ fn names_formats_and_refusals() {
         assert!(message.contains(why), "{params}: {message}");
     }
     assert!(!dir.join("x.glb").exists() && !dir.join("x.gltf").exists());
+    assert!(!dir.join("x.GLTF").exists());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Exports the active document in both forms, a primitive per face group
+/// and per look, reads both back and holds them to each other and to the
+/// STL of the very same mesh: the same triangles, volume and materials.
+/// The numbers, for the record: `name: named <groups> groups <bytes> bytes
+/// (JSON <bytes>), looks <primitives> primitives <bytes> bytes (JSON
+/// <bytes>), <triangles> triangles; stl <bytes> bytes`.
+fn both_forms(s: &mut Session, dir: &Path, name: &str) -> String {
+    let (out, file) = export(s, dir, "model.glb", json!({}));
+    let (looks, merged) = export(s, dir, "looks.glb", json!({"primitives": "looks"}));
+    let stl = run(
+        s,
+        "file.export",
+        json!({"path": "model.stl", "tolerance": out["tolerance"], "angle": out["angle"]}),
+    );
+    let (count, _, stl_volume) = stl_numbers(&std::fs::read(dir.join("model.stl")).unwrap());
+    for (form, read) in [("named", &file), ("looks", &merged)] {
+        let triangles = triangles(read, 1e-3);
+        assert_eq!(triangles.len(), count, "{name} {form}");
+        assert!(
+            (volume(&triangles) - stl_volume).abs() <= 1e-6 * stl_volume.abs(),
+            "{name} {form}: {} {stl_volume}",
+            volume(&triangles)
+        );
+    }
+    assert_eq!(merged.materials, file.materials, "{name}");
+    assert_eq!(looks["triangles"], out["triangles"], "{name}");
+    let json = |file: &str| {
+        let bytes = std::fs::read(dir.join(file)).unwrap();
+        u32::from_le_bytes(bytes[12..16].try_into().unwrap())
+    };
+    format!(
+        "{name}: named {} groups {} bytes (JSON {}), looks {} primitives {} bytes (JSON {}), {} triangles, {} bodies, {} materials; stl {} bytes",
+        out["faceGroups"],
+        out["bytes"],
+        json("model.glb"),
+        looks["drawCalls"],
+        looks["bytes"],
+        json("looks.glb"),
+        out["triangles"],
+        out["bodies"],
+        out["materials"],
+        stl["bytes"]
+    )
+}
+
 /// Real models: three of the guide's examples (a bracket, a gear and a
-/// case) exported at the default quality, read back with every rule of the
-/// reader, and against the binary STL of the very same mesh (its tolerance
-/// and angle given): the same triangles and volume. Their sizes are
-/// printed for the record.
+/// case) exported at the default quality in both forms, read back with
+/// every rule of the reader, and against the binary STL of the very same
+/// mesh (its tolerance and angle given): the same triangles and volume.
+/// Their sizes are printed for the record.
 #[test]
 fn the_guides_examples_export_and_read_back() {
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples");
@@ -507,29 +704,28 @@ fn the_guides_examples_export_and_read_back() {
             s.execute(id, &params)
                 .unwrap_or_else(|e| panic!("{name}: {id}: {e}"));
         }
-        let (out, file) = export(&mut s, &dir, "model.glb", json!({}));
-        let stl = run(
-            &mut s,
-            "file.export",
-            json!({"path": "model.stl", "tolerance": out["tolerance"], "angle": out["angle"]}),
-        );
-        let (count, _, stl_volume) = stl_numbers(&std::fs::read(dir.join("model.stl")).unwrap());
-        let read = triangles(&file, 1e-3);
-        assert_eq!(read.len(), count, "{name}");
-        assert!(
-            (volume(&read) - stl_volume).abs() <= 1e-6 * stl_volume.abs(),
-            "{name}: {} {stl_volume}",
-            volume(&read)
-        );
-        println!(
-            "{name}: glb {} bytes, {} triangles, {} bodies, {} face groups, {} materials; stl {} bytes",
-            out["bytes"],
-            out["triangles"],
-            out["bodies"],
-            out["faceGroups"],
-            out["materials"],
-            stl["bytes"]
-        );
+        println!("{}", both_forms(&mut s, &dir, name));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+/// The published examples with the most faces (the moka pot and the
+/// spiral staircase, `docs/examples/published/`), measured in both forms:
+/// what a viewer on a phone gets. Slow in a debug build, so asked for:
+/// `cargo test --release -p craft3d-engine --test gltf_export published --
+/// --ignored --nocapture`.
+#[test]
+#[ignore = "measures two large published examples: run with --ignored"]
+fn the_published_examples_in_both_forms() {
+    let published = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples/published");
+    for name in ["moka-pot", "spiral-staircase"] {
+        let dir = workdir("gltf-export", name);
+        let file = format!("{name}.3dcraft");
+        std::fs::copy(published.join(&file), dir.join(&file)).unwrap();
+        let mut s = session_in(&dir);
+        s.execute("file.open", &json!({"path": file}))
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        println!("{}", both_forms(&mut s, &dir, name));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -1,17 +1,30 @@
 //! Tessellated bodies as the nodes of a glTF file
 //! (`craft3d_meshio::gltf`): one node per body, and in it one group of
-//! triangles (a primitive of its mesh) per name of its faces and material.
+//! triangles (a primitive of its mesh) per name of its faces and material,
+//! or, for viewers, per material alone ([`Primitives`]).
 //!
-//! **Face groups.** glTF names nodes and meshes but not the primitives of
-//! a mesh; the place it gives application data is `extras`. A group holds
-//! the triangles of the faces that share a persistent name (the pieces a
-//! boolean cut one face into) and a material, and says so in its `extras`:
-//! `face`, that name as `document.inspect` lists it under `faceNames`, and
-//! `faces`, the indices of those faces in that list. Every triangle of a
-//! primitive is of one of those faces, so a reader maps triangles back to
-//! the faces 3DCraft refers to by name. A face without a name is a group of
-//! its own, with `faces` alone. Groups come in the order of their first
-//! face, triangles in the tessellator's order.
+//! **Face groups** ([`Primitives::Faces`], the default). glTF names nodes
+//! and meshes but not the primitives of a mesh; the place it gives
+//! application data is `extras`. A group holds the triangles of the faces
+//! that share a persistent name (the pieces a boolean cut one face into)
+//! and a material, and says so in its `extras`: `face`, that name as
+//! `document.inspect` lists it under `faceNames`, and `faces`, the indices
+//! of those faces in that list. Every triangle of a primitive is of one of
+//! those faces, so a reader maps triangles back to the faces 3DCraft refers
+//! to by name. A face without a name is a group of its own, with `faces`
+//! alone. Groups come in the order of their first face, triangles in the
+//! tessellator's order.
+//!
+//! **Looks** ([`Primitives::Looks`]). A group holds every triangle of one
+//! material, whatever face it is on, and has no `extras`: a viewer draws a
+//! body in as many calls as it has looks instead of one per face, and the
+//! file names no face. Vertices of the group that have the same position
+//! and the same normal, bit for bit, are one vertex (the copies of a point
+//! on the seam of a cylinder, or where two faces meet tangentially); where
+//! the normals differ (an edge between faces at an angle) they stay two, so
+//! creases stay creases. A vertex without a normal is never shared: its
+//! normal is worked out from its own face's triangles. The triangles are
+//! those of the face groups, in the same order.
 //!
 //! The tessellator gives each face its own vertices, with the surface's
 //! normal at each: a group keeps them (a cylinder shades smooth, and the
@@ -24,6 +37,33 @@ use crate::IoError;
 use craft3d_meshio::gltf::{Extra, Extras, Group, Node};
 use craft3d_tess::Mesh;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// What a primitive of a body's mesh holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Primitives {
+    /// The faces of one persistent name and look, named in its `extras`.
+    #[default]
+    Faces,
+    /// Every triangle of one look, without names: fewer draw calls.
+    Looks,
+}
+
+impl Primitives {
+    /// Its name in `file.export`'s `primitives`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Primitives::Faces => "faces",
+            Primitives::Looks => "looks",
+        }
+    }
+
+    /// The choice of a name.
+    pub fn from_name(name: &str) -> Option<Primitives> {
+        [Primitives::Faces, Primitives::Looks]
+            .into_iter()
+            .find(|p| p.name() == name)
+    }
+}
 
 /// One body as its glTF node is made.
 #[derive(Clone, Debug)]
@@ -40,14 +80,17 @@ pub struct GltfBody<'a> {
     pub material: Option<u32>,
     /// The node's `extras`.
     pub extras: Extras,
+    /// A primitive per face group, or per look.
+    pub primitives: Primitives,
 }
 
 /// What puts triangles in one group: the faces' name, or the face itself
-/// when it has none, and the material.
+/// when it has none, and the material; or the material alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Key<'a> {
     Named(&'a str, Option<u32>),
     Face(u32, Option<u32>),
+    Look(Option<u32>),
 }
 
 /// A group being filled.
@@ -59,6 +102,9 @@ struct Filling<'a> {
     /// The group's vertex for a vertex of the mesh that another group has
     /// in [`node`]'s shared table (a mesh whose faces share vertices).
     others: BTreeMap<u32, u32>,
+    /// With [`Primitives::Looks`]: the group's vertex of each position and
+    /// normal, by their bits.
+    welded: BTreeMap<[u64; 6], u32>,
 }
 
 /// The glTF node of a body (see the module's documentation): an error
@@ -71,6 +117,7 @@ pub fn node(body: GltfBody<'_>) -> Result<Node, IoError> {
             triangle: mesh.face_ids.len().min(mesh.triangles.len()),
         });
     }
+    let looks = body.primitives == Primitives::Looks;
     let mut keys: BTreeMap<Key, usize> = BTreeMap::new();
     let mut filling: Vec<Filling> = Vec::new();
     // The group and its vertex of each vertex of the mesh, for the first
@@ -78,6 +125,22 @@ pub fn node(body: GltfBody<'_>) -> Result<Node, IoError> {
     // own, as the tessellator makes them).
     let mut shared: Vec<Option<(usize, u32)>> = vec![None; mesh.positions.len()];
     let place = |p: craft3d_math::Vec3| [p.x + 0.0, p.y + 0.0, p.z + 0.0].map(f64::to_bits);
+    // With looks: the key under which a vertex is shared, its position and
+    // its normal; none for a vertex without a normal.
+    let weld_key = |k: u32| -> Option<[u64; 6]> {
+        if !looks {
+            return None;
+        }
+        let p = mesh.positions.get(k as usize)?;
+        let n = mesh.normals.get(k as usize)?;
+        let normal = [n.x, n.y, n.z];
+        if normal.iter().any(|c| !c.is_finite()) || normal.iter().all(|c| *c == 0.0) {
+            return None;
+        }
+        let [a, b, c] = place(*p);
+        let [d, e, f] = [n.x + 0.0, n.y + 0.0, n.z + 0.0].map(f64::to_bits);
+        Some([a, b, c, d, e, f])
+    };
     for (t, (triangle, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
         let [Some(a), Some(b), Some(c)] = triangle.map(|k| mesh.positions.get(k as usize).copied())
         else {
@@ -98,16 +161,17 @@ pub fn node(body: GltfBody<'_>) -> Result<Node, IoError> {
             .get(face as usize)
             .map(String::as_str)
             .filter(|n| !n.is_empty());
-        let key = match name {
-            Some(name) => Key::Named(name, material),
-            None => Key::Face(face, material),
+        let key = match (looks, name) {
+            (true, _) => Key::Look(material),
+            (false, Some(name)) => Key::Named(name, material),
+            (false, None) => Key::Face(face, material),
         };
         let at = match keys.get(&key) {
             Some(&at) => at,
             None => {
                 keys.insert(key, filling.len());
                 filling.push(Filling {
-                    name,
+                    name: if looks { None } else { name },
                     group: Group {
                         material,
                         ..Group::default()
@@ -115,6 +179,7 @@ pub fn node(body: GltfBody<'_>) -> Result<Node, IoError> {
                     faces: Vec::new(),
                     seen: BTreeSet::new(),
                     others: BTreeMap::new(),
+                    welded: BTreeMap::new(),
                 });
                 filling.len() - 1
             }
@@ -127,9 +192,13 @@ pub fn node(body: GltfBody<'_>) -> Result<Node, IoError> {
         }
         let mut corners = [0_u32; 3];
         for (corner, &k) in corners.iter_mut().zip(triangle) {
-            let known = match shared.get(k as usize).copied().flatten() {
-                Some((group, vertex)) if group == at => Some(vertex),
-                _ => fill.others.get(&k).copied(),
+            let weld = weld_key(k);
+            let known = match weld {
+                Some(w) => fill.welded.get(&w).copied(),
+                None => match shared.get(k as usize).copied().flatten() {
+                    Some((group, vertex)) if group == at => Some(vertex),
+                    _ => fill.others.get(&k).copied(),
+                },
             };
             *corner = match known {
                 Some(vertex) => vertex,
@@ -146,11 +215,16 @@ pub fn node(body: GltfBody<'_>) -> Result<Node, IoError> {
                     fill.group
                         .normals
                         .push(n.map_or([0.0; 3], |n| [n.x, n.y, n.z]));
-                    match shared.get_mut(k as usize) {
-                        Some(slot) if slot.is_none() => *slot = Some((at, vertex)),
-                        _ => {
-                            fill.others.insert(k, vertex);
+                    match weld {
+                        Some(w) => {
+                            fill.welded.insert(w, vertex);
                         }
+                        None => match shared.get_mut(k as usize) {
+                            Some(slot) if slot.is_none() => *slot = Some((at, vertex)),
+                            _ => {
+                                fill.others.insert(k, vertex);
+                            }
+                        },
                     }
                     vertex
                 }
@@ -162,14 +236,16 @@ pub fn node(body: GltfBody<'_>) -> Result<Node, IoError> {
         .into_iter()
         .map(|fill| {
             let mut group = fill.group;
-            if let Some(name) = fill.name {
+            if !looks {
+                if let Some(name) = fill.name {
+                    group
+                        .extras
+                        .push(("face".to_string(), Extra::Text(name.to_string())));
+                }
                 group
                     .extras
-                    .push(("face".to_string(), Extra::Text(name.to_string())));
+                    .push(("faces".to_string(), Extra::Numbers(fill.faces)));
             }
-            group
-                .extras
-                .push(("faces".to_string(), Extra::Numbers(fill.faces)));
             group
         })
         .collect();
@@ -205,6 +281,7 @@ mod tests {
             face_materials: &materials,
             material: Some(0),
             extras: vec![("feature".into(), Extra::Text("F1".into()))],
+            primitives: Primitives::Faces,
         })
         .unwrap();
         assert_eq!(node.name, "cube");
@@ -269,6 +346,7 @@ mod tests {
                 face_materials: &[],
                 material: None,
                 extras: Vec::new(),
+                primitives: Primitives::Faces,
             }
         }
         let made = node(body(&mesh)).unwrap();
@@ -310,6 +388,7 @@ mod tests {
             face_materials: &[],
             material: None,
             extras: Vec::new(),
+            primitives: Primitives::Faces,
         })
         .unwrap();
         assert_eq!(made.groups.len(), 2);
@@ -319,5 +398,118 @@ mod tests {
             assert_eq!(group.triangles, [[0, 1, 2]]);
         }
         assert_eq!(made.groups[1].positions[0], [0.0, 1.0, 0.0]);
+    }
+
+    /// By look: a primitive per material, no names, the same triangles;
+    /// vertices shared where position and normal agree, kept apart where the
+    /// normals differ (a box's corners) or where there is none.
+    #[test]
+    fn looks_merge_faces_and_share_only_what_agrees() {
+        // A cube whose top is green: two looks.
+        let mut mesh = cube(2.0);
+        let faces = names(6);
+        let materials = [None, Some(1)];
+        let body = |primitives| GltfBody {
+            name: "cube",
+            mesh: &mesh,
+            face_names: &faces,
+            face_materials: &materials,
+            material: Some(0),
+            extras: Vec::new(),
+            primitives,
+        };
+        let named = node(body(Primitives::Faces)).unwrap();
+        let merged = node(body(Primitives::Looks)).unwrap();
+        assert_eq!((named.groups.len(), merged.groups.len()), (6, 2));
+        let summary: Vec<(Option<u32>, usize, usize, bool)> = merged
+            .groups
+            .iter()
+            .map(|g| {
+                (
+                    g.material,
+                    g.positions.len(),
+                    g.triangles.len(),
+                    g.extras.is_empty(),
+                )
+            })
+            .collect();
+        // The cube's normals are zero (none): no vertex shared, 4 a face.
+        assert_eq!(summary, [(Some(0), 20, 10, true), (Some(1), 4, 2, true)]);
+        // Every triangle once, with the corners the named form has, in the
+        // same order look by look.
+        let corners = |node: &Node, material: u32| -> Vec<[[f64; 3]; 3]> {
+            node.groups
+                .iter()
+                .filter(|g| g.material == Some(material))
+                .flat_map(|g| {
+                    g.triangles
+                        .iter()
+                        .map(|t| t.map(|k| g.positions[k as usize]))
+                })
+                .collect()
+        };
+        for material in [0, 1] {
+            assert_eq!(corners(&named, material), corners(&merged, material));
+        }
+        // With the surface's normals, the four corners of each side share
+        // nothing with the sides they touch (another normal), and a side's
+        // two triangles share their diagonal.
+        let outward = [
+            Vec3::new(0.0, 0.0, -1.0),
+            Vec3::Z,
+            Vec3::new(0.0, -1.0, 0.0),
+            Vec3::Y,
+            Vec3::new(-1.0, 0.0, 0.0),
+            Vec3::X,
+        ];
+        for (k, normal) in mesh.normals.iter_mut().enumerate() {
+            *normal = outward[k / 4];
+        }
+        let merged = node(GltfBody {
+            name: "cube",
+            mesh: &mesh,
+            face_names: &faces,
+            face_materials: &[],
+            material: Some(0),
+            extras: Vec::new(),
+            primitives: Primitives::Looks,
+        })
+        .unwrap();
+        assert_eq!(merged.groups.len(), 1);
+        assert_eq!(merged.groups[0].positions.len(), 24);
+        assert_eq!(merged.groups[0].triangles.len(), 12);
+        // Two copies of one point with one normal (a seam's) are one vertex.
+        let mut seam = Mesh::default();
+        for p in [
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::Y,
+            Vec3::ZERO,
+            Vec3::Y,
+            Vec3::new(-1.0, 0.0, 0.0),
+        ] {
+            seam.positions.push(p);
+            seam.normals.push(Vec3::Z);
+        }
+        seam.triangles = vec![[0, 1, 2], [3, 4, 5]];
+        seam.face_ids = vec![0, 0];
+        let one = node(GltfBody {
+            name: "seam",
+            mesh: &seam,
+            face_names: &names(1),
+            face_materials: &[],
+            material: None,
+            extras: Vec::new(),
+            primitives: Primitives::Looks,
+        })
+        .unwrap();
+        assert_eq!(one.groups[0].positions.len(), 4);
+        assert_eq!(one.groups[0].triangles, [[0, 1, 2], [0, 2, 3]]);
+        assert_eq!(Primitives::from_name("looks"), Some(Primitives::Looks));
+        assert_eq!(
+            Primitives::from_name("faces").map(Primitives::name),
+            Some("faces")
+        );
+        assert_eq!(Primitives::from_name("named"), None);
     }
 }

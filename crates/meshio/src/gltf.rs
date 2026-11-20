@@ -46,6 +46,7 @@
 //!   The same scene gives the same bytes.
 
 use crate::{MeshError, Unit};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 /// A value in an object's `extras`, the place glTF gives application data.
@@ -53,6 +54,9 @@ use std::fmt::Write as _;
 pub enum Extra {
     Text(String),
     Number(u64),
+    /// Written as the shortest decimal that reads back as the same `f64`;
+    /// `null` when it is not finite (JSON has no such number).
+    Real(f64),
     Texts(Vec<String>),
     Numbers(Vec<u64>),
 }
@@ -111,6 +115,9 @@ pub struct PbrMaterial {
 pub struct Scene {
     /// `asset.generator`: the program that wrote the file, and its version.
     pub generator: String,
+    /// `asset.extras`: what the file as a whole says beyond glTF (written
+    /// only when there is something).
+    pub asset_extras: Extras,
     /// The unit of the positions, which are written in metres.
     pub unit: Unit,
     pub nodes: Vec<Node>,
@@ -304,6 +311,10 @@ fn json_text(
     let mut out = String::new();
     out.push_str("{\"asset\":{\"version\":\"2.0\",\"generator\":");
     push_string(&mut out, &scene.generator);
+    if !scene.asset_extras.is_empty() {
+        out.push_str(",\"extras\":");
+        push_extras(&mut out, &scene.asset_extras);
+    }
     out.push('}');
     let used = extensions_used(&scene.materials);
     if !used.is_empty() {
@@ -562,6 +573,49 @@ fn to_gltf(p: [f64; 3], scale: f64) -> [f32; 3] {
     [x as f32 + 0.0, z as f32 + 0.0, -y as f32 + 0.0]
 }
 
+/// What a node's points become in the file's 32-bit floats (in metres):
+/// how many of its points fall on another point (`merged`; a point is told
+/// by its exact position, so the copies of one point on several faces are
+/// one point) and how many of its triangles get two corners on one place
+/// there and so fold to a line or a point (`folded`). Both 0 for every
+/// model of ordinary size near the origin; a model far from it, or
+/// thousands of metres across with millimetre detail, loses that much in
+/// glTF. Points that are not finite (which [`write_glb`] refuses) are left
+/// out of the count.
+pub fn points_in_32_bits(node: &Node, unit: Unit) -> (usize, usize) {
+    let scale = unit.metres();
+    let exact = |p: [f64; 3]| p.map(|c| (c + 0.0).to_bits());
+    let written = |p: [f64; 3]| to_gltf(p, scale).map(f32::to_bits);
+    let mut points: BTreeMap<[u64; 3], [u32; 3]> = BTreeMap::new();
+    for group in &node.groups {
+        for &p in &group.positions {
+            if p.iter().all(|c| c.is_finite()) {
+                points.entry(exact(p)).or_insert_with(|| written(p));
+            }
+        }
+    }
+    let places: BTreeSet<[u32; 3]> = points.values().copied().collect();
+    let merged = points.len() - places.len();
+    let mut folded = 0;
+    for group in &node.groups {
+        for triangle in &group.triangles {
+            let corners = triangle.map(|k| {
+                group
+                    .positions
+                    .get(k as usize)
+                    .filter(|p| p.iter().all(|c| c.is_finite()))
+                    .map(|&p| written(p))
+            });
+            if let [Some(a), Some(b), Some(c)] = corners
+                && (a == b || b == c || c == a)
+            {
+                folded += 1;
+            }
+        }
+    }
+    (merged, folded)
+}
+
 /// `v` made unit length, scaled first so that neither its square
 /// underflows nor overflows; `None` for a zero vector or one that is not
 /// finite.
@@ -741,6 +795,8 @@ fn push_extras(out: &mut String, extras: &[(String, Extra)]) {
             Extra::Number(n) => {
                 let _ = write!(out, "{n}");
             }
+            Extra::Real(x) if x.is_finite() => push_number(out, *x),
+            Extra::Real(_) => out.push_str("null"),
             Extra::Texts(list) => {
                 out.push('[');
                 for (k, text) in list.iter().enumerate() {
@@ -792,6 +848,7 @@ mod tests {
     fn triangle_scene() -> Scene {
         Scene {
             generator: "3DCraft test".into(),
+            asset_extras: Vec::new(),
             unit: Unit::Meter,
             nodes: vec![Node {
                 name: "t".into(),
@@ -962,6 +1019,90 @@ mod tests {
             "{\"asset\":{\"version\":\"2.0\",\"generator\":\"\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"name\":\"empty\"}]}"
         );
         assert!(bin.is_none());
+    }
+
+    /// The box and the colour read back from data that would hide a writer
+    /// starting its `min` or `max` at 0, or leaving a colour in sRGB: every
+    /// coordinate away from 0 (and every written z below it), and a colour
+    /// of neither 0 nor 255 in any channel.
+    #[test]
+    fn min_and_max_are_the_datas_and_the_colour_is_linear() {
+        let mut scene = triangle_scene();
+        // (x, y, z) is written (x, z, −y): (1, 3, −2), (4, 3, −2), (1, 6, −5).
+        scene.nodes[0].groups[0].positions =
+            vec![[1.0, 2.0, 3.0], [4.0, 2.0, 3.0], [1.0, 5.0, 6.0]];
+        scene.materials[0].color = [128, 64, 200];
+        let (_, _, json, bin) = chunks(&write_glb(&scene).unwrap());
+        assert!(json.contains("\"min\":[1,3,-5],\"max\":[4,6,-2]"), "{json}");
+        let bin = bin.unwrap();
+        let float = |at: usize| f32::from_le_bytes(bin[at..at + 4].try_into().unwrap());
+        assert_eq!([float(24), float(28), float(32)], [1.0, 6.0, -5.0]);
+        let linear = [128_u8, 64, 200].map(srgb_to_linear);
+        let mut factor = String::new();
+        push_numbers(&mut factor, [linear[0], linear[1], linear[2], 1.0]);
+        assert!(
+            json.contains(&format!("\"baseColorFactor\":{factor}")),
+            "{json}"
+        );
+        // Linear, not the bytes over 255: 128 is 0.216, not 0.502.
+        assert!((linear[0] - 0.215_860_5).abs() < 1e-6 && (linear[0] - 128.0 / 255.0).abs() > 0.2);
+        assert!(!json.contains(&format!("{}", 128.0 / 255.0)), "{json}");
+    }
+
+    #[test]
+    fn asset_extras_are_written_with_real_numbers() {
+        let mut scene = triangle_scene();
+        scene.asset_extras = vec![
+            ("documentUnit".into(), Extra::Text("in".into())),
+            ("scale".into(), Extra::Real(0.0254)),
+            (
+                "documentAxes".into(),
+                Extra::Texts(vec!["X".into(), "-Z".into(), "Y".into()]),
+            ),
+            ("nothing".into(), Extra::Real(f64::NAN)),
+        ];
+        let (_, _, json, _) = chunks(&write_glb(&scene).unwrap());
+        assert!(
+            json.starts_with(
+                "{\"asset\":{\"version\":\"2.0\",\"generator\":\"3DCraft test\",\"extras\":{\"documentUnit\":\"in\",\"scale\":0.0254,\"documentAxes\":[\"X\",\"-Z\",\"Y\"],\"nothing\":null}},"
+            ),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn points_that_fall_together_in_32_bits_are_counted() {
+        // A millimetre cube's corners a hundred kilometres out along x, in
+        // millimetres: 32-bit floats there are 7.8 mm apart in x (and fine
+        // in y and z, near 0), so its eight corners are four places and
+        // every triangle with a side along x folds.
+        let corner = |i: u32| {
+            [
+                1e8 + f64::from(i & 1),
+                f64::from((i >> 1) & 1),
+                f64::from((i >> 2) & 1),
+            ]
+        };
+        let far = Node {
+            name: "far".into(),
+            extras: Vec::new(),
+            groups: vec![Group {
+                positions: (0..8).map(corner).collect(),
+                triangles: vec![[0, 2, 3], [0, 3, 1], [4, 5, 7], [4, 7, 6]],
+                ..Group::default()
+            }],
+        };
+        assert_eq!(points_in_32_bits(&far, Unit::Millimeter), (4, 4));
+        // Near the origin nothing falls together; a point on two faces (two
+        // copies, one in each group) is one point.
+        let mut near = far.clone();
+        for p in &mut near.groups[0].positions {
+            p[0] -= 1e8;
+        }
+        near.groups.push(near.groups[0].clone());
+        assert_eq!(points_in_32_bits(&near, Unit::Millimeter), (0, 0));
+        // Nor in metres, where the same model is a thousand times larger.
+        assert_eq!(points_in_32_bits(&near, Unit::Meter), (0, 0));
     }
 
     /// A strip of `n` vertices along x, `n − 2` triangles.

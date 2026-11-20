@@ -450,7 +450,7 @@ fn freecad_reads_a_needle_cut_along_its_axis_as_a_solid() {
 #[test]
 #[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
 fn freecad_reads_gltf_in_place_and_to_scale() {
-    use craft3d_io::gltf::{GltfBody, node};
+    use craft3d_io::gltf::{GltfBody, Primitives, node};
     use craft3d_kernel::primitives;
     use craft3d_math::Frame;
     use craft3d_meshio::gltf::{PbrMaterial, Scene, write_glb};
@@ -467,10 +467,12 @@ fn freecad_reads_gltf_in_place_and_to_scale() {
             face_materials: &[],
             material: Some(0),
             extras: Vec::new(),
+            primitives: Primitives::Faces,
         })
         .unwrap();
         write_glb(&Scene {
             generator: "3DCraft".to_string(),
+            asset_extras: Vec::new(),
             unit,
             nodes: vec![node],
             materials: vec![PbrMaterial {

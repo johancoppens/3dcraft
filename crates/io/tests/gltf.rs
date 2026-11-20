@@ -18,12 +18,12 @@
 #[path = "common/bodies.rs"]
 mod bodies;
 
-use craft3d_io::gltf::{GltfBody, node};
+use craft3d_io::gltf::{GltfBody, Primitives, node};
 use craft3d_io::{MeshFormat, export_mesh};
 use craft3d_kernel::primitives;
 use craft3d_math::{Frame, Vec3};
 use craft3d_meshio::Unit;
-use craft3d_meshio::gltf::{Extra, Group, PbrMaterial, Scene, srgb_to_linear, write_glb};
+use craft3d_meshio::gltf::{Extra, Extras, Group, PbrMaterial, Scene, srgb_to_linear, write_glb};
 use craft3d_tess::{Mesh, TessParams, tessellate_body};
 use craft3d_testkit::readers::gltf::{Gltf, GltfNode, read_glb};
 use craft3d_testkit::readers::json::Json;
@@ -73,8 +73,31 @@ fn part(name: &str, feature: u32, body: &Body, scale: f64, material: u32) -> Par
 }
 
 fn scene(parts: &[Part], materials: Vec<PbrMaterial>, unit: Unit) -> Scene {
+    scene_as(parts, materials, unit, Primitives::Faces, Vec::new())
+}
+
+/// The asset's extras `file.export` writes for a document in millimetres.
+fn millimetres() -> Extras {
+    vec![
+        ("documentUnit".into(), Extra::Text("mm".into())),
+        ("scale".into(), Extra::Real(0.001)),
+        (
+            "documentAxes".into(),
+            Extra::Texts(vec!["X".into(), "-Z".into(), "Y".into()]),
+        ),
+    ]
+}
+
+fn scene_as(
+    parts: &[Part],
+    materials: Vec<PbrMaterial>,
+    unit: Unit,
+    primitives: Primitives,
+    asset_extras: Extras,
+) -> Scene {
     Scene {
         generator: "3DCraft".to_string(),
+        asset_extras,
         unit,
         nodes: parts
             .iter()
@@ -86,6 +109,7 @@ fn scene(parts: &[Part], materials: Vec<PbrMaterial>, unit: Unit) -> Scene {
                     face_materials: &p.face_materials,
                     material: Some(p.material),
                     extras: vec![("feature".into(), Extra::Text(format!("F{}", p.feature)))],
+                    primitives,
                 })
                 .unwrap()
             })
@@ -155,8 +179,32 @@ fn fixtures() -> Vec<(&'static str, Vec<Part>, Scene)> {
     out
 }
 
+/// The cylinder and the two bodies a primitive per look, with the asset's
+/// extras `file.export` writes: two more pinned files.
+fn merged_fixtures() -> Vec<(&'static str, Vec<Part>, Scene)> {
+    let mut out = Vec::new();
+    for (file, parts, named) in fixtures() {
+        let merged = match file {
+            "cylinder.glb" => "cylinder-looks.glb",
+            "two-bodies.glb" => "two-bodies-looks.glb",
+            _ => continue,
+        };
+        let s = scene_as(
+            &parts,
+            named.materials,
+            Unit::Millimeter,
+            Primitives::Looks,
+            millimetres(),
+        );
+        out.push((merged, parts, s));
+    }
+    out
+}
+
 /// The SHA-256 of each pinned file.
-const PINNED: [(&str, &str); 4] = [
+const PINNED: [(&str, &str); 6] = [
+    ("cylinder-looks.glb", "unknown"),
+    ("two-bodies-looks.glb", "unknown"),
     (
         "block.glb",
         "50523d5bf4200c6404e6c9c5124fcf78e73b8ead11e724cd814e4776d02eb97c",
@@ -219,16 +267,16 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// The exact bytes of four small files, so that a change of the writer or
-/// of the meshes shows up in review. Set `CRAFT3D_UPDATE_GOLDEN=1` to
-/// rewrite them after a deliberate change (and the SHA-256 in [`PINNED`]);
-/// a failure says what was written, with the bytes in base64 for a file of
-/// up to 256 KiB, so the new file can be taken from the log of a run on
-/// another machine.
+/// The exact bytes of six small files (four models, two of them also a
+/// primitive per look), so that a change of the writer or of the meshes
+/// shows up in review. Set `CRAFT3D_UPDATE_GOLDEN=1` to rewrite them after
+/// a deliberate change (and the SHA-256 in [`PINNED`]); a failure says what
+/// was written, with the bytes in base64 for a file of up to 256 KiB, so
+/// the new file can be taken from the log of a run on another machine.
 #[test]
-fn golden_bytes_of_four_small_models() {
+fn golden_bytes_of_six_small_files() {
     let mut failures = Vec::new();
-    for (file, _, scene) in fixtures() {
+    for (file, _, scene) in fixtures().into_iter().chain(merged_fixtures()) {
         let bytes = write_glb(&scene).unwrap();
         assert_eq!(
             write_glb(&scene).unwrap(),
@@ -639,6 +687,7 @@ fn indices_past_65535_vertices_read_back_as_32_bits() {
     let groups = vec![slivers(65_536), slivers(65_535)];
     let scene = Scene {
         generator: "3DCraft".to_string(),
+        asset_extras: Vec::new(),
         unit: Unit::Millimeter,
         nodes: vec![
             craft3d_meshio::gltf::Node {
@@ -697,4 +746,138 @@ fn a_sheet_reads_back_open() {
     let read: Gltf = read_glb(&write_glb(&s).unwrap()).unwrap();
     assert_eq!(read.nodes[0].primitives.len(), 5);
     assert!(read.materials[0].double_sided);
+}
+
+/// The base colour of each triangle of a node, linear, sorted.
+fn triangle_colours(read: &Gltf, node: &GltfNode) -> Vec<[f64; 4]> {
+    let mut colours: Vec<[f64; 4]> = node
+        .primitives
+        .iter()
+        .flat_map(|p| {
+            let colour = read.materials[p.material.unwrap()].base_color;
+            std::iter::repeat_n(colour, p.triangles.len())
+        })
+        .collect();
+    colours.sort_by(|p, q| p.partial_cmp(q).unwrap());
+    colours
+}
+
+/// A primitive per look, read back against a primitive per face group of
+/// the same model, for every fixture: the same triangles (as many, the
+/// same corners, the same volume), the same materials, every triangle in
+/// its colour; as many primitives as the body has looks, none with extras;
+/// no more vertices than the named form, a block's corners three vertices
+/// each (three normals: the creases stay).
+#[test]
+fn merged_by_look_reads_back_as_the_named_form() {
+    for (file, parts, named) in fixtures() {
+        let merged = scene_as(
+            &parts,
+            named.materials.clone(),
+            Unit::Millimeter,
+            Primitives::Looks,
+            millimetres(),
+        );
+        let (named_bytes, merged_bytes) = (write_glb(&named).unwrap(), write_glb(&merged).unwrap());
+        let (a, b) = (
+            read_glb(&named_bytes).unwrap(),
+            read_glb(&merged_bytes).unwrap(),
+        );
+        assert_eq!(a.materials, b.materials, "{file}");
+        let mut lines = Vec::new();
+        for (x, y) in a.nodes.iter().zip(&b.nodes) {
+            let (tx, ty) = (node_triangles(x, 1e-3), node_triangles(y, 1e-3));
+            assert_eq!(tx.len(), ty.len(), "{file}");
+            assert!(
+                close(volume(&tx), volume(&ty), 1e-12 * volume(&tx).abs()),
+                "{file}"
+            );
+            let sorted = |mut t: Vec<[[f64; 3]; 3]>| {
+                t.sort_by(|p, q| p.partial_cmp(q).unwrap());
+                t
+            };
+            assert_eq!(sorted(tx), sorted(ty), "{file}: the same triangles");
+            assert_eq!(
+                triangle_colours(&a, x),
+                triangle_colours(&b, y),
+                "{file}: every triangle in its colour"
+            );
+            let looks: std::collections::BTreeSet<Option<usize>> =
+                x.primitives.iter().map(|p| p.material).collect();
+            assert_eq!(y.primitives.len(), looks.len(), "{file}");
+            assert!(y.primitives.iter().all(|p| p.extras == Json::Null));
+            let vertices = |n: &GltfNode| {
+                n.primitives
+                    .iter()
+                    .map(|p| p.positions.len())
+                    .sum::<usize>()
+            };
+            assert!(vertices(y) <= vertices(x), "{file}");
+            lines.push(format!(
+                "{}: {} primitives, {} vertices named; {} primitives, {} vertices merged",
+                x.name,
+                x.primitives.len(),
+                vertices(x),
+                y.primitives.len(),
+                vertices(y)
+            ));
+            if file == "block.glb" {
+                assert_eq!(vertices(y), 24, "{file}");
+            }
+        }
+        println!(
+            "{file}: named {} bytes, merged {} bytes; {}",
+            named_bytes.len(),
+            merged_bytes.len(),
+            lines.join("; ")
+        );
+    }
+}
+
+/// `asset.extras` is all a reader needs to give the document's coordinates
+/// back: `scale` and `documentAxes` turn the file's points into the
+/// model's, which are the STL's, in `documentUnit`.
+#[test]
+fn the_asset_says_how_to_turn_the_file_back() {
+    let (_, parts, scene) = merged_fixtures().remove(0);
+    let read = read_glb(&write_glb(&scene).unwrap()).unwrap();
+    let extras = read.json.at(&["asset", "extras"]).unwrap();
+    assert_eq!(text(extras, "documentUnit"), "mm");
+    let scale = number(extras, &["scale"]);
+    let axes: Vec<&str> = extras
+        .get("documentAxes")
+        .and_then(Json::as_array)
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    assert_eq!(axes, ["X", "-Z", "Y"]);
+    // Each of the document's axes from the file's, by the names alone.
+    let back = |p: [f64; 3]| {
+        let mut model = [0.0; 3];
+        for (slot, &axis) in model.iter_mut().zip(&axes) {
+            let (sign, name) = match axis.strip_prefix('-') {
+                Some(name) => (-1.0, name),
+                None => (1.0, axis),
+            };
+            let at = ["X", "Y", "Z"].iter().position(|a| *a == name).unwrap();
+            *slot = sign * p[at] / scale;
+        }
+        model
+    };
+    let triangles: Vec<[[f64; 3]; 3]> = read.nodes[0]
+        .primitives
+        .iter()
+        .flat_map(|p| p.triangles.iter().map(|t| t.map(|k| back(p.positions[k]))))
+        .collect();
+    let stl = export_mesh(&parts[0].mesh, "c", Unit::Millimeter, MeshFormat::StlBinary).unwrap();
+    let (count, stl_box, stl_volume) = stl_numbers(&stl);
+    assert_eq!(triangles.len(), count);
+    assert!(close(volume(&triangles), stl_volume, 1e-6 * stl_volume));
+    assert!(
+        bbox(&triangles)
+            .iter()
+            .zip(&stl_box)
+            .all(|(g, s)| close(*g, *s, 1e-5))
+    );
 }

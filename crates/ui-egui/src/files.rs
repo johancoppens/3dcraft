@@ -27,9 +27,10 @@ pub const IMPORT_EXTENSIONS: [&str; 12] = [
     "step", "stp", "STEP", "STP", "FCStd", "fcstd", "FCSTD", "brep", "brp", "BREP", "BRP", "Fcstd",
 ];
 
-/// The formats `file.export` writes, as the export dialog offers them: a
-/// name and its extensions. The format follows the extension of the file
-/// the person names.
+/// The formats the export dialog offers, of those `file.export` writes (not
+/// glTF yet, `.glb`: docs/roadmap.md, M10 › Open): a name and its
+/// extensions. The format follows the extension of the file the person
+/// names.
 pub const EXPORT_FORMATS: [(&str, &[&str]); 6] = [
     ("STEP", &["step", "stp"]),
     ("STL", &["stl"]),

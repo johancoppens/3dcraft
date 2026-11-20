@@ -635,6 +635,48 @@ fn run_builds_a_part_that_info_render_and_convert_read() {
     );
     assert!(text.lines().any(|line| line.starts_with("v ")));
 
+    // glTF (2026-11-20): a primitive per face group, or with
+    // --primitives looks one per look of each body, the same triangles.
+    let glb = path(&dir, "part.glb");
+    let named = cli(&["convert", &part, &glb]).ok().json_lines().remove(0);
+    assert_eq!(std::fs::read(&glb).unwrap()[..4], *b"glTF");
+    assert_eq!(
+        (named["primitives"].clone(), named["faceNames"].clone()),
+        (json!("faces"), json!(true))
+    );
+    let looks = path(&dir, "looks.glb");
+    let merged = cli(&["convert", &part, &looks, "--primitives", "looks"])
+        .ok()
+        .json_lines()
+        .remove(0);
+    assert_eq!(
+        (merged["primitives"].clone(), merged["faceNames"].clone()),
+        (json!("looks"), json!(false))
+    );
+    assert_eq!(merged["triangles"], named["triangles"]);
+    assert!(
+        merged["drawCalls"].as_u64() < named["drawCalls"].as_u64(),
+        "{merged}"
+    );
+    // Other formats have no primitives: the engine refuses (1); .3dcraft
+    // and STEP take no mesh options at all (2).
+    cli(&[
+        "convert",
+        &part,
+        &path(&dir, "p.stl"),
+        "--primitives",
+        "looks",
+    ])
+    .failed(1);
+    cli(&[
+        "convert",
+        &part,
+        &path(&dir, "p.step"),
+        "--primitives",
+        "looks",
+    ])
+    .failed(2);
+
     // A finer tolerance gives more triangles on the pin.
     let fine = path(&dir, "fine.stl");
     let exported = cli(&["convert", &part, &fine, "--tolerance", "0.001"])
