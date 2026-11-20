@@ -42,7 +42,7 @@
 mod boolean_common;
 mod common;
 
-use boolean_common::{SCALES, mass};
+use boolean_common::SCALES;
 use common::{arc, circle, line};
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::BooleanOp::{Intersect, Subtract, Union};
@@ -54,7 +54,7 @@ use craft3d_kernel::extrude::extrude;
 use craft3d_kernel::primitives;
 use craft3d_kernel::profile::detect_profiles;
 use craft3d_math::{Frame, Portable, Tolerance, Vec3};
-use craft3d_topo::{Body, check};
+use craft3d_topo::{Body, MassProperties, check, mass_properties};
 use std::f64::consts::{FRAC_PI_2, PI};
 
 /// The offsets of the vertex from the border, in tolerances: merged with
@@ -78,6 +78,11 @@ fn unrefused() -> BooleanOptions {
     }
 }
 
+/// The volume and area of a body, or why they could not be measured.
+fn mass(body: &Body) -> Result<MassProperties, String> {
+    mass_properties(body).map_err(|e| format!("cannot be measured: {e:?}"))
+}
+
 /// What a boolean of the pair gave, held to what every boolean keeps:
 /// `Ok(volume)` (0 for an empty result) or why not.
 fn volume_of(a: &Body, b: &Body, op: BooleanOp, tol: &Tolerance) -> Result<f64, String> {
@@ -96,7 +101,7 @@ fn volume_of(a: &Body, b: &Body, op: BooleanOp, tol: &Tolerance) -> Result<f64, 
                 }
                 Err(e) => return Err(format!("the boolean's check cannot run: {e}")),
             }
-            Ok(mass(&result.body).volume)
+            Ok(mass(&result.body)?.volume)
         }
         Err(KernelError::EmptyResult { .. }) => Ok(0.0),
         Err(e) => Err(format!("refused: {e}")),
@@ -114,7 +119,13 @@ fn booleans(
     faults: &mut Vec<String>,
     what: &str,
 ) {
-    let (ma, mb) = (mass(a), mass(b));
+    let (ma, mb) = match (mass(a), mass(b)) {
+        (Ok(ma), Ok(mb)) => (ma, mb),
+        (Err(why), _) | (_, Err(why)) => {
+            faults.push(format!("{what}: an operand {why}"));
+            return;
+        }
+    };
     // A volume is known to the tolerance over the boundary.
     let slack = tol.linear * (ma.area + mb.area) + 1e-9 * (ma.volume + mb.volume);
     for (op, want) in [
@@ -301,28 +312,54 @@ fn held(place: &Place, faults: &mut Vec<String>) {
         Ok(found) => faults.push(format!("{what}: contact says {found:?}")),
         Err(e) => faults.push(format!("{what}: contact refused: {e}")),
     }
-    match (interference(&plate, &cylinder, &tol), want) {
-        (Ok(Interference::Clear), Want::Clear) => {}
-        // A contact in a point, or along a line: no area. (With the
-        // vertex within the tolerance of the edge the point is read as a
-        // short stretch of the edge: a touch all the same.)
-        (Ok(Interference::Touch { kind, area, .. }), Want::Point | Want::Line)
-            if kind != ContactKind::Face && area == 0.0 => {}
-        (Ok(Interference::Touch { kind, area, .. }), Want::Face(shared))
-            if kind == ContactKind::Face && (area - shared).abs() <= slack(shared) => {}
-        (Ok(Interference::Overlap(common)), Want::Overlap(volume))
-            if (mass(&common.body).volume - volume).abs()
-                <= slack(place.shared()) * -place.lift * tol.linear + 1e-9 * volume => {}
-        (Ok(found), _) => {
-            let found = match found {
-                Interference::Overlap(common) => {
-                    format!("an overlap of {}", mass(&common.body).volume)
-                }
-                other => format!("{other:?}"),
-            };
-            faults.push(format!("{what}: interference says {found}"));
+    // The query tells a shared area from an edge above the tolerance
+    // times the root of both boundaries: a lens thinner than that is a
+    // touch without an area.
+    let both = match (mass(&plate), mass(&cylinder)) {
+        (Ok(plate), Ok(cylinder)) => plate.area + cylinder.area,
+        (Err(why), _) | (_, Err(why)) => {
+            faults.push(format!("{what}: an operand {why}"));
+            return;
         }
-        (Err(e), _) => faults.push(format!("{what}: interference refused: {e}")),
+    };
+    let told = |area: f64| area > (tol.linear * both.sqrt()).max(1e-9 * both);
+    let verdict = match interference(&plate, &cylinder, &tol) {
+        Err(e) => Err(format!("refused: {e}")),
+        Ok(Interference::Clear) if want == Want::Clear => Ok(()),
+        Ok(Interference::Clear) => Err("says clear".to_string()),
+        Ok(Interference::Touch { kind, area, .. }) => {
+            let right = match want {
+                Want::Face(shared) if told(shared) => {
+                    kind == ContactKind::Face && (area - shared).abs() <= slack(shared)
+                }
+                // A contact in a point or along a line: no area. (With
+                // the vertex within the tolerance of the edge the point
+                // is read as a short stretch of the edge: a touch all the
+                // same.)
+                Want::Point | Want::Line | Want::Face(_) => {
+                    kind != ContactKind::Face && area == 0.0
+                }
+                Want::Clear | Want::Overlap(_) => false,
+            };
+            if right {
+                Ok(())
+            } else {
+                Err(format!("says a touch of kind {kind:?} and area {area}"))
+            }
+        }
+        Ok(Interference::Overlap(common)) => match (want, mass(&common.body)) {
+            (Want::Overlap(volume), Ok(found))
+                if (found.volume - volume).abs()
+                    <= slack(place.shared()) * -place.lift * tol.linear + 1e-9 * volume =>
+            {
+                Ok(())
+            }
+            (_, Ok(found)) => Err(format!("says an overlap of {}", found.volume)),
+            (_, Err(why)) => Err(format!("says an overlap that {why}")),
+        },
+    };
+    if let Err(why) = verdict {
+        faults.push(format!("{what}: interference {why}"));
     }
     let common = match want {
         Want::Overlap(volume) => volume,
@@ -331,26 +368,28 @@ fn held(place: &Place, faults: &mut Vec<String>) {
     booleans(&plate, &cylinder, common, &tol, faults, &what);
 }
 
-/// The grid at one scale and tolerance.
-fn grid(k: f64, coarse: bool) {
+/// The grid at one scale, at both tolerances.
+fn grid(k: f64) {
     let mut faults = Vec::new();
     let mut places = 0;
-    for turn in [0.0, 0.5] {
-        for side in [Side::Inside, Side::Outside] {
-            for shift in [0.0, 40.0, -40.0] {
-                for lift in [0.0, 5.0, -50.0] {
-                    for offset in OFFSETS {
-                        let place = Place {
-                            k,
-                            coarse,
-                            turn,
-                            side,
-                            shift,
-                            lift,
-                            offset,
-                        };
-                        held(&place, &mut faults);
-                        places += 1;
+    for coarse in [false, true] {
+        for turn in [0.0, 0.5] {
+            for side in [Side::Inside, Side::Outside] {
+                for shift in [0.0, 40.0, -40.0] {
+                    for lift in [0.0, 5.0, -50.0] {
+                        for offset in OFFSETS {
+                            let place = Place {
+                                k,
+                                coarse,
+                                turn,
+                                side,
+                                shift,
+                                lift,
+                                offset,
+                            };
+                            held(&place, &mut faults);
+                            places += 1;
+                        }
                     }
                 }
             }
@@ -366,20 +405,17 @@ fn grid(k: f64, coarse: bool) {
 
 #[test]
 fn a_cylinder_at_a_plates_edge_at_a_thousandth() {
-    grid(SCALES[0], false);
-    grid(SCALES[0], true);
+    grid(SCALES[0]);
 }
 
 #[test]
 fn a_cylinder_at_a_plates_edge_at_one() {
-    grid(SCALES[1], false);
-    grid(SCALES[1], true);
+    grid(SCALES[1]);
 }
 
 #[test]
 fn a_cylinder_at_a_plates_edge_at_a_million() {
-    grid(SCALES[2], false);
-    grid(SCALES[2], true);
+    grid(SCALES[2]);
 }
 
 // ---------------------------------------------------------------------
@@ -444,8 +480,9 @@ fn hub(k: f64, tol: &Tolerance) -> Body {
 }
 
 /// The hub on the shaft: the bore lies on the seat (a touch, the area of
-/// the bore), whatever vertex the keyway's end has.
-fn keyed(k: f64, coarse: bool) {
+/// the bore), whatever vertex the keyway's end has. What is not so is
+/// added to `faults`.
+fn keyed(k: f64, coarse: bool, faults: &mut Vec<String>) {
     let tol = tolerance(k, coarse);
     let hub = hub(k, &tol);
     assert_eq!(check(&hub, &tol), [], "the hub at {k}");
@@ -453,7 +490,6 @@ fn keyed(k: f64, coarse: bool) {
     // hub's length.
     let (seat, w) = (SEAT * k, HALF_KEY * k);
     let bore = seat * (2.0 * PI - 2.0 * (w / seat).pasin()) * 51.0 * k;
-    let mut faults = Vec::new();
     for offset in [None, Some(0.4), Some(1.4), Some(3.0), Some(8.0)] {
         let shaft = shaft(k, &tol, offset);
         assert_eq!(check(&shaft, &tol), [], "the shaft at {k}, {offset:?}");
@@ -477,16 +513,24 @@ fn keyed(k: f64, coarse: bool) {
                     if kind == ContactKind::Face
                         && (area - bore).abs() <= tol.linear * 200.0 * k + 1e-6 * bore => {}
                 Ok(Interference::Overlap(common)) => faults.push(format!(
-                    "{what}, {way}: interference says an overlap of {}",
-                    mass(&common.body).volume
+                    "{what}, {way}: interference says an overlap of {:?}",
+                    mass(&common.body).map(|found| found.volume)
                 )),
                 Ok(found) => faults.push(format!(
                     "{what}, {way}: interference says {found:?}, not a face of {bore}"
                 )),
                 Err(e) => faults.push(format!("{what}, {way}: interference refused: {e}")),
             }
-            booleans(a, b, 0.0, &tol, &mut faults, &format!("{what}, {way}"));
+            booleans(a, b, 0.0, &tol, faults, &format!("{what}, {way}"));
         }
+    }
+}
+
+/// [`keyed`] at every scale.
+fn keyed_at_every_scale(coarse: bool) {
+    let mut faults = Vec::new();
+    for k in SCALES {
+        keyed(k, coarse, &mut faults);
     }
     assert!(
         faults.is_empty(),
@@ -498,14 +542,10 @@ fn keyed(k: f64, coarse: bool) {
 
 #[test]
 fn a_hub_on_a_keyed_shaft_at_the_jigs_tolerance() {
-    for k in SCALES {
-        keyed(k, true);
-    }
+    keyed_at_every_scale(true);
 }
 
 #[test]
 fn a_hub_on_a_keyed_shaft_at_a_millionth() {
-    for k in SCALES {
-        keyed(k, false);
-    }
+    keyed_at_every_scale(false);
 }
