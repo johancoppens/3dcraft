@@ -405,14 +405,27 @@ fn held(place: &Place, faults: &mut Vec<String>) -> bool {
     unmeasured || unmeasured_again
 }
 
-/// The places whose common volume (a lens 40 tolerances wide and 50 deep
-/// under the cylinder's rim, the rim's vertex within the tolerance of the
+/// The places at scale `k` whose common volume (a lens 40 tolerances wide
+/// and 50 deep under the cylinder's rim, with the rim's vertex beside the
 /// plate's edge) the boolean makes, valid and held to its own check, and
 /// `mass_properties` cannot measure ("a boundary integral that does not
-/// settle"), at 1e-3 and at 1e6 and not at 1: a fault of the measure, owed
-/// (docs/design/topology.md), which the change these tests are for does
-/// not touch. Held as a list, so a place that joins it or leaves it fails.
-const UNMEASURED: [&str; 1] = ["fine lines turn 0 Outside shift 40 lift -50 offset Some(0.4)"];
+/// settle"): at 1e-3 and at 1e6, none at 1. A fault of the measure, owed
+/// (docs/design/topology.md › *A lens a few dozen tolerances thick that
+/// is not measured at every scale*), which the change these tests are
+/// for does not touch: the same places on the commit before it. Held as
+/// a list, so a place that joins it or leaves it fails.
+fn unmeasured_at(k: f64) -> &'static [&'static str] {
+    if k < 1.0 {
+        &[
+            "fine lines turn 0 Outside shift 40 lift -50 offset Some(0.4)",
+            "fine splines turn 0 Outside shift 40 lift -50 offset Some(1.4)",
+        ]
+    } else if k > 1.0 {
+        &["fine lines turn 0 Outside shift 40 lift -50 offset Some(0.4)"]
+    } else {
+        &[]
+    }
+}
 
 /// The grid at one scale: both tolerances, the plate's edges as lines and
 /// as splines.
@@ -454,11 +467,7 @@ fn grid(k: f64) {
         faults.len(),
         faults.join("\n  ")
     );
-    let owed: BTreeSet<String> = if k == 1.0 {
-        BTreeSet::new()
-    } else {
-        UNMEASURED.iter().map(ToString::to_string).collect()
-    };
+    let owed: BTreeSet<String> = unmeasured_at(k).iter().map(ToString::to_string).collect();
     assert_eq!(
         unmeasured, owed,
         "the common volumes that cannot be measured at {k}"
