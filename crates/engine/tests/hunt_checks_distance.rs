@@ -2123,35 +2123,35 @@ fn a_big_ball_sunk_into_a_block_is_given_a_distance_known() {
     );
 }
 
-/// Found by the review of the cone's proof (2026-11-14), owed, known
-/// wrong: **a pair that shares volume is answered clear, with nothing
-/// proven, and an assertion of a clearance of at least 0 passes.** A ball
-/// about 2500 times the body, sunk 3 to 10 tolerances into a cone's or a
-/// cylinder's side:
+/// Found by the review of the cone's proof (2026-11-14) as a known wrong
+/// answer, right since 2026-11-20: **a pair that shares volume a few
+/// tolerances deep under a ball thousands of times the body overlaps.** A
+/// ball about 2500 times the body, sunk 3 to 10 tolerances into a cone's
+/// or a cylinder's side:
 /// - a cone of radius 4 and height 12 and a ball of radius 10 000 at
 ///   (9488.832971018304, 0, 3168.277657006102): its centre is 10 000 −
 ///   1e-5 from the side at half its height along the side's normal
 ///   (closed form), so its surface lies 1e-5 (10 tolerances) inside the
-///   cone; `measure.clearance` answers clear, 1.097e-6, `atLeast` 0;
+///   cone;
 /// - a cylinder of radius 4 and height 10 from z = −5 and a ball of
 ///   radius 10 000 at (10003.999997, 0, 0.7), 3e-6 (3 tolerances) inside
-///   its wall: clear the same way.
+///   its wall.
 ///
-/// Nothing false is proven (`atLeast` is 0), but the status is false, and
-/// `clearance min "0 mm"` and `overlap is false` pass on bodies that
-/// overlap. The cause is not in the distance or its proof: where nothing
-/// is proven beyond twice the tolerance, `verify_cmds::clearance_status`
-/// asks the kernel (`craft3d_kernel::boolean::contact`), which answers
-/// Clear for such a pair (`feature.boolean` intersect of it leaves
-/// nothing, `document.interference` says clear): a common volume a few
-/// tolerances deep under a ball thousands of times the body. Balls of
-/// 0.5 to 200 sunk 3 to 200 tolerances are answered overlap (168 of 168
-/// in the review). The same before and after the repair of the cone's
-/// proof (before it, the cone's case was clear with a false proof).
-/// When the kernel's contact is fixed this test fails: make it the right
-/// answer (an overlap; both assertions failed).
+/// Both were answered clear (1.097e-6, `atLeast` 0), and `clearance min
+/// "0 mm"` and `overlap is false` passed on bodies that overlap: where
+/// nothing is proven beyond twice the tolerance, `verify_cmds::
+/// clearance_status` asks the kernel (`craft3d_kernel::boolean::
+/// contact`), which answered Clear. The ball crosses the side in a loop
+/// half a unit across at a sine of a few 1e-5, where a marched point
+/// within its ten-thousandth of the tolerance of the ball was anywhere
+/// across a band several tolerances wide about the loop; since a point is
+/// held to the curve where the surfaces cross at a shallow angle
+/// (docs/design/booleans.md › *A spar's face beside a rib's skin*) the
+/// kernel answers the overlap, and both assertions fail, as they must.
+/// (This test held the wrong answer until then, and failed when the
+/// answer changed, as it was written to.)
 #[test]
-fn a_huge_ball_sunk_a_few_tolerances_into_a_side_is_answered_clear_known() {
+fn a_huge_ball_sunk_a_few_tolerances_into_a_side_overlaps() {
     let tol = 1e-6;
     let (rb, r): (f64, f64) = (10_000.0, 4.0);
     // The cone's case by its closed form: from the side's point at half
@@ -2226,11 +2226,10 @@ fn a_huge_ball_sunk_a_few_tolerances_into_a_side_is_answered_clear_known() {
             "{what}: proven {at_least:e} apart: {clear}"
         );
         assert!(
-            clear["pairs"][0]["status"] == "clear"
-                && apart["status"] == "passed"
-                && none["status"] == "passed",
-            "{what}, sunk {depth:e}, is answered otherwise now: {clear}; at least 0: {}; no \
-             overlap: {}: if an overlap and both failed, it is fixed; make this the right answer",
+            clear["pairs"][0]["status"] == "overlap"
+                && apart["status"] == "failed"
+                && none["status"] == "failed",
+            "{what}, sunk {depth:e}: {clear}; at least 0: {}; no overlap: {}",
             apart["status"],
             none["status"]
         );
