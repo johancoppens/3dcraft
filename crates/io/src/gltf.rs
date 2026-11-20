@@ -24,7 +24,9 @@
 //! the normals differ (an edge between faces at an angle) they stay two, so
 //! creases stay creases. A vertex without a normal is never shared: its
 //! normal is worked out from its own face's triangles. The triangles are
-//! those of the face groups, in the same order.
+//! those of the face groups, each with the same corners and winding, in
+//! the tessellator's order (the face groups' order, but for the pieces of
+//! a face cut in two, which a face group holds together).
 //!
 //! The tessellator gives each face its own vertices, with the surface's
 //! normal at each: a group keeps them (a cylinder shades smooth, and the

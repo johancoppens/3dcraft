@@ -722,6 +722,11 @@ fn no_command_panics_on_adversarial_parameters() {
                 check(&json!({ key.as_str(): value, "clear": true }));
             }
         }
+        // glTF a primitive per look (`primitives` looks) takes a way of its
+        // own through the face groups: once in each state, to a `.glb`.
+        if v == 0 && keys.iter().any(|k| k == "primitives") {
+            check(&json!({"path": "hunt.glb", "primitives": "looks"}));
+        }
         // Every parameter at once with the same value, so the checks
         // behind the first failing parameter are reached as well: also
         // with one parameter left valid in turn.

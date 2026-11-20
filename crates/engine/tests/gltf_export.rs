@@ -540,6 +540,79 @@ fn a_primitive_per_look_has_the_same_triangles() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Only the materials a primitive uses are written, renumbered in order: a
+/// red block with a blue top, then a block whose own yellow no face uses
+/// (every face of it is green), then a plain block. The yellow falls out
+/// between looks that stay, so a renumbering off by one, or one that also
+/// shifts the looks before the gap, colours the top red or the green block
+/// grey, or points past the materials: in both forms every primitive must
+/// keep its face's colour.
+#[test]
+fn a_look_nothing_uses_is_dropped_and_the_others_keep_their_faces() {
+    let dir = workdir("gltf-export", "renumbered");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    for (name, x) in [("A", 0), ("B", 20), ("C", 40)] {
+        run(
+            &mut s,
+            "feature.block",
+            json!({"size": [10, 10, 10], "position": [x, 0, 0], "name": name}),
+        );
+    }
+    run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "A", "color": RED}),
+    );
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": ["F1:face(1)"], "color": BLUE}),
+    );
+    run(
+        &mut s,
+        "body.appearance",
+        json!({"body": "B", "color": YELLOW}),
+    );
+    let every: Vec<String> = (0..6).map(|k| format!("F2:face({k})")).collect();
+    run(
+        &mut s,
+        "face.appearance",
+        json!({"faces": every, "color": GREEN}),
+    );
+    let top = f64::from(0.01_f32);
+    let yellow = linear(YELLOW);
+    for (form, calls) in [("faces", 18), ("looks", 4)] {
+        let (out, file) = export(
+            &mut s,
+            &dir,
+            &format!("{form}.glb"),
+            json!({"primitives": form}),
+        );
+        assert_eq!(out["materials"], 4, "{form}: {out}");
+        assert_eq!(out["drawCalls"], calls, "{form}: {out}");
+        assert_eq!(file.materials.len(), 4, "{form}");
+        assert!(
+            file.materials.iter().all(|m| m.base_color != yellow),
+            "{form}"
+        );
+        for node in &file.nodes {
+            for p in &node.primitives {
+                let on_top = p.positions.iter().all(|q| q[1] == top);
+                let want = match node.name.as_str() {
+                    "A" if on_top => BLUE,
+                    "A" => RED,
+                    "B" => GREEN,
+                    _ => GREY,
+                };
+                let colour = file.materials[p.material.unwrap()].base_color;
+                assert_eq!(colour, linear(want), "{form}: {}", node.name);
+            }
+        }
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A model far from the origin loses precision in the file's 32-bit
 /// floats: the points that fall on others are counted and the body named,
 /// as binary STL's are; near the origin nothing is said.
