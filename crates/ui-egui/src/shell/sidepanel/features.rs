@@ -1985,6 +1985,8 @@ mod tests {
             made_by: None,
             held: None,
             failed: None,
+            inside: Vec::new(),
+            marked: false,
         }
     }
 

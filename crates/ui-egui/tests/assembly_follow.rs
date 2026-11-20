@@ -265,10 +265,18 @@ fn an_instance_whose_part_has_a_failed_feature_is_marked_in_the_instances_panel(
     assert!((width(&shell) - 30.0).abs() < 1e-6, "{}", width(&shell));
     let row = &shell.tree_rows()[0];
     assert_eq!(row.state, craft3d_engine::FeatureState::Ok, "{row:?}");
+    // The row's status keeps the ⚠ that `ui.get` has reported since 0.2.0;
+    // the panel paints it for held only and marks a failed feature with
+    // the dot after the name (`marked`, 2026-11-20), its reason under the
+    // row. Both are regression pins of the report's shape, with no oracle
+    // independent of the code (docs/testing.md › *Changing an expectation*,
+    // its third condition): what is painted is pinned by the UX pass's
+    // pictures, not here.
     assert!(
         row.status.contains(craft3d_ui_egui::shell::HELD_MARK),
         "{row:?}"
     );
+    assert!(row.marked, "{row:?}");
     let failed = row.failed.as_deref().unwrap_or_else(|| panic!("{row:?}"));
     assert!(
         failed.contains("`Round` (F2)") && failed.contains("radius"),

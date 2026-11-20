@@ -419,6 +419,19 @@ fn wrong_inside(sub: &Placed, flexible: bool, depth: usize) -> Vec<String> {
             }
         }
     }
+    out.extend(wrong_within(sub, flexible));
+    out
+}
+
+/// What is wrong in the subassembly `sub` itself as it is placed for its
+/// parent, its instances left out: each of its mates and couplings that
+/// takes no part ("its mate `Ground`: …", "its coupling …") and, unless
+/// it is flexible, its own solve ("it does not solve: …"). The last of
+/// what [`wrong_inside`] lists, in its words; what the Instances panel
+/// says under the subassembly's row (`asm_outline.rs`), its instances'
+/// own being on their rows.
+pub(crate) fn wrong_within(sub: &Placed, flexible: bool) -> Vec<String> {
+    let mut out = Vec::new();
     for mate in &sub.mates {
         if let Some(why) = &mate.error {
             out.push(format!("its mate `{}`: {why}", mate.name));

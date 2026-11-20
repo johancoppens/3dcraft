@@ -613,6 +613,36 @@ pub struct Trouble {
     pub elsewhere: bool,
 }
 
+/// What the form's header says ([`Shell::form_said`]).
+#[derive(Clone, Debug, PartialEq)]
+enum FormSaid {
+    /// A value is being applied, or an assembly's verdict at rest is not
+    /// known yet: the spinner and *Regenerating…*.
+    Waiting,
+    /// An assembly's verdict at rest cannot be had (the page's worker
+    /// stopped with the view's job): *Not checked*, why on hover; neither
+    /// valid nor failed.
+    NotChecked(String),
+    /// *Valid*.
+    Valid,
+    /// Not valid: the words (*Breaks the model*, *Not solved*, *2 failed*)
+    /// and the problems they stand on, in the check's words (none for a
+    /// break, whose trouble line says it).
+    Wrong(String, Vec<String>),
+}
+
+impl FormSaid {
+    /// The header's words.
+    fn words(&self) -> String {
+        match self {
+            FormSaid::Waiting => "Regenerating…".to_string(),
+            FormSaid::NotChecked(_) => "Not checked".to_string(),
+            FormSaid::Valid => "Valid".to_string(),
+            FormSaid::Wrong(words, _) => words.clone(),
+        }
+    }
+}
+
 /// The last state the form took as good: the parameters' expressions
 /// then (Back to last good sets them) and the model's faults then (a
 /// commit that adds one broke the model).
@@ -683,6 +713,10 @@ pub struct ParamForm {
     note: Option<Note>,
     trouble: Option<Trouble>,
     last_good: Option<LastGood>,
+    /// For an assembly, what its check lists at rest as of the last sync:
+    /// what the form weighs and says, whatever the view shows (a moment of
+    /// a motion, a joint held by hand), as `document.check` does.
+    at_rest: craft3d_engine::AssemblyAtRest,
     /// A parameter moved off the last good values by something other than
     /// the form (an undo, a redo, an agent), seen when the revision
     /// changed: judged once the assertions are measured.
@@ -1027,17 +1061,45 @@ impl Shell {
     }
 
     /// What is wrong with the model as the last sync left it: the failing
-    /// rows of the feature list and the assertions measured broken.
+    /// rows of the feature list, or for an assembly what its check lists
+    /// (`AssemblyOutline::problems`), and the assertions measured broken.
     fn faults_now(&self) -> (Faults, bool) {
-        use craft3d_engine::AssertionStatus as A;
+        use craft3d_engine::{AssemblyAtRest, AssertionStatus as A};
         let mut faults = Faults::default();
-        for row in self.rows.iter().filter(|r| r.state == FeatureState::Failed) {
-            let error = row.error.clone().unwrap_or_default();
-            faults
-                .features
-                .insert(row.id.clone(), format!("{}: {error}", row.name));
-        }
         let mut pending = false;
+        match &self.params.at_rest {
+            // Each by what it names (the second problem of one instance as
+            // `instance Sub 2`), in the check's words, at rest as the check
+            // reads it (not the moment shown): a commit that adds one breaks
+            // the model, one that changes only a reason does not. Before,
+            // only the instances that were not placed counted.
+            AssemblyAtRest::Known(problems) => {
+                let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+                for problem in problems {
+                    let named = format!("{} {}", problem.what, problem.name);
+                    let count = seen.entry(named.clone()).or_insert(0);
+                    *count = count.saturating_add(1);
+                    let key = if *count == 1 {
+                        named
+                    } else {
+                        format!("{named} {count}")
+                    };
+                    faults.features.insert(key, problem.problem.clone());
+                }
+            }
+            // Not known yet (on the page, until the worker says), or not to
+            // be had for this state (the worker stopped with its view):
+            // judged once it is known, as a check still being measured is.
+            AssemblyAtRest::Unknown | AssemblyAtRest::Unavailable(_) => pending = true,
+            AssemblyAtRest::Part => {
+                for row in self.rows.iter().filter(|r| r.state == FeatureState::Failed) {
+                    let error = row.error.clone().unwrap_or_default();
+                    faults
+                        .features
+                        .insert(row.id.clone(), format!("{}: {error}", row.name));
+                }
+            }
+        }
         for a in &self.assertion_rows {
             match a.status {
                 A::Failed | A::Error => {
@@ -1057,6 +1119,8 @@ impl Shell {
     /// state. Part of every sync.
     pub(super) fn sync_params(&mut self, session: &mut Session) {
         let doc = session.document_status().map(|s| s.id);
+        // Asked below, for a form only.
+        self.params.at_rest = craft3d_engine::AssemblyAtRest::Part;
         let form = &mut self.params;
         let on_player = std::mem::take(&mut form.opens_on_player);
         if doc != form.doc {
@@ -1112,6 +1176,12 @@ impl Shell {
             }
             form.list = Some(list);
             form.read_for = Some((doc, revision));
+        }
+        // The verdict at rest only where a form reads it (public
+        // parameters): asking may place the state at rest, which nothing
+        // else of an assembly without a form needs.
+        if form.list.as_ref().is_some_and(|l| l.jig) {
+            self.params.at_rest = session.assembly_at_rest();
         }
         let (faults, measuring) = self.faults_now();
         let form = &mut self.params;
@@ -1274,11 +1344,77 @@ impl Shell {
         }
     }
 
+    /// What the form's header says while no value is being applied
+    /// ([`FormSaid`]): `Valid`; `Breaks the model` after a value that broke
+    /// it (against the last good state); for an assembly that its check
+    /// finds something wrong with at rest, what its Assembly tab heads with
+    /// (`Not solved`, `2 failed`) whatever the last good state, with the
+    /// check's problems, the solve's first when it failed (the words lead
+    /// with it); while an assembly's verdict at rest is not known (on the
+    /// page, until the worker says), what it says while it works; where it
+    /// cannot be had (the worker stopped with the view's job), *Not
+    /// checked*. Never *Valid* without a verdict. Before, an assembly that
+    /// opened with an instance not placed, or broke by a mate, a coupling
+    /// or its solve, was said *Valid*, and so was one past a limit at rest
+    /// while a moment of its motion inside the limit was shown.
+    fn form_said(&self) -> FormSaid {
+        use craft3d_engine::AssemblyAtRest;
+        if self.params.trouble.as_ref().is_some_and(|t| t.broke) {
+            return FormSaid::Wrong("Breaks the model".to_string(), Vec::new());
+        }
+        match &self.params.at_rest {
+            AssemblyAtRest::Unknown => FormSaid::Waiting,
+            AssemblyAtRest::Unavailable(why) => FormSaid::NotChecked(format!(
+                "the model is built elsewhere, and how it is placed could not be had there: {why}"
+            )),
+            AssemblyAtRest::Known(problems) if !problems.is_empty() => {
+                let mut ordered = problems.clone();
+                if let Some(at) = ordered.iter().position(|p| p.what == "solve") {
+                    let solve = ordered.remove(at);
+                    ordered.insert(0, solve);
+                }
+                let verdict = crate::state::AssemblyVerdict::new(&ordered, false, None);
+                FormSaid::Wrong(verdict.text, verdict.problems)
+            }
+            AssemblyAtRest::Known(_) | AssemblyAtRest::Part => FormSaid::Valid,
+        }
+    }
+
+    /// What the form says under its header of the problems it stands on,
+    /// as the window writes them: the first, and how many more the
+    /// Assembly tab lists; `None` without one.
+    fn form_why(problems: &[String]) -> Option<(String, Option<String>)> {
+        let first = crate::shell::readable_problem(problems.first()?);
+        let more = problems.len().saturating_sub(1);
+        Some((
+            first,
+            (more > 0).then(|| format!("and {more} more on the Assembly tab")),
+        ))
+    }
+
     /// `ui.get`'s `parameters`: what the form shows besides the values
     /// (which are `param.list`'s).
     pub(crate) fn parameters_report(&self) -> Value {
         let form = &self.params;
         let list = form.list.as_ref();
+        let jig = list.is_some_and(|l| l.jig);
+        let said = if form.busy() {
+            FormSaid::Waiting
+        } else {
+            self.form_said()
+        };
+        // What the form's header says, and the line under it; none without
+        // a form.
+        let status = jig.then(|| said.words());
+        let why = match &said {
+            FormSaid::Wrong(_, problems) if jig => {
+                Self::form_why(problems).map(|(first, more)| match more {
+                    Some(more) => format!("{first}\n{more}"),
+                    None => first,
+                })
+            }
+            _ => None,
+        };
         json!({
             "jig": list.is_some_and(|l| l.jig),
             "tab": if self.state.parameters.open && list.is_some_and(|l| l.jig) {
@@ -1289,6 +1425,8 @@ impl Shell {
             "count": list.map_or(0, |l| l.params.len()),
             "inUse": self.jig_in_use(),
             "busy": form.busy(),
+            "status": status,
+            "why": why,
             "live": form.live.as_ref().map(|l| json!({
                 "name": l.name, "value": l.value, "dragging": l.dragging,
             })),
@@ -1622,8 +1760,17 @@ impl Shell {
     fn parameters_header(&mut self, ui: &mut egui::Ui, list: &ParamList, compact: bool) {
         let kit = crate::kit::Kit::panel(&self.tokens);
         let s = kit.skin;
-        let broke = self.params.trouble.as_ref().is_some_and(|t| t.broke);
-        let busy = self.params.busy();
+        let said = if self.params.busy() {
+            FormSaid::Waiting
+        } else {
+            self.form_said()
+        };
+        // Why, under the header: the first problem it stands on, as the
+        // window writes it, and how many more the Assembly tab lists.
+        let why_line = match &said {
+            FormSaid::Wrong(_, problems) => Self::form_why(problems),
+            _ => None,
+        };
         ui.horizontal(|ui| {
             ui.set_min_height(kit.hit(self.tokens.control_height));
             if compact {
@@ -1637,22 +1784,45 @@ impl Shell {
                 );
                 ui.add_space(self.tokens.inset);
             }
-            if busy {
-                kit.spinner(ui, "Regenerating…");
-            } else {
-                let (glyph, text, ink) = if broke {
-                    (crate::kit::Glyph::Warning, "Breaks the model", s.failed)
-                } else {
-                    (crate::kit::Glyph::Check, "Valid", s.ok)
-                };
+            // Working, or an assembly's verdict not known yet: what the
+            // form says while it does not know, never Valid.
+            let (glyph, ink, hover) = match &said {
+                FormSaid::Waiting => {
+                    kit.spinner(ui, "Regenerating…");
+                    (None, s.text, String::new())
+                }
+                // Neither valid nor failed: why on hover.
+                FormSaid::NotChecked(why) => {
+                    (Some(crate::kit::Glyph::Info), s.text_dim, why.clone())
+                }
+                FormSaid::Valid => (Some(crate::kit::Glyph::Check), s.ok, String::new()),
+                FormSaid::Wrong(_, problems) => (
+                    Some(crate::kit::Glyph::Warning),
+                    s.failed,
+                    crate::shell::problems_hover(problems),
+                ),
+            };
+            if let Some(glyph) = glyph {
                 let side = self.tokens.nav_icon_size * 0.875;
                 let (place, _) =
                     ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
                 crate::kit::glyphs::paint(ui.painter(), glyph, place, color(ink), &self.tokens);
-                let said = ui.label(egui::RichText::new(text).font(kit.font()).color(color(ink)));
+                // Never wider than the room it has: cut with "…", whole
+                // on hover.
+                let mut shown = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(said.words())
+                            .font(kit.font())
+                            .color(color(ink)),
+                    )
+                    .truncate(),
+                );
+                if !hover.is_empty() {
+                    shown = shown.on_hover_text(hover);
+                }
                 self.params
                     .hits
-                    .push(("status".to_string(), place.union(said.rect)));
+                    .push(("status".to_string(), place.union(shown.rect)));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let about = [list.info.title.as_str(), list.info.description.as_str()]
@@ -1692,6 +1862,18 @@ impl Shell {
             && trouble.name.is_none()
         {
             self.trouble_line(ui, &trouble);
+        }
+        if let Some((first, more)) = why_line {
+            for line in std::iter::once(first).chain(more) {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(line)
+                            .size(self.tokens.secondary_font)
+                            .color(color(self.tokens.failed)),
+                    )
+                    .wrap(),
+                );
+            }
         }
     }
 
