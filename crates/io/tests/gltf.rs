@@ -614,9 +614,7 @@ fn slivers(n: u32) -> Group {
             _ => [f64::from(k / 3), 0.0, 1.0],
         })
         .collect();
-    let mut triangles: Vec<[u32; 3]> = (0..n / 3)
-        .map(|i| [3 * i, 3 * i + 1, 3 * i + 2])
-        .collect();
+    let mut triangles: Vec<[u32; 3]> = (0..n / 3).map(|i| [3 * i, 3 * i + 1, 3 * i + 2]).collect();
     if !n.is_multiple_of(3) {
         triangles.push([n - 1, n - 2, n - 3]);
     }
