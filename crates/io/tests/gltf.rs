@@ -23,7 +23,7 @@ use craft3d_io::{MeshFormat, export_mesh};
 use craft3d_kernel::primitives;
 use craft3d_math::{Frame, Vec3};
 use craft3d_meshio::Unit;
-use craft3d_meshio::gltf::{Extra, PbrMaterial, Scene, srgb_to_linear, write_glb};
+use craft3d_meshio::gltf::{Extra, Group, PbrMaterial, Scene, srgb_to_linear, write_glb};
 use craft3d_tess::{Mesh, TessParams, tessellate_body};
 use craft3d_testkit::readers::gltf::{Gltf, GltfNode, read_glb};
 use craft3d_testkit::readers::json::Json;
@@ -601,6 +601,85 @@ fn any_name_any_scale_and_every_unit() {
             .fold(f64::MIN, f64::max);
         assert_eq!(top, f64::from((3.0 * metres) as f32), "{unit:?}");
     }
+}
+
+/// A group of `n` vertices in millimetres, every one on a triangle: the
+/// triangles `(3i, 3i + 1, 3i + 2)` of slivers along x, and one more over
+/// the last three vertices when `n` is not a multiple of 3.
+fn slivers(n: u32) -> Group {
+    let positions = (0..n)
+        .map(|k| match k % 3 {
+            0 => [f64::from(k / 3), 0.0, 0.0],
+            1 => [f64::from(k / 3), 1.0, 0.0],
+            _ => [f64::from(k / 3), 0.0, 1.0],
+        })
+        .collect();
+    let mut triangles: Vec<[u32; 3]> = (0..n / 3)
+        .map(|i| [3 * i, 3 * i + 1, 3 * i + 2])
+        .collect();
+    if !n.is_multiple_of(3) {
+        triangles.push([n - 1, n - 2, n - 3]);
+    }
+    Group {
+        extras: Vec::new(),
+        material: None,
+        positions,
+        normals: Vec::new(),
+        triangles,
+    }
+}
+
+/// The switch to 32-bit indices, read back by the independent reader: a
+/// group of 65,536 vertices has `u32` indices (5125), one of 65,535 after
+/// it `u16` (5123), and both read back with every rule of the reader (the
+/// restart value never used, every accessor in its view and aligned, `min`
+/// and `max` the data's, unit normals) as the triangles and points given,
+/// in metres with +Y up. An empty scene and a node without triangles read
+/// back too: no buffer, no mesh.
+#[test]
+fn indices_past_65535_vertices_read_back_as_32_bits() {
+    let groups = vec![slivers(65_536), slivers(65_535)];
+    let scene = Scene {
+        generator: "3DCraft".to_string(),
+        unit: Unit::Millimeter,
+        nodes: vec![
+            craft3d_meshio::gltf::Node {
+                name: "empty".to_string(),
+                extras: Vec::new(),
+                groups: vec![Group::default()],
+            },
+            craft3d_meshio::gltf::Node {
+                name: "wide".to_string(),
+                extras: Vec::new(),
+                groups: groups.clone(),
+            },
+        ],
+        materials: Vec::new(),
+    };
+    let read = read_glb(&write_glb(&scene).unwrap()).unwrap();
+    assert_eq!(read.nodes.len(), 2);
+    assert!(read.nodes[0].mesh.is_none());
+    let primitives = &read.nodes[1].primitives;
+    assert_eq!(
+        primitives.iter().map(|p| p.index_type).collect::<Vec<_>>(),
+        [5125, 5123]
+    );
+    for (p, group) in primitives.iter().zip(&groups) {
+        assert_eq!(p.positions.len(), group.positions.len());
+        let given: Vec<[usize; 3]> = group
+            .triangles
+            .iter()
+            .map(|t| t.map(|k| k as usize))
+            .collect();
+        assert_eq!(p.triangles, given);
+        for (q, model) in p.positions.iter().zip(&group.positions) {
+            let want = [model[0], model[2], -model[1]];
+            assert_eq!(*q, want.map(|c| f64::from((c * 1e-3) as f32) + 0.0));
+        }
+    }
+    let empty = read_glb(&write_glb(&Scene::default()).unwrap()).unwrap();
+    assert!(empty.nodes.is_empty() && empty.materials.is_empty());
+    assert!(empty.json.get("buffers").is_none());
 }
 
 /// A sheet (an open box) is written as it is; the reader takes it, and a

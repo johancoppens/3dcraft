@@ -280,6 +280,9 @@ fn adversarial() -> Vec<Value> {
         json!("../../etc/passwd"),
         json!("/etc/passwd"),
         json!("x.stl"),
+        // glTF has a writer of its own behind `file.export` (2026-11-20):
+        // a `.glb` path reaches it in every state.
+        json!("x.glb"),
         json!("x.3dcraft"),
         json!("."),
         json!("stl"),
