@@ -1147,9 +1147,10 @@ fn the_heading_keeps_to_the_panel_s_width() {
 /// A source file that changes while a moment of the motion is shown (as
 /// the window follows it when it gets the focus back): the form still
 /// weighs the assembly at rest, placed again with the file read now, and
-/// never waits for the moment to be let go of. Before (the review's probe
-/// of round two), it said *Regenerating…* until then, with nothing being
-/// regenerated.
+/// never waits for the moment to be let go of. A guard, not a fix: the
+/// review's probe of round two (Check 44723852412) found the window
+/// already said *1 failed* here, not *Regenerating…*; the page's two cases
+/// were the stuck ones.
 #[test]
 fn a_source_followed_during_a_moment_leaves_the_form_its_verdict() {
     let mut s = session("follow-moment");

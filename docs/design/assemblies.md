@@ -1018,9 +1018,10 @@ each published assembly as 0.2.0 answered it.
   state; it is not: the worker holds the state below the view (`state_bytes` of `view.base`) and shows the
   moment beside it (`show_view`), so the facts of any view of a state say its verdict at rest, and the page now
   keeps them from any view. The worker places the state at rest for it when it is not placed yet (once per state,
-  what the check would place; a moment is placed apart, `place_moment`, and leaves it), and so does the window,
-  which closes the native case the review found with the same probe (a source followed during a moment left the
-  form on *Regenerating…*). (b) After the worker stopped with the view's job the form stayed on *Regenerating…*
+  what the check would place; a moment is placed apart, `place_moment`, and leaves it), and so does the window.
+  The window was not stuck: the review's native probe (a source followed during a moment, Check 44723852412)
+  found the form saying *1 failed*: the state at rest was placed again within the window's frames already (by
+  what, the probe did not look); the test of that case is a guard. (b) After the worker stopped with the view's job the form stayed on *Regenerating…*
   until the next edit: the page now tells a view whose facts came without the verdict (`view_failed_here`'s
   error) from one whose facts have not come (`AssemblyAtRest::Unavailable`), and the form says *Not checked*,
   neither valid nor failed (the info glyph, dim), why on hover (*the model is built elsewhere, and how it is
