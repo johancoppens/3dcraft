@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: Ask a question
+    url: https://github.com/johancoppens/3dcraft/discussions/categories/q-a
+    about: A question (does it read my file, how do I connect my agent, how was it built) goes to Discussions, Q&A. A problem, a refusal included, is an issue.
   - name: User guide
     url: https://3dcraft.dev/guide/
     about: Installing 3DCraft, connecting an AI agent, modelling, and what to do when something goes wrong.

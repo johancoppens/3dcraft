@@ -5,6 +5,10 @@ machine can check (the [README](README.md) says how it started). This page says 
 and how to propose a change. The rules for the code itself are in [`AGENTS.md`](AGENTS.md) and
 [`docs/contributing.md`](docs/contributing.md).
 
+A question (does it read my file, how do I connect my agent, how was it built) goes to
+[Discussions, in Q&A](https://github.com/johancoppens/3dcraft/discussions/categories/q-a); a problem, a
+refusal included, stays an issue, as below.
+
 ## Reporting a problem
 
 Open an issue in this repository: [new issue](https://github.com/johancoppens/3dcraft/issues/new/choose),
