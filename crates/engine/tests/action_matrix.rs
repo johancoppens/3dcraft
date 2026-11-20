@@ -19,17 +19,23 @@ mod plan;
 use craft3d_engine::{Session, Workspace};
 use plan::{CallError, Expect, KINDS, Verdict};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 /// Entities per kind the gated run takes (bottom-k by name, so the same
 /// ones every time).
 const PER_KIND: usize = 4;
 
 fn bracket() -> Session {
+    built(include_str!("action_matrix/bracket.steps.json"))
+}
+
+/// A model built from its steps (`[[command, params], ...]`) in a new
+/// document in mm.
+fn built(text: &str) -> Session {
     let mut session = Session::new(Workspace::unrestricted());
     session
         .execute("file.new", &json!({"units": "mm"}))
         .unwrap();
-    let text = include_str!("action_matrix/bracket.steps.json");
     let steps: Vec<(String, Value)> = serde_json::from_str(text).unwrap();
     for (id, params) in &steps {
         session.execute(id, params).unwrap();
@@ -361,6 +367,7 @@ fn measured(volume: f64, area: f64) -> plan::Measured {
         volume_bound: None,
         area_bound: None,
         applied: None,
+        below: None,
     }
 }
 
@@ -410,6 +417,7 @@ fn identities_catch_wrong_volumes() {
                 volume_bound: None,
                 area_bound: None,
                 applied: None,
+                below: None,
             },
         )
         .is_ok()
@@ -427,6 +435,7 @@ fn identities_catch_wrong_volumes() {
                 volume_bound: None,
                 area_bound: None,
                 applied: None,
+                below: None,
             }
         )
         .is_ok()
@@ -443,6 +452,7 @@ fn identities_catch_wrong_volumes() {
                 volume_bound: None,
                 area_bound: None,
                 applied: None,
+                below: None,
             },
         )
         .is_ok()
@@ -451,6 +461,39 @@ fn identities_catch_wrong_volumes() {
     assert!(!two(1999.0, 1200.0, 20.0));
     assert!(!two(2000.0, 1100.0, 20.0), "instances merged");
     assert!(!two(2000.0, 1200.0, 5.0), "both in one place");
+    // The block cut by its top's plane moved in by 1, at a tolerance of
+    // 1e-6: measure.below gives 900 below it, the section is 100; the cut
+    // may differ from it by 4e-6 · (600 + 100) + 2e-9 · 1000 = 2.8e-3.
+    let cut = action(
+        Expect::Below {
+            d: 1.0,
+            tolerance: 1e-6,
+        },
+        1000.0,
+        600.0,
+    );
+    let kept = |volume: f64, below: Option<(f64, f64)>| {
+        plan::identity(
+            &cut,
+            &plan::Measured {
+                volume,
+                area: 560.0,
+                centroid: [5.0, 5.0, 4.5],
+                volume_bound: None,
+                area_bound: None,
+                applied: None,
+                below,
+            },
+        )
+        .is_ok()
+    };
+    assert!(kept(900.0, Some((900.0, 100.0))));
+    assert!(kept(900.0 + 2e-3, Some((900.0, 100.0))), "within the band");
+    assert!(!kept(900.0 + 4e-3, Some((900.0, 100.0))), "past the band");
+    assert!(!kept(100.0, Some((900.0, 100.0))), "the other side kept");
+    assert!(!kept(1000.0, Some((1000.0, 0.0))), "nothing taken away");
+    assert!(!kept(1100.0, Some((1100.0, 100.0))), "material added");
+    assert!(!kept(900.0, None), "nothing to hold it to");
     // Without the exact change: a fillet of radius 0.1 along one straight
     // edge 10 long takes at most 0.1143 · (10 + 2 · 5.67 · 1.143) = 2.62
     // (r times its setback at 10°, along the edge and on past both ends
@@ -701,6 +744,7 @@ fn a_blend_below_the_noise_needs_other_evidence() {
         volume_bound: Some(1e-8),
         area_bound: Some(1e-9),
         applied,
+        below: None,
     };
     let holds_after = |a: &plan::Action, m: plan::Measured| plan::identity(a, &m).is_ok();
     // A fillet of radius 1e-5 along 10: at most 11.43e-10 · 10.0013 =
@@ -921,6 +965,7 @@ fn a_tiny_blend_on_a_large_body_is_told_by_its_faces() {
                 volume_bound: measure["volumeBound"].as_f64(),
                 area_bound: measure["areaBound"].as_f64(),
                 applied: Some(plan::blend_applied(&mut call(&mut session), &fillet, &id).is_ok()),
+                below: None,
             };
             if command == "feature.transform" {
                 // The same body measured again: its change is jitter, far
@@ -1008,4 +1053,156 @@ fn a_bug_and_a_panic_are_told_apart() {
     );
     assert_eq!(plan::bug_verdict(&panic), Some(Verdict::Crash));
     assert_eq!(plan::bug_verdict("the radius is too large"), None);
+}
+
+/// The plane cut kind on a block 10 × 20 × 30: each face's plane moved
+/// in by a tenth of the face's shortest edge leaves the block less a slab
+/// that deep, what measure.below gives below the plane. Seeded mistakes:
+/// the other side kept (the slab), and the plane moved out instead (the
+/// whole block, nothing taken away), are wrong.
+#[test]
+fn a_plane_cut_is_held_to_the_volume_below_its_plane() {
+    let mut session =
+        built(r#"[["feature.block", {"size": ["10 mm", "20 mm", "30 mm"], "name": "Box"}]]"#);
+    let inspect = session.execute("document.inspect", &json!({})).unwrap();
+    let unit = plan::length_unit(&inspect);
+    let body = plan::bodies(&inspect)
+        .into_iter()
+        .find(|b| b.solid)
+        .unwrap();
+    assert_eq!(body.tolerance, 1e-6, "file.new's default");
+    let edges = plan::edges(
+        &session
+            .execute("document.edges", &json!({"feature": body.feature}))
+            .unwrap(),
+    );
+    let cuts = plan::plan(&body, &edges, &unit, &[plan::Kind::PlaneCut]);
+    assert_eq!(cuts.len(), 6, "a cut by each face");
+    // 10 × 20 faces moved in by 1 take 200, 20 × 30 by 2 take 1200, 10 × 30
+    // by 1 take 300.
+    let mut volumes = Vec::new();
+    for cut in &cuts {
+        let outcome = plan::run_action(&mut call(&mut session), cut);
+        assert_eq!(
+            outcome.verdict,
+            Verdict::Ok,
+            "{}: {}",
+            cut.entity,
+            outcome.reason
+        );
+        assert!(!outcome.restart && !outcome.unrestored, "{}", cut.entity);
+        volumes.push(outcome.after.unwrap().0);
+    }
+    volumes.sort_by(f64::total_cmp);
+    let want = [4800.0, 4800.0, 5700.0, 5700.0, 5800.0, 5800.0];
+    for (got, want) in volumes.iter().zip(want) {
+        assert!((got - want).abs() < 1e-9 * want, "{volumes:?}");
+    }
+    let mut other = cuts[0].clone();
+    other.params["planes"][0]["side"] = json!("above");
+    let outcome = plan::run_action(&mut call(&mut session), &other);
+    assert_eq!(outcome.verdict, Verdict::Wrong, "{}", outcome.reason);
+    let mut out = cuts[0].clone();
+    let offset = out.params["planes"][0]["offset"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    out.params["planes"][0]["offset"] = json!(offset.trim_start_matches('-'));
+    let outcome = plan::run_action(&mut call(&mut session), &out);
+    assert_eq!(outcome.verdict, Verdict::Wrong, "{}", outcome.reason);
+    assert!(
+        outcome.reason.contains("took nothing away"),
+        "{}",
+        outcome.reason
+    );
+    // Every cut was undone: the block is as it was.
+    let after = session.execute("document.inspect", &json!({})).unwrap();
+    assert_eq!(after.get("bodies"), inspect.get("bodies"));
+}
+
+/// The plane cut kind (`plan::Kind::PlaneCut`) on every model of the
+/// repository the matrix runs (the bracket and the four bench models; the
+/// models under `target/work` are not in the repository), in this
+/// process, planned and sampled as `cargo xtask actions` plans them: the
+/// bracket and the rotor whole, the others the 40 faces the bottom-k
+/// sampling picks (the ratchet has no plane cut yet). The kind's own run,
+/// narrower than the whole matrix, which runs every kind in server
+/// processes. Not in the gate (minutes):
+/// `cargo test -p craft3d-engine --test action_matrix -- --ignored --nocapture plane_cuts`.
+/// Prints every cell and the refusals by class with their cells; fails on
+/// a crash, a bug, a wrong result or an undo that did not restore.
+#[test]
+#[ignore = "minutes: the plane cut kind on every model of the repository, run on demand"]
+fn plane_cuts_on_the_models_of_the_repository() {
+    let models: [(&str, &str, bool); 5] = [
+        (
+            "bracket",
+            include_str!("action_matrix/bracket.steps.json"),
+            true,
+        ),
+        ("rotor", include_str!("bench_models/rotor.steps.json"), true),
+        (
+            "impeller-blades",
+            include_str!("bench_models/impeller-blades.steps.json"),
+            false,
+        ),
+        (
+            "engine-block",
+            include_str!("bench_models/engine-block.steps.json"),
+            false,
+        ),
+        (
+            "turbofan",
+            include_str!("bench_models/turbofan.steps.json"),
+            false,
+        ),
+    ];
+    let mut failures = Vec::new();
+    let mut totals: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut classes: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (model, text, every) in models {
+        let mut session = built(text);
+        let inspect = session.execute("document.inspect", &json!({})).unwrap();
+        let unit = plan::length_unit(&inspect);
+        let mut actions = Vec::new();
+        for body in plan::bodies(&inspect).into_iter().filter(|b| b.solid) {
+            let edges = session
+                .execute("document.edges", &json!({"feature": body.feature}))
+                .unwrap();
+            let edges = plan::edges(&edges);
+            actions.extend(plan::plan(&body, &edges, &unit, &[plan::Kind::PlaneCut]));
+        }
+        let planned = actions.len();
+        let k = if every { None } else { Some(40) };
+        let mut chosen = plan::choose(actions, k, &|_, _| false);
+        plan::bound_all(&mut call(&mut session), &mut chosen);
+        println!("{model}: {} cells of {planned} planned", chosen.len());
+        for action in &chosen {
+            let outcome = plan::run_action(&mut call(&mut session), action);
+            let verdict = outcome.verdict.as_str();
+            println!(
+                "{model:16} {verdict:8} {} {}",
+                action.entity, outcome.reason
+            );
+            *totals.entry(verdict).or_default() += 1;
+            let cell = format!("{model} {}", action.entity);
+            match outcome.verdict {
+                Verdict::Ok => {}
+                Verdict::Refused => classes
+                    .entry(plan::reason_class(&outcome.reason))
+                    .or_default()
+                    .push(cell.clone()),
+                _ => failures.push(format!("{verdict} {cell}: {}", outcome.reason)),
+            }
+            if outcome.restart || outcome.unrestored {
+                failures.push(format!("{cell}: the undo did not restore the model"));
+                session = built(text);
+            }
+        }
+    }
+    println!("plane cuts: {totals:?}");
+    for (class, cells) in &classes {
+        println!("refused {:4}  {class}: {}", cells.len(), cells.join("; "));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

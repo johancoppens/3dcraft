@@ -14,7 +14,7 @@
 //! (12, 13 and 16 get a screw); all pass. A later failure of one of them
 //! is a regression of the new design, not of the old.
 
-use craft3d_fuzz::{Deep, Design, Generator, Options, Setup, run_design, run_seed};
+use craft3d_fuzz::{Deep, Design, Generator, Options, Setup, Steps, Tally, run_design, run_seed};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -110,4 +110,63 @@ fn hostile_designs_are_refused_not_crashed() {
     assert_eq!(runner.report.finding, None);
     assert_eq!(runner.report.refused.len(), 3);
     assert_eq!(runner.report.accepted, 2);
+}
+
+/// A plane cut group is held to its target: no more volume than the
+/// target had, and by one plane its two sides add up (the other side made
+/// on a copy); by two planes only the first. One that leaves nothing is a
+/// refusal, counted by its words.
+#[test]
+fn a_plane_cut_is_held_to_its_target() {
+    let cut = |params: serde_json::Value| json!({"step": "planeCut", "commands": [{"command": "feature.planeCut", "params": params}]});
+    let design = Design::from_json(&json!({
+        "seed": 1, "scale": 1,
+        "groups": [
+            {"step": "primitive", "commands": [{"command": "feature.block", "params": {"size": [10, 10, 10], "name": "N0"}}]},
+            // The block is 0 to 10 every way: 400 below z = 4, kept as a copy.
+            cut(json!({"target": "{N0}", "planes": [{"point": [0, 0, 4], "normal": [0, 0, 1]}], "keep": true, "name": "N1"})),
+            // Above z = 5 and below x + y = 10: 250.
+            cut(json!({"target": "{N0}", "planes": [{"plane": "xy", "offset": 5, "side": "above"}, {"point": [5, 5, 5], "normal": [1, 1, 0]}], "name": "N2"})),
+            // Nothing of the 400 lies above z = 20.
+            cut(json!({"target": "{N1}", "planes": {"plane": "xy", "offset": 20, "side": "above"}, "name": "N3"})),
+        ],
+    }))
+    .expect("reads");
+    let runner = run_design(&design, options()).expect("runs");
+    let report = &runner.report;
+    assert_eq!(report.finding, None);
+    assert_eq!(report.accepted, 3);
+    assert_eq!(report.refused.len(), 1);
+    assert!(
+        report.refused[0].reason.contains("leaves nothing"),
+        "{:?}",
+        report.refused
+    );
+    assert_eq!(
+        report.cut_volumes,
+        Tally {
+            checked: 2,
+            skipped: 0
+        }
+    );
+    assert_eq!(
+        report.cut_sides,
+        Tally {
+            checked: 1,
+            skipped: 0
+        }
+    );
+    assert_eq!(
+        report.steps.get("planeCut"),
+        Some(&Steps {
+            groups: 3,
+            accepted: 2
+        })
+    );
+    let json = report.to_json();
+    assert_eq!(
+        json["steps"]["planeCut"],
+        json!({"groups": 3, "accepted": 2})
+    );
+    assert_eq!(json["cuts"]["sides"], json!({"checked": 1, "skipped": 0}));
 }

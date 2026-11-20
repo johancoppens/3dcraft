@@ -14,7 +14,9 @@
 //!   `document.check` (deep: topology, self-intersection, the boolean's own
 //!   check) finds fault with, a boolean whose volumes break
 //!   `V(A ∪ B) + V(A ∩ B) = V(A) + V(B)` or `V(A − B) + V(A ∩ B) = V(A)`,
-//!   a regeneration edit by edit that differs from a full one, or a saved
+//!   a plane cut whose body has more volume than its target had, or one by
+//!   a single plane whose two sides do not add up to the target, a
+//!   regeneration edit by edit that differs from a full one, or a saved
 //!   document that opens to a different state;
 //! - **refused**: a group a command said no to (an error, or a feature
 //!   that failed with a reason). Not a bug; counted by reason. The group is
@@ -49,6 +51,10 @@ pub(crate) fn bug_kind(message: &str) -> Option<&'static str> {
 
 /// Longest reason or detail kept, in characters.
 const KEPT: usize = 600;
+
+/// The command of the plane cut step, whose groups get checks of their own
+/// ([`Runner::cut_checks`]).
+const PLANE_CUT: &str = "feature.planeCut";
 
 /// When the deep check (self-intersection on a fine mesh, the boolean's
 /// full check) runs; the shallow one runs after every group.
@@ -119,6 +125,28 @@ impl Refusal {
     }
 }
 
+/// How often a check ran, and how often it could not (a measure or a
+/// sibling that was refused): counted, never skipped silently.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tally {
+    pub checked: usize,
+    pub skipped: usize,
+}
+
+impl Tally {
+    fn to_json(self) -> Value {
+        json!({"checked": self.checked, "skipped": self.skipped})
+    }
+}
+
+/// The groups of one kind of step (`Group::step`) and how many of them
+/// were accepted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Steps {
+    pub groups: usize,
+    pub accepted: usize,
+}
+
 /// Everything a design's run produced.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Report {
@@ -129,6 +157,12 @@ pub struct Report {
     pub booleans: usize,
     pub identities_checked: usize,
     pub identities_skipped: usize,
+    /// Per kind of step, its groups and how many were accepted.
+    pub steps: BTreeMap<String, Steps>,
+    /// Plane cuts held to "no more volume than the target had".
+    pub cut_volumes: Tally,
+    /// Plane cuts by one plane held to "the two sides add up".
+    pub cut_sides: Tally,
     pub finding: Option<Finding>,
 }
 
@@ -138,6 +172,14 @@ impl Report {
     }
 
     pub fn to_json(&self) -> Value {
+        let steps: serde_json::Map<String, Value> = self
+            .steps
+            .iter()
+            .map(|(step, n)| {
+                let counts = json!({"groups": n.groups, "accepted": n.accepted});
+                (step.clone(), counts)
+            })
+            .collect();
         let mut value = json!({
             "seed": self.setup.seed,
             "scale": self.setup.scale,
@@ -146,6 +188,8 @@ impl Report {
             "accepted": self.accepted,
             "booleans": self.booleans,
             "identities": {"checked": self.identities_checked, "skipped": self.identities_skipped},
+            "steps": steps,
+            "cuts": {"volumes": self.cut_volumes.to_json(), "sides": self.cut_sides.to_json()},
             "refused": self.refused.iter().map(|r| json!({
                 "group": r.group, "command": r.command, "reason": r.reason, "key": r.key(),
             })).collect::<Vec<_>>(),
@@ -247,6 +291,46 @@ fn run_commands(
     Ok(done)
 }
 
+/// The name of the other side of a plane cut, made on a copy of the
+/// document ([`Runner::cut_checks`]).
+const OTHER_SIDE: &str = "__other";
+
+/// What a plane cut group is held to after it: its params with ids, its
+/// target, and the target's volume and area before it (`None` when they
+/// could not be measured: the checks are then skipped, counted).
+struct CutBefore {
+    params: Value,
+    target: String,
+    measured: Option<(f64, f64)>,
+}
+
+/// The params of the cut `params` by its one plane with the other side
+/// kept, as a kept copy named [`OTHER_SIDE`]; `None` when it cuts by more
+/// than one plane.
+fn other_side(params: &Value) -> Option<Value> {
+    let plane = match params.get("planes")? {
+        Value::Array(items) => match items.as_slice() {
+            [one] => one,
+            _ => return None,
+        },
+        one => one,
+    };
+    let flipped = match plane {
+        Value::Object(map) => {
+            let mut map = map.clone();
+            let above = map.get("side").and_then(Value::as_str) == Some("above");
+            map.insert("side".into(), if above { "below" } else { "above" }.into());
+            Value::Object(map)
+        }
+        other => json!({"plane": other, "side": "above"}),
+    };
+    let mut out = params.as_object()?.clone();
+    out.insert("planes".into(), json!([flipped]));
+    out.insert("keep".into(), true.into());
+    out.insert("name".into(), OTHER_SIDE.into());
+    Some(Value::Object(out))
+}
+
 /// The volume and area of a feature's body.
 fn measure(session: &mut Session, feature: &str) -> Option<(f64, f64)> {
     let m = session
@@ -309,6 +393,9 @@ impl Runner {
                 booleans: 0,
                 identities_checked: 0,
                 identities_skipped: 0,
+                steps: BTreeMap::new(),
+                cut_volumes: Tally::default(),
+                cut_sides: Tally::default(),
                 finding: None,
             },
         })
@@ -323,6 +410,21 @@ impl Runner {
     /// changes nothing.
     pub fn query(&mut self, command: &str, params: &Value) -> Option<Value> {
         self.session.execute(command, params).ok()
+    }
+
+    /// The faces of `faces` that are flat: those a datum plane can be put
+    /// on, tried on a copy of the document, so nothing of it reaches the
+    /// design.
+    pub fn flat_faces(&self, faces: &[String]) -> Vec<String> {
+        let mut copy = self.session.clone();
+        faces
+            .iter()
+            .filter(|face| {
+                copy.execute("datum.plane", &json!({"from": face, "distance": 0}))
+                    .is_ok_and(|r| r.get("status").and_then(Value::as_str) == Some("ok"))
+            })
+            .cloned()
+            .collect()
     }
 
     fn refresh_names(&mut self) {
@@ -379,8 +481,17 @@ impl Runner {
         }
         self.report.groups += 1;
         let index = self.report.groups - 1;
+        self.report
+            .steps
+            .entry(group.step.clone())
+            .or_default()
+            .groups += 1;
         let before = self.session.clone();
         let script_len = self.script.len();
+        // A plane cut's target measured before it, for its checks after.
+        let cut = (group.main_command() == PLANE_CUT)
+            .then(|| self.cut_before(group))
+            .flatten();
         let is_boolean = group.main_command() == "feature.boolean";
         if is_boolean {
             self.report.booleans += 1;
@@ -427,6 +538,11 @@ impl Runner {
             return Applied::Refused;
         }
         self.report.accepted += 1;
+        self.report
+            .steps
+            .entry(group.step.clone())
+            .or_default()
+            .accepted += 1;
         self.refresh_names();
         let command = group.main_command().to_string();
         if self.session.regeneration_matches_a_full_one() == Some(false) {
@@ -438,7 +554,101 @@ impl Runner {
             );
         }
         let deep = self.options.deep == Deep::EveryGroup;
-        self.check(deep, &command)
+        let checked = self.check(deep, &command);
+        match cut {
+            Some(cut) if checked == Applied::Accepted => self.cut_checks(&cut, &before),
+            _ => checked,
+        }
+    }
+
+    /// The params of a plane cut group with ids filled in, and its target's
+    /// volume and area now, before the group runs.
+    fn cut_before(&mut self, group: &Group) -> Option<CutBefore> {
+        let params = group
+            .commands
+            .last()
+            .map(|c| map_strings(&c.params, &|s| resolved_text(s, &self.ids), 0))?;
+        let target = params.get("target").and_then(Value::as_str)?.to_string();
+        let measured = measure(&mut self.session, &target);
+        Some(CutBefore {
+            params,
+            target,
+            measured,
+        })
+    }
+
+    /// The checks of an accepted plane cut, beyond those of every group:
+    /// its body has no more volume than its target had, and, when it cuts
+    /// by one plane, the same cut with the other side kept (on a copy of
+    /// the document before the group) has the rest, so that the two add up
+    /// to the target (a side that leaves nothing has none). Each within
+    /// what a boolean may decide either way, `2 t (S(A) + S(result))` per
+    /// result (`craft3d_kernel::boolean::verify`, rule 1: a cut is the
+    /// boolean intersection of the target with a block of which only the
+    /// top, the plane, meets it, and that face's piece is in the result),
+    /// and the integrator's `1e-9` of the volume.
+    fn cut_checks(&mut self, cut: &CutBefore, before: &Session) -> Applied {
+        let t = self.setup.tolerance();
+        let name = cut.params.get("name").and_then(Value::as_str).unwrap_or("");
+        let made = self.ids.get(name).cloned();
+        let after = made
+            .as_deref()
+            .and_then(|id| measure(&mut self.session, id));
+        let (Some((va, sa)), Some((vc, sc))) = (cut.measured, after) else {
+            self.report.cut_volumes.skipped += 1;
+            return Applied::Accepted;
+        };
+        self.report.cut_volumes.checked += 1;
+        let allowed = 2.0 * t * (sa + sc) + 1e-9 * va.abs();
+        if !(vc.is_finite() && vc - va <= allowed) {
+            let detail = format!(
+                "the cut {name} has volume {vc:e}, its target {} had {va:e}: more by {:e}, allowed {allowed:e}",
+                cut.target,
+                vc - va
+            );
+            return self.found("wrong", "cut-volume", PLANE_CUT, &detail);
+        }
+        if !self.options.identities {
+            return Applied::Accepted;
+        }
+        let Some(other) = other_side(&cut.params) else {
+            return Applied::Accepted;
+        };
+        let mut side = before.clone();
+        let rest = match side.execute(PLANE_CUT, &other) {
+            Err(e) => Err(e.message().to_string()),
+            Ok(result) if result.get("status").and_then(Value::as_str) == Some("failed") => {
+                let error = result.get("error").and_then(Value::as_str).unwrap_or("");
+                if error.contains("leaves nothing") {
+                    Ok((0.0, 0.0))
+                } else {
+                    Err(error.to_string())
+                }
+            }
+            Ok(_) => measure(&mut side, OTHER_SIDE).ok_or_else(String::new),
+        };
+        let (vo, so) = match rest {
+            Ok(rest) => rest,
+            Err(message) => {
+                if let Some(kind) = bug_kind(&message) {
+                    let detail = format!("the other side of the cut {name}: {message}");
+                    return self.found(kind, oracle_of_bug(kind), PLANE_CUT, &detail);
+                }
+                self.report.cut_sides.skipped += 1;
+                return Applied::Accepted;
+            }
+        };
+        self.report.cut_sides.checked += 1;
+        let allowed = 2.0 * t * (2.0 * sa + sc + so) + 1e-9 * va.abs();
+        let gap = vc + vo - va;
+        if gap.is_finite() && gap.abs() <= allowed {
+            return Applied::Accepted;
+        }
+        let detail = format!(
+            "the two sides of the cut {name} do not add up to its target {}: {vc:e} + {vo:e} − {va:e} = {gap:e}, allowed {allowed:e}",
+            cut.target
+        );
+        self.found("wrong", "cut-sides", PLANE_CUT, &detail)
     }
 
     /// `document.check`; a finding for its first problem.
@@ -747,6 +957,37 @@ mod tests {
             "boolean-check"
         );
         assert_eq!(oracle_of("cannot be measured: open"), "unmeasurable");
+    }
+
+    #[test]
+    fn the_other_side_of_a_cut_by_one_plane() {
+        let one = json!({"target": "F1", "planes": [{"point": [0, 0, 1], "normal": [0, 0, 1]}], "name": "N2"});
+        let other = other_side(&one).unwrap();
+        assert_eq!(
+            other["planes"],
+            json!([{"point": [0, 0, 1], "normal": [0, 0, 1], "side": "above"}])
+        );
+        assert_eq!(other["keep"], true);
+        assert_eq!(other["name"], OTHER_SIDE);
+        assert_eq!(other["target"], "F1");
+        // Above turns below; a plane given alone, or as a name, becomes an
+        // object in a list.
+        let alone = json!({"target": "F1", "planes": {"plane": "xy", "side": "above"}});
+        assert_eq!(
+            other_side(&alone).unwrap()["planes"],
+            json!([{"plane": "xy", "side": "below"}])
+        );
+        let named = json!({"target": "F1", "planes": "F1:face(1)"});
+        assert_eq!(
+            other_side(&named).unwrap()["planes"],
+            json!([{"plane": "F1:face(1)", "side": "above"}])
+        );
+        // Several planes have no one other side.
+        assert_eq!(
+            other_side(&json!({"target": "F1", "planes": ["xy", "yz"]})),
+            None
+        );
+        assert_eq!(other_side(&json!({"target": "F1"})), None);
     }
 
     #[test]
