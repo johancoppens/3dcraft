@@ -392,7 +392,9 @@ direction is denied.
 
 Options:
   --automation-read-root DIR    An existing directory commands may read from
-  --automation-write-root DIR   An existing directory commands may write to
+  --automation-write-root DIR   A directory commands may write to; made at
+                                the start when it does not exist yet and
+                                its parent does
   --recovery-dir DIR|none       Autosave documents with unsaved changes into
                                 DIR, and offer what a killed server left
                                 there (recovery.list, recovery.open,
@@ -430,7 +432,9 @@ skips discovery: the window at that port with that token.
 
 Options:
   --automation-read-root DIR    An existing directory commands may read from
-  --automation-write-root DIR   An existing directory commands may write to
+  --automation-write-root DIR   A directory commands may write to; made at
+                                the start when it does not exist yet and
+                                its parent does
   --recovery-dir DIR|none       Autosave documents with unsaved changes into
                                 DIR, and offer what a killed server left
                                 there (recovery.list, recovery.open,

@@ -58,6 +58,8 @@ The official MCP registry (`registry.modelcontextprotocol.io`, which other direc
 
 Built on 2026-11-20 ([`development.md`](development.md) › *The MCP bundle*): one bundle for Linux, macOS (Apple Silicon) and Windows, made by `cargo xtask package --formats mcpb` from the programs of the release's package jobs, with `server.json` as an artifact of the run. Publishing `server.json` to the registry stays the developer's step, after the release is published.
 
+**The work folder's default** (2026-11-20, after the developer installed the rehearsal's bundle in Claude Desktop on Linux and used it): the setting offers `${DOCUMENTS}/3DCraft`, a folder of 3DCraft's in the person's documents, where the window suggests one, and never the home folder. Without a default of ours the client appeared to show the person's home folder in the field, so pressing *Save* could hand the server the whole home folder. The server makes the work folder when it does not exist yet (`--automation-write-root` makes a missing folder whose parent exists, that one folder only). The specification allows the default; whether Claude Desktop fills in `${DOCUMENTS}` in it is seen when the bundle is installed before the tag ([`development.md`](development.md) › *The MCP bundle*).
+
 ### 2026-11-13: On Windows a launcher starts the window (decided by the developer; settles D-open-20)
 
 `craft3d.exe` is a console program, so started from the Start menu or by a double-clicked file it opened a console window beside 3DCraft's own, and closing that closed 3DCraft (*2026-11-12: On Windows the window stays a console program for 0.1.1*, below). The developer chose the small launcher of the two options an agent costed.

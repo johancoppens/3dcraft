@@ -4,8 +4,9 @@
 //! specification (github.com/modelcontextprotocol/mcpb, `MANIFEST.md`,
 //! manifest version 0.3): a ZIP archive with `manifest.json` at its root
 //! and `craft3d-cli` for Linux, macOS and Windows, which an MCP client such
-//! as Claude for macOS and Windows installs with one click and starts
-//! headless (`craft3d-cli mcp`) with a work folder the person chooses. And
+//! as Claude Desktop installs with one click and starts headless
+//! (`craft3d-cli mcp`) with a work folder the person chooses (offered:
+//! `${DOCUMENTS}/3DCraft`). And
 //! beside it `server.json`, the entry of the official MCP registry
 //! (`registry.modelcontextprotocol.io`, `io.github.johancoppens/3dcraft`)
 //! that points at the bundle as a release asset, with its SHA-256: made by
@@ -214,6 +215,35 @@ pub(crate) const FONTS_FROM_PROGRAM: &str = "../share/craft3d/fonts";
 /// `${user_config.<key>}` (`src/node/validate.ts`).
 const VARIABLES: [&str; 3] = ["__dirname", "pathSeparator", "/"];
 
+/// The variables MCPB's specification names for a `user_config` default
+/// (`MANIFEST.md`, "Available variables for default values"). Its validator
+/// does not read defaults, and its own `getMcpConfigForManifest`
+/// (`src/shared/config.ts`) passes a default on as it is written: filling
+/// one in is the client's.
+const DEFAULT_VARIABLES: [&str; 3] = ["HOME", "DESKTOP", "DOCUMENTS"];
+
+/// The work folder's default: a folder of 3DCraft's in the person's
+/// documents, where the window suggests one (`Documents/3DCraft`), never
+/// the home folder itself (2026-11-20: with no default of ours, Claude
+/// Desktop on Linux appeared to show the home folder in the field). The
+/// server makes it at the start when it does not exist yet.
+const WORK_FOLDER_DEFAULT: &str = "${DOCUMENTS}/3DCraft";
+
+/// The names of the `${...}` variables in `text` in order, each one added
+/// to `problems` when `known` refuses it with a reason; a `${` that is not
+/// closed is a problem too, and ends the reading.
+fn check_variables(text: &str, known: &dyn Fn(&str) -> Option<String>, problems: &mut Vec<String>) {
+    let mut rest = text;
+    while let Some((_, after)) = rest.split_once("${") {
+        let Some((name, tail)) = after.split_once('}') else {
+            problems.push(format!("`{text}` has a `${{` that is not closed"));
+            return;
+        };
+        problems.extend(known(name));
+        rest = tail;
+    }
+}
+
 /// What `${__dirname}` stands for in a command: the folder the client
 /// unpacked the bundle into.
 const DIRNAME: &str = "${__dirname}/";
@@ -316,9 +346,10 @@ pub(crate) fn manifest(template: &str, version: &str) -> Result<String, String> 
 /// [`NESTED_FIELDS`]), another version than the workspace's, a
 /// platform whose command is not its program in the bundle (or one not
 /// listed under `compatibility.platforms`), an entry point that is none of
-/// the programs, a variable the validator does not know or a work folder
-/// not asked for, and a server that is not the headless one (`mcp`, not
-/// `--bridge`). Every problem is named.
+/// the programs, a variable the validator does not know, one in a default
+/// the specification does not name, a work folder not asked for or not
+/// offered as [`WORK_FOLDER_DEFAULT`], and a server that is not the
+/// headless one (`mcp`, not `--bridge`). Every problem is named.
 pub(crate) fn check_manifest(manifest: &Value, version: &str) -> Result<(), String> {
     let mut problems: Vec<String> = Vec::new();
     let Some(fields) = manifest.as_object() else {
@@ -442,32 +473,47 @@ pub(crate) fn check_manifest(manifest: &Value, version: &str) -> Result<(), Stri
             strings.extend(env.values().filter_map(Value::as_str));
         }
     }
+    let in_config = |name: &str| {
+        if VARIABLES.contains(&name) {
+            return None;
+        }
+        let key = name.strip_prefix("user_config.");
+        let option = key.and_then(|k| user_config.and_then(|u| u.get(k)));
+        match option {
+            Some(option) if option.get("required").and_then(Value::as_bool) == Some(true) => None,
+            Some(_) => Some(format!(
+                "`${{{name}}}` is not required: the server cannot start without it"
+            )),
+            None => Some(format!(
+                "`${{{name}}}` is no variable MCPB knows nor a user_config of the manifest"
+            )),
+        }
+    };
     for string in strings {
-        let mut rest = string;
-        while let Some((_, after)) = rest.split_once("${") {
-            let Some((name, tail)) = after.split_once('}') else {
-                problems.push(format!("`{string}` has a `${{` that is not closed"));
-                break;
-            };
-            rest = tail;
-            if VARIABLES.contains(&name) {
-                continue;
-            }
-            let key = name.strip_prefix("user_config.");
-            let option = key.and_then(|k| user_config.and_then(|u| u.get(k)));
-            match option {
-                Some(option) if option.get("required").and_then(Value::as_bool) == Some(true) => {}
-                Some(_) => problems.push(format!(
-                    "`${{{name}}}` is not required: the server cannot start without it"
-                )),
-                None => problems.push(format!(
-                    "`${{{name}}}` is no variable MCPB knows nor a user_config of the manifest"
-                )),
-            }
+        check_variables(string, &in_config, &mut problems);
+    }
+    for (at, default) in at_path(manifest, &["user_config", "*", "default"]) {
+        let in_default = |name: &str| {
+            (!DEFAULT_VARIABLES.contains(&name))
+                .then(|| format!("`{at}` uses `${{{name}}}`, no variable MCPB names for a default"))
+        };
+        let texts: Vec<&str> = match default {
+            Value::String(one) => vec![one.as_str()],
+            Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
+        };
+        for value in texts {
+            check_variables(value, &in_default, &mut problems);
         }
     }
     if text(manifest, &["user_config", "work_folder", "type"]) != Some("directory") {
         problems.push("user_config.work_folder is not a directory".to_string());
+    }
+    if text(manifest, &["user_config", "work_folder", "default"]) != Some(WORK_FOLDER_DEFAULT) {
+        problems.push(format!(
+            "user_config.work_folder.default is not `{WORK_FOLDER_DEFAULT}`: the work folder \
+             offered is a folder of 3DCraft's, never the home folder"
+        ));
     }
     if text(manifest, &["icon"]) != Some("icon.png") {
         problems.push("icon is not icon.png".to_string());
@@ -1086,6 +1132,37 @@ mod tests {
         broken(
             &|m| m["user_config"]["work_folder"]["required"] = false.into(),
             "is not required",
+        );
+        // The work folder is offered as a folder of 3DCraft's: never the
+        // home folder, never none (2026-11-20).
+        assert_eq!(
+            good["user_config"]["work_folder"]["default"],
+            WORK_FOLDER_DEFAULT
+        );
+        for default in [Value::Null, "${HOME}".into(), "${DOCUMENTS}".into()] {
+            broken(
+                &|m| m["user_config"]["work_folder"]["default"] = default.clone(),
+                "user_config.work_folder.default is not `${DOCUMENTS}/3DCraft`",
+            );
+        }
+        broken(
+            &|m| {
+                m["user_config"]["work_folder"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("default");
+            },
+            "user_config.work_folder.default is not",
+        );
+        // Only the variables the specification names for a default:
+        // `${DOWNLOADS}` it names for `mcp_config` alone.
+        broken(
+            &|m| m["user_config"]["work_folder"]["default"] = "${DOWNLOADS}/3DCraft".into(),
+            "`user_config.work_folder.default` uses `${DOWNLOADS}`, no variable MCPB names",
+        );
+        broken(
+            &|m| m["user_config"]["work_folder"]["default"] = "${DOCUMENTS/3DCraft".into(),
+            "has a `${` that is not closed",
         );
         broken(
             &|m| m["server"]["entry_point"] = "server/craft3d-cli".into(),

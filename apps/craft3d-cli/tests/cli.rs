@@ -1325,21 +1325,40 @@ fn serve_writes_beneath_the_write_root_and_reads_beneath_the_read_root() {
     assert!(outbox.join("both.3dcraft").exists() && !inbox.join("both.3dcraft").exists());
 }
 
+/// A root must be a directory. A read root must exist; a write root that
+/// does not exist yet is made when its parent exists (only that folder),
+/// so it is refused here only where its parent is missing too
+/// (2026-11-20: until then a missing write root was refused as well).
 #[test]
-fn a_root_must_be_an_existing_directory() {
+fn a_root_must_be_a_directory() {
     let dir = workdir("bad-roots");
     std::fs::write(dir.join("file.txt"), "x").unwrap();
     for subcommand in ["serve", "mcp"] {
+        let ran = cli_in(
+            &dir,
+            &[subcommand, "--automation-read-root", "no-such-dir"],
+            Some(""),
+        )
+        .failed(1);
+        assert!(
+            ran.stderr.contains("--automation-read-root") && ran.stderr.contains("no-such-dir"),
+            "{}",
+            ran.stderr
+        );
         for flag in ["--automation-read-root", "--automation-write-root"] {
-            let ran = cli_in(&dir, &[subcommand, flag, "no-such-dir"], Some("")).failed(1);
+            let ran = cli_in(&dir, &[subcommand, flag, "no-parent/work"], Some("")).failed(1);
             assert!(
-                ran.stderr.contains(flag) && ran.stderr.contains("no-such-dir"),
+                ran.stderr.contains(flag) && ran.stderr.contains("no-parent/work"),
                 "{}",
                 ran.stderr
             );
             let ran = cli_in(&dir, &[subcommand, flag, "file.txt"], Some("")).failed(1);
             assert!(ran.stderr.contains("not a directory"), "{}", ran.stderr);
         }
+        assert!(
+            !dir.join("no-such-dir").exists() && !dir.join("no-parent").exists(),
+            "nothing is made for a start that is refused"
+        );
         let ran = cli_in(
             &dir,
             &[
@@ -1354,6 +1373,111 @@ fn a_root_must_be_an_existing_directory() {
         .failed(2);
         assert!(ran.stderr.contains("given twice"), "{}", ran.stderr);
     }
+}
+
+/// The MCP bundle starts `mcp` with the work folder the person chose as
+/// both roots, and that folder's default, `${DOCUMENTS}/3DCraft`, does not
+/// exist on a fresh machine. The write root is made at the start (that
+/// folder only, nothing beside it, nothing said on stderr), the read root
+/// naming the same folder then finds it, and the commands answer as with
+/// a folder that existed: a save beneath it works, one outside it is
+/// refused. A client that passes the default without filling in
+/// `${DOCUMENTS}` (MCPB's issue 251) gives a path whose parent does not
+/// exist: refused, nothing made. So is a start with `--bridge`, which
+/// takes no roots.
+#[test]
+fn a_missing_write_root_is_made_at_the_start() {
+    let dir = workdir("made-root");
+    let documents = dir.join("Documents");
+    std::fs::create_dir_all(&documents).unwrap();
+    let work = path(&documents, "3DCraft");
+    let call = |id: u64, command: Value| {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": "command_run", "arguments": command}}).to_string()
+    };
+    let input = [
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "cli-test", "version": "1"}}})
+        .to_string(),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string(),
+        call(2, json!({"id": "file.new"})),
+        call(3, json!({"id": "feature.block", "params": {"size": [1, 2, 3]}})),
+        call(4, json!({"id": "file.save", "params": {"path": "part.3dcraft"}})),
+        call(5, json!({"id": "file.open", "params": {"path": "part.3dcraft"}})),
+        call(6, json!({"id": "file.save", "params": {"path": "../escaped.3dcraft"}})),
+    ]
+    .join("\n");
+    let ran = cli_in(
+        &dir,
+        &[
+            "mcp",
+            "--automation-read-root",
+            &work,
+            "--automation-write-root",
+            &work,
+        ],
+        Some(&input),
+    )
+    .ok();
+    let replies = ran.json_lines();
+    assert_eq!(replies.len(), 6, "{}", ran.stdout);
+    assert!(replies[0]["result"]["serverInfo"].is_object());
+    for (at, reply) in replies.iter().enumerate().take(5).skip(1) {
+        assert_eq!(reply["result"]["isError"], false, "{at}: {reply}");
+    }
+    assert_eq!(replies[5]["result"]["isError"], true, "{}", replies[5]);
+    assert!(
+        std::fs::read(documents.join("3DCraft/part.3dcraft"))
+            .unwrap()
+            .starts_with(b"PK")
+    );
+    let names = |at: &Path| {
+        let mut names: Vec<String> = std::fs::read_dir(at)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(names(&dir), ["Documents"]);
+    assert_eq!(names(&documents), ["3DCraft"]);
+    assert_eq!(names(&documents.join("3DCraft")), ["part.3dcraft"]);
+
+    // `serve` alike, with a relative root: made in the working directory.
+    let ran = cli_in(
+        &dir,
+        &["serve", "--automation-write-root", "out"],
+        Some(&save_session("saved.3dcraft")),
+    )
+    .ok();
+    assert_eq!(ran.json_lines()[2]["ok"], true, "{}", ran.stdout);
+    assert!(dir.join("out/saved.3dcraft").is_file());
+
+    // The default as the client wrote it, not filled in.
+    let ran = cli_in(
+        &dir,
+        &["mcp", "--automation-write-root", "${DOCUMENTS}/3DCraft"],
+        Some(""),
+    )
+    .failed(1);
+    assert!(
+        ran.stderr
+            .contains("`--automation-write-root ${DOCUMENTS}/3DCraft`: cannot use this directory"),
+        "{}",
+        ran.stderr
+    );
+    assert_eq!(ran.stdout, "");
+    let ran = cli_in(
+        &dir,
+        &["mcp", "--bridge", "1", "--automation-write-root", "bridged"],
+        Some(""),
+    )
+    .failed(2);
+    assert!(
+        ran.stderr.contains("give the root flags to `craft3d`"),
+        "{}",
+        ran.stderr
+    );
+    assert_eq!(names(&dir), ["Documents", "out"]);
 }
 
 #[test]

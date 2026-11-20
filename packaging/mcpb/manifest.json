@@ -76,6 +76,7 @@
       "type": "directory",
       "title": "Work folder",
       "description": "The folder 3DCraft may read and write. Your models are saved here; it reads and writes nowhere else.",
+      "default": "${DOCUMENTS}/3DCraft",
       "required": true
     }
   }
