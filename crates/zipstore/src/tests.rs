@@ -788,8 +788,9 @@ fn sha256_hex(data: &[u8]) -> String {
     message.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
     for block in message.chunks(64) {
         let mut w = [0_u32; 64];
-        for (word, bytes) in w.iter_mut().zip(block.chunks_exact(4)) {
-            *word = u32::from_be_bytes(bytes.try_into().unwrap());
+        let (words, _) = block.as_chunks::<4>();
+        for (word, bytes) in w.iter_mut().zip(words) {
+            *word = u32::from_be_bytes(*bytes);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
