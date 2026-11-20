@@ -516,7 +516,8 @@ pub enum GltfPrimitives {
     #[default]
     Faces,
     /// A group per look of the body, without the faces' names: far fewer
-    /// draw calls for a viewer, usually a smaller file.
+    /// draw calls for a viewer; a smaller file, though often a larger one
+    /// once gzipped.
     Looks,
 }
 

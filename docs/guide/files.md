@@ -107,7 +107,7 @@ and the **Grouping** of the triangles:
 | Grouping | For |
 |---|---|
 | **By face** | Each face apart, with its name: for a program that needs to know which triangles are which face; the default |
-| **By colour** | The faces of each body merged by colour, without their names: quicker on a web page, a phone or in a game engine, and usually a smaller file |
+| **By colour** | The faces of each body merged by colour, without their names: quicker to draw on a web page, a phone or in a game engine; a smaller file, though often a larger one once a web server compresses it |
 
 The triangles are the same either way. The last choice is offered next time. The status line after the
 export names what of the bodies' appearance glTF cannot show (*glTF cannot show: brushing direction*,
