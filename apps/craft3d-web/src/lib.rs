@@ -6,8 +6,8 @@
 //! It is a viewer, as the desktop app is: open a `.3dcraft` document
 //! (File, Open…, or drop it on the page), look at it with the viewport,
 //! the view cube, the feature tree and the selection; save it, export it
-//! (STEP, STL, 3MF, OBJ with its material library, DXF, SVG) and import
-//! STEP. Where the browser has the File System Access API (Chrome, Edge,
+//! (STEP, STL, 3MF, OBJ with its material library, glTF, DXF, SVG) and
+//! import STEP. Where the browser has the File System Access API (Chrome, Edge,
 //! Chromebooks) Open, Save As, Import and Export show the system's file
 //! dialogs and Save writes back to the document's file; elsewhere (or
 //! with `?download`) saved and exported files are browser downloads and
