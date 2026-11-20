@@ -354,13 +354,12 @@ fn evidence(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<Evidence, Stop>
     // Where an edge of one meets the other's surface: a contact in a
     // point that leaves no stretch and has no vertex (the rim of a
     // cylinder touching the edge of a plate from outside, an edge tangent
-    // to an edge). Looked at only where nothing else was found: the places
-    // the boolean looks at for parts that touch (`zero_thickness`), so a
-    // pair it would refuse to unite as touching in a point is not clear.
-    if found.kind.is_none() {
-        for &p in &sections.edge_meets {
-            meet_at(&mut found, p);
-        }
+    // to an edge). The places the boolean looks at for parts that touch
+    // (`zero_thickness`), so a pair it would refuse to unite as touching
+    // in a point is not clear, and a pair that touches elsewhere as well
+    // has this place among its places.
+    for &p in &sections.edge_meets {
+        meet_at(&mut found, p);
     }
     Ok(found)
 }

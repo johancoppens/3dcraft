@@ -44,7 +44,7 @@
 mod boolean_common;
 mod common;
 
-use boolean_common::SCALES;
+use boolean_common::{SCALES, boxed};
 use common::{arc, circle, line};
 use craft3d_geom::{Curve3, NurbsCurve};
 use craft3d_kernel::KernelError;
@@ -117,11 +117,13 @@ fn volume_of(a: &Body, b: &Body, op: BooleanOp, tol: &Tolerance) -> Result<f64, 
 /// touch or are apart). True when what they share was made, valid and
 /// held to the boolean's own check, and could not be measured: a fault of
 /// the measure, not of the boolean, which the caller holds to its list.
+/// With `as_a_feature` each is run once more as a feature runs it.
 fn booleans(
     a: &Body,
     b: &Body,
     common: f64,
     tol: &Tolerance,
+    as_a_feature: bool,
     faults: &mut Vec<String>,
     what: &str,
 ) -> bool {
@@ -152,6 +154,9 @@ fn booleans(
         // built, empty, or refused as zero thickness (a vertex of the
         // result within twice the tolerance of an edge it is not on: the
         // rim's vertex beside the plate's edge), never for the contact.
+        if !as_a_feature {
+            continue;
+        }
         match boolean(a, b, op, tol) {
             Ok(_) | Err(KernelError::EmptyResult { .. } | KernelError::ZeroThickness { .. }) => {}
             Err(e) => faults.push(format!("{what}: {op:?} as a feature runs it refused: {e}")),
@@ -327,6 +332,26 @@ impl Place {
         }
     }
 
+    /// The kind of a touch without an area. In a point: `Point`, but
+    /// `Edge` where the rim's vertex is within the tolerance of the edge
+    /// on the plate's side, so that the piece of the rim up to it is one
+    /// with the piece of the edge beside it (a contact along that piece).
+    /// Along a line, or on a lens too thin to be told an area: `Edge`.
+    fn kind(&self) -> Option<ContactKind> {
+        match self.want() {
+            Want::Clear | Want::Overlap(_) => None,
+            Want::Point => {
+                let merged = self.offset.is_some_and(|e| e < 1.0);
+                if merged && self.along != Along::PastCorner {
+                    Some(ContactKind::Edge)
+                } else {
+                    Some(ContactKind::Point)
+                }
+            }
+            Want::Line | Want::Face(_) => Some(ContactKind::Edge),
+        }
+    }
+
     fn want(&self) -> Want {
         let area = self.shared();
         let tangent_outside = self.side == Side::Outside && self.shift == 0.0;
@@ -406,12 +431,10 @@ fn held(place: &Place, faults: &mut Vec<String>) -> bool {
                 Want::Face(shared) if told(shared) => {
                     kind == ContactKind::Face && (area - shared).abs() <= slack(shared)
                 }
-                // A contact in a point or along a line: no area. (With
-                // the vertex within the tolerance of the edge the point
-                // is read as a short stretch of the edge: a touch all the
-                // same.)
+                // A contact in a point, or along a curve (a line, or a
+                // lens too thin to be told an area): no area.
                 Want::Point | Want::Line | Want::Face(_) => {
-                    kind != ContactKind::Face && area == 0.0
+                    Some(kind) == place.kind() && area == 0.0
                 }
                 Want::Clear | Want::Overlap(_) => false,
             };
@@ -443,7 +466,17 @@ fn held(place: &Place, faults: &mut Vec<String>) -> bool {
         Want::Overlap(volume) => volume,
         _ => 0.0,
     };
-    let unmeasured_again = booleans(&plate, &cylinder, common, &tol, faults, &what);
+    // The booleans where the bodies meet (lifted clear, the three are the
+    // two bodies as they are and nothing), and as a feature runs them
+    // where the footprint is tangent: every place that fails on the
+    // kernel as it was, or with a part of the repair taken out, has the
+    // footprint tangent and the cylinder resting (the review of
+    // 2026-11-20, which measured 12 960 calls a scale down to 5 760).
+    if place.lift > 0.0 {
+        return unmeasured;
+    }
+    let as_a_feature = place.shift == 0.0;
+    let unmeasured_again = booleans(&plate, &cylinder, common, &tol, as_a_feature, faults, &what);
     unmeasured || unmeasured_again
 }
 
@@ -532,6 +565,55 @@ fn a_cylinder_at_a_plates_edge_at_one() {
 #[test]
 fn a_cylinder_at_a_plates_edge_at_a_million() {
     grid(SCALES[2]);
+}
+
+/// A touch found one way does not hide a touch in a point found another.
+/// A frame (a plate, a wall on its back and a roof on the wall) and a
+/// cylinder under the roof beside the plate: its lid lies against the
+/// roof (a touch on the lid's area), and its rim touches the plate's top
+/// front edge in one point, where no vertex of either is and no stretch
+/// is left. Both are where the bodies meet: the place at the plate's edge
+/// is among the contact's places. (Read only where nothing else was
+/// found, as the repair first had it, that place was left out.)
+#[test]
+fn a_touch_in_a_point_is_listed_beside_a_touch_on_a_face() {
+    for k in SCALES {
+        for coarse in [false, true] {
+            let tol = tolerance(k, coarse);
+            let what = format!("scale {k} {}", if coarse { "coarse" } else { "fine" });
+            let plate = boxed(k, [-10.0, 0.0, -5.0], [10.0, 10.0, 0.0]);
+            let wall = boxed(k, [-10.0, 8.0, 0.0], [10.0, 10.0, 6.0]);
+            let roof = boxed(k, [-10.0, -10.0, 6.0], [10.0, 10.0, 8.0]);
+            let frame = boolean(&plate, &wall, Union, &tol).unwrap().body;
+            let frame = boolean(&frame, &roof, Union, &tol).unwrap().body;
+            let r = RADIUS * k;
+            let cylinder = primitives::cylinder(
+                &Frame::WORLD.at(Vec3::new(0.0, -r, 0.0)).unwrap(),
+                r,
+                6.0 * k,
+            )
+            .unwrap();
+            assert!(
+                matches!(contact(&frame, &cylinder, &tol), Ok(Contact::Touch)),
+                "{what}"
+            );
+            match interference(&frame, &cylinder, &tol) {
+                Ok(Interference::Touch { kind, area, at, .. }) => {
+                    assert_eq!(kind, ContactKind::Face, "{what}");
+                    let lid = PI * r * r;
+                    assert!(
+                        (area - lid).abs() <= tol.linear * 2.0 * PI * r + 1e-7 * lid,
+                        "{what}: an area of {area}, not {lid}"
+                    );
+                    assert!(
+                        at.iter().any(|p| p.length() <= tol.linear),
+                        "{what}: the point at the plate's edge is not among {at:?}"
+                    );
+                }
+                other => panic!("{what}: {other:?}"),
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -637,7 +719,7 @@ fn keyed(k: f64, coarse: bool, faults: &mut Vec<String>) {
                 )),
                 Err(e) => faults.push(format!("{what}, {way}: interference refused: {e}")),
             }
-            if booleans(a, b, 0.0, &tol, faults, &format!("{what}, {way}")) {
+            if booleans(a, b, 0.0, &tol, true, faults, &format!("{what}, {way}")) {
                 faults.push(format!("{what}, {way}: what they share cannot be measured"));
             }
         }

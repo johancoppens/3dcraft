@@ -1149,11 +1149,12 @@ fn clip(
                 // (it left the boundary on the way, without crossing it),
                 // and that end is a sample like the three: outside there
                 // is outside, as above; inside there is inside, held to
-                // the band as a stretch with a sample inside is. Where
-                // the surfaces only touch along the curve such a stretch
-                // is left out, as one with mixed samples is.
+                // the band as a stretch with a sample inside is.
                 let end = |cut: &Cut| -> Option<Side> {
-                    // The vertex the end will be, and where it is.
+                    // The vertex the end will be, and where it is: a
+                    // cut within the merging distance of a vertex is
+                    // that vertex, which may be within the tolerance of
+                    // the boundary where the cut is not.
                     let (vertex, point) = match vertices.find_with(cut.point, edge_meets_edge(*cut))
                     {
                         Ok(Some(vertex)) => (Some(vertex), *vertices.points.get(vertex)?),
@@ -1164,8 +1165,10 @@ fn clip(
                         Ok(Side::On) | Err(_) => return None,
                         Ok(clear) => clear,
                     };
-                    // (A vertex of an edge of the face is on its boundary
-                    // wherever it was merged to.)
+                    // A vertex of an edge of the face is on its boundary
+                    // wherever it was merged to: a loose vertex, as far
+                    // off its edge as its own tolerance, that is one with
+                    // a vertex of the other body beyond it.
                     let of_the_face = vertex.is_some_and(|vertex| {
                         solid.edges_of(face).into_iter().any(|edge| {
                             solid
@@ -1181,10 +1184,6 @@ fn clip(
                     _ => None,
                 };
                 match leaves {
-                    Some(_) if meeting.tangent => {
-                        keep = false;
-                        break;
-                    }
                     Some(Side::Out) if all_along(Side::Out) => {
                         keep = false;
                         break;
@@ -3303,6 +3302,13 @@ pub(super) mod tests {
     ///   (its ends 10 tolerances out, the plate turned so that the top's
     ///   box holds them) and by the rule for three samples on the
     ///   boundary (its ends 1.9 tolerances out).
+    /// - The circle 0.3 tolerances into the plate: within half the
+    ///   tolerance of the edge all the way where it is not outside, which
+    ///   is on the edge (the distance at which two points are one, and by
+    ///   which faces that go through each other still only touch). Left
+    ///   out, by either rule; without the half tolerance the sign of the
+    ///   middle's offset would have it refused, or taken as along the
+    ///   boundary.
     /// - The circle 0.9 tolerances into the plate: the stretch crosses the
     ///   edge twice, and its middle is inside by more than half the
     ///   tolerance. It keeps the reading it had: refused as partly on and
@@ -3322,8 +3328,10 @@ pub(super) mod tests {
             // tolerances outside it.
             for (turn, bite, ends, want) in [
                 (0.5, -0.3, 10.3, Reading::LeftOut),
+                (0.5, 0.3, 9.7, Reading::LeftOut),
                 (0.5, 0.9, 9.1, Reading::Refused),
                 (0.0, -0.3, 1.9, Reading::LeftOut),
+                (0.0, 0.3, 1.9, Reading::LeftOut),
                 (0.0, 0.9, 1.9, Reading::Along),
             ] {
                 let what = format!("turned by {turn}, {bite} tolerances inside, at {k}");
@@ -3399,6 +3407,196 @@ pub(super) mod tests {
                     Err(other) => panic!("{what}: {other:?}"),
                 };
                 assert_eq!(found, want, "{what}");
+            }
+        }
+    }
+
+    /// What `clip` makes of the circle in which the wall of a cylinder
+    /// through a plate meets the plane of the plate's top, for
+    /// `an_end_is_read_at_the_vertex_it_will_be` and
+    /// `an_end_at_a_vertex_of_the_face_is_on_its_boundary`. The plate is
+    /// `[-10, 10] × [0, 10] × [-5, 0]` times `k`, turned by `turn` about z,
+    /// its top front left vertex moved by `corner` (a loose vertex, off
+    /// its edges); the cylinder of radius 4 has its axis through
+    /// `centre`; `known` are vertices that are there before the bodies'
+    /// own (of the other body, in a boolean); the circle is cut at the
+    /// angles `cuts`. With the reading, the stretch's two vertices when it
+    /// was kept. All places are given before the turn, in the top's plane.
+    fn clipped_at_a_plates_edge(
+        k: f64,
+        turn: f64,
+        corner: (f64, f64),
+        centre: (f64, f64),
+        known: &[(f64, f64)],
+        cuts: &[f64],
+    ) -> (Reading, Option<(usize, usize)>) {
+        use std::f64::consts::{FRAC_1_SQRT_2, TAU};
+        let tolerance = Tolerance::new(1e-2 * k, 1e-9).unwrap();
+        let tol = tolerance.linear;
+        let r = 4.0 * k;
+        let (s, c) = f64::psin_cos(turn);
+        let turned = |x: f64, y: f64, z: f64| Vec3::new(c * x - s * y, s * x + c * y, z);
+        let x_axis = turned(1.0, 0.0, 0.0);
+        let mut plate = crate::primitives::block(
+            &Frame::new(turned(-10.0 * k, 0.0, -5.0 * k), Vec3::Z, x_axis).unwrap(),
+            20.0 * k,
+            10.0 * k,
+            5.0 * k,
+        )
+        .unwrap();
+        let at_corner = turned(-10.0 * k, 0.0, 0.0);
+        let moved = plate
+            .vertices
+            .iter_mut()
+            .find(|v| v.point.distance(at_corner) <= tol)
+            .unwrap();
+        moved.point = turned(-10.0 * k + corner.0, corner.1, 0.0);
+        let cylinder = crate::primitives::cylinder(
+            &Frame::new(turned(centre.0, centre.1, -k), Vec3::Z, x_axis).unwrap(),
+            r,
+            6.0 * k,
+        )
+        .unwrap();
+        let circle = craft3d_geom::Circle::new(
+            Frame::new(turned(centre.0, centre.1, 0.0), Vec3::Z, x_axis).unwrap(),
+            r,
+        )
+        .unwrap();
+        let meeting = MeetingCurve {
+            curve: Curve3::Circle(circle),
+            range: (0.0, TAU),
+            closed: true,
+            tangent: false,
+            exact: true,
+            deviation: 0.0,
+        };
+        let cuts: Vec<Cut> = cuts
+            .iter()
+            .map(|&angle| Cut {
+                t: 0.0,
+                point: meeting.curve.eval(angle),
+                a_edge: None,
+                b_edge: None,
+                end: false,
+            })
+            .collect();
+        let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
+        for &(x, y) in known {
+            vertices.find_or_add(turned(x, y, 0.0)).unwrap();
+        }
+        let a = prepare(&plate, Operand::A, &mut vertices, &tolerance, true).unwrap();
+        let b = prepare(&cylinder, Operand::B, &mut vertices, &tolerance, true).unwrap();
+        let fa = face_holding(&a, turned(0.0, 5.0 * k, 0.0), tol);
+        let wall = turned(
+            centre.0 - r * FRAC_1_SQRT_2,
+            centre.1 - r * FRAC_1_SQRT_2,
+            2.0 * k,
+        );
+        let fb = face_holding(&b, wall, tol);
+        let mut sections = Sections::default();
+        let made = clip(
+            &meeting,
+            &cuts,
+            &a,
+            fa,
+            &b,
+            fb,
+            &mut vertices,
+            &tolerance,
+            &mut sections,
+        );
+        match &made {
+            Ok(()) if sections.stretches.is_empty() => (Reading::LeftOut, None),
+            Ok(()) => {
+                assert_eq!(sections.stretches.len(), 1);
+                let stretch = &sections.stretches[0];
+                assert!(!stretch.inside_a && stretch.inside_b);
+                (Reading::Along, Some((stretch.start, stretch.end)))
+            }
+            Err(Stop::Unsupported { reason, .. }) if *reason == AMBIGUOUS => {
+                (Reading::Refused, None)
+            }
+            Err(other) => panic!("{other:?}"),
+        }
+    }
+
+    /// An end of a stretch is read where the vertex it will be already is,
+    /// not at its cut (`Vertices::find_with`). A circle 0.3 tolerances
+    /// short of a plate's edge, cut 1.3 tolerances outside the plate either
+    /// side of the place nearest the edge, where two vertices stand 0.45
+    /// tolerances nearer the plate (within the merging distance of the
+    /// cuts, and within the tolerance of the edge): the stretch runs
+    /// between those two vertices, which are on the face's boundary, and
+    /// is along it as it was before a stretch's ends were read (the
+    /// imprint then holds it to the piece of the edge between them). Read
+    /// at its cuts, both clear of the boundary, it would be left out, and
+    /// a stretch that was imprinted would be lost. Without those vertices
+    /// the same stretch ends clear of the boundary and is left out.
+    #[test]
+    fn an_end_is_read_at_the_vertex_it_will_be() {
+        use std::f64::consts::FRAC_PI_2;
+        for k in [1e-3, 1.0, 1e6] {
+            let tol = 1e-2 * k;
+            let r = 4.0 * k;
+            let centre = (0.0, -r - 0.3 * tol);
+            // The cuts 1.3 tolerances out: 1.0 below the circle's highest
+            // point.
+            let away = (1.0 - 1.0 * tol / r).pacos();
+            let cuts = [FRAC_PI_2 - away, FRAC_PI_2 + away];
+            let known = cuts.map(|angle: f64| {
+                (
+                    centre.0 + r * angle.pcos(),
+                    centre.1 + r * angle.psin() + 0.45 * tol,
+                )
+            });
+            for turn in [0.0, 0.5] {
+                let what = format!("turned by {turn}, at {k}");
+                let (found, ends) =
+                    clipped_at_a_plates_edge(k, turn, (0.0, 0.0), centre, &known, &cuts);
+                assert_eq!(found, Reading::Along, "{what}");
+                // The two vertices that were there: the first two of all.
+                let ends = ends.unwrap();
+                assert!(ends == (0, 1) || ends == (1, 0), "{what}: {ends:?}");
+                let (found, _) = clipped_at_a_plates_edge(k, turn, (0.0, 0.0), centre, &[], &cuts);
+                assert_eq!(found, Reading::LeftOut, "{what}, no vertices");
+            }
+        }
+    }
+
+    /// An end at a vertex of the face is on the face's boundary wherever
+    /// the vertices' merging has put it. A plate whose top front left
+    /// vertex is loose, 0.9 tolerances off its edges (as far as its own
+    /// tolerance lets it be), is one with a vertex of the other body 0.45
+    /// tolerances beyond it: the place they share is 1.35 tolerances from
+    /// the top's boundary. A circle 0.3 tolerances short of the front
+    /// edge, cut where it is nearest the edge and at that vertex, is
+    /// within the tolerance of the edge at its three samples and ends at a
+    /// vertex of the face: along the boundary, as it was before a
+    /// stretch's ends were read. Read by that vertex's distance alone it
+    /// would be left out, and a stretch that was imprinted would be lost.
+    #[test]
+    fn an_end_at_a_vertex_of_the_face_is_on_its_boundary() {
+        use std::f64::consts::FRAC_PI_2;
+        for k in [1e-3, 1.0, 1e6] {
+            let tol = 1e-2 * k;
+            let r = 4.0 * k;
+            // The circle's highest point is 0.3 tolerances short of the
+            // edge; it passes 1.35 tolerances below the corner, 1.05 below
+            // its highest point, that far round.
+            let away = (1.0 - 1.05 * tol / r).pacos();
+            let centre = (-10.0 * k + r * away.psin(), -r - 0.3 * tol);
+            let cuts = [FRAC_PI_2, FRAC_PI_2 + away];
+            let beyond = (centre.0 + r * cuts[1].pcos(), centre.1 + r * cuts[1].psin());
+            for turn in [0.0, 0.5] {
+                let what = format!("turned by {turn}, at {k}");
+                let loose = (0.0, -0.9 * tol);
+                let (found, ends) =
+                    clipped_at_a_plates_edge(k, turn, loose, centre, &[beyond], &cuts);
+                assert_eq!(found, Reading::Along, "{what}");
+                // It ends at the vertex that was there, which the plate's
+                // corner is one with.
+                let ends = ends.unwrap();
+                assert!(ends.0 == 0 || ends.1 == 0, "{what}: {ends:?}");
             }
         }
     }
