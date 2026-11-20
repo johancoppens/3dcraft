@@ -411,6 +411,46 @@ impl Work {
     }
 }
 
+/// What the window says of an assembly as a whole: the heading of its
+/// Assembly tab, and what a form of its public parameters says in the
+/// place of *Valid* while something is wrong (docs/design/assemblies.md ›
+/// *The tree*). Read from what `document.check` lists for the assembly
+/// ([`craft3d_engine::AssemblyOutline::problems`]), never from the solve
+/// alone. In `ui.get` under `assembly`, `null` for a part; not part of
+/// [`UiState`]: it follows the document and cannot be set.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AssemblyVerdict {
+    /// The check lists nothing wrong with the assembly.
+    pub ok: bool,
+    /// What the heading says: `Solved` with the degrees of freedom left
+    /// (`Solved · 1 DOF`) while ok; `Not solved` when the solve failed;
+    /// else how many problems the check lists (`2 failed`).
+    pub text: String,
+    /// What is wrong, in the check's words, one per problem
+    /// `document.check` lists for the assembly (*instance `Plate` is not
+    /// placed: …*); empty while ok.
+    pub problems: Vec<String>,
+}
+
+impl AssemblyVerdict {
+    /// The verdict on the assembly `outline` lists.
+    pub fn of(outline: &craft3d_engine::AssemblyOutline) -> Self {
+        let problems: Vec<String> = outline.problems.iter().map(|p| p.problem.clone()).collect();
+        let text = match (&outline.solve_error, problems.len(), outline.dof) {
+            (Some(_), ..) => "Not solved".to_string(),
+            (None, 0, Some(n)) => format!("Solved · {n} DOF"),
+            (None, 0, None) => "Solved".to_string(),
+            (None, n, _) => format!("{n} failed"),
+        };
+        Self {
+            ok: problems.is_empty() && outline.solve_error.is_none(),
+            text,
+            problems,
+        }
+    }
+}
+
 /// One tab of the row above the viewport: an open document as the window
 /// shows it, in the order of `file.list`. In `ui.get` under `tabs`; not
 /// part of [`UiState`]: it follows the session and cannot be set (the
@@ -2729,6 +2769,57 @@ mod tests {
                 .apply_patch(&json!({"picked": null}))
                 .unwrap_err()
                 .contains("cannot be set")
+        );
+    }
+
+    /// An assembly's verdict is *Solved* only while its check lists
+    /// nothing: the degrees of freedom left when they are known; *Not
+    /// solved* when the solve failed, whatever else is wrong; else how many
+    /// problems, each in the check's words. A solve that failed is never
+    /// ok, even with no problem listed.
+    #[test]
+    fn an_assembly_is_solved_only_while_its_check_lists_nothing() {
+        use craft3d_engine::{AssemblyOutline, OutlineProblem};
+        let problem = |what: &'static str, name: &str, text: &str| OutlineProblem {
+            what,
+            name: name.to_string(),
+            problem: text.to_string(),
+        };
+        let mut outline = AssemblyOutline {
+            dof: Some(1),
+            ..AssemblyOutline::default()
+        };
+        let said = AssemblyVerdict::of(&outline);
+        assert!(said.ok && said.problems.is_empty(), "{said:?}");
+        assert_eq!(said.text, "Solved · 1 DOF");
+        outline.dof = None;
+        assert_eq!(AssemblyVerdict::of(&outline).text, "Solved");
+        outline.problems = vec![
+            problem("instance", "Plate", "instance `Plate` is not placed: x"),
+            problem("mate", "Ground", "mate `Ground`: y"),
+        ];
+        outline.dof = Some(0);
+        let said = AssemblyVerdict::of(&outline);
+        assert!(!said.ok, "{said:?}");
+        assert_eq!(said.text, "2 failed");
+        assert_eq!(
+            said.problems,
+            ["instance `Plate` is not placed: x", "mate `Ground`: y"]
+        );
+        outline.solve_error = Some("z".to_string());
+        outline
+            .problems
+            .push(problem("solve", "", "the assembly does not solve: z"));
+        let said = AssemblyVerdict::of(&outline);
+        assert_eq!(said.text, "Not solved");
+        assert_eq!(said.problems.len(), 3);
+        outline.problems.clear();
+        let said = AssemblyVerdict::of(&outline);
+        assert!(!said.ok && said.text == "Not solved", "{said:?}");
+        let json = serde_json::to_value(&said).unwrap();
+        assert_eq!(
+            json,
+            json!({"ok": false, "text": "Not solved", "problems": []})
         );
     }
 }

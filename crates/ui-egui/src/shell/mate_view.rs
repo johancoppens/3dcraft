@@ -32,6 +32,9 @@ pub(crate) struct MateView {
     pub(crate) hover_name: Option<String>,
     /// Where the last frame drew each mate's row, by its name.
     pub(crate) rows: Vec<(String, egui::Rect)>,
+    /// Where the last frame drew the row of each coupling that takes no
+    /// part, by its name.
+    pub(crate) couplings: Vec<(String, egui::Rect)>,
     /// A point of each marker on screen at the last frame (the middle of
     /// its longest line there), in points, by its mate.
     pub(crate) markers: Vec<(String, egui::Pos2)>,
@@ -158,6 +161,12 @@ impl Shell {
     /// Where the last frame drew each mate's row on the Assembly tab.
     pub fn mate_row_hits(&self) -> &[(String, egui::Rect)] {
         &self.mate_view.rows
+    }
+
+    /// Where the last frame drew the row of each coupling that takes no
+    /// part, after the mates on the Assembly tab.
+    pub fn coupling_row_hits(&self) -> &[(String, egui::Rect)] {
+        &self.mate_view.couplings
     }
 
     /// A point of each mate's marker on screen at the last frame, in
@@ -356,6 +365,7 @@ impl Shell {
         let t = kit.t;
         let s = kit.skin;
         self.mate_view.rows.clear();
+        self.mate_view.couplings.clear();
         self.joints.hits.clear();
         kit.fold_header(ui, open, "Mates", Some(outline.mates.len()), None);
         if !*open {
@@ -436,6 +446,38 @@ impl Shell {
                     released |= self.drive_slider(ui, kit, mate, &outline.unit, size, &motion);
                 });
             }
+        }
+        // A coupling that takes no part, after the mates it couples, with
+        // why, as a failed mate is. One that takes part is not listed: the
+        // mates it couples show their motion.
+        for coupling in &outline.couplings {
+            let Some(error) = &coupling.error else {
+                continue;
+            };
+            let hits = kit.list_row_hits(
+                ui,
+                crate::kit::ListRow::new(&coupling.name)
+                    .icon(crate::kit::Glyph::Warning)
+                    .icon_ink(s.failed)
+                    .value("coupling")
+                    .failed(true),
+            );
+            let tip = hits.tip(&coupling.name, "coupling", error);
+            let shown = hits.response.on_hover_text(tip);
+            statuses.push(shown.rect);
+            self.mate_view
+                .couplings
+                .push((coupling.name.clone(), shown.rect));
+            ui.indent(("craft3d-coupling-error", &coupling.name), |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(error)
+                            .color(color(s.failed))
+                            .size(t.secondary_font),
+                    )
+                    .wrap(),
+                );
+            });
         }
         if released {
             self.joints.dragging = None;

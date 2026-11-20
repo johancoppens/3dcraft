@@ -223,6 +223,14 @@ it), then the mates with their kind and value, and how many degrees of freedom a
 the assembly's checks, with the player at the foot. Click a row to select the instance, double-click to
 fly to it; the eye hides it, and **Open** opens its part in a tab of its own.
 
+The tab's heading says **Solved** (with the degrees of freedom left) only while the assembly's
+`document.check` finds nothing wrong with it. Otherwise it says **Not solved**, or how many problems the
+check lists (**2 failed**); point at it for each in the check's words. Each is also on the row it names: an
+instance that is not placed is red with why, also inside a subassembly; a mate that fails is red; a coupling
+that takes no part is a red row after the mates; a subassembly with something wrong in its own mates or
+solve is marked ⚠, with what is wrong under it (*its mate `Ground`: …*). The **Parameters** tab of an
+assembly with public parameters says the same in the place of **Valid**.
+
 Every joint you can set by hand is a slider on the **Parameters** tab: the joints the assembly stays
 solved with. In a linkage that moves one way (a four-bar), the joints that move it have a slider until you
 set one; then that one drives the loop and is its only slider. In the view, **Alt and a drag** on a part

@@ -22,7 +22,10 @@
 //! anything, and what it draws is what a session that shows the view
 //! itself draws, bit for bit (`crates/engine/tests/view_elsewhere.rs`).
 
-use crate::asm_outline::{AssemblyOutline, JointHandle, MateFrame, OutlineInstance, OutlineMate};
+use crate::asm_outline::{
+    AssemblyOutline, JointHandle, MateFrame, OutlineCoupling, OutlineInstance, OutlineMate,
+    OutlineProblem,
+};
 use crate::{OpenDocument, Session};
 use craft3d_doc::{Blob, Document};
 use serde_json::{Map, Value, json};
@@ -614,9 +617,16 @@ pub(crate) fn facts_bytes(
         // so, by number.
         let rows = outline.as_ref().map_or(0, |o| {
             let lists = o.instances.iter().map(|i| i.features.len());
+            let lists = lists.chain(o.instances.iter().map(|i| i.inside.len()));
             let lists = lists.chain(o.mates.iter().map(|m| m.variables.len()));
             lists
-                .chain([o.instances.len(), o.mates.len(), o.free.len()])
+                .chain([
+                    o.instances.len(),
+                    o.mates.len(),
+                    o.couplings.len(),
+                    o.free.len(),
+                    o.problems.len(),
+                ])
                 .max()
                 .unwrap_or(0)
         });
@@ -733,6 +743,7 @@ fn outline_json(o: &AssemblyOutline) -> Value {
             "error": i.error,
             "held": i.held,
             "featureFailed": i.feature_failed,
+            "inside": i.inside,
             "visible": i.visible,
             "own": i.own,
             "grounded": i.grounded,
@@ -755,10 +766,19 @@ fn outline_json(o: &AssemblyOutline) -> Value {
                 "z": f.z.map(bits),
             })),
         })).collect::<Vec<_>>(),
+        "couplings": o.couplings.iter().map(|c| json!({
+            "name": c.name,
+            "error": c.error,
+        })).collect::<Vec<_>>(),
         "dof": o.dof,
         "free": o.free,
         "solveError": o.solve_error,
         "unit": o.unit,
+        "problems": o.problems.iter().map(|p| json!({
+            "what": p.what,
+            "name": p.name,
+            "problem": p.problem,
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -816,6 +836,13 @@ fn status_name(name: &str) -> Option<&'static str> {
         .find(|s| *s == name)
 }
 
+/// What a problem of the check names, as the outline holds it.
+fn problem_name(name: &str) -> Option<&'static str> {
+    ["instance", "mate", "coupling", "solve"]
+        .into_iter()
+        .find(|s| *s == name)
+}
+
 fn outline_from(value: &Value) -> Option<AssemblyOutline> {
     let mut out = AssemblyOutline {
         dof: match value.get("dof")? {
@@ -829,8 +856,26 @@ fn outline_from(value: &Value) -> Option<AssemblyOutline> {
     };
     let instances = value.get("instances")?.as_array()?;
     let mates = value.get("mates")?.as_array()?;
-    if instances.len() > MAX_ROWS || mates.len() > MAX_ROWS {
+    let couplings = value.get("couplings")?.as_array()?;
+    let problems = value.get("problems")?.as_array()?;
+    if [instances, mates, couplings, problems]
+        .iter()
+        .any(|list| list.len() > MAX_ROWS)
+    {
         return None;
+    }
+    for c in couplings {
+        out.couplings.push(OutlineCoupling {
+            name: text(c, "name")?,
+            error: opt_text(c, "error")?,
+        });
+    }
+    for p in problems {
+        out.problems.push(OutlineProblem {
+            what: problem_name(p.get("what")?.as_str()?)?,
+            name: text(p, "name")?,
+            problem: text(p, "problem")?,
+        });
     }
     for i in instances {
         out.instances.push(OutlineInstance {
@@ -842,6 +887,7 @@ fn outline_from(value: &Value) -> Option<AssemblyOutline> {
             error: opt_text(i, "error")?,
             held: opt_text(i, "held")?,
             feature_failed: opt_text(i, "featureFailed")?,
+            inside: texts(i, "inside")?,
             visible: i.get("visible")?.as_bool()?,
             own: i.get("own")?.as_bool()?,
             grounded: i.get("grounded")?.as_bool()?,
@@ -1158,6 +1204,7 @@ mod tests {
                 error: None,
                 held: Some("pinned".into()),
                 feature_failed: Some("its feature `Round` (F2) failed: radius: too large".into()),
+                inside: vec!["its mate `Ground`: no body has a face `F1:face(9)`".into()],
                 visible: true,
                 own: true,
                 grounded: false,
@@ -1180,10 +1227,26 @@ mod tests {
                     z: [0.0, 0.0, 1.0],
                 }),
             }],
+            couplings: vec![OutlineCoupling {
+                name: "Gears".into(),
+                error: Some("its mate `Mesh` takes no part".into()),
+            }],
             dof: Some(1),
             free: vec!["Spin turns".into()],
             solve_error: None,
             unit: "mm".into(),
+            problems: vec![
+                OutlineProblem {
+                    what: "coupling",
+                    name: "Gears".into(),
+                    problem: "coupling `Gears`: its mate `Mesh` takes no part".into(),
+                },
+                OutlineProblem {
+                    what: "solve",
+                    name: String::new(),
+                    problem: "the assembly does not solve: x".into(),
+                },
+            ],
         };
         let joint = JointHandle {
             mate: "Spin".into(),
@@ -1196,6 +1259,10 @@ mod tests {
             unit: "mm".into(),
             size: 1e-300,
         };
+        // A problem of a kind the check has not: the outline is not read.
+        let mut unknown = outline_json(&outline);
+        unknown["problems"][0]["what"] = json!("feature");
+        assert_eq!(outline_from(&unknown), None);
         assert_eq!(outline_from(&outline_json(&outline)), Some(outline));
         assert_eq!(joint_from(&joint_json(&joint)), Some(joint));
         for bad in [

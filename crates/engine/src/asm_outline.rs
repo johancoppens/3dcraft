@@ -1,11 +1,12 @@
 //! An assembly as a viewer lists it (docs/design/assemblies.md › *The
 //! tree*): its instances nested by subassembly, then its mates with their
-//! status and value, and the degrees of freedom left. Read from the
-//! placement the view shows (the moment of a motion when one is shown,
-//! else the assembly at rest); runs no command.
+//! status and value, its couplings, the degrees of freedom left, and what
+//! the assembly's check finds wrong with it. Read from the placement the
+//! view shows (the moment of a motion when one is shown, else the
+//! assembly at rest); runs no command.
 
 use crate::Session;
-use crate::asm::{Built, InstanceState, Placed};
+use crate::asm::{Built, InstanceState, Placed, Wrong};
 use craft3d_doc::{Document, MateKind};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -19,6 +20,8 @@ pub struct AssemblyOutline {
     /// Its instances, each followed by those of its subassembly, nested.
     pub instances: Vec<OutlineInstance>,
     pub mates: Vec<OutlineMate>,
+    /// Its couplings, in its order.
+    pub couplings: Vec<OutlineCoupling>,
     /// The degrees of freedom left when it is solved.
     pub dof: Option<usize>,
     /// Each free motion left, in words.
@@ -27,6 +30,37 @@ pub struct AssemblyOutline {
     pub solve_error: Option<String>,
     /// The document's length unit (`mm`): what a distance is set in.
     pub unit: String,
+    /// What `document.check` lists as wrong with the assembly as it is
+    /// placed (`asm::wrong_in`), in its order and its words: an instance
+    /// that is not placed, or placed although a feature of its part
+    /// failed, what is wrong inside a subassembly (under its instance), a
+    /// mate or a coupling that takes no part, the solve when it failed.
+    /// Empty when the assembly is what it says: the window's verdict on it
+    /// (*Solved*, a Jig form's *Valid*) is read from this, never from the
+    /// solve alone.
+    pub problems: Vec<OutlineProblem>,
+}
+
+/// A problem of the assembly's check ([`AssemblyOutline::problems`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutlineProblem {
+    /// What it names, as `document.check` keys it: `instance`, `mate`,
+    /// `coupling` or `solve`.
+    pub what: &'static str,
+    /// The instance, mate or coupling it names; empty for the solve.
+    pub name: String,
+    /// The problem, in the check's words (*instance `Plate` is not
+    /// placed: …*).
+    pub problem: String,
+}
+
+/// A coupling row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutlineCoupling {
+    pub name: String,
+    /// Why it takes no part, when it does not (`assembly.solve` ›
+    /// `failed`).
+    pub error: Option<String>,
 }
 
 /// An instance row.
@@ -52,6 +86,11 @@ pub struct OutlineInstance {
     /// A feature of its part (or of a part in it) that failed in its
     /// configuration: it is placed with the bodies from before it.
     pub feature_failed: Option<String>,
+    /// For a subassembly that is placed: what is wrong in it itself, in
+    /// the check's words (*its mate `Ground`: …*, *its coupling …*, *it
+    /// does not solve: …*, `asm::wrong_within`); what is wrong with its
+    /// instances is on their own rows. Empty otherwise.
+    pub inside: Vec<String>,
     /// Shown (`instance.edit` with `visible` hides it); only for the
     /// assembly's own instances.
     pub visible: bool,
@@ -156,6 +195,35 @@ impl Session {
                 .unwrap_or_default(),
             solve_error: placed.solve_error.clone(),
             unit: crate::commands::length_unit(&doc).to_string(),
+            // The check's own list, so that the window says what it says.
+            problems: crate::asm::wrong_in(&placed)
+                .into_iter()
+                .map(|(what, problem)| {
+                    let (what, name) = match what {
+                        Wrong::Instance(name) => ("instance", name),
+                        Wrong::Mate(name) => ("mate", name),
+                        Wrong::Coupling(name) => ("coupling", name),
+                        Wrong::Solve => ("solve", String::new()),
+                    };
+                    OutlineProblem {
+                        what,
+                        name,
+                        problem,
+                    }
+                })
+                .collect(),
+            couplings: assembly
+                .couplings
+                .iter()
+                .map(|c| OutlineCoupling {
+                    name: c.name.clone(),
+                    error: placed
+                        .couplings
+                        .iter()
+                        .find(|s| s.name == c.name)
+                        .and_then(|s| s.error.clone()),
+                })
+                .collect(),
             ..AssemblyOutline::default()
         };
         for st in placed.instances.iter().filter(|i| i.flex_of.is_none()) {
@@ -372,36 +440,34 @@ fn push_instance(
     if rows.len() >= MAX_ROWS || depth > crate::asm::MAX_DEPTH {
         return;
     }
-    let source = st.source.clone();
     let sub = match st.built.as_deref() {
         Some(Built::Assembly(sub)) => Some(Arc::clone(sub)),
         _ => None,
     };
-    rows.push(OutlineInstance {
-        name: st.name.clone(),
-        label: st.name.rsplit('/').next().unwrap_or(&st.name).to_string(),
-        depth,
-        source,
-        subassembly: sub.is_some(),
-        error: st.error.clone(),
-        held: st.held.clone(),
-        feature_failed: st.feature_failed.clone(),
-        visible,
-        own,
-        grounded: false,
-        // A flexible subassembly's bodies are its instances'.
-        features: if st.flexed {
-            Vec::new()
-        } else {
-            st.bodies.iter().map(ToString::to_string).collect()
-        },
-    });
+    // A flexible subassembly's bodies are its instances'.
+    let features = if st.flexed {
+        Vec::new()
+    } else {
+        st.bodies.iter().map(ToString::to_string).collect()
+    };
+    rows.push(instance_row(st, depth, visible, own, features));
     if st.flexed {
-        // Its instances take part in this assembly's solve, placed here.
+        // Its instances take part in this assembly's solve, placed here;
+        // listed in its order, with those it could not place.
+        let first = rows.len();
+        if let Some(sub) = &sub {
+            push_flexed(rows, placed, sub, &st.name, depth + 1, visible);
+        }
+        // Any placed here that its own list did not reach.
+        let listed: BTreeSet<String> = rows
+            .iter()
+            .skip(first)
+            .map(|row| row.name.clone())
+            .collect();
         for child in placed
             .instances
             .iter()
-            .filter(|i| i.flex_of.as_deref() == Some(st.name.as_str()))
+            .filter(|i| i.flex_of.as_deref() == Some(st.name.as_str()) && !listed.contains(&i.name))
         {
             push_instance(rows, placed, child, depth + 1, visible, false);
         }
@@ -414,5 +480,79 @@ fn push_instance(
         for row in rows.iter_mut().skip(first) {
             row.features.clear();
         }
+    }
+}
+
+/// The instances of the flexible subassembly `sub`, whose instance is
+/// `prefix` in the assembly `placed`, in its order: each placed here as
+/// `prefix/Inner` as `placed` holds it; one that `sub` could not place,
+/// as `sub` holds it, with why (before, it was not listed: only what is
+/// placed here was); a flexible subassembly of its own, which is not
+/// placed itself (its instances are, here), as `sub` holds it, followed
+/// by its instances. The last two under their names here, with no body.
+fn push_flexed(
+    rows: &mut Vec<OutlineInstance>,
+    placed: &Placed,
+    sub: &Placed,
+    prefix: &str,
+    depth: usize,
+    visible: bool,
+) {
+    if depth > crate::asm::MAX_DEPTH {
+        return;
+    }
+    for inner in sub.instances.iter().filter(|i| i.flex_of.is_none()) {
+        if rows.len() >= MAX_ROWS {
+            return;
+        }
+        let name = format!("{prefix}/{}", inner.name);
+        if inner.error.is_none()
+            && !inner.flexed
+            && let Some(here) = placed.instance(&name)
+        {
+            push_instance(rows, placed, here, depth, visible, false);
+            continue;
+        }
+        let mut there = inner.clone();
+        there.name.clone_from(&name);
+        rows.push(instance_row(&there, depth, visible, false, Vec::new()));
+        if inner.flexed
+            && let Some(Built::Assembly(inner_sub)) = inner.built.as_deref()
+        {
+            push_flexed(rows, placed, inner_sub, &name, depth + 1, visible);
+        }
+    }
+}
+
+/// The row of the instance `st`, its bodies the shown part's `features`.
+fn instance_row(
+    st: &InstanceState,
+    depth: usize,
+    visible: bool,
+    own: bool,
+    features: Vec<String>,
+) -> OutlineInstance {
+    let sub = match st.built.as_deref() {
+        Some(Built::Assembly(sub)) => Some(sub),
+        _ => None,
+    };
+    OutlineInstance {
+        name: st.name.clone(),
+        label: st.name.rsplit('/').next().unwrap_or(&st.name).to_string(),
+        depth,
+        source: st.source.clone(),
+        subassembly: sub.is_some(),
+        error: st.error.clone(),
+        held: st.held.clone(),
+        feature_failed: st.feature_failed.clone(),
+        // As the check asks: only of a subassembly that is placed.
+        inside: match (sub, &st.error) {
+            (Some(sub), None) => crate::asm::wrong_within(sub, st.flexed),
+            _ => Vec::new(),
+        },
+        visible,
+        own,
+        grounded: false,
+        features,
     }
 }

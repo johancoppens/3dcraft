@@ -355,11 +355,17 @@ pub struct TreeRow {
     /// The row is marked as for `held`, and its tooltip says which and
     /// why.
     pub failed: Option<String>,
+    /// In an assembly's tree: for a subassembly, what is wrong in it
+    /// itself, in the words of the assembly's check (its mates, its
+    /// couplings, its solve; `OutlineInstance::inside`). The row is marked
+    /// as for `held`, and the lines are shown under it.
+    pub inside: Vec<String>,
 }
 
 /// The mark after the source of an instance row whose source changed and
-/// is not followed ([`TreeRow::held`]), or whose part has a feature that
-/// failed in its configuration ([`TreeRow::failed`]). In egui's default
+/// is not followed ([`TreeRow::held`]), whose part has a feature that
+/// failed in its configuration ([`TreeRow::failed`]), or, a subassembly,
+/// with something wrong in it ([`TreeRow::inside`]). In egui's default
 /// fonts.
 pub const HELD_MARK: char = '⚠';
 
@@ -2226,6 +2232,12 @@ impl Shell {
         self.outline.as_ref()
     }
 
+    /// What the window says of the active assembly as a whole, from what
+    /// its check lists (`ui.get` › `assembly`); `None` for a part.
+    pub fn assembly_verdict(&self) -> Option<crate::state::AssemblyVerdict> {
+        self.outline.as_ref().map(crate::state::AssemblyVerdict::of)
+    }
+
     /// Where the last frame drew each instance row's controls: the
     /// instance, `eye` or `open`, and the rectangle.
     pub fn instance_hits(&self) -> &[(String, &'static str, egui::Rect)] {
@@ -2962,6 +2974,7 @@ impl Shell {
                 depth: 0,
                 held: None,
                 failed: None,
+                inside: Vec::new(),
             })
             .collect();
         // An assembly lists its instances, nested by subassembly, and its
@@ -3027,7 +3040,10 @@ impl Shell {
                         } else {
                             FeatureState::Ok
                         },
-                        status: if i.held.is_some() || i.feature_failed.is_some() {
+                        status: if i.held.is_some()
+                            || i.feature_failed.is_some()
+                            || !i.inside.is_empty()
+                        {
                             format!("{} {HELD_MARK}", i.source)
                         } else {
                             i.source.clone()
@@ -3044,6 +3060,7 @@ impl Shell {
                         made_by: None,
                         held: i.held.clone(),
                         failed: i.feature_failed.clone(),
+                        inside: i.inside.clone(),
                     }
                 })
                 .collect();
@@ -4820,7 +4837,7 @@ impl Shell {
                                     | FeatureState::Inactive
                                     | FeatureState::RolledBack
                             );
-                            let hover = match (&row.error, &row.held, &row.failed) {
+                            let mut hover = match (&row.error, &row.held, &row.failed) {
                                 (Some(error), ..) => error.clone(),
                                 (None, Some(held), Some(failed)) => {
                                     format!("{} · {held} · {failed}", row.kind)
@@ -4829,6 +4846,10 @@ impl Shell {
                                 (None, None, Some(failed)) => format!("{} · {failed}", row.kind),
                                 (None, None, None) => format!("{} · {}", row.kind, row.status),
                             };
+                            for line in &row.inside {
+                                hover.push('\n');
+                                hover.push_str(line);
+                            }
                             let icon = match row.kind {
                                 "subassembly" => crate::kit::Glyph::Assembly,
                                 "instance" => crate::kit::Glyph::Part,
@@ -4968,6 +4989,22 @@ impl Shell {
                                         )
                                         .wrap(),
                                     );
+                                });
+                            }
+                            // What is wrong in a subassembly itself (its
+                            // mates, couplings, solve), as the check says it.
+                            if !row.inside.is_empty() {
+                                ui.indent(("craft3d-inside", &row.name, row.depth), |ui| {
+                                    for line in &row.inside {
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(line)
+                                                    .color(color(tokens.failed))
+                                                    .size(tokens.secondary_font),
+                                            )
+                                            .wrap(),
+                                        );
+                                    }
                                 });
                             }
                         }
@@ -6288,29 +6325,30 @@ fn named_edge(feature: &str, name: Option<&str>, faces: &[String]) -> Option<Edg
 /// what they are for, and how to get one.
 pub const NO_ASSERTIONS_HINT: &str = "No checks yet. Ask an AI agent, e.g. \u{201c}check that the wall is at least 2 mm\u{201d}, or use assert.add.";
 
-/// An assembly's status at the top of its tab (boards w2, t1): solved
-/// and its degrees of freedom left, or why it is not solved.
+/// An assembly's status at the top of its tab (boards w2, t1), its
+/// verdict ([`crate::state::AssemblyVerdict`]): solved and its degrees of
+/// freedom left while the assembly's check finds nothing wrong with it;
+/// else why it is not solved, or how many problems the check lists, each
+/// in its words on hover (and on the row it names).
 fn assembly_status(
     ui: &mut egui::Ui,
     kit: &crate::kit::Kit,
     outline: &craft3d_engine::AssemblyOutline,
 ) {
     let s = kit.skin;
-    let (glyph, ink, text) = match (&outline.solve_error, outline.dof) {
-        (Some(_), _) => (
-            crate::kit::Glyph::Warning,
-            s.failed,
-            "Not solved".to_string(),
-        ),
-        (None, Some(n)) => (crate::kit::Glyph::Check, s.ok, format!("Solved · {n} DOF")),
-        (None, None) => (crate::kit::Glyph::Check, s.ok, "Solved".to_string()),
+    let verdict = crate::state::AssemblyVerdict::of(outline);
+    let (glyph, ink) = if verdict.ok {
+        (crate::kit::Glyph::Check, s.ok)
+    } else {
+        (crate::kit::Glyph::Warning, s.failed)
     };
-    let hover = match (&outline.solve_error, outline.dof) {
-        (Some(why), _) => format!("Not solved: {why}"),
-        (None, Some(0)) => "Fully constrained (0 degrees of freedom left)".to_string(),
-        (None, Some(1)) => format!("1 degree of freedom left: {}", outline.free.join(", ")),
-        (None, Some(n)) => format!("{n} degrees of freedom left: {}", outline.free.join(", ")),
-        (None, None) => String::new(),
+    let text = verdict.text;
+    let hover = match (verdict.ok, outline.dof) {
+        (false, _) => verdict.problems.join("\n"),
+        (true, Some(0)) => "Fully constrained (0 degrees of freedom left)".to_string(),
+        (true, Some(1)) => format!("1 degree of freedom left: {}", outline.free.join(", ")),
+        (true, Some(n)) => format!("{n} degrees of freedom left: {}", outline.free.join(", ")),
+        (true, None) => String::new(),
     };
     let response = ui
         .horizontal(|ui| {

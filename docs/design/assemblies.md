@@ -778,7 +778,19 @@ each published assembly as 0.2.0 answered it.
   value and `driven`, and the degrees of freedom left (or why the solve failed). Marks, a click to select, a double
   click to fly and an eye per row work as for features; the eye issues `instance.edit {visible}` and *Open* issues
   `instance.open` (the source in a tab of its own). It is read from the placement the view shows: a moment of the
-  motion when one is shown.
+  motion when one is shown. **Its verdict is the check's** (2026-11-20): the outline carries what `document.check`
+  lists for the assembly (`AssemblyOutline::problems`, `asm::wrong_in` of the placement shown), and the heading
+  (`AssemblyVerdict`, `ui.get` › `assembly`) says *Solved* with the degrees of freedom left only while that is
+  empty; else *Not solved* when the solve failed, or how many problems it lists (*2 failed*), each in the check's
+  words on hover. Each is on the row it names: an instance that is not placed is red with why (a flexible
+  subassembly's too, from the subassembly's own placement, and a flexible subassembly inside a flexible one is a
+  row of its own with its instances under it), one placed although a feature of its part failed is marked ⚠; a
+  subassembly with something wrong in itself (its mates, its couplings, its own solve unless it is flexible:
+  `asm::wrong_within`, the tail of what `wrong_inside` lists) is marked ⚠ with those lines under its row
+  (`OutlineInstance::inside`); a failed mate is red; a coupling that takes no part is a red row after the mates,
+  with why (one that takes part is not listed). A form of the assembly's public parameters says the heading's
+  words in the place of *Valid*, and weighs a commit by the check's problems ([`document.md`](document.md) ›
+  *Good and broken are sets*).
 - **Joints** (`ui-egui/src/shell/joints.rs`): a mate whose main free motion can be set by hand and leaves the
   assembly solved (`OutlineMate::settable`) is a slider on the Parameters tab, between its limits or a turn either
   way (a distance: the model's size either way). Settable means: it has a free motion, no formula of other
@@ -905,6 +917,43 @@ each published assembly as 0.2.0 answered it.
 
 ### Findings and history (track A)
 
+- 2026-11-20 (window-verdict): the window told a person *Solved* and *Valid* while `document.check` on the same
+  assembly said not ok (since 0.2.1, below). The Assembly tab's heading read the solve of what was placed alone, so
+  an assembly whose plate its part refused (a corner of 40 mm past its range of 30) and whose mate on it failed was
+  *Solved · 0 DOF*, with two red rows under it; a coupling that takes no part (a linear one on a motion its revolute
+  lacks) was in no outline, so the heading said *Solved · 1 DOF* and nothing anywhere said why `assembly.solve` was
+  not ok; a flexible subassembly listed only what its parent placed, so its instance that was not placed showed
+  nowhere; a subassembly's own mates and solve were shown nowhere (*instance `Sub`: its mate `Ground`: …*); and a
+  form of the assembly's public parameters weighed only red instance rows against the last good state, so a value
+  that failed a feature of an instance's part (the row is ⚠, not red) or past a hinge's limit (the solve) left it
+  *Valid*, as did an assembly that opened unsolved. Principle broken: one truth; the window had a second, weaker
+  rule. Rule: the window's verdict on an assembly is what the check lists for it, and each problem is shown where
+  the person looks for the thing it names. Built: `AssemblyOutline::problems` is `asm::wrong_in` of the placement the
+  view shows (the document's at rest, as the check's); `AssemblyVerdict::of` makes the heading from it (*Solved*,
+  *Solved · n DOF* only while it is empty; *Not solved* when the solve failed; else *n failed*, the check's words one
+  per line on hover), and `ui.get` › `assembly` gives it (`{ok, text, problems}`, `null` for a part). The outline
+  carries the couplings (`OutlineCoupling`), and the Mates section draws one that takes no part as a red row after
+  the mates with why (`Shell::coupling_row_hits`); one that takes part is not listed, so no assembly that is right
+  looks different. A row of a placed subassembly carries `inside`, `asm::wrong_within` (split out of `wrong_inside`,
+  which lists the same in the same order: its mates, its couplings, its solve unless flexible), shown under the row
+  in the failure colour and on hover, the row's source marked ⚠ (`ui.get` › `features[].inside`); its instances'
+  problems are on their own rows. A flexible subassembly's rows are its own instances in its order (`push_flexed`):
+  each placed in the parent as the parent holds it, one it could not place from its own placement with why (before,
+  not listed), and a flexible subassembly of its own as a row (before, the list went from the outer one straight to
+  the inner one's instances) with its instances under it; any placed in the parent that this walk misses are still
+  listed after. A form of the assembly's parameters weighs a commit by those problems, each keyed by what it names
+  (`instance Sub`, `instance Sub 2` for a second one of the same instance, `mate Ground`, `solve`), so a value that
+  adds one *Breaks the model* and one that only changes a reason does not; and its header says the heading's words
+  in the place of *Valid* while the check lists anything, whatever the last good state (`ui.get` › `parameters` ›
+  `status`). Not changed: what a command answers, the file format, a part's form (still weighed against its last
+  good state alone, so a part that opens with a failed feature says *Valid*: whether it should not is a question
+  for parts, open), and the Checks section, which says a broken assertion of the assembly itself while the heading
+  may say *Solved* (the heading speaks of the placement; whether it should also weigh the assertions, which
+  `document.check` does, is open). The outline crosses to the page with its new
+  lists (`view_elsewhere`, bit for bit). Tests: `crates/ui-egui/tests/assembly_verdict.rs` (each case before and
+  after, the problems in `ui.get` equal to the check's, a right, a floating, a redundant and a limited assembly still
+  *Solved* and *Valid*), `state::tests::an_assembly_is_solved_only_while_its_check_lists_nothing`, and the crossing
+  in `view_elsewhere::tests`.
 - 2026-11-19 (assembly-check): an assembly's `document.check` answered `ok` with no problem while an instance was not
   placed: one plate given a corner radius of 40 mm where its part's range ends at 30, one fixed mate on it.
   `assembly.inspect` gave the instance `error` (*its configuration failed: nothing was changed: `corner`: its value
@@ -954,11 +1003,8 @@ each published assembly as 0.2.0 answered it.
   mate does not follow a short name to the face it became, as a feature that takes the body and `file.export` do
   ([`names.md`](names.md) › *References that follow a body*): whether it should is a question, not part of this
   fix. A check that measures an instance that is not placed (a clearance on it) said *there is no feature named
-  `Plate`*; it now says why (*instance `Plate` is not placed: …*, `Placed::pose_of` in `verify_cmds::subject`). The window does not take its verdict from the check: the Instances
-  panel draws an instance that is not placed and a failed mate as red rows with their reasons, but its heading says
-  *Solved* while the solve of what is placed succeeds, couplings are not in its outline, a flexible subassembly's
-  instance that is not placed is not listed, a subassembly's mates are not shown, and the Jig form's *Valid* weighs
-  only failed instance rows against the last good state (owed).
+  `Plate`*; it now says why (*instance `Plate` is not placed: …*, `Placed::pose_of` in `verify_cmds::subject`). The
+  window did not take its verdict from the check; it does since 2026-11-20 (window-verdict, above).
 
 - 2026-11-18 (asm-save-path): an assembly whose sources were relative to the working folder (the window's read root),
   saved under an absolute path, got source paths that climbed to the file system's root and then named the path from

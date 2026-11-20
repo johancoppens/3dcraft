@@ -1027,15 +1027,38 @@ impl Shell {
     }
 
     /// What is wrong with the model as the last sync left it: the failing
-    /// rows of the feature list and the assertions measured broken.
+    /// rows of the feature list, or for an assembly what its check lists
+    /// (`AssemblyOutline::problems`), and the assertions measured broken.
     fn faults_now(&self) -> (Faults, bool) {
         use craft3d_engine::AssertionStatus as A;
         let mut faults = Faults::default();
-        for row in self.rows.iter().filter(|r| r.state == FeatureState::Failed) {
-            let error = row.error.clone().unwrap_or_default();
-            faults
-                .features
-                .insert(row.id.clone(), format!("{}: {error}", row.name));
+        match &self.outline {
+            // Each by what it names (the second problem of one instance as
+            // `instance Sub 2`), in the check's words: a commit that adds
+            // one breaks the model, one that changes only a reason does
+            // not. Before, only the instances that were not placed counted.
+            Some(outline) => {
+                let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+                for problem in &outline.problems {
+                    let named = format!("{} {}", problem.what, problem.name);
+                    let count = seen.entry(named.clone()).or_insert(0);
+                    *count = count.saturating_add(1);
+                    let key = if *count == 1 {
+                        named
+                    } else {
+                        format!("{named} {count}")
+                    };
+                    faults.features.insert(key, problem.problem.clone());
+                }
+            }
+            None => {
+                for row in self.rows.iter().filter(|r| r.state == FeatureState::Failed) {
+                    let error = row.error.clone().unwrap_or_default();
+                    faults
+                        .features
+                        .insert(row.id.clone(), format!("{}: {error}", row.name));
+                }
+            }
         }
         let mut pending = false;
         for a in &self.assertion_rows {
@@ -1274,11 +1297,35 @@ impl Shell {
         }
     }
 
+    /// What the form's header says while no value is being applied,
+    /// whether that is good, and what its hover adds: `Valid`; `Breaks the
+    /// model` after a value that broke it (against the last good state);
+    /// for an assembly that its check finds something wrong with, what
+    /// its Assembly tab heads with (`Not solved`, `2 failed`) whatever the
+    /// last good state, each problem on hover in the check's words. Before,
+    /// an assembly that opened with an instance not placed, or broke by a
+    /// mate, a coupling or its solve, was said *Valid*.
+    fn form_said(&self) -> (bool, String, String) {
+        if self.params.trouble.as_ref().is_some_and(|t| t.broke) {
+            return (false, "Breaks the model".to_string(), String::new());
+        }
+        match self.assembly_verdict().filter(|v| !v.ok) {
+            Some(verdict) => (false, verdict.text, verdict.problems.join("\n")),
+            None => (true, "Valid".to_string(), String::new()),
+        }
+    }
+
     /// `ui.get`'s `parameters`: what the form shows besides the values
     /// (which are `param.list`'s).
     pub(crate) fn parameters_report(&self) -> Value {
         let form = &self.params;
         let list = form.list.as_ref();
+        // What the form's header says; none without a form.
+        let status = match (list.is_some_and(|l| l.jig), form.busy()) {
+            (false, _) => None,
+            (true, true) => Some("Regenerating…".to_string()),
+            (true, false) => Some(self.form_said().1),
+        };
         json!({
             "jig": list.is_some_and(|l| l.jig),
             "tab": if self.state.parameters.open && list.is_some_and(|l| l.jig) {
@@ -1289,6 +1336,7 @@ impl Shell {
             "count": list.map_or(0, |l| l.params.len()),
             "inUse": self.jig_in_use(),
             "busy": form.busy(),
+            "status": status,
             "live": form.live.as_ref().map(|l| json!({
                 "name": l.name, "value": l.value, "dragging": l.dragging,
             })),
@@ -1622,7 +1670,7 @@ impl Shell {
     fn parameters_header(&mut self, ui: &mut egui::Ui, list: &ParamList, compact: bool) {
         let kit = crate::kit::Kit::panel(&self.tokens);
         let s = kit.skin;
-        let broke = self.params.trouble.as_ref().is_some_and(|t| t.broke);
+        let (good, words, why) = self.form_said();
         let busy = self.params.busy();
         ui.horizontal(|ui| {
             ui.set_min_height(kit.hit(self.tokens.control_height));
@@ -1640,16 +1688,23 @@ impl Shell {
             if busy {
                 kit.spinner(ui, "Regenerating…");
             } else {
-                let (glyph, text, ink) = if broke {
-                    (crate::kit::Glyph::Warning, "Breaks the model", s.failed)
+                let (glyph, ink) = if good {
+                    (crate::kit::Glyph::Check, s.ok)
                 } else {
-                    (crate::kit::Glyph::Check, "Valid", s.ok)
+                    (crate::kit::Glyph::Warning, s.failed)
                 };
                 let side = self.tokens.nav_icon_size * 0.875;
                 let (place, _) =
                     ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
                 crate::kit::glyphs::paint(ui.painter(), glyph, place, color(ink), &self.tokens);
-                let said = ui.label(egui::RichText::new(text).font(kit.font()).color(color(ink)));
+                let mut said = ui.label(
+                    egui::RichText::new(words)
+                        .font(kit.font())
+                        .color(color(ink)),
+                );
+                if !why.is_empty() {
+                    said = said.on_hover_text(why);
+                }
                 self.params
                     .hits
                     .push(("status".to_string(), place.union(said.rect)));
