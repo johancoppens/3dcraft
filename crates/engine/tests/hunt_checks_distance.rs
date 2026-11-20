@@ -42,10 +42,17 @@
 //! repaired on 2026-11-14). Known wrong and pinned in tests of their own,
 //! which fail when it is mended: the distance of faces that cross at a
 //! shallow angle is not 0
-//! (`a_big_ball_sunk_into_a_block_is_given_a_distance_known`), and a
-//! huge ball sunk a few tolerances into a cone's or a cylinder's side is
-//! answered clear
-//! (`a_huge_ball_sunk_a_few_tolerances_into_a_side_is_answered_clear_known`).
+//! (`a_big_ball_sunk_into_a_block_is_given_a_distance_known`), and a ball
+//! of radius 20 000 sunk 5 tolerances into a cone's side is answered clear
+//! (`a_ball_of_twenty_thousand_sunk_five_tolerances_into_a_cone_is_answered_clear_known`).
+//! A ball of radius 10 000 sunk a few tolerances into a cone's or a
+//! cylinder's side was answered clear until 2026-11-20 and is held to the
+//! overlap (`a_huge_ball_sunk_a_few_tolerances_into_a_side_overlaps`),
+//! and to what it is on both sides of zero
+//! (`a_huge_ball_by_a_side_is_clear_touching_or_overlapping_as_it_lies`);
+//! eight larger balls that are not told since then are owed
+//! (`a_ball_tens_of_thousands_of_times_the_body_sunk_into_a_side_overlaps`,
+//! ignored).
 
 #![allow(
     clippy::unwrap_used,
@@ -2123,35 +2130,35 @@ fn a_big_ball_sunk_into_a_block_is_given_a_distance_known() {
     );
 }
 
-/// Found by the review of the cone's proof (2026-11-14), owed, known
-/// wrong: **a pair that shares volume is answered clear, with nothing
-/// proven, and an assertion of a clearance of at least 0 passes.** A ball
-/// about 2500 times the body, sunk 3 to 10 tolerances into a cone's or a
-/// cylinder's side:
+/// Found by the review of the cone's proof (2026-11-14) as a known wrong
+/// answer, right since 2026-11-20: **a pair that shares volume a few
+/// tolerances deep under a ball thousands of times the body overlaps.** A
+/// ball about 2500 times the body, sunk 3 to 10 tolerances into a cone's
+/// or a cylinder's side:
 /// - a cone of radius 4 and height 12 and a ball of radius 10 000 at
 ///   (9488.832971018304, 0, 3168.277657006102): its centre is 10 000 −
 ///   1e-5 from the side at half its height along the side's normal
 ///   (closed form), so its surface lies 1e-5 (10 tolerances) inside the
-///   cone; `measure.clearance` answers clear, 1.097e-6, `atLeast` 0;
+///   cone;
 /// - a cylinder of radius 4 and height 10 from z = −5 and a ball of
 ///   radius 10 000 at (10003.999997, 0, 0.7), 3e-6 (3 tolerances) inside
-///   its wall: clear the same way.
+///   its wall.
 ///
-/// Nothing false is proven (`atLeast` is 0), but the status is false, and
-/// `clearance min "0 mm"` and `overlap is false` pass on bodies that
-/// overlap. The cause is not in the distance or its proof: where nothing
-/// is proven beyond twice the tolerance, `verify_cmds::clearance_status`
-/// asks the kernel (`craft3d_kernel::boolean::contact`), which answers
-/// Clear for such a pair (`feature.boolean` intersect of it leaves
-/// nothing, `document.interference` says clear): a common volume a few
-/// tolerances deep under a ball thousands of times the body. Balls of
-/// 0.5 to 200 sunk 3 to 200 tolerances are answered overlap (168 of 168
-/// in the review). The same before and after the repair of the cone's
-/// proof (before it, the cone's case was clear with a false proof).
-/// When the kernel's contact is fixed this test fails: make it the right
-/// answer (an overlap; both assertions failed).
+/// Both were answered clear (1.097e-6, `atLeast` 0), and `clearance min
+/// "0 mm"` and `overlap is false` passed on bodies that overlap: where
+/// nothing is proven beyond twice the tolerance, `verify_cmds::
+/// clearance_status` asks the kernel (`craft3d_kernel::boolean::
+/// contact`), which answered Clear. The ball crosses the side in a loop
+/// half a unit across at a sine of a few 1e-5, where a marched point
+/// within its ten-thousandth of the tolerance of the ball was anywhere
+/// across a band several tolerances wide about the loop; since a point is
+/// held to the curve where the surfaces cross at a shallow angle
+/// (docs/design/booleans.md › *A spar's face beside a rib's skin*) the
+/// kernel answers the overlap, and both assertions fail, as they must.
+/// (This test held the wrong answer until then, and failed when the
+/// answer changed, as it was written to.)
 #[test]
-fn a_huge_ball_sunk_a_few_tolerances_into_a_side_is_answered_clear_known() {
+fn a_huge_ball_sunk_a_few_tolerances_into_a_side_overlaps() {
     let tol = 1e-6;
     let (rb, r): (f64, f64) = (10_000.0, 4.0);
     // The cone's case by its closed form: from the side's point at half
@@ -2226,13 +2233,195 @@ fn a_huge_ball_sunk_a_few_tolerances_into_a_side_is_answered_clear_known() {
             "{what}: proven {at_least:e} apart: {clear}"
         );
         assert!(
-            clear["pairs"][0]["status"] == "clear"
-                && apart["status"] == "passed"
-                && none["status"] == "passed",
-            "{what}, sunk {depth:e}, is answered otherwise now: {clear}; at least 0: {}; no \
-             overlap: {}: if an overlap and both failed, it is fixed; make this the right answer",
+            clear["pairs"][0]["status"] == "overlap"
+                && apart["status"] == "failed"
+                && none["status"] == "failed",
+            "{what}, sunk {depth:e}: {clear}; at least 0: {}; no overlap: {}",
             apart["status"],
             none["status"]
         );
     }
+}
+
+/// The same two pairs on both sides of zero (the review of the repair of
+/// the shallow crossing, 2026-11-20): the ball of radius 10 000 with its
+/// surface 10 and 3 tolerances outside the side is clear, and no more is
+/// proven than that gap; within a third of a tolerance of the side,
+/// outside or inside, it touches; 3, 10 and 100 tolerances inside, it
+/// overlaps. The truth is the placement itself: the ball's centre lies
+/// along the side's normal, its radius less the depth from the side.
+/// (Before the repair the cylinder's pair a third of a tolerance inside
+/// could not be told, "marching an intersection curve stalled", and the
+/// pairs 3 and 10 tolerances inside were answered clear.)
+#[test]
+fn a_huge_ball_by_a_side_is_clear_touching_or_overlapping_as_it_lies() {
+    let tol = 1e-6;
+    let (rb, r): (f64, f64) = (10_000.0, 4.0);
+    let slant = 12.0_f64.phypot(r);
+    let n = (12.0 / slant, r / slant);
+    for cone in [true, false] {
+        for (sunk, want) in [
+            (-10.0, "clear"),
+            (-3.0, "clear"),
+            (-0.3, "touch"),
+            (0.3, "touch"),
+            (3.0, "overlap"),
+            (10.0, "overlap"),
+            (100.0, "overlap"),
+        ] {
+            let depth = sunk * tol;
+            let (what, body, centre): (&str, Step, V) = if cone {
+                (
+                    "the cone",
+                    (
+                        "feature.cone",
+                        json!({"name": "A", "radius": mm(r), "height": mm(12.0)}),
+                    ),
+                    V::new(2.0 + n.0 * (rb - depth), 0.0, 6.0 + n.1 * (rb - depth)),
+                )
+            } else {
+                (
+                    "the cylinder",
+                    (
+                        "feature.cylinder",
+                        json!({"name": "A", "radius": mm(r), "height": mm(10.0), "position": mm3(V::new(0.0, 0.0, -5.0))}),
+                    ),
+                    V::new(rb + r - depth, 0.0, 0.7),
+                )
+            };
+            let mut s = document(1.0);
+            build(&mut s, &[body, sphere("B", rb, centre)]).unwrap();
+            let Ran::Ok(clear) = run(
+                &mut s,
+                "measure.clearance",
+                &json!({"from": "A", "to": "B"}),
+            ) else {
+                panic!("{what}, the ball sunk {sunk} tolerances: no clearance");
+            };
+            assert!(
+                clear["pairs"][0]["status"] == want,
+                "{what}, the ball sunk {sunk} tolerances, is not told to {want}: {clear}"
+            );
+            // Never a proof above the truth: the gap, or nothing.
+            let gap = (-depth).max(0.0);
+            let at_least = clear["atLeast"].as_f64().unwrap_or(0.0);
+            assert!(
+                at_least <= gap + 1e-13 * rb,
+                "{what}, the ball sunk {sunk} tolerances: proven {at_least:e} apart, the gap is {gap:e}: {clear}"
+            );
+        }
+    }
+}
+
+/// The ball's centre for its surface to lie `depth` inside the side of the
+/// cone of radius 4 and height 12 at half its height (along the side's
+/// normal there), or inside the wall of the cylinder of radius 4 at 0.7.
+fn by_the_side(cone: bool, rb: f64, depth: f64) -> (Step, V) {
+    let r = 4.0_f64;
+    if cone {
+        let slant = 12.0_f64.phypot(r);
+        let n = (12.0 / slant, r / slant);
+        (
+            (
+                "feature.cone",
+                json!({"name": "A", "radius": mm(r), "height": mm(12.0)}),
+            ),
+            V::new(2.0 + n.0 * (rb - depth), 0.0, 6.0 + n.1 * (rb - depth)),
+        )
+    } else {
+        (
+            (
+                "feature.cylinder",
+                json!({"name": "A", "radius": mm(r), "height": mm(10.0), "position": mm3(V::new(0.0, 0.0, -5.0))}),
+            ),
+            V::new(rb + r - depth, 0.0, 0.7),
+        )
+    }
+}
+
+/// Found by the review of the repair of the shallow crossing (2026-11-20),
+/// known wrong: **a ball of radius 20 000 sunk 5 tolerances into the
+/// cone's side is answered clear** (5.56e-7, `atLeast` 0), where it was an
+/// overlap before the repair (which answered clear at 4.5 and at 6
+/// tolerances: the answer is unsteady there on both). Nothing false is
+/// proven, but the status is false. The ball of 10 000 is held to the
+/// truth above; from 20 000 up the nearest a marched point is asked to the
+/// other surface (`Marcher::held`, down to `64 ε` of the pair's box) is
+/// finer than the rounding of a distance to a centre that far away
+/// (docs/design/verification.md › *Answered clear though sharing volume*).
+/// When it is mended this test fails: make it the right answer, an
+/// overlap.
+#[test]
+fn a_ball_of_twenty_thousand_sunk_five_tolerances_into_a_cone_is_answered_clear_known() {
+    let tol = 1e-6;
+    let rb = 20_000.0;
+    let (body, centre) = by_the_side(true, rb, 5.0 * tol);
+    let mut s = document(1.0);
+    build(&mut s, &[body, sphere("B", rb, centre)]).unwrap();
+    let Ran::Ok(clear) = run(
+        &mut s,
+        "measure.clearance",
+        &json!({"from": "A", "to": "B"}),
+    ) else {
+        panic!("no clearance");
+    };
+    // Never a proof above the truth, known or not.
+    let at_least = clear["atLeast"].as_f64().unwrap_or(0.0);
+    assert!(at_least <= 0.0, "proven {at_least:e} apart: {clear}");
+    assert!(
+        clear["pairs"][0]["status"] == "clear",
+        "answered otherwise now: {clear}: if an overlap, it is mended; make this the right answer"
+    );
+}
+
+/// Owed, found by the same review: eight pairs that were told to overlap
+/// before the repair of the shallow crossing and are not told since
+/// (`measure.clearance` cannot tell, `document.interference` answers
+/// *unknown*: "marching an intersection curve stalled"): balls of 30 000
+/// to 200 000 sunk 3 to 50 tolerances into the cone's side or the
+/// cylinder's wall. A step of the march must end as near the other
+/// surface as `Marcher::held` asks, which there is nearer than the
+/// distance to a centre so far away can be told; no step does, however
+/// short. Each shares volume with the body by its closed form (the
+/// placement), so an overlap is the truth.
+#[test]
+#[ignore = "owed: a ball thousands of times the body, a few tolerances in, is not told since the shallow crossing's repair"]
+fn a_ball_tens_of_thousands_of_times_the_body_sunk_into_a_side_overlaps() {
+    let tol = 1e-6;
+    let mut failed = Vec::new();
+    for (cone, rb, sunk) in [
+        (true, 3e4, 3.0),
+        (true, 5e4, 3.0),
+        (true, 7e4, 20.0),
+        (true, 1e5, 20.0),
+        (true, 1e5, 30.0),
+        (true, 1e5, 50.0),
+        (true, 2e5, 50.0),
+        (false, 1e5, 20.0),
+    ] {
+        let (body, centre) = by_the_side(cone, rb, sunk * tol);
+        let mut s = document(1.0);
+        build(&mut s, &[body, sphere("B", rb, centre)]).unwrap();
+        let said = match run(
+            &mut s,
+            "measure.clearance",
+            &json!({"from": "A", "to": "B"}),
+        ) {
+            Ran::Ok(clear) => clear["pairs"][0]["status"].to_string(),
+            Ran::Err(e) => e,
+            Ran::Panic(e) => panic!("{e}"),
+        };
+        if said != "\"overlap\"" {
+            failed.push(format!(
+                "a ball of {rb:e} sunk {sunk} tolerances into the {}: {said}",
+                if cone { "cone" } else { "cylinder" }
+            ));
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "{} of 8 not told to overlap:\n{}",
+        failed.len(),
+        failed.join("\n")
+    );
 }

@@ -116,6 +116,9 @@ const MIN_SINE: f64 = 1e-8;
 /// twice its length) across a jump in speed of `2^(RESCALES − 2)` and
 /// more.
 const RESCALES: usize = 48;
+/// The share of the linear tolerance within which a marched point is held
+/// to the curve along the chart ([`Marcher::held`]).
+const ALONG: f64 = 1.0 / 16.0;
 /// Places at which a border of a freeform chart is sampled for the
 /// stretches of it that lie on the field ([`Marcher::border_stretches`]).
 const BORDER_SAMPLES: u32 = 64;
@@ -318,6 +321,9 @@ pub(super) struct Marcher {
     tol: Tolerance,
     /// How close to `f = 0` a marched point is brought.
     on: f64,
+    /// What rounding leaves of `f` at the size of the box: no point is
+    /// asked nearer to `f = 0` than this ([`Marcher::held`]).
+    floor: f64,
     /// Distance from the field's surface beyond which a point with
     /// `f = 0` is past that surface's edge.
     cut: f64,
@@ -357,7 +363,8 @@ impl Marcher {
             .ok_or(GeomError::InvalidParameter("an empty box"))?;
         let scale = lo.distance(hi);
         let magnitude = lo.length().max(hi.length()) + scale;
-        let on = (1e-4 * tol.linear).max(64.0 * f64::EPSILON * magnitude);
+        let floor = 64.0 * f64::EPSILON * magnitude;
+        let on = (1e-4 * tol.linear).max(floor);
         if !(scale > 0.0) || on > 0.02 * tol.linear {
             return Err(GeomError::InvalidParameter(
                 "the box has no size, or the tolerance is finer than rounding allows at its size",
@@ -369,6 +376,7 @@ impl Marcher {
             own,
             tol: *tol,
             on,
+            floor,
             cut: 0.25 * tol.linear,
             hmax: scale / 32.0,
             hmin: 4.0 * on,
@@ -516,12 +524,53 @@ impl Marcher {
         (!c.periodic_u && at(p.u, c.u)) || (!c.periodic_v && at(p.v, c.v))
     }
 
-    /// Newton back onto `f = 0`, moving the shortest way in space.
+    /// How near `f = 0` a point is brought at a place: `on`, and where the
+    /// surfaces cross at so shallow an angle there that a point within
+    /// `on` of the field's surface could be further than [`ALONG`] of the
+    /// tolerance from the curve along the chart (`on / sin θ`, `θ` the
+    /// angle between the surfaces), `on sin θ`, which holds it within `on`
+    /// of the curve, or as near as rounding leaves (`floor`).
+    ///
+    /// A point within `on` of the field is on both surfaces to that, but
+    /// where the surfaces are nearly tangent it is anywhere across a band
+    /// about the curve, `on / sin θ` wide. A step of the march is held to
+    /// its own length and to the turn of the tangent, and a span of the
+    /// fit to a point of the intersection between its ends
+    /// ([`Marcher::deviation`]): both take their points to be on the
+    /// curve. Where the band is wider than the curve's own bend (a plane
+    /// that all but holds a ruling of a lofted skin crosses it in a
+    /// hairpin a few tolerances across, at a sine of a few 1e-5), no step
+    /// however short landed where it was held to and the march stalled,
+    /// or it went round by the luck of where its steps fell and gave a
+    /// curve a tolerance or two beside the crossing, on both surfaces
+    /// (docs/design/booleans.md › *A spar's face beside a rib's skin*).
+    fn held(&self, e: &Eval) -> f64 {
+        let Some(normal) = e.su.cross(e.sv).normalized() else {
+            return self.on;
+        };
+        let sine = normal.cross(e.n).length();
+        if self.on <= ALONG * self.tol.linear * sine {
+            self.on
+        } else {
+            (self.on * sine).max(self.floor)
+        }
+    }
+
+    /// Newton back onto `f = 0`, moving the shortest way in space: to the
+    /// first place as near `f = 0` as it is held there ([`Marcher::held`]),
+    /// and where none is reached (`f` has no slope to follow, or the tries
+    /// run out: the surfaces tangent there, or a hair apart), the first
+    /// place within `on`, which is what was returned before points were
+    /// held to the curve.
     fn correct(&mut self, mut u: f64, mut v: f64) -> Option<(Eval, f64, f64)> {
+        let mut within: Option<(Eval, f64, f64)> = None;
         for _ in 0..16 {
             let e = self.eval(u, v)?;
             if e.f.abs() <= self.on {
-                return Some((e, u, v));
+                if e.f.abs() <= self.held(&e) {
+                    return Some((e, u, v));
+                }
+                within = within.or(Some((e, u, v)));
             }
             // w = G⁻¹ g with G the first fundamental form.
             let (a, b, c) = (e.su.dot(e.su), e.su.dot(e.sv), e.sv.dot(e.sv));
@@ -533,7 +582,7 @@ impl Marcher {
             };
             let slope = e.gu * wu + e.gv * wv;
             if !(slope > 0.0) {
-                return None;
+                break;
             }
             u -= e.f * wu / slope;
             v -= e.f * wv / slope;
@@ -541,7 +590,7 @@ impl Marcher {
                 return None;
             }
         }
-        None
+        within
     }
 
     /// The point of a branch at an evaluated place, travelling the way
@@ -2266,8 +2315,19 @@ impl Marcher {
             // not, such as once around a closed curve smaller than the
             // step, back to just past where it began (the tangent there
             // is the same, so the turn does not show it).
+            // And it ends on the curve: a point within `on` of the field
+            // that could not be brought as near as it is held where the
+            // surfaces cross at a shallow angle ([`Marcher::held`]) is
+            // anywhere across the band about the curve (past the turn of
+            // a hairpin there is no curve to come onto): a shorter step
+            // lands where there is.
+            let on_curve = e.f.abs() <= self.held(&e);
             let Some(new) = new.filter(|_| {
-                step.dot(cur.t) > 0.0 && len >= 0.5 * h && len <= 2.0 * h && turn >= cos_turn
+                step.dot(cur.t) > 0.0
+                    && len >= 0.5 * h
+                    && len <= 2.0 * h
+                    && turn >= cos_turn
+                    && on_curve
             }) else {
                 // Off the edge of the other surface the field has a crease
                 // and no tangent: that is an end, not a stall.
@@ -2285,7 +2345,13 @@ impl Marcher {
                         // predicted from the derivatives on one side goes
                         // as far off however short it is. The parameter
                         // step is then scaled to the length it went.
-                        let ahead = step.dot(cur.t) > 0.0 && turn >= cos_turn;
+                        // (Only a step that ended on the curve and went too
+                        // far or too short: one that ended off it is no
+                        // better for another length, and taken here the
+                        // march went on from places off the curve, a
+                        // least step at a time, thousands of them, to the
+                        // same stall.)
+                        let ahead = step.dot(cur.t) > 0.0 && turn >= cos_turn && on_curve;
                         let Some(new) = ahead
                             .then(|| self.rescaled(&cur, h, len, sign, cos_turn))
                             .flatten()
@@ -3690,7 +3756,7 @@ mod tests {
     )]
 
     use super::*;
-    use crate::{Cylinder, Plane};
+    use crate::{BezierPatch, Cylinder, Plane, Sphere};
     use craft3d_math::Frame;
 
     /// A marcher on the plane z = 0 (its chart is x and y) at scale `k`.
@@ -3728,6 +3794,192 @@ mod tests {
                 assert!(m.clear_of_zero(reach + m.tol.linear, reach), "k {k}");
             }
         }
+    }
+
+    /// The most evaluations the cylinder's side and the far ball may take
+    /// in either box before the march says it stalled: it takes 2 632 and
+    /// 2 428, and took 210 938 in the smaller box while the step's last
+    /// resort took steps that ended off the curve.
+    const EVALUATIONS_OF_THE_STALL: usize = 10_000;
+
+    /// A marcher on a trough along y against the plane z = 0: a patch of
+    /// degree two by one over x within 1 of `shift` and y in 0..1,
+    /// `z = lift + a (y − ½) − (x − shift)² / 4`. Along its middle
+    /// (`u = ½`) the surfaces cross at the slope `a`, and `f` is
+    /// `lift + a (v − ½)`.
+    fn trough(a: f64, lift: f64, shift: f64, tol: f64) -> Marcher {
+        let mut ctrl = Vec::new();
+        for (i, x) in [-1.0, 0.0, 1.0].into_iter().enumerate() {
+            for y in [0.0, 1.0] {
+                let middle = lift + a * (y - 0.5);
+                let z = if i == 1 { middle + 0.25 } else { middle - 0.25 };
+                ctrl.push(Vec3::new(shift + x, y, z));
+            }
+        }
+        let patch = Surface::Bezier(BezierPatch::new(2, 1, ctrl).unwrap());
+        let plane = Surface::Plane(Plane::new(Frame::WORLD));
+        let within = Bbox3::from_points([
+            Vec3::new(shift - 1.1, -0.1, -1.0),
+            Vec3::new(shift + 1.1, 1.1, 1.0),
+        ]);
+        let tol = Tolerance::new(tol, 1e-9).unwrap();
+        let field = Field::new(&plane).unwrap();
+        let chart = Chart::new(&patch, &within, &tol, &field).unwrap().unwrap();
+        Marcher::new(chart, field, &within, &tol).unwrap()
+    }
+
+    /// Where the surfaces cross steeply enough for a point within `on` of
+    /// the field to be within a sixteenth of the tolerance of the curve
+    /// (a sine of `16 on / tol`, 1.6e-3 here), a point within `on` is
+    /// left where it is, as it was before points were held to the curve:
+    /// what was marched before is marched the same.
+    #[test]
+    fn a_point_within_on_at_a_steep_crossing_is_left_where_it_is() {
+        for a in [0.5, 2e-3] {
+            let mut m = trough(a, 0.0, 0.0, 1e-6);
+            assert!((m.on - 1e-10).abs() < 1e-20, "{}", m.on);
+            let v = 0.5 + 0.5 * m.on / a;
+            let (e, u1, v1) = m.correct(0.5, v).unwrap();
+            assert!(e.f.abs() > 0.4 * m.on && e.f.abs() <= m.on, "{a}: {}", e.f);
+            assert_eq!((u1, v1), (0.5, v), "slope {a}");
+        }
+    }
+
+    /// Where they cross at a shallower angle than that, a point within
+    /// `on` of the field (here 400 times `on` from the curve along the
+    /// chart) is brought on to within `on` of the curve.
+    #[test]
+    fn a_point_within_on_at_a_shallow_crossing_is_brought_onto_the_curve() {
+        let a = 1.2e-3;
+        let mut m = trough(a, 0.0, 0.0, 1e-6);
+        let v = 0.5 + 0.5 * m.on / a;
+        assert!(v - 0.5 > 400.0 * m.on);
+        let (e, u1, v1) = m.correct(0.5, v).unwrap();
+        assert_eq!(u1, 0.5);
+        assert!((v1 - 0.5).abs() <= m.on, "{} from the curve", v1 - 0.5);
+        assert!(e.f.abs() <= m.on * a, "{}", e.f);
+    }
+
+    /// A point within `on` that cannot be brought nearer (the surfaces
+    /// are tangent there: `f` has no slope to follow) is still the point
+    /// it was, not none.
+    #[test]
+    fn a_point_within_on_that_cannot_be_brought_nearer_is_kept() {
+        let mut m = trough(0.0, 0.5e-10, 0.0, 1e-6);
+        let (e, u1, v1) = m.correct(0.5, 0.3).unwrap();
+        assert!(e.f.abs() > m.floor && e.f.abs() <= m.on, "{}", e.f);
+        assert_eq!((u1, v1), (0.5, 0.3));
+    }
+
+    /// Where the surfaces come within `on` of each other and do not meet
+    /// (the trough's ridge half of `on` under the plane), no place is as
+    /// near as it is held, however long Newton goes on: the place given,
+    /// the first within `on`, is the one returned, not a later one (the
+    /// second try lands within `on` as well, on the other side of the
+    /// ridge), as before points were held to the curve.
+    #[test]
+    fn of_places_within_on_none_of_them_held_the_first_is_returned() {
+        let mut m = trough(0.0, -0.5e-10, 0.0, 1e-6);
+        // 0.9 of `on` under the plane: 0.5 at the ridge and 0.4 down its
+        // side, `x² / 4` with `x = 2 u − 1`.
+        let u = 0.5 + 0.5 * (1.6e-10_f64).sqrt();
+        let (e, u1, v1) = m.correct(u, 0.3).unwrap();
+        assert!(e.f < -0.8 * m.on && e.f > -m.on, "{}", e.f);
+        assert_eq!((u1, v1), (u, 0.3));
+        // The second try is within `on` too, and is not the one returned.
+        let x = 2.0 * u - 1.0;
+        let second = 0.5 + 0.5 * (0.5 * x - 1e-10 / x);
+        let there = m.eval(second, 0.3).unwrap();
+        assert!(there.f.abs() <= m.on && second != u, "{}", there.f);
+    }
+
+    /// A step that ends off the curve is not taken by the step's last
+    /// resort either. A cylinder's side and a ball 25 000 times its
+    /// radius sunk 3 tolerances into it, asked as a boolean asks them:
+    /// the ball's distance is rounded in steps coarser than the nearest a
+    /// point is held to in the smaller box, so the march ends in its
+    /// stall there (owed: docs/design/booleans.md › *A spar's face beside
+    /// a rib's skin* › *A surface far larger than the box*; in the larger
+    /// box `on` is the floor itself and the march stalls as it did
+    /// before). It must end there for what a stall costs, and not creep
+    /// on from places off the curve a least step at a time, thousands of
+    /// them, to the same stall.
+    #[test]
+    fn a_step_that_ends_off_the_curve_is_not_taken_by_its_last_resort() {
+        let side = Surface::Cylinder(Cylinder::new(Frame::WORLD, 4.0).unwrap());
+        let centre = Vec3::new(100_003.999_997, 0.0, 0.7);
+        let ball = Surface::Sphere(Sphere::new(Frame::WORLD.at(centre).unwrap(), 1e5).unwrap());
+        let tol = Tolerance::new(1e-6, 1e-9).unwrap();
+        // The boxes a boolean asks the pair in: the part of the side's box
+        // the ball's box holds (a sliver at x = 4), grown by the room of
+        // the larger face, then of the smaller.
+        let (side_diagonal, ball_diagonal) = (228.0_f64.sqrt(), 2e5 * 3.0_f64.sqrt());
+        let mut most = 0;
+        for room in [
+            16.0 * 1e-6 + 0.013 * ball_diagonal,
+            16.0 * 1e-6 + 0.013 * side_diagonal,
+        ] {
+            let within = Bbox3::from_points([
+                Vec3::new(centre.x - 1e5 - room, -4.0 - room, -5.0 - room),
+                Vec3::new(4.0 + room, 4.0 + room, 5.0 + room),
+            ]);
+            let field = Field::new(&ball).unwrap();
+            let chart = Chart::new(&side, &within, &tol, &field).unwrap().unwrap();
+            let mut m = Marcher::new(chart, field, &within, &tol).unwrap();
+            let met = m.solve(&within);
+            eprintln!(
+                "room {room}: {} evaluations, on {:e}, floor {:e}: {:?}",
+                m.evals,
+                m.on,
+                m.floor,
+                met.as_ref()
+                    .map(|found| (found.curves.len(), found.points.len()))
+            );
+            most = most.max(m.evals);
+        }
+        assert!(most <= EVALUATIONS_OF_THE_STALL, "{most} evaluations");
+    }
+
+    /// No point is asked nearer `f = 0` than rounding leaves at the size
+    /// of the box: a million from the origin at a tolerance of 1e-5, `on`
+    /// is that floor itself, and a point within it at a shallow crossing
+    /// is left where it is.
+    #[test]
+    fn a_point_is_not_asked_nearer_than_rounding_leaves() {
+        let a = 1e-3;
+        let mut m = trough(a, 0.0, 1e6, 1e-5);
+        assert!(m.on == m.floor && m.on > 1e-9, "{} {}", m.on, m.floor);
+        let v = 0.5 + 0.5 * m.on / a;
+        let (e, u1, v1) = m.correct(0.5, v).unwrap();
+        assert!(e.f.abs() > 0.4 * m.on && e.f.abs() <= m.on, "{}", e.f);
+        assert_eq!((u1, v1), (0.5, v));
+    }
+
+    /// At a place where the chart has no normal (a pole: one of its
+    /// derivatives vanishes) there is no angle to read: a point is held
+    /// to `on`, as everywhere before. With one, at a slope of 1e-5, to
+    /// what rounding leaves (less than `on` times that sine would be).
+    #[test]
+    fn a_point_where_the_chart_has_no_normal_is_held_to_on() {
+        let m = trough(1e-5, 0.0, 0.0, 1e-6);
+        let e = Eval {
+            p: Vec3::ZERO,
+            su: Vec3::ZERO,
+            sv: Vec3::Y,
+            f: 0.0,
+            dist: 0.0,
+            n: Vec3::Z,
+            gu: 0.0,
+            gv: 0.0,
+        };
+        assert_eq!(m.held(&e), m.on);
+        let e = Eval {
+            su: Vec3::X,
+            sv: Vec3::new(0.0, 1.0, 1e-5),
+            ..e
+        };
+        assert_eq!(m.held(&e), m.floor);
+        assert!(m.floor < 1e-3 * m.on, "{} {}", m.floor, m.on);
     }
 
     /// The arc of the circle about `centre` (in the plane) of `radius` over
