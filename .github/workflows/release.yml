@@ -684,11 +684,13 @@ jobs:
       # On a dispatch only, the rehearsal of the commit to be tagged, never
       # in a tag's run: npm resolves the tool's dependencies at run time,
       # within the ranges of its package.json, so this is code no lock
-      # file pins, and a step of a run holds that run's credentials for
-      # its artifacts: it could replace any package of the release (the
+      # file pins, and a step can reach the run's credentials for its
+      # artifacts (it runs with sudo beside the runner's own process, which
+      # holds them; upload-artifact replaces an artifact with nothing
+      # more): such code could replace any package of the release (the
       # bundle and server.json together pass the draft's own checks). The
-      # tag is made on the rehearsed commit, whose xtask fills in the same
-      # manifest, so the rehearsal's verdict holds for the tag. No
+      # tag is made on the rehearsed commit, whose xtask fills in and
+      # checks the same manifest, so the rehearsal's verdict holds. No
       # dependency's install script runs (`npm_config_ignore_scripts`).
       - name: MCPB's validator
         if: github.event_name == 'workflow_dispatch'
