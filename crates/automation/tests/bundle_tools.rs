@@ -11,7 +11,7 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_automation::mcp;
+use craft3d_automation::{MAX_BATCH_STEPS, mcp};
 use craft3d_engine::{Session, Workspace};
 use serde_json::{Value, json};
 
@@ -50,4 +50,44 @@ fn the_bundle_lists_the_tools_the_headless_server_gives() {
     // The window's own tool is not the headless server's.
     assert!(!listed.iter().any(|name| name == mcp::WINDOW_TOOL));
     assert_ne!(manifest["tools_generated"], true);
+}
+
+/// What the manifest says of a batch is the server's own limit: the
+/// number of steps `command_batch` takes, `MAX_BATCH_STEPS`, which its
+/// schema also gives (`maxItems`).
+#[test]
+fn the_bundle_says_the_batch_limit_the_server_keeps() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../packaging/mcpb/manifest.json"
+    );
+    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let batch = manifest["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "command_batch")
+        .unwrap();
+    let said = batch["description"].as_str().unwrap();
+    assert!(
+        said.contains(&format!("up to {MAX_BATCH_STEPS} commands")),
+        "packaging/mcpb/manifest.json says of command_batch `{said}`; the server takes up to \
+         {MAX_BATCH_STEPS} steps"
+    );
+    // The number the manifest names is the one the server enforces and
+    // gives in its own schema.
+    let mut session = Session::new(Workspace::none());
+    let line = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}});
+    let reply: Value =
+        serde_json::from_str(&mcp::handle_line(&mut session, &line.to_string()).unwrap()).unwrap();
+    let served = reply["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "command_batch")
+        .unwrap();
+    assert_eq!(
+        served["inputSchema"]["properties"]["steps"]["maxItems"],
+        MAX_BATCH_STEPS
+    );
 }

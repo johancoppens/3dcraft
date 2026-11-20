@@ -281,6 +281,52 @@ jobs:
           if-no-files-found: error
           path: target/mcpb-program/
 
+      # That program started as the MCP bundle lays it out and as a client
+      # starts it: server/<platform>/ beside server/share/craft3d/fonts,
+      # `mcp` with a work folder, `initialize`, a raised text in the
+      # built-in font, a save in the work folder. On macOS and Windows the
+      # bundle is the first package that puts the fonts there (theirs are
+      # in the app's Resources and beside the program), so it is tried
+      # here, on the runner of that system; on Linux the job
+      # `package (mcpb)` starts it from the bundle itself. The fonts are
+      # this package's own; the checkout's, which a program built here
+      # finds as a last resort, are moved away while it runs. On Windows
+      # the work folder is given as Windows writes paths (`cygpath -m`).
+      - name: the program in the MCP bundle's layout
+        if: runner.os != 'Linux'
+        run: |
+          case "$RUNNER_OS" in
+            macOS) platform=darwin; fonts=dist/stage/dmg/3DCraft.app/Contents/Resources/fonts ;;
+            Windows) platform=win32; fonts=$(ls -d dist/stage/3dcraft-*-windows/fonts) ;;
+          esac
+          layout="$PWD/target/mcpb-layout"
+          rm -rf "$layout"
+          mkdir -p "$layout/server/$platform" "$layout/server/share/craft3d/fonts" "$layout/work"
+          cp target/mcpb-program/* "$layout/server/$platform/"
+          cp "$fonts"/* "$layout/server/share/craft3d/fonts/"
+          ls -lR "$layout/server"
+          cli=$(ls "$layout/server/$platform"/craft3d-cli*)
+          work="$layout/work"
+          if command -v cygpath > /dev/null; then work=$(cygpath -m "$work"); fi
+          mv assets/fonts target/checkout-fonts
+          trap 'mv target/checkout-fonts assets/fonts' EXIT
+          steps='[{"id":"file.new","params":{"units":"mm"}},{"id":"feature.block","params":{"size":[60,20,3],"name":"Plate"}},{"id":"sketch.create","params":{"name":"Label","face":"F1:face(1)"}},{"id":"sketch.text","params":{"sketch":"Label","text":"3DCraft","font":"sans","size":"8 mm","at":[30,10],"align":"center","anchor":"middle"}},{"id":"feature.extrude","params":{"sketch":"Label","distance":"1 mm","join":"Plate","name":"Raised"}},{"id":"file.save","params":{"path":"'"$work"'/text.3dcraft"}}]'
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release","version":"0"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"command_batch","arguments":{"terse":true,"steps":'"$steps"'}}}' \
+            | (cd / && env -u CRAFT3D_FONTS "$cli" mcp --automation-read-root "$work" --automation-write-root "$work") \
+            > "$layout/replies.txt"
+          cat "$layout/replies.txt"
+          grep -q '"serverInfo"' "$layout/replies.txt"
+          if grep -q '"isError":true' "$layout/replies.txt"; then
+            echo "::error::the program in the bundle's layout refused a step (above)"; exit 1
+          fi
+          # The batch's report is the text of the tool's answer, a JSON
+          # string inside the reply: its quotes are escaped there.
+          grep -qF '\"completed\":6' "$layout/replies.txt"
+          test -s "$layout/work/text.3dcraft"
+
       # The .msi installed as a person installs it, silently: first the
       # latest published release's, when it is older, then this one over
       # it. The upgrade must leave one 3DCraft in Apps (the UpgradeCode
@@ -654,12 +700,12 @@ jobs:
             > "$smoke/replies.txt"
           cat "$smoke/replies.txt"
           grep -q '"serverInfo"' "$smoke/replies.txt"
-          # The batch's report is the text of the tool's answer, a JSON
-          # string inside the reply: its quotes are escaped there.
-          grep -qF '\"completed\":6' "$smoke/replies.txt"
           if grep -q '"isError":true' "$smoke/replies.txt"; then
             echo "::error::the bundle's server refused a step (above)"; exit 1
           fi
+          # The batch's report is the text of the tool's answer, a JSON
+          # string inside the reply: its quotes are escaped there.
+          grep -qF '\"completed\":6' "$smoke/replies.txt"
           test -s "$work/text.3dcraft"
           mv target/checkout-fonts assets/fonts
 

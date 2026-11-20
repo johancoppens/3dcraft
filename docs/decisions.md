@@ -1,6 +1,6 @@
 # Decisions
 
-> **Last updated:** 2026-11-17
+> **Last updated:** 2026-11-20
 
 This is the record of the decisions taken while 3DCraft was built, written at the time and kept as it was. "The developer" is the project's maintainer; "an agent" and "the coordinator" are the AI agents that built it (the coordinator plans the others' work and merges it). A decision made by an agent "for the developer to overturn" (some of them overnight, while nobody could be asked) stood unless it was overturned, and a later entry says so where it was; dates are when a decision was taken, ids of runs and commits are the workshop's evidence of the day. From outside the project, an open decision is raised in an issue.
 
@@ -47,12 +47,14 @@ The web build gets **Embed**: a page that loads its module drives it through the
 
 ### 2026-11-13: An MCP bundle in the release, for the official MCP registry (decided by the developer)
 
-The official MCP registry (`registry.modelcontextprotocol.io`, which other directories draw from) stores only a description, `server.json`, pointing at a package of a kind it knows; the installers are none of those kinds, and an MCP bundle (`.mcpb`) on a GitHub release is one. The developer settled the four open points on 2026-11-13:
+The official MCP registry (`registry.modelcontextprotocol.io`, which other directories draw from) stores only a description, `server.json`, pointing at a package of a kind it knows; the installers are none of those kinds, and an MCP bundle (`.mcpb`) on a GitHub release is one. On 2026-11-13 the developer settled the three open points and approved one text:
 
 - **The name in the registry** is `io.github.johancoppens/3dcraft`, proven by signing in with GitHub; it follows GitHub as the application id `io.github.johancoppens.craft3d` does (2026-10-22).
 - **The bundle starts 3DCraft without a window,** `craft3d-cli mcp --automation-read-root DIR --automation-write-root DIR` with a work folder the person chooses when installing it, not `--bridge`: it must work for someone who installed nothing else. The long description says so and where to get the window.
 - **It comes with the next version, built by the release itself,** not added to a release made before it.
-- **The long description** of the draft manifest is approved, for this headless bundle. Its last sentence names the version series, filled in by the build (`@SERIES@`: "3DCraft is at version 0.2."); the approved draft said 0.1. Awaiting the developer's word: that sentence as filled in, the six tools' one-line descriptions, the work folder's explanation and the keywords.
+- **The long description** of the draft manifest is approved, for this headless bundle. Its last sentence names the version series, filled in by the build (`@SERIES@`: "3DCraft is at version 0.2."); the approved draft said 0.1.
+
+**Awaiting the developer's word** (in `packaging/mcpb/manifest.json`, used as drafted until then): that last sentence as the build fills it in, the six tools' one-line descriptions, the work folder's title and explanation, the keywords, and the author, support and documentation links.
 
 Built on 2026-11-20 ([`development.md`](development.md) › *The MCP bundle*): one bundle for Linux, macOS (Apple Silicon) and Windows, made by `cargo xtask package --formats mcpb` from the programs of the release's package jobs, with `server.json` as an artifact of the run. Publishing `server.json` to the registry stays the developer's step, after the release is published.
 
