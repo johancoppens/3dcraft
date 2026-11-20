@@ -2703,13 +2703,13 @@ mod tests {
     }
 
     /// glTF in the export dialog (2026-11-20), as the other meshes: offered
-    /// for the model, its quality and how it groups its triangles chosen
-    /// there (a group per face with its name by default, or per colour,
-    /// lighter), the save dialog's filter glTF, the file written at once as
-    /// `.glb` and the choice kept for the next export; the status line says
-    /// what the file left out of the looks. A refusal (a folder that is not
-    /// there, a document without bodies) opens the error dialog as for the
-    /// other formats and writes nothing.
+    /// for the model, its quality and its grouping chosen there (by face,
+    /// each with its name, by default, or by colour), the save dialog's
+    /// filter glTF, the file written at once as `.glb` and the choice kept
+    /// for the next export; the status line says what of the bodies'
+    /// appearance glTF cannot show. A refusal (a folder that is not there,
+    /// a document without bodies) opens the error dialog as for the other
+    /// formats and writes nothing.
     #[test]
     fn the_dialog_exports_gltf_in_either_grouping() {
         use craft3d_ui_egui::files::{ExportQuality, GltfPrimitives};
@@ -2761,7 +2761,7 @@ mod tests {
         assert_eq!((label.as_str(), ok), ("file.export", true), "{said}");
         assert_eq!(
             said,
-            "Exported plate · left out of the looks: brushing direction"
+            "Exported plate · glTF cannot show: brushing direction"
         );
         let answer = host.last_answer.clone().unwrap();
         assert_eq!(
@@ -2776,8 +2776,8 @@ mod tests {
         assert_eq!(listing(&mine), ["plate.glb"]);
         let bytes = std::fs::read(mine.join("plate.glb")).unwrap();
         assert_eq!(bytes.get(..4), Some(&b"glTF"[..]), "a binary glTF");
-        // Written: glTF offered first next time; the lighter grouping at
-        // the coarse quality.
+        // Written: glTF offered first next time; grouped by colour, at the
+        // coarse quality.
         act(&mut host, &mut dialogs, FileAction::Export);
         assert_eq!(host.shell.state.export.format, ExportFormat::Glb);
         host.shell.state.export.primitives = GltfPrimitives::Looks;
@@ -2787,10 +2787,7 @@ mod tests {
         host.file_choice(dialogs.wait().unwrap());
         let (_, ok, said) = last(&host);
         assert!(ok, "{said}");
-        assert_eq!(
-            said,
-            "Exported web · left out of the looks: brushing direction"
-        );
+        assert_eq!(said, "Exported web · glTF cannot show: brushing direction");
         let answer = host.last_answer.clone().unwrap();
         // A group per look of each body: one each here.
         assert_eq!(

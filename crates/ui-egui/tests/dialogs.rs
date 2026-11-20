@@ -1007,9 +1007,9 @@ fn the_export_of_the_model_says_which_hidden_bodies_it_leaves_out() {
 }
 
 /// glTF in the export dialog (2026-11-20): offered for the model with the
-/// other meshes, drawn with its quality and how it groups its triangles
-/// (a group per face with its name by default, or per colour, lighter),
-/// answered with both, written as asked, and kept for the next export
+/// other meshes, drawn with its quality and its grouping (by face, each
+/// with its name, by default, or by colour), answered with both, written
+/// as asked, and kept for the next export
 /// once written; `ui.set {"export": {"primitives": …}}` chooses the
 /// grouping, open or closed, and refuses anything else with nothing
 /// changed.
@@ -1050,7 +1050,7 @@ fn gltf_is_offered_with_its_grouping_and_kept_once_written() {
     // Drawn with its options, the grouping among them.
     frame(&ctx, &mut shell, &mut session, Vec::new());
     assert!(shell.export_dialog().is_some());
-    // The lighter grouping, chosen over the control channel as a click
+    // The grouping by colour, chosen over the control channel as a click
     // on it chooses it; anything else is refused and nothing changes.
     let set = call(
         &mut shell,
@@ -1110,4 +1110,86 @@ fn gltf_is_offered_with_its_grouping_and_kept_once_written() {
         params,
         vec![("quality", json!("coarse")), ("primitives", json!("faces"))]
     );
+}
+
+/// A frame of the window `width` points wide.
+fn frame_wide(
+    ctx: &egui::Context,
+    shell: &mut Shell,
+    session: &mut Session,
+    width: f32,
+) -> egui::Vec2 {
+    for _ in 0..2 {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, vec2(width, 600.0))),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| shell.ui(ui, session));
+        output.textures_delta.clear();
+    }
+    shell.export_dialog_rect().unwrap().size()
+}
+
+/// The export dialog keeps its size whichever choice of a row is made: the
+/// hint under Quality, Grouping and Projection is as tall as the tallest
+/// of its row's hints at the dialog's width, also in a narrow window
+/// where more of them wrap (the review of check/gltf-dialog, 2026-11-20:
+/// Coarse's hint took two lines and Normal's one, and the dialog jumped).
+/// Not vacuous: the size read follows the dialog's content, smaller for
+/// STL, which has no Grouping, than for glTF.
+#[test]
+fn the_export_dialog_keeps_its_size_whichever_choice_is_made() {
+    let ctx = egui::Context::default();
+    let mut session = Session::new(Workspace::memory());
+    session
+        .execute("file.new", &json!({"units": "mm"}))
+        .unwrap();
+    session
+        .execute(
+            "feature.block",
+            &json!({"name": "Plate", "size": [40, 20, 10]}),
+        )
+        .unwrap();
+    let mut shell = Shell::new();
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    shell.open_export(&mut session).unwrap();
+    assert_eq!(shell.export_dialog_rect(), None, "not drawn yet");
+    for width in [900.0, 480.0] {
+        shell.set_export_format(ExportFormat::Glb).unwrap();
+        let mut sizes = Vec::new();
+        for quality in ExportQuality::ALL {
+            for primitives in GltfPrimitives::ALL {
+                shell.state.export.quality = quality;
+                shell.state.export.primitives = primitives;
+                let size = frame_wide(&ctx, &mut shell, &mut session, width);
+                sizes.push((quality, primitives, size));
+            }
+        }
+        let (_, _, first) = sizes[0];
+        for (quality, primitives, size) in &sizes {
+            assert_eq!(*size, first, "{width}: {quality:?} {primitives:?}");
+        }
+        // STL has no Grouping: the dialog is smaller, so the size read
+        // is the content's, and the same for each quality.
+        shell.set_export_format(ExportFormat::Stl).unwrap();
+        let mut stl = Vec::new();
+        for quality in ExportQuality::ALL {
+            shell.state.export.quality = quality;
+            stl.push(frame_wide(&ctx, &mut shell, &mut session, width));
+        }
+        assert!(stl[0].y < first.y, "{width}: {stl:?} {first:?}");
+        assert!(stl.iter().all(|s| *s == stl[0]), "{width}: {stl:?}");
+        // A drawing of the model: its projection's hint likewise.
+        shell.set_export_format(ExportFormat::Svg).unwrap();
+        let mut drawn = Vec::new();
+        for perspective in [false, true, false] {
+            shell.state.export.drawing.perspective = perspective;
+            drawn.push(frame_wide(&ctx, &mut shell, &mut session, width));
+        }
+        assert!(drawn.iter().all(|s| *s == drawn[0]), "{width}: {drawn:?}");
+    }
+    // Closed: no place.
+    shell.answer_export(false);
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    assert_eq!(shell.export_dialog_rect(), None);
 }

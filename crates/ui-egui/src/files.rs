@@ -542,20 +542,16 @@ impl GltfPrimitives {
     /// What the dialog calls it.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Faces => "By face, named",
-            Self::Looks => "By colour, lighter",
+            Self::Faces => "By face",
+            Self::Looks => "By colour",
         }
     }
 
     /// What the dialog says of it under the choice.
     pub fn hint(self) -> &'static str {
         match self {
-            Self::Faces => {
-                "A group of triangles per face, with the face's name: for a program that needs to know which face is which; the default"
-            }
-            Self::Looks => {
-                "A group per colour of each body, without the faces' names: far fewer draw calls and usually a smaller file, for a web page or a phone"
-            }
+            Self::Faces => "Each face apart, with its name: for programs; the default",
+            Self::Looks => "Faces merged by colour, no names: quicker on a web page",
         }
     }
 }

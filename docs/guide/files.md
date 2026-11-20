@@ -102,15 +102,15 @@ becomes glTF's +Y, whatever the document's unit). It is for showing a model, not
 is the exact model, 3MF the one to print.
 
 In the export dialog, choose the format **glTF**. It asks for the **Quality**, as the other meshes do,
-and how the triangles are **Grouped**:
+and the **Grouping** of the triangles:
 
-| Grouped | For |
+| Grouping | For |
 |---|---|
-| **By face, named** | A program that needs to know which triangles are which face: each face's name is in the file; the default |
-| **By colour, lighter** | A web page, a phone or a game engine: one group per colour of each body, far fewer for a viewer to draw and usually a smaller file, without the faces' names |
+| **By face** | Each face apart, with its name: for a program that needs to know which triangles are which face; the default |
+| **By colour** | The faces of each body merged by colour, without their names: quicker on a web page, a phone or in a game engine, and usually a smaller file |
 
 The triangles are the same either way. The last choice is offered next time. The status line after the
-export names what the file could not keep of the looks (*left out of the looks: brushing direction*,
+export names what of the bodies' appearance glTF cannot show (*glTF cannot show: brushing direction*,
 below). An agent, a script or `craft3d-cli convert part.3dcraft part.glb` writes the same:
 
 ```json
@@ -124,7 +124,7 @@ below). An agent, a script or `craft3d-cli convert part.3dcraft part.glb` writes
 `quality`, `tolerance`, `angle` and `bodies` work as for the other meshes. Each primitive of a body's
 mesh holds the triangles of one face (or of the pieces of one face a cut made) and says the face's name
 in its `extras`, so a program can tell which triangles are which face. For a page shown on phones, take
-`"primitives": "looks"` (**By colour, lighter** in the dialog, `--primitives looks` on the command
+`"primitives": "looks"` (**By colour** in the dialog, `--primitives looks` on the command
 line): a primitive per colour of each body instead of one per face, so a viewer draws a body of a
 thousand faces in a few calls and the file is usually smaller; the triangles are the same, but the
 faces' names are not in it. What glTF cannot show

@@ -119,6 +119,8 @@ pub(super) struct Dialogs {
     /// Where the export dialog's choices of *What* were drawn in the last
     /// frame, each with what it chooses.
     what_hits: Vec<(ExportWhat, egui::Rect)>,
+    /// Where the export dialog was drawn in the last frame.
+    export_rect: Option<egui::Rect>,
 }
 
 /// What `ui.set` chose for the next opening of the export dialog.
@@ -681,6 +683,7 @@ impl Shell {
     /// Export, amber, at the right. Enter exports, Escape cancels.
     fn export_dialog_ui(&mut self, ctx: &egui::Context) {
         let Some(ask) = self.dialogs.export.take() else {
+            self.dialogs.export_rect = None;
             return;
         };
         let tokens = self.tokens;
@@ -833,6 +836,7 @@ impl Shell {
             answer = Some(false);
         }
         self.dialogs.what_hits = what_hits;
+        self.dialogs.export_rect = Some(shown.rect);
         self.dialogs.export = Some(ask);
         if let Some(what) = chose {
             let _ = self.set_export_what(what);
@@ -849,6 +853,13 @@ impl Shell {
     /// frame, each with what it chooses (empty while it is closed).
     pub fn export_what_hits(&self) -> &[(ExportWhat, egui::Rect)] {
         &self.dialogs.what_hits
+    }
+
+    /// Where the export dialog was drawn in the last frame (`None` while
+    /// it is closed): its size stays the same whichever choice of a row
+    /// is made, the hint under the row as tall as its tallest choice's.
+    pub fn export_dialog_rect(&self) -> Option<egui::Rect> {
+        self.dialogs.export_rect
     }
 }
 
@@ -901,6 +912,42 @@ fn hint(ui: &mut egui::Ui, kit: &Kit, indent: f32, text: &str) {
     });
 }
 
+/// The hint under a row of choices: `text`, the chosen one's, as [`hint`]
+/// draws it, in a place as tall as the tallest of `choices` (every
+/// choice's hint) wrapped at the same width, so the dialog keeps its size
+/// whichever is chosen (the review of check/gltf-dialog, 2026-11-20:
+/// Coarse's hint took two lines and Normal's one, and the dialog jumped).
+fn choice_hint(ui: &mut egui::Ui, kit: &Kit, indent: f32, text: &str, choices: &[&str]) {
+    ui.horizontal(|ui| {
+        ui.add_space(indent + ui.spacing().item_spacing.x);
+        let width = ui.available_width().max(1.0);
+        let font = kit.small_font();
+        let ink = color(kit.skin.text_dim);
+        let tallest = choices
+            .iter()
+            .chain(std::iter::once(&text))
+            .map(|hint| {
+                ui.painter()
+                    .layout(hint.to_string(), font.clone(), ink, width)
+                    .size()
+                    .y
+            })
+            .fold(0.0_f32, f32::max);
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, tallest),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_min_height(tallest);
+                ui.add(egui::Label::new(egui::RichText::new(text).font(font).color(ink)).wrap());
+            },
+        );
+    });
+}
+
+/// What the dialog says under *Projection* of each choice.
+const ORTHOGRAPHIC_HINT: &str = "To scale: one unit in the file is one unit of the model";
+const PERSPECTIVE_HINT: &str = "As the eye sees it, for an illustration: not to scale";
+
 /// The options of what is chosen in the format chosen: a mesh's quality,
 /// how a glTF file groups its triangles, a drawing's view, projection and
 /// hidden lines, a sheet's width and gap.
@@ -920,12 +967,18 @@ fn options_ui(ui: &mut egui::Ui, kit: &Kit, label: f32, export: &mut crate::stat
                 export.quality = *quality;
             }
         });
-        hint(ui, kit, label, export.quality.hint());
+        choice_hint(
+            ui,
+            kit,
+            label,
+            export.quality.hint(),
+            &ExportQuality::ALL.map(ExportQuality::hint),
+        );
     }
-    // glTF: a group per face with its name (the default), or per colour,
-    // lighter for a viewer (`file.export {primitives}`).
+    // glTF: each face apart with its name (the default), or the faces
+    // merged by colour (`file.export {primitives}`).
     if export.format == ExportFormat::Glb {
-        row(ui, kit, "Grouped", label, |ui| {
+        row(ui, kit, "Grouping", label, |ui| {
             let segments: Vec<Segment<'_>> = GltfPrimitives::ALL
                 .iter()
                 .map(|p| Segment::Text(p.label()))
@@ -939,7 +992,13 @@ fn options_ui(ui: &mut egui::Ui, kit: &Kit, label: f32, export: &mut crate::stat
                 export.primitives = *primitives;
             }
         });
-        hint(ui, kit, label, export.primitives.hint());
+        choice_hint(
+            ui,
+            kit,
+            label,
+            export.primitives.hint(),
+            &GltfPrimitives::ALL.map(GltfPrimitives::hint),
+        );
     }
     if export.what == ExportWhat::Model && export.format.kind() == ExportKind::Outline {
         let drawing = &mut export.drawing;
@@ -972,15 +1031,16 @@ fn options_ui(ui: &mut egui::Ui, kit: &Kit, label: f32, export: &mut crate::stat
             );
             drawing.dashed = chosen == 0;
         });
-        hint(
+        choice_hint(
             ui,
             kit,
             label,
             if drawing.perspective {
-                "As the eye sees it, for an illustration: not to scale"
+                PERSPECTIVE_HINT
             } else {
-                "To scale: one unit in the file is one unit of the model"
+                ORTHOGRAPHIC_HINT
             },
+            &[ORTHOGRAPHIC_HINT, PERSPECTIVE_HINT],
         );
     }
     if export.what.has_sheet() {
