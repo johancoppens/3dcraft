@@ -23,9 +23,11 @@
 //!   (beside the plate, touching its top front edge in one point), and
 //!   the vertex of its rim `e` tolerances off that edge. Around it a grid:
 //!   the footprint tangent, 40 tolerances further in and 40 further out;
-//!   the cylinder resting, lifted (clear) and sunk in (overlap); in the
-//!   world's axes and turned; closed forms for every answer (the area a
-//!   disc and a half plane share).
+//!   the cylinder resting, lifted (clear) and sunk in (overlap); the
+//!   place of tangency at the middle of the edge and at a corner of the
+//!   face; the plate's edges as lines and as splines; in the world's
+//!   axes and turned; closed forms for every answer (the area a disc and
+//!   a half plane share).
 //! - *A keyed shaft and a hub.* A shaft with a keyway whose rounded end
 //!   was cut as two arcs (a vertex on the end's rim, `e` tolerances off
 //!   the side of the hub's keyway), in a hub whose bore lies on the
