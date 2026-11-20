@@ -203,8 +203,14 @@ fn merged_fixtures() -> Vec<(&'static str, Vec<Part>, Scene)> {
 
 /// The SHA-256 of each pinned file.
 const PINNED: [(&str, &str); 6] = [
-    ("cylinder-looks.glb", "unknown"),
-    ("two-bodies-looks.glb", "unknown"),
+    (
+        "cylinder-looks.glb",
+        "dfb76a92827a64d51e5e0cacc25f8cc5c37e67bf5e5695c457ea2225c44c8846",
+    ),
+    (
+        "two-bodies-looks.glb",
+        "395734807d982fc0df40d92442380a400e6c1a9c7d3fe16175b74160473c7eae",
+    ),
     (
         "block.glb",
         "50523d5bf4200c6404e6c9c5124fcf78e73b8ead11e724cd814e4776d02eb97c",

@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated:** 2026-11-20 · **Stage:** R1: 0.1.0 released from the code frozen since 2026-11-05 (tagged on 2026-11-11, published on 2026-11-12), 0.1.1 (2026-11-12), 0.1.2 and 0.1.3 (2026-11-16), its fixes; the freeze ended on 2026-11-13; **0.2.0**, the first version after R1 (notes on the model, measuring and a section you drag in the window, fillets that fade, rounded tips and sheets through grids of points), tagged and published on 2026-11-19 from the workshop's `main`, and 0.2.1, its first fixes, on 2026-11-20 from `release/0.2`; 0.2.x comes from `release/0.2`, the 0.1 line has ended, the public `main` is the latest release; M7 (booleans), M8.5 and M9 in progress, M4 nearly done, M10 and V1 started; M0–M3, M5, M6 and M8 done · **Change:** minor (M10: glTF export done, a Done line; the current focus)
+> **Last updated:** 2026-11-20 · **Stage:** R1: 0.1.0 released from the code frozen since 2026-11-05 (tagged on 2026-11-11, published on 2026-11-12), 0.1.1 (2026-11-12), 0.1.2 and 0.1.3 (2026-11-16), its fixes; the freeze ended on 2026-11-13; **0.2.0**, the first version after R1 (notes on the model, measuring and a section you drag in the window, fillets that fade, rounded tips and sheets through grids of points), tagged and published on 2026-11-19 from the workshop's `main`, and 0.2.1, its first fixes, on 2026-11-20 from `release/0.2`; 0.2.x comes from `release/0.2`, the 0.1 line has ended, the public `main` is the latest release; M7 (booleans), M8.5 and M9 in progress, M4 nearly done, M10 and V1 started; M0–M3, M5, M6 and M8 done · **Change:** minor (M10: glTF for viewers, a Done line)
 
 This is the plan 3DCraft was built by, kept as it was used while it was built: the agents picked their work from *Current focus*, and each milestone's **Done** lines are dated history (what landed on that day, with the workshop's run and commit ids as evidence), its **Open** lists what is still owed. "The developer" is the project's maintainer.
 
@@ -736,6 +736,7 @@ STEP files read into the document as bodies (an `Import` feature), a pinned publ
 - STEP: a surface of revolution whose profile crosses its axis read on the part its face lies on, or refused saying why ([`design/step-import.md`](design/step-import.md)) (2026-11-15)
 - Faces drawn at a very uneven pace (weights a thousandfold apart) meshed on a grid graded to their shape, so such STEP parts are drawn, exported and cut ([`design/tessellator.md`](design/tessellator.md) › *A grid graded to the shape*) (2026-11-16)
 - glTF 2.0 binary (`.glb`) export from `file.export`: the mesh exports' triangles with the surfaces' normals in metres with +Y up, a node per body, a primitive per name of its faces with the name in `extras`, a material per look with the clear coat, transmission and index of refraction in their KHR extensions, what glTF cannot hold listed; checked by Khronos's glTF-Validator, an independent reader against STL and FreeCAD; asked from outside ([issue 3](https://github.com/johancoppens/3dcraft/issues/3); [`file-formats.md`](file-formats.md) › *glTF*) (2026-11-20)
+- glTF for viewers: a primitive per look of each body (`primitives` looks: the published moka pot in 10 draw calls instead of 822, its JSON 7 KB instead of 438), the document's unit and the turn back in `asset.extras`, points that fall together in 32 bits counted, no material nothing uses (2026-11-20)
 
 #### Open
 - [ ] glTF in the window's export dialog (it has `file.export` and `craft3d-cli convert` only), with the UX pass a window feature gets
@@ -806,6 +807,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-20 | minor | M10: glTF for viewers (a primitive per look, the unit in the file, points that fall together counted), a Done line |
 | 2026-11-20 | minor | M10: glTF export done, a Done line (the dialog's share an Open item); the current focus |
 | 2026-11-20 | minor | Two Open items for the next version, asked in the public repository's issue 3 (the developer, 2026-11-20): a body cut by planes in one feature (M7), glTF export (M10) |
 | 2026-11-20 | minor | 0.2.1 released (2026-11-20): the stage and R1's Done line |
