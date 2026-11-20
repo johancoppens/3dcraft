@@ -15,13 +15,19 @@
 //! intersected with what the first left. Each block reaches far past the
 //! prism on every other side.
 //!
+//! The plane either holds that vertex, V, or crosses the edge that
+//! leaves V along the other wall at a place W. That edge leaves at a
+//! shallow angle to the plane, so W is 3.23 `t` tolerances from V.
+//!
 //! What each distance answers today is printed by the test
-//! (`--ignored --nocapture`) and written under the test below. Two things
-//! are owed: a refusal there says "imprint lost: a curve in which two
-//! faces cross does not divide them; a piece of it is missing", which
-//! names no place, no tolerance and nothing to do; and the band the
-//! roadmap gives (half to twice the tolerance refused, as neither one
-//! place nor two) is not what happens: 0.7 to 2 tolerances build.
+//! (`--ignored --nocapture`) and written under it. One thing is owed:
+//! where V and W come between one and two tolerances apart (the plane
+//! about half a tolerance from V), the refusal says "imprint lost: a
+//! curve in which two faces cross does not divide them; a piece of it is
+//! missing", which names no place, no tolerance and nothing to do, where
+//! the tolerance rule's own refusal names its faces. The bodies built
+//! with the plane 0.7 to 2 tolerances from V are not inside that rule's
+//! band: their V and W are more than two tolerances apart.
 
 #![allow(
     clippy::unwrap_used,
@@ -123,10 +129,26 @@ fn nearest_pair(body: &Body) -> f64 {
 
 /// Owed: at every distance the second block either cuts (a body that
 /// passes its check) or is refused as at the edge of tolerance, with the
-/// faces. Today (2026-11-20, the answers the Check printed, the same on
-/// `check/cut-planes` and on `check/contact-border` f93760c7): see
-/// docs/design/booleans.md › *A plane that passes a vertex by less than a
-/// tolerance*, which lists every distance.
+/// faces.
+///
+/// Today (2026-11-20; Check runs 44767663080 and 44769475435 on
+/// `check/cut-planes`, 44767711875 on `check/contact-border` f93760c7
+/// with this file added: the same answers), by the plane's distance from
+/// the vertex in tolerances, with how far apart the two nearest vertices
+/// of a body built are:
+///
+/// - over it, 0 and 0.3: built, the vertex taken as lying in the plane
+///   (11 vertices);
+/// - 0.45, 0.49, 0.497, 0.51, 0.55: refused, "imprint lost: a curve in
+///   which two faces cross does not divide them; a piece of it is missing
+///   (face 1 of the second body)";
+/// - 0.7, 0.9, 1.0, 1.5, 1.9, 2.1: built with two vertices there (12),
+///   2.26, 2.91, 3.23, 4.84, 6.14 and 6.78 tolerances apart;
+/// - under it, 0.3: built (11 vertices); 0.45 and 0.55: "imprint lost";
+///   0.7: built (12 vertices, 2.08 apart); 1.0: "imprint lost"; 1.5:
+///   refused as it should be, "two points closer together than the
+///   tolerance can tell apart (at the edge of tolerance)", with its
+///   faces; 1.9 and 2.1: built (6.14 and 6.78 apart).
 #[test]
 #[ignore = "owed: a block's top within about half a tolerance of a vertex is refused as \"imprint lost\", with no place, tolerance or action: run with --ignored --nocapture"]
 fn a_block_whose_top_passes_a_vertex_by_less_than_a_tolerance_cuts_or_says_where() {

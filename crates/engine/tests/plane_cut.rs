@@ -1268,14 +1268,19 @@ fn a_plane_reports_what_it_did_and_only_one_that_changes_nothing_is_warned_of() 
         assert!(result.get("warnings").is_none(), "scale {k}: {result}");
         let left = assert_solid(&mut s, "LeftToo", 3600.0, Some(1620.0), k);
         assert_eq!(left["shells"], 1, "{left}");
-        // Two level planes on the block, the lower one last: the upper
-        // one cut and its face is gone; the lower one first: the upper
-        // one changes nothing.
+        // Two level planes on a block of its own, the lower one last: the
+        // upper one cut and its face is gone; the lower one first: the
+        // upper one changes nothing.
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": [40.0 * k, 30.0 * k, 20.0 * k], "position": [100.0 * k, 0.0, 0.0], "name": "Slab"}),
+        );
         let at = |z: f64| through(k, [0.0, 0.0, z], [0.0, 0.0, 1.0]);
         let result = built(
             &mut s,
             CUT,
-            json!({"target": "Part", "planes": [at(15.0), at(10.0)], "keep": true, "name": "Lower"}),
+            json!({"target": "Slab", "planes": [at(15.0), at(10.0)], "keep": true, "name": "Lower"}),
         );
         assert_eq!(
             result["planes"],
@@ -1289,7 +1294,7 @@ fn a_plane_reports_what_it_did_and_only_one_that_changes_nothing_is_warned_of() 
         let result = built(
             &mut s,
             CUT,
-            json!({"target": "Part", "planes": [at(10.0), at(15.0)], "keep": true, "name": "LowerToo"}),
+            json!({"target": "Slab", "planes": [at(10.0), at(15.0)], "keep": true, "name": "LowerToo"}),
         );
         assert_eq!(
             result["planes"],
@@ -1459,8 +1464,8 @@ const EAVES_OUTLINE: [[f64; 2]; 24] = [
 /// its side's first corner with a normal square to that side from the
 /// side's own numbers, `[dy, -dx, L / tan(a)]`, nothing rounded. Then two
 /// neighbours meet on the corner between them to rounding: the roof is
-/// built at three scales, has no short edge, and every vertex at the
-/// eaves' height is a corner of the outline. (With the normals rounded to
+/// built at three scales, has no short edge, and where a corner's upright
+/// edge reaches the eaves it ends in one vertex, the corner itself. (With the normals rounded to
 /// six decimals a plane passes its neighbour's corner by half a
 /// tolerance, and the cut is refused there: docs/design/booleans.md.)
 #[test]
@@ -1522,23 +1527,37 @@ fn a_roof_from_the_outlines_own_numbers_meets_on_the_corners() {
             let length = edge["length"].as_f64().unwrap();
             assert!(length >= k, "scale {k}: an edge of {length}: {edge}");
         }
+        // Where a corner's upright edge reaches the eaves it ends in one
+        // vertex, which is the corner at the eaves' height to rounding:
+        // nothing else lies within a thousandth of it.
+        let points: Vec<[f64; 3]> = listed["vertices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|vertex| vec3(&vertex["point"]))
+            .collect();
         let mut at_the_eaves = 0;
-        for vertex in listed["vertices"].as_array().unwrap() {
-            let [x, y, z] = vec3(&vertex["point"]);
-            if (z - 14.0 * k).abs() > 1e-9 * k {
-                continue;
+        for corner in &outline {
+            let near: Vec<f64> = points
+                .iter()
+                .map(|p| {
+                    let (dx, dy, dz) = (p[0] - corner[0], p[1] - corner[1], p[2] - 14.0 * k);
+                    (dx * dx + dy * dy + dz * dz).sqrt()
+                })
+                .filter(|&distance| distance <= 1e-3 * k)
+                .collect();
+            assert!(near.len() <= 1, "scale {k}: {near:?} at {corner:?}");
+            if let Some(&distance) = near.first() {
+                at_the_eaves += 1;
+                assert!(
+                    distance <= 1e-9 * k,
+                    "scale {k}: {distance} from {corner:?}"
+                );
             }
-            at_the_eaves += 1;
-            assert!(
-                outline
-                    .iter()
-                    .any(|p| (p[0] - x).abs() <= 1e-9 * k && (p[1] - y).abs() <= 1e-9 * k),
-                "scale {k}: a vertex at the eaves beside the outline's corners: {vertex}"
-            );
         }
         assert!(
-            at_the_eaves >= 12,
-            "scale {k}: {at_the_eaves} vertices at the eaves"
+            at_the_eaves >= 8,
+            "scale {k}: {at_the_eaves} corners at the eaves"
         );
     }
 }

@@ -833,3 +833,35 @@ Each is bounded per call; what is open is the number of calls, the remakes, the 
 
 **Owed:** `contact`, and the imprint it shares with the booleans, where an imprinted curve coincides exactly with a face's border; and where the shafts' extra edges come from (not traced). A reproduction of two bodies and one `measure.clearance` exists in the workshop (the bodies are a published Jig's, so they are not in this repository); the fix starts by making a synthetic pair that fails the same way.
 
+
+### A plane that passes a vertex by less than a tolerance: owed (2026-11-20, a hipped roof of 24 planes; `crates/kernel/tests/boolean_plane_by_vertex.rs`)
+
+*Found* by a hipped roof cut with `feature.planeCut` ([`plane-cut.md`](plane-cut.md)): 24 planes, one through every side of an outline at the eaves, their normals rounded to six decimals. Refused at the last plane: *"imprint lost: a curve in which two faces cross does not divide them; a piece of it is missing"*. With the normals unrounded it builds. The review reduced it to two planes at one convex corner of the outline: the second passes 0.497 tolerances over the vertex the first makes on the corner's upright edge. A datum plane, a sketch, a rectangle, an extrusion and a subtraction per plane are refused the same, so it is the boolean's, not the plane cut's block.
+
+*The case, with plain booleans* (the test file above, which is the reproduction). A prism over a four-cornered outline, 40 high, one corner at (50.4, 0). A block whose top is a plane through that corner at height 14, holding the outline's side on one side of the corner, is intersected with it: the upright edge of the corner now ends in a vertex V at (50.4, 0, 14), and the edge that leaves V along the other wall rises from it at 23 degrees. A second block, whose top holds the outline's other side (to the six decimals of its normal), passes `t` tolerances from V and is intersected with what the first left. Its top either holds V, or crosses the edge that leaves V at a place W; because that edge leaves at a shallow angle to the plane, W is 3.23 `t` tolerances from V. Tolerance 1e-6 on a part of 50.
+
+*What each distance answers* (2026-11-20; the test printed it: Check runs 44767663080 and 44769475435 on this work, 44767711875 on `check/contact-border` f93760c7 with only the test added: the same answers, so the change there to how a meeting curve near a face's border is read moves none of them):
+
+| The plane's distance from V, in tolerances | Answer | V to W, in tolerances |
+|---|---|---|
+| over V: 0, 0.3 | built; V is taken as lying in the plane (11 vertices) | W would be 0 and 0.97 from V: one place |
+| 0.45, 0.49, 0.497, 0.51, 0.55 | refused: "imprint lost: a curve in which two faces cross does not divide them; a piece of it is missing (face 1 of the second body)" | 1.45 to 1.78 |
+| 0.7, 0.9, 1.0, 1.5, 1.9, 2.1 | built, V and W two vertices (12), the body passes its check | 2.26, 2.91, 3.23, 4.84, 6.14, 6.78 |
+| under V: 0.3 | built, one place (11 vertices) | |
+| 0.45, 0.55 | refused: "imprint lost …" | |
+| 0.7 | built (12 vertices) | the two nearest 2.08 apart |
+| 1.0 | refused: "imprint lost …" | |
+| 1.5 | refused: "two points closer together than the tolerance can tell apart (at the edge of tolerance)", with its faces | |
+| 1.9, 2.1 | built (12 vertices) | the two nearest 6.14 and 6.78 apart |
+
+*What is wrong, and what is not.*
+
+- **The refusal's words.** Where the plane is between about 0.4 and 0.6 tolerances from V (and 1.0 under it), V and W are between 1.45 and 1.78 tolerances apart: neither one place nor two, the band the tolerance rule refuses ([`../roadmap.md`](../roadmap.md) › *The boolean checklist*, the open item "faces of exact bodies between half and twice the tolerance apart: refused"). It is refused, but as "imprint lost", which names no place, no tolerance and nothing to do, where 1.5 under V gets the rule's own refusal with its faces. Owed: the same state reaches the rule's refusal by every path, or is built.
+- **Not wrong: the bodies built from 0.7 on.** They read as built inside the band when the distance is taken from the plane to V (0.7 to 2 tolerances). The band is between two points, and the two points there are V and W, 2.26 tolerances apart at 0.7 and further beyond: two places, by the rule. No body the sweep built has two vertices nearer than 2.08 tolerances.
+- **To be decided with the fix, not a fault found:** at 0.3 the plane is within half a tolerance of V and V is taken as lying in it, though the crossing W would be 0.97 tolerances from V. Which distance decides (the plane's from the vertex, or the crossing's along the edge) is two rules that agree at a steep crossing and differ by the sine of the angle at a shallow one.
+
+*Cause:* not traced. The words come from the imprint's check that a meeting curve divides the face it lies in; a guess, from the distances alone, is that the curve's end is snapped to V (a hit within twice the tolerance of an edge's end is that end) while V itself is not on the plane (more than half a tolerance off), so the piece between does not close.
+
+*For whoever gives planes:* numbers from a computation unrounded, and a plane through a side of an outline with a normal exactly square to that side from the side's own numbers ([`plane-cut.md`](plane-cut.md) › *Planes from measured data*; the guide says so). That avoids the state; it does not mend the words.
+
+**Owed:** the refusal with its place, faces and tolerance (or the cut) at every distance of the sweep; the ignored test `a_block_whose_top_passes_a_vertex_by_less_than_a_tolerance_cuts_or_says_where` holds it and prints the table. The distances that build today are held by the test beside it.
