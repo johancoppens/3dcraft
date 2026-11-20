@@ -15,6 +15,7 @@ What every modelling operation of `craft3d-kernel` promises, and the list of ope
 | Primitives | `primitives`: block, cylinder, cone, sphere, torus, each built in a fixed order of entities | [`names.md`](names.md) |
 | Profiles and sweeps | `profile`, `spline2`, `extrude`, `extrude_to`, `revolve`, `loft`, `sweep`, `helix`, `thread` | [`sweeps.md`](sweeps.md) |
 | Booleans | `boolean` (and `contains_points`) | [`booleans.md`](booleans.md) |
+| A cut by a plane | `halfspace`: the boolean with a block made from the body's own box, one side kept | [`plane-cut.md`](plane-cut.md) |
 | Blends | `blend` (with `blend::rolling`), front ends `chamfer` and `fillet` | [`blends.md`](blends.md) |
 | Face operations | `tweak`, `offset_face`, `shell`, `move_face`, `draft`, `thicken`, `delete_face` | [`face-operations.md`](face-operations.md) |
 | Arrangement | transform, mirror and pattern: `topo::transform` and `merge`, joined by the boolean where instances touch (built in `regen`) | [`names.md`](names.md) |

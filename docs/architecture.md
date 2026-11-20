@@ -154,6 +154,7 @@ Kept here on purpose, short, so the developer sees where the structure is weakes
 | [`design/topology.md`](design/topology.md) | the B-rep, `check`, genus, the self-intersection check, mass properties, transforms |
 | [`design/kernel.md`](design/kernel.md) | what every operation promises; the list of operations |
 | [`design/booleans.md`](design/booleans.md) | imprint, classify, assemble; freeform operands; what is refused; speed; the corpus |
+| [`design/plane-cut.md`](design/plane-cut.md) | a body cut by planes in one feature: the boolean with a block made from the body's own box, the names by a plane's id |
 | [`design/blends.md`](design/blends.md) | closed-form blends, rolling-ball blends, chains, meets, ends |
 | [`design/sweeps.md`](design/sweeps.md) | profiles, extrude and its ends, revolve, loft, sweep, helix, thread |
 | [`design/face-operations.md`](design/face-operations.md) | offset face, shell, move face, draft, thicken, delete face |
