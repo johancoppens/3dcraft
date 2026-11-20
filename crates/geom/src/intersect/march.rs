@@ -558,14 +558,14 @@ impl Marcher {
 
     /// Newton back onto `f = 0`, moving the shortest way in space: to the
     /// first place as near `f = 0` as it is held there ([`Marcher::held`]),
-    /// and where none is reached, the first within `on`, as before points
-    /// were held to the curve.
+    /// and where none is reached (`f` has no slope to follow, or the tries
+    /// run out: the surfaces tangent there, or a hair apart), the first
+    /// place within `on`, which is what was returned before points were
+    /// held to the curve.
     fn correct(&mut self, mut u: f64, mut v: f64) -> Option<(Eval, f64, f64)> {
         let mut within: Option<(Eval, f64, f64)> = None;
         for _ in 0..16 {
-            let Some(e) = self.eval(u, v) else {
-                break;
-            };
+            let e = self.eval(u, v)?;
             if e.f.abs() <= self.on {
                 if e.f.abs() <= self.held(&e) {
                     return Some((e, u, v));
@@ -587,7 +587,7 @@ impl Marcher {
             u -= e.f * wu / slope;
             v -= e.f * wv / slope;
             if !(u.is_finite() && v.is_finite()) {
-                break;
+                return None;
             }
         }
         within
@@ -2345,7 +2345,13 @@ impl Marcher {
                         // predicted from the derivatives on one side goes
                         // as far off however short it is. The parameter
                         // step is then scaled to the length it went.
-                        let ahead = step.dot(cur.t) > 0.0 && turn >= cos_turn;
+                        // (Only a step that ended on the curve and went too
+                        // far or too short: one that ended off it is no
+                        // better for another length, and taken here the
+                        // march went on from places off the curve, a
+                        // least step at a time, thousands of them, to the
+                        // same stall.)
+                        let ahead = step.dot(cur.t) > 0.0 && turn >= cos_turn && on_curve;
                         let Some(new) = ahead
                             .then(|| self.rescaled(&cur, h, len, sign, cos_turn))
                             .flatten()
@@ -3750,7 +3756,7 @@ mod tests {
     )]
 
     use super::*;
-    use crate::{BezierPatch, Cylinder, Plane};
+    use crate::{BezierPatch, Cylinder, Plane, Sphere};
     use craft3d_math::Frame;
 
     /// A marcher on the plane z = 0 (its chart is x and y) at scale `k`.
@@ -3789,6 +3795,10 @@ mod tests {
             }
         }
     }
+
+    /// The most evaluations the cylinder's side and the far ball may take
+    /// before the march says it stalled.
+    const EVALUATIONS_OF_THE_STALL: usize = 40_000_000;
 
     /// A marcher on a trough along y against the plane z = 0: a patch of
     /// degree two by one over x within 1 of `shift` and y in 0..1,
@@ -3857,6 +3867,65 @@ mod tests {
         let (e, u1, v1) = m.correct(0.5, 0.3).unwrap();
         assert!(e.f.abs() > m.floor && e.f.abs() <= m.on, "{}", e.f);
         assert_eq!((u1, v1), (0.5, 0.3));
+    }
+
+    /// Where the surfaces come within `on` of each other and do not meet
+    /// (the trough's ridge half of `on` under the plane), no place is as
+    /// near as it is held, however long Newton goes on: the place given,
+    /// the first within `on`, is the one returned, not a later one (the
+    /// second try lands within `on` as well, on the other side of the
+    /// ridge), as before points were held to the curve.
+    #[test]
+    fn of_places_within_on_none_of_them_held_the_first_is_returned() {
+        let mut m = trough(0.0, -0.5e-10, 0.0, 1e-6);
+        // 0.9 of `on` under the plane: 0.5 at the ridge and 0.4 down its
+        // side, `x² / 4` with `x = 2 u − 1`.
+        let u = 0.5 + 0.5 * (1.6e-10_f64).sqrt();
+        let (e, u1, v1) = m.correct(u, 0.3).unwrap();
+        assert!(e.f < -0.8 * m.on && e.f > -m.on, "{}", e.f);
+        assert_eq!((u1, v1), (u, 0.3));
+        // The second try is within `on` too, and is not the one returned.
+        let x = 2.0 * u - 1.0;
+        let second = 0.5 + 0.5 * (0.5 * x - 1e-10 / x);
+        let there = m.eval(second, 0.3).unwrap();
+        assert!(there.f.abs() <= m.on && second != u, "{}", there.f);
+    }
+
+    /// A step that ends off the curve is not taken by the step's last
+    /// resort either. A cylinder's side and a ball 25 000 times its
+    /// radius sunk 3 tolerances into it, in the room of the cylinder's
+    /// face: the ball's distance is rounded in steps coarser than the
+    /// nearest a point is held to there, so the march ends in its stall
+    /// (owed: docs/design/booleans.md › *A spar's face beside a rib's
+    /// skin* › *Still refused*). It must end there for what the stall
+    /// costs, and not creep on from places off the curve a least step at
+    /// a time, as it did while the last resort took such steps (measured
+    /// on the build server, the evaluations of this one question: with
+    /// the rule and without it).
+    #[test]
+    fn a_step_that_ends_off_the_curve_is_not_taken_by_its_last_resort() {
+        let side = Surface::Cylinder(Cylinder::new(Frame::WORLD, 4.0).unwrap());
+        let centre = Vec3::new(100_003.999_997, 0.0, 0.7);
+        let ball = Surface::Sphere(Sphere::new(Frame::WORLD.at(centre).unwrap(), 1e5).unwrap());
+        let within = Bbox3::from_points([Vec3::new(-4.2, -4.2, -5.2), Vec3::new(4.2, 4.2, 5.2)]);
+        let tol = Tolerance::new(1e-6, 1e-9).unwrap();
+        let field = Field::new(&ball).unwrap();
+        let chart = Chart::new(&side, &within, &tol, &field).unwrap().unwrap();
+        let mut m = Marcher::new(chart, field, &within, &tol).unwrap();
+        let met = m.solve(&within);
+        eprintln!(
+            "COUNT {} evaluations, on {:e}, floor {:e}: {:?}",
+            m.evals,
+            m.on,
+            m.floor,
+            met.as_ref()
+                .map(|found| (found.curves.len(), found.points.len()))
+        );
+        assert!(
+            m.evals <= EVALUATIONS_OF_THE_STALL,
+            "{} evaluations",
+            m.evals
+        );
     }
 
     /// No point is asked nearer `f = 0` than rounding leaves at the size
