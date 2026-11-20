@@ -54,7 +54,7 @@ The official MCP registry (`registry.modelcontextprotocol.io`, which other direc
 - **It comes with the next version, built by the release itself,** not added to a release made before it.
 - **The long description** of the draft manifest is approved, for this headless bundle. Its last sentence names the version series, filled in by the build (`@SERIES@`: "3DCraft is at version 0.2."); the approved draft said 0.1.
 
-**Awaiting the developer's word** (in `packaging/mcpb/manifest.json`, used as drafted until then): that last sentence as the build fills it in, the six tools' one-line descriptions, the work folder's title and explanation, the keywords, and the author, support and documentation links.
+**Approved by the developer on 2026-11-20** (in `packaging/mcpb/manifest.json`): that last sentence as the build fills it in, the six tools' one-line descriptions, the work folder's title and explanation, and the keywords. The author, support and documentation links are addresses, not texts: the author's name with the website, the public repository's issues, the guide on the website. The same day he decided that the bundle comes with 0.2.2, once a rehearsal has passed and the rehearsal's bundle has been installed in a client.
 
 Built on 2026-11-20 ([`development.md`](development.md) › *The MCP bundle*): one bundle for Linux, macOS (Apple Silicon) and Windows, made by `cargo xtask package --formats mcpb` from the programs of the release's package jobs, with `server.json` as an artifact of the run. Publishing `server.json` to the registry stays the developer's step, after the release is published.
 
