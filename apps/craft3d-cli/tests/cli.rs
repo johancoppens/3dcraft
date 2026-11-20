@@ -1329,6 +1329,8 @@ fn serve_writes_beneath_the_write_root_and_reads_beneath_the_read_root() {
 /// does not exist yet is made when its parent exists (only that folder),
 /// so it is refused here only where its parent is missing too
 /// (2026-11-20: until then a missing write root was refused as well).
+/// What a root may be is the program's own rule, so this is a regression
+/// test of that rule, not a proof against anything outside it.
 #[test]
 fn a_root_must_be_a_directory() {
     let dir = workdir("bad-roots");
