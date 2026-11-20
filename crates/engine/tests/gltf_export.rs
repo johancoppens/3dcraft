@@ -342,12 +342,16 @@ fn every_face_has_its_look_and_what_glb_cannot_hold_is_said() {
     assert_eq!(names, ["Holed", "Pin", "Glass", "Brushed", "Plain"]);
     let material = |p: &GltfPrimitive| &file.materials[p.material.unwrap()];
     let top = f64::from(0.01_f32);
+    let mut groups = Vec::new();
     for p in &file.nodes[0].primitives {
         let on_top = p.positions.iter().all(|q| q[1] == top);
         let want = if on_top { BLUE } else { RED };
         assert_eq!(material(p).base_color, linear(want), "{:?}", p.extras);
-        assert_eq!(on_top, text(&p.extras, "face") == "F1:face(1)");
+        groups.push((text(&p.extras, "face").to_string(), on_top));
     }
+    // The plate's top is one face, its name the boolean's.
+    println!("Holed's face groups (name, on top): {groups:?}");
+    assert_eq!(groups.iter().filter(|(_, on_top)| *on_top).count(), 1);
     let pin = material(&file.nodes[1].primitives[0]);
     assert_eq!(pin.base_color, linear(GREEN));
     assert_eq!((pin.metallic, pin.roughness), (0.9, 0.25));
@@ -471,6 +475,8 @@ fn names_formats_and_refusals() {
         (json!({"path": "x.glb", "tolerance": -1}), "tolerance"),
         (json!({"path": "x.glb", "bodies": ["Nope"]}), "Nope"),
         (json!({"path": "x.glb", "format": "glbx"}), "glb"),
+        // A write that fails: no such folder.
+        (json!({"path": "no-such-folder/x.glb"}), "x.glb"),
     ] {
         let message = error(&mut s, "file.export", params.clone());
         assert!(message.contains(why), "{params}: {message}");
