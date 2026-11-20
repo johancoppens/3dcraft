@@ -39,13 +39,15 @@
 //! (`HUNT_CASES` cases per kind, default 120) and prints every case that is
 //! not right. Cases found wrong are pinned in [`KNOWN`] with what is wrong
 //! (none at present: the ten a cone's face that holds its apex gave were
-//! repaired on 2026-11-14). Known wrong and pinned in tests of their own,
-//! which fail when it is mended: the distance of faces that cross at a
+//! repaired on 2026-11-14). Known wrong and pinned in a test of its own,
+//! which fails when it is mended: the distance of faces that cross at a
 //! shallow angle is not 0
-//! (`a_big_ball_sunk_into_a_block_is_given_a_distance_known`), and a
-//! huge ball sunk a few tolerances into a cone's or a cylinder's side is
-//! answered clear
-//! (`a_huge_ball_sunk_a_few_tolerances_into_a_side_is_answered_clear_known`).
+//! (`a_big_ball_sunk_into_a_block_is_given_a_distance_known`). A ball of
+//! radius 10 000 sunk a few tolerances into a cone's or a cylinder's side
+//! was answered clear until 2026-11-20 and is held to the overlap
+//! (`a_huge_ball_sunk_a_few_tolerances_into_a_side_overlaps`), and to
+//! what it is on both sides of zero
+//! (`a_huge_ball_by_a_side_is_clear_touching_or_overlapping_as_it_lies`).
 
 #![allow(
     clippy::unwrap_used,
@@ -2233,5 +2235,75 @@ fn a_huge_ball_sunk_a_few_tolerances_into_a_side_overlaps() {
             apart["status"],
             none["status"]
         );
+    }
+}
+
+/// The same two pairs on both sides of zero (the review of the repair of
+/// the shallow crossing, 2026-11-20): the ball of radius 10 000 with its
+/// surface 10 and 3 tolerances outside the side is clear, and no more is
+/// proven than that gap; within a third of a tolerance of the side,
+/// outside or inside, it touches; 3, 10 and 100 tolerances inside, it
+/// overlaps. The truth is the placement itself: the ball's centre lies
+/// along the side's normal, its radius less the depth from the side.
+/// (Before the repair the cylinder's pair a third of a tolerance inside
+/// could not be told, "marching an intersection curve stalled", and the
+/// pairs 3 and 10 tolerances inside were answered clear.)
+#[test]
+fn a_huge_ball_by_a_side_is_clear_touching_or_overlapping_as_it_lies() {
+    let tol = 1e-6;
+    let (rb, r): (f64, f64) = (10_000.0, 4.0);
+    let slant = 12.0_f64.phypot(r);
+    let n = (12.0 / slant, r / slant);
+    for cone in [true, false] {
+        for (sunk, want) in [
+            (-10.0, "clear"),
+            (-3.0, "clear"),
+            (-0.3, "touch"),
+            (0.3, "touch"),
+            (3.0, "overlap"),
+            (10.0, "overlap"),
+            (100.0, "overlap"),
+        ] {
+            let depth = sunk * tol;
+            let (what, body, centre): (&str, Step, V) = if cone {
+                (
+                    "the cone",
+                    (
+                        "feature.cone",
+                        json!({"name": "A", "radius": mm(r), "height": mm(12.0)}),
+                    ),
+                    V::new(2.0 + n.0 * (rb - depth), 0.0, 6.0 + n.1 * (rb - depth)),
+                )
+            } else {
+                (
+                    "the cylinder",
+                    (
+                        "feature.cylinder",
+                        json!({"name": "A", "radius": mm(r), "height": mm(10.0), "position": mm3(V::new(0.0, 0.0, -5.0))}),
+                    ),
+                    V::new(rb + r - depth, 0.0, 0.7),
+                )
+            };
+            let mut s = document(1.0);
+            build(&mut s, &[body, sphere("B", rb, centre)]).unwrap();
+            let Ran::Ok(clear) = run(
+                &mut s,
+                "measure.clearance",
+                &json!({"from": "A", "to": "B"}),
+            ) else {
+                panic!("{what}, the ball sunk {sunk} tolerances: no clearance");
+            };
+            assert!(
+                clear["pairs"][0]["status"] == want,
+                "{what}, the ball sunk {sunk} tolerances, is not told to {want}: {clear}"
+            );
+            // Never a proof above the truth: the gap, or nothing.
+            let gap = (-depth).max(0.0);
+            let at_least = clear["atLeast"].as_f64().unwrap_or(0.0);
+            assert!(
+                at_least <= gap + 1e-13 * rb,
+                "{what}, the ball sunk {sunk} tolerances: proven {at_least:e} apart, the gap is {gap:e}: {clear}"
+            );
+        }
     }
 }
