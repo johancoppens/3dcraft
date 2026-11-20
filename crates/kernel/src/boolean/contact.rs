@@ -338,15 +338,28 @@ fn evidence(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<Evidence, Stop>
     points.extend_from_slice(&sections.touches);
     points.extend(on_the_other(&sa, &sb, tol));
     points.extend(on_the_other(&sb, &sa, tol));
-    for p in points {
+    let meet_at = |found: &mut Evidence, p: Vec3| {
         let (on_a, on_b) = (faces_at(&sa, p, tol), faces_at(&sb, p, tol));
         if on_a.is_empty() || on_b.is_empty() {
-            continue;
+            return;
         }
         found.raise(ContactKind::Point);
         found.point(p, tol);
         found.faces_a.extend(on_a);
         found.faces_b.extend(on_b);
+    };
+    for p in points {
+        meet_at(&mut found, p);
+    }
+    // Where an edge of one meets the other's surface: a contact in a
+    // point that leaves no stretch and has no vertex (the rim of a
+    // cylinder touching the edge of a plate from outside, an edge tangent
+    // to an edge). The places the boolean looks at for parts that touch
+    // (`zero_thickness`), so a pair it would refuse to unite as touching
+    // in a point is not clear, and a pair that touches elsewhere as well
+    // has this place among its places.
+    for &p in &sections.edge_meets {
+        meet_at(&mut found, p);
     }
     Ok(found)
 }

@@ -737,6 +737,11 @@ impl Outline {
         })
     }
 
+    /// Whether a piece of the boundary is within `r` of `p`.
+    pub fn within(&self, p: Vec3, r: f64) -> bool {
+        self.boxes.nearer(&self.loops, p, r, true)
+    }
+
     /// For a point within `tol` of the boundary: whether it is inside the
     /// face by the sign of its offset from the nearest piece (the test
     /// [`left_of`] reads a witness by), when one piece is the nearest by
