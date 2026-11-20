@@ -109,6 +109,18 @@ fn second_cut(body: &Body, vertex: Vec3, t: f64) -> Result<Body, KernelError> {
     boolean(body, &under(at, SECOND), BooleanOp::Intersect, &tol).map(|result| result.body)
 }
 
+/// How far apart the two nearest vertices of `body` are.
+fn nearest_pair(body: &Body) -> f64 {
+    let points: Vec<Vec3> = body.vertices.iter().map(|v| v.point).collect();
+    let mut nearest = f64::INFINITY;
+    for (i, a) in points.iter().enumerate() {
+        for b in points.iter().skip(i + 1) {
+            nearest = nearest.min(a.distance(*b));
+        }
+    }
+    nearest
+}
+
 /// Owed: at every distance the second block either cuts (a body that
 /// passes its check) or is refused as at the edge of tolerance, with the
 /// faces. Today (2026-11-20, the answers the Check printed, the same on
@@ -127,9 +139,10 @@ fn a_block_whose_top_passes_a_vertex_by_less_than_a_tolerance_cuts_or_says_where
                 let problems = check(&cut, &tol);
                 if problems.is_empty() {
                     format!(
-                        "builds ({} faces, {} vertices)",
+                        "builds ({} faces, {} vertices, the two nearest {:.2} tolerances apart)",
                         cut.faces.len(),
-                        cut.vertices.len()
+                        cut.vertices.len(),
+                        nearest_pair(&cut) / tol.linear
                     )
                 } else {
                     owed.push(t);

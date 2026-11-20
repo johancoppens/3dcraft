@@ -147,7 +147,8 @@ const FROZEN: &[(u32, usize, u64)] = &[
     // laptop): a plate 40 x 20 x 5 mm and two notes with replies after
     // their closing, kept with the note (one opened again).
     (77, 2528, 0x851e_f10e_8852_f2e5),
-    // 78: written by craft3d-cli of ab290359 (the build of the workshop's
+    // 78: written by craft3d-cli of ab290359 (8c9dd74b in the history
+    // since its title was reworded, the same tree; the build of the workshop's
     // Check run 44747074632, by a test of that commit that printed the
     // file to its log): a block 40 x 30 x 20 mm cut by planes in one
     // feature, a roof by a datum plane, a point with a normal and the

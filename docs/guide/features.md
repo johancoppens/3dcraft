@@ -326,30 +326,43 @@ it:
 - **`target`** is the feature whose body is cut; the body goes into the cut. With `keep` the target keeps
   its body and the cut is a copy: cut a kept copy once on each side of a plane to have both parts.
 - **Each plane has an id**, a number from 1 (give one with `id`, or it gets the next free one), listed in
-  the result under `planes` with whether the cut body has a face of it (`cuts`) and how many (`faces`).
-  The face a plane cuts is named by it, `F9:cut(3)`, so a fillet, a sketch or a mate on that face stays
-  on it when planes are added, deleted or put in another order. A plane that cuts the body in two places
-  gives two faces of that name. What is left of the target's faces keeps its names with a prefix,
-  `F9:copy(0)/...`. A piece that joins a face of the target lying in the plane is that face, and answers
-  to both names.
+  the result under `planes`. The face a plane cuts is named by it, `F9:cut(3)`, so a fillet, a sketch or a
+  mate on that face stays on it when planes are added, deleted or put in another order. A plane that cuts
+  the body in two places gives two faces of that name. What is left of the target's faces keeps its names
+  with a prefix, `F9:copy(0)/...`. A piece that joins a face of the target lying in the plane is that
+  face, and answers to both names. A sketch or a datum placed on a plane's face has the plane's own
+  origin and axes, so it moves only as the plane moves.
 - **`feature.edit`** changes `target`, `planes` and `keep`. `planes` is the whole list: a plane given with
   its id stays that plane; one given without is the plane it equals in every field, and else a new plane
   with a new id, never one a deleted plane had. A plane given through variables is changed with
   `variable.set`.
-- **A plane that cuts nothing** (it does not meet the body, it lies in a face of it with the body behind,
-  or what it cut was cut away by the others) changes nothing and is listed under `warnings`. A plane that
-  leaves nothing of the body fails the feature, naming the plane.
+- **What each plane did** is in the result, under `planes`: `cuts` says whether the plane took anything
+  away when it was applied (the planes are applied in the order given), `faces` how many faces of the cut
+  body are pieces of it. A plane can cut and leave no face: the planes after it cut its face away, or, on
+  a body in several parts, it took away whole parts that lie beyond it without touching it. A plane that
+  takes nothing away (the body, as the planes before it leave it, lies wholly on the side it keeps: it
+  does not meet that body, or lies in a face of it with the body behind) changes nothing and is listed
+  under `warnings`. A plane that leaves nothing of the body fails the feature, naming the plane.
 - **Nothing is snapped.** The planes are applied in the order given, each a cut of its own, exactly as
   given. Planes that should meet in one point and, as measured, nearly do, leave the small faces between
   them; where faces or points come between half and twice the document's tolerance of each other, the
   feature fails with the plane and the faces (as a boolean does: [Troubleshooting](troubleshooting.md)),
   also for a place a later plane of the list would cut away (put that plane first). Planes meant to meet
   in one point: give them that point, the same numbers for each, as above.
+- **Planes from a computation: give the numbers as they come, not rounded.** A normal rounded to six
+  decimals turns its plane a little: ten millimetres along, by up to five millionths of a millimetre,
+  which is where the tolerance is (a millionth of a millimetre unless the document sets another). The
+  plane then passes its neighbour's corner by about the tolerance, and the cut fails there. A roof plane through one side of an outline, from `(x0, y0)` to `(x1, y1)` going round
+  counter-clockwise, rising inward at the angle `a`: give it through the point `[x0, y0, eaves]` with the
+  normal `[dy, -dx, L / tan(a)]`, where `dx = x1 - x0`, `dy = y1 - y0` and `L` is the side's length. That
+  normal is exactly square to the side, from the side's own numbers, so the planes of two neighbouring
+  sides both pass through the corner between them to rounding, and meet there in one edge.
 - **Not convex.** Several planes in one cut keep what is below all of them, which is convex where they
   meet. A shape with a valley (an L-shaped hipped roof, crossing gables) is a cut per convex part, each of
   a kept copy, joined with `feature.boolean`.
 - **Not built yet**, and refused: a sheet as the target (a sheet is trimmed by a solid with
-  `feature.boolean`).
+  `feature.boolean`). A plane has no condition of its own yet: a plane placed by a datum or a face of a
+  feature that is switched off fails the whole cut, naming the plane.
 
 ## Patterns, mirror, transform
 
