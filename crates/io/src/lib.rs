@@ -1,12 +1,14 @@
 //! Import and export orchestration.
 //!
-//! 3DCraft meshes to STL, 3MF and OBJ through `craft3d-meshio`, and bodies
-//! (the exact B-rep) to STEP through `craft3d-step`: see [`step`]. The
-//! outline of a sketch or of a flat face goes to DXF and SVG through
-//! `craft3d-drawing`: see [`drawing`].
+//! 3DCraft meshes to STL, 3MF and OBJ through `craft3d-meshio`, and to
+//! glTF's nodes and face groups: see [`gltf`]; bodies (the exact B-rep) to
+//! STEP through `craft3d-step`: see [`step`]. The outline of a sketch or of
+//! a flat face goes to DXF and SVG through `craft3d-drawing`: see
+//! [`drawing`].
 
 pub mod cut;
 pub mod drawing;
+pub mod gltf;
 pub mod step;
 pub mod step_assembly;
 

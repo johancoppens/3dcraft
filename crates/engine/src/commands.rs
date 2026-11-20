@@ -66,8 +66,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Saves the active document as a .3dcraft file (atomically) under the write root. A recovered document (recovery.open) is not saved over its original file when that file changed since the recovery was taken, unless overwrite is true. With thumbnail (the default for a Jig, a document with public parameters) the file also holds thumb.png, a 400 x 300 picture of the bodies from the iso view drawn by the CPU renderer (the same document gives the same picture on one platform and build; drawn once per change), for a gallery; the result says thumbnail: true when it was written, and thumbnailError why not (no bodies yet): the document is saved all the same.", doc: true, file_save),
     spec!("file.close", "Close", r#"{"document": integer = the active one, "discard": boolean = false}"#,
         "Closes the active document, or the open document of that number (file.list). Refuses unsaved changes unless discard is true. The active document stays active when another closes; when it closes, the last open one becomes active. Returns how many are open and which is active.", doc: true, file_close),
-    spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj|dxf|svg" = from the extension, "tolerance": number = by quality, "quality": "coarse|normal|fine" = "normal", "angle": degrees = by quality, "bodies": [id or name of the feature that made the body] = every body, "sketch": id or name, "fold": id or name of a fold, "sheetMetal": id or name of a sheet-metal part or a list of them (a sheet), "face": face name, "feature": id or name = the body that has the face, "faces": [face name or {"face", "feature", "xAxis", "layer"}], "set": name of a named set, "trace": name of a trace (view.trace), "xAxis": [x, y, z] = level, y up the face, "origin": "model|corner" = model, "gap": expr = 5 mm, "width": expr = no limit, "construction": boolean = false, "view": "iso|front|back|left|right|top|bottom|current" = iso, "projection": "orthographic|perspective" = orthographic, "hidden": "omit|dashed" = omit, "stroke": number = 0.01 (SVG line width in mm)}"#,
-        "Writes a file under the write root. step (.step, .stp) is the exact geometry of every body, with the document's units, its tolerance as the file's uncertainty and the bodies' names. stl, 3mf and obj are meshes of every body: quality coarse, normal (the default) or fine sets how closely they follow the model, a chordal tolerance of 2, 1 or 0.25 thousandths of the side of a square with the bodies' area (for stl and 3mf at normal at most 0.1 mm and at fine at most 0.025 mm, so a printed curve shows no flats; never more than 16 times finer than that automatic tolerance, and the automatic one where so fine a mesh cannot be made) and an angle criterion of 20, 10 or 5 degrees (no chord turns an edge, no triangle side a surface's normal, by more, so small holes and thin bent tubes stay round); tolerance (in document units) and angle (degrees, 0 for none, else 1 to 90) set either one instead, and a tolerance given without quality or angle has no angle criterion, as before 2026-10-23. The result says tolerance, angle and quality, and closed counts the meshes that are watertight as the file holds them: a binary stl file holds single precision, where points the mesh keeps apart can fall on one another (a part far from the origin, a surface that turns more sharply than the angle can follow with points that far apart); then mergedPoints counts them, foldedTriangles the triangles they fold to a line (of no area: a reader's repair drops them, and closed counts a body whose other triangles are a closed surface), and warnings says which bodies and whether their file is a closed surface (stl-ascii, 3mf and obj write every point as the mesh has it). A mesh of more than 20000000 triangles, all bodies together, is refused (choose a coarser quality). 3mf carries the colours of bodies and faces; obj carries them in a material library written beside it (name.obj, name.mtl; mtl in the result, null when nothing has a colour; with colours the name must have no white space or #, and must not end in .mtl). bodies writes only the bodies it names (to step, stl, 3mf and obj), each by the id or name of the feature that made it, as document.inspect and select.get name them, with their names and colours, in history order; without bodies a body hidden in the view (feature.visible) is left out of step, stl, 3mf and obj, as the drawings leave it out, and hiddenLeftOut ({count, bodies}) says which, every body hidden refused; a hidden body named in bodies is written; a body switched off now (its condition is 0, or suppressed) is left out, so one list holds for every option, and switchedOffLeftOut ({count, bodies}) names it, and a list of only such bodies is refused (nothing to write); any other name that is not a body now (unknown, failed, or taken by a later feature) is an error that lists the bodies there are. dxf and svg are a flat outline for laser cutting and drawings, in the document's unit at true size: of a sketch (sketch: its lines, arcs and circles, the instances of its patterns included, joined into chains, in the sketch's axes; construction geometry only with construction, on a layer of its own), of a trace (trace: the name of a path view.trace made, as one polyline in its plane, x along the world axis least along the plane's normal) or of a flat face of a body (face: a name from document.inspect, faceNames, or the name the face had in an earlier body, followed to its newest form as features follow names; its outer boundary and its holes, seen from outside the body, so never mirrored: outer boundaries run counter-clockwise; feature says which body when several have a face of that name). A face is drawn with y up the face (the model's +z projected onto its plane) and, on a face that lies flat, x along the model's +x; xAxis gives x another direction (projected onto the plane); the origin is the model's origin dropped onto the plane, or with origin corner the lower left corner of the outline. faces puts several flat faces, of one body or of several, on one sheet: each in its own frame and on a layer of its own named after it (or its layer), set left to right in the order given by their bounding boxes, gap apart, in rows of at most width (a new row above the last). set does the same for every flat face a named set (set.define) holds now, in document order, the faces of one body on one layer named after it (faces given the same layer in faces share it too): one sheet of all the parts to cut, which follows the design as the set does; a body hidden in the view is drawn too (visibility is view data). The result lists under notFlat the faces of the set that are not flat and under others how many items of each other kind it holds (body, edge, ...); neither is drawn. Every curve stays what it is: lines, circular arcs and circles, ellipses, splines; nothing becomes a polyline. dxf is AutoCAD 2000 ASCII with $INSUNITS; svg has width and height in mm, cm or in and y pointing up as in the model. tolerance for svg is how far the cubic Béziers written for a spline of a degree above 3 or a rational one may lie from it (default: the document's tolerance); the result says how many there were. Without sketch, face or faces a dxf or svg file is a drawing of the model as seen (a projected view): every edge of the bodies that are not hidden, as the curve it is in the drawing (a line, a circle or arc where its plane is square to the view, else an ellipse or elliptic arc, a spline as a spline; one seen edge on as a line), and the silhouettes of curved faces as straight pieces within tolerance (the chordal tolerance here, automatic by default), on the layer visible (silhouettes on silhouette); what lies behind a face is left out, or with hidden dashed drawn dashed on the layer hidden. view is a named view, or current: the camera of the window showing the document (iso without one; the result says so in note); the result gives the camera used; projection orthographic is to scale (one drawing unit is one model unit, in the document's unit), perspective is true size only at the depth of the camera's target. The section of the window is not applied and a scrubbed view is not followed: the bodies of the document as it is, whole. The result counts the visible, silhouette and hidden pieces (lines, arcs, elliptic arcs and splines; a whole circle or ellipse one). With fold, a .dxf or .svg file is the crease pattern of a fold, flat, in its sketch's axes: the sheet's outline on the layer boundary (black, continuous), mountains on mountain (red, dash-dot), valleys on valley (blue, dashed) and cuts on cut (black, continuous), each crease line whole; the result counts the creases of each kind. With sheetMetal, a .dxf or .svg file is the flat pattern of a sheet-metal part (feature.sheetMetal), in its sketch's axes: the outline on the layer outline (black, continuous: the base, the bends' strips at their bend allowance and the flanges, reliefs and holes cut), each bend's line (the middle of its strip) on bendUp (blue, dashed) or bendDown (red, dash-dot); the result counts the bends of each way and gives the flat area. With sheetMetal a list of parts, their flat patterns go side by side on one sheet as a set's faces do (gap apart, default 5 mm, in rows of at most width), each in its sketch's axes moved, the outlines sharing the layer outline and the bend lines bendUp and bendDown; the result lists each part with where it went (at, bbox).", doc: true, names: ["face", "faces"], file_export),
+    spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj|glb|dxf|svg" = from the extension, "tolerance": number = by quality, "quality": "coarse|normal|fine" = "normal", "angle": degrees = by quality, "bodies": [id or name of the feature that made the body] = every body, "sketch": id or name, "fold": id or name of a fold, "sheetMetal": id or name of a sheet-metal part or a list of them (a sheet), "face": face name, "feature": id or name = the body that has the face, "faces": [face name or {"face", "feature", "xAxis", "layer"}], "set": name of a named set, "trace": name of a trace (view.trace), "xAxis": [x, y, z] = level, y up the face, "origin": "model|corner" = model, "gap": expr = 5 mm, "width": expr = no limit, "construction": boolean = false, "view": "iso|front|back|left|right|top|bottom|current" = iso, "projection": "orthographic|perspective" = orthographic, "hidden": "omit|dashed" = omit, "stroke": number = 0.01 (SVG line width in mm)}"#,
+        "Writes a file under the write root. step (.step, .stp) is the exact geometry of every body, with the document's units, its tolerance as the file's uncertainty and the bodies' names. stl, 3mf and obj are meshes of every body: quality coarse, normal (the default) or fine sets how closely they follow the model, a chordal tolerance of 2, 1 or 0.25 thousandths of the side of a square with the bodies' area (for stl and 3mf at normal at most 0.1 mm and at fine at most 0.025 mm, so a printed curve shows no flats; never more than 16 times finer than that automatic tolerance, and the automatic one where so fine a mesh cannot be made) and an angle criterion of 20, 10 or 5 degrees (no chord turns an edge, no triangle side a surface's normal, by more, so small holes and thin bent tubes stay round); tolerance (in document units) and angle (degrees, 0 for none, else 1 to 90) set either one instead, and a tolerance given without quality or angle has no angle criterion, as before 2026-10-23. The result says tolerance, angle and quality, and closed counts the meshes that are watertight as the file holds them: a binary stl file holds single precision, where points the mesh keeps apart can fall on one another (a part far from the origin, a surface that turns more sharply than the angle can follow with points that far apart); then mergedPoints counts them, foldedTriangles the triangles they fold to a line (of no area: a reader's repair drops them, and closed counts a body whose other triangles are a closed surface), and warnings says which bodies and whether their file is a closed surface (stl-ascii, 3mf and obj write every point as the mesh has it). A mesh of more than 20000000 triangles, all bodies together, is refused (choose a coarser quality). 3mf carries the colours of bodies and faces; obj carries them in a material library written beside it (name.obj, name.mtl; mtl in the result, null when nothing has a colour; with colours the name must have no white space or #, and must not end in .mtl). glb is glTF 2.0 binary, for showing a model in a browser, a game engine or a renderer: the triangles the other mesh formats have at the same quality (as obj, without the finer chord stl and 3mf take for printing), in metres with +Y up (the model's +Z turned to +Y, its front facing +Z), with each face's normals; one node per body named after its feature (extras.feature, its id), and in its mesh one primitive per name of its faces whose extras give that name (face) and the faces' places in document.inspect's faceNames (faces); a metallic-roughness material per look (colour, metallic, roughness; clear coat, transmission and index of refraction in their KHR_materials extensions; a body without a colour in the pictures' grey; both sides drawn for an open mesh). The result adds faceGroups, materials, extensions, unit (m), documentUnit, scale (metres per document unit), upAxis and leftOut: each layer of a look glTF cannot hold (anisotropy, subsurface, pattern, volume: the refraction through a body that is not thin-walled and its absorption), with the bodies that have it. A .gltf name is refused: glb holds the JSON and the data in one file. bodies writes only the bodies it names (to step, stl, 3mf, obj and glb), each by the id or name of the feature that made it, as document.inspect and select.get name them, with their names and colours, in history order; without bodies a body hidden in the view (feature.visible) is left out of step, stl, 3mf, obj and glb, as the drawings leave it out, and hiddenLeftOut ({count, bodies}) says which, every body hidden refused; a hidden body named in bodies is written; a body switched off now (its condition is 0, or suppressed) is left out, so one list holds for every option, and switchedOffLeftOut ({count, bodies}) names it, and a list of only such bodies is refused (nothing to write); any other name that is not a body now (unknown, failed, or taken by a later feature) is an error that lists the bodies there are. dxf and svg are a flat outline for laser cutting and drawings, in the document's unit at true size: of a sketch (sketch: its lines, arcs and circles, the instances of its patterns included, joined into chains, in the sketch's axes; construction geometry only with construction, on a layer of its own), of a trace (trace: the name of a path view.trace made, as one polyline in its plane, x along the world axis least along the plane's normal) or of a flat face of a body (face: a name from document.inspect, faceNames, or the name the face had in an earlier body, followed to its newest form as features follow names; its outer boundary and its holes, seen from outside the body, so never mirrored: outer boundaries run counter-clockwise; feature says which body when several have a face of that name). A face is drawn with y up the face (the model's +z projected onto its plane) and, on a face that lies flat, x along the model's +x; xAxis gives x another direction (projected onto the plane); the origin is the model's origin dropped onto the plane, or with origin corner the lower left corner of the outline. faces puts several flat faces, of one body or of several, on one sheet: each in its own frame and on a layer of its own named after it (or its layer), set left to right in the order given by their bounding boxes, gap apart, in rows of at most width (a new row above the last). set does the same for every flat face a named set (set.define) holds now, in document order, the faces of one body on one layer named after it (faces given the same layer in faces share it too): one sheet of all the parts to cut, which follows the design as the set does; a body hidden in the view is drawn too (visibility is view data). The result lists under notFlat the faces of the set that are not flat and under others how many items of each other kind it holds (body, edge, ...); neither is drawn. Every curve stays what it is: lines, circular arcs and circles, ellipses, splines; nothing becomes a polyline. dxf is AutoCAD 2000 ASCII with $INSUNITS; svg has width and height in mm, cm or in and y pointing up as in the model. tolerance for svg is how far the cubic Béziers written for a spline of a degree above 3 or a rational one may lie from it (default: the document's tolerance); the result says how many there were. Without sketch, face or faces a dxf or svg file is a drawing of the model as seen (a projected view): every edge of the bodies that are not hidden, as the curve it is in the drawing (a line, a circle or arc where its plane is square to the view, else an ellipse or elliptic arc, a spline as a spline; one seen edge on as a line), and the silhouettes of curved faces as straight pieces within tolerance (the chordal tolerance here, automatic by default), on the layer visible (silhouettes on silhouette); what lies behind a face is left out, or with hidden dashed drawn dashed on the layer hidden. view is a named view, or current: the camera of the window showing the document (iso without one; the result says so in note); the result gives the camera used; projection orthographic is to scale (one drawing unit is one model unit, in the document's unit), perspective is true size only at the depth of the camera's target. The section of the window is not applied and a scrubbed view is not followed: the bodies of the document as it is, whole. The result counts the visible, silhouette and hidden pieces (lines, arcs, elliptic arcs and splines; a whole circle or ellipse one). With fold, a .dxf or .svg file is the crease pattern of a fold, flat, in its sketch's axes: the sheet's outline on the layer boundary (black, continuous), mountains on mountain (red, dash-dot), valleys on valley (blue, dashed) and cuts on cut (black, continuous), each crease line whole; the result counts the creases of each kind. With sheetMetal, a .dxf or .svg file is the flat pattern of a sheet-metal part (feature.sheetMetal), in its sketch's axes: the outline on the layer outline (black, continuous: the base, the bends' strips at their bend allowance and the flanges, reliefs and holes cut), each bend's line (the middle of its strip) on bendUp (blue, dashed) or bendDown (red, dash-dot); the result counts the bends of each way and gives the flat area. With sheetMetal a list of parts, their flat patterns go side by side on one sheet as a set's faces do (gap apart, default 5 mm, in rows of at most width), each in its sketch's axes moved, the outlines sharing the layer outline and the bend lines bendUp and bendDown; the result lists each part with where it went (at, bbox).", doc: true, names: ["face", "faces"], file_export),
     spec!("edit.undo", "Undo", "{}", "Undoes the last change to the document.", doc: true, edit_undo),
     spec!("edit.redo", "Redo", "{}", "Redoes the change last undone.", doc: true, edit_redo),
     spec!("variable.set", "Set Variable", r#"{"name": string, "expr": expression, "wait": boolean = false}"#,
@@ -1442,7 +1442,7 @@ pub const EXPORT_MAX_TRIANGLES: usize = 20_000_000;
 /// that is printed ([`PRINT_CHORD_MM`]); coarse, which asks for less, and
 /// a tolerance given are not held to it.
 /// Returns the parameters, the quality's name and the angle in degrees.
-fn export_tess(
+pub(crate) fn export_tess(
     p: &Params,
     regen: &Regen,
     print_cap: Option<f64>,
@@ -1511,17 +1511,19 @@ fn export_tess(
 /// One mesh per body, with the name of the feature that made it.
 /// One body's mesh, with the appearance of the body and of each of its
 /// faces (`appearance`).
-struct BodyMesh {
-    name: String,
-    mesh: Mesh,
+pub(crate) struct BodyMesh {
+    /// The feature that made the body.
+    pub(crate) id: FeatureId,
+    pub(crate) name: String,
+    pub(crate) mesh: Mesh,
     /// The body's own (for an export's object; a picture colours faces).
-    appearance: Option<craft3d_doc::Appearance>,
-    faces: Vec<Option<craft3d_doc::Appearance>>,
+    pub(crate) appearance: Option<craft3d_doc::Appearance>,
+    pub(crate) faces: Vec<Option<craft3d_doc::Appearance>>,
 }
 
 /// Of the bodies of `only` when given (in history order), else of every
 /// body.
-fn meshes(
+pub(crate) fn meshes(
     open: &mut OpenDocument,
     command: &str,
     tess: &TessParams,
@@ -1550,6 +1552,7 @@ fn meshes(
             e => CommandError::new(format!("{command}: {name}: {e}")),
         })?;
         out.push(BodyMesh {
+            id,
             name,
             mesh,
             appearance: crate::appearance::body_appearance_in(&values, &regen, id),
@@ -1607,7 +1610,7 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
             .find(|key| p.get(key).is_some())
         {
             return fail(format!(
-                "file.export: `{key}` is for mesh files (.stl, .3mf, .obj); an outline keeps every curve as it is"
+                "file.export: `{key}` is for mesh files (.stl, .3mf, .obj, .glb); an outline keeps every curve as it is"
             ));
         }
         let resolved = session.workspace.resolve_write(path)?;
@@ -1669,19 +1672,23 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
         written.report(&mut out);
         return Ok(out);
     }
+    if crate::gltf_export::wanted(p.str("format")?, path)? {
+        outline_only()?;
+        return crate::gltf_export::export(session, &p, path);
+    }
     let format = match p.str("format")? {
         Some("stl") => MeshFormat::StlBinary,
         Some("stl-ascii") => MeshFormat::StlAscii,
         Some("3mf") => MeshFormat::ThreeMf,
         Some("obj") => MeshFormat::Obj,
-        Some(other) => return fail(format!("file.export: unknown format `{other}`; use step, stl, stl-ascii, 3mf, obj, dxf or svg")),
+        Some(other) => return fail(format!("file.export: unknown format `{other}`; use step, stl, stl-ascii, 3mf, obj, glb, dxf or svg")),
         None => std::path::Path::new(path)
             .extension()
             .and_then(|e| e.to_str())
             .and_then(MeshFormat::from_extension)
             .ok_or_else(|| {
                 CommandError::new(format!(
-                    "file.export: cannot tell the format from `{path}`; use a .step, .stp, .stl, .3mf, .obj, .dxf or .svg name, or pass `format`"
+                    "file.export: cannot tell the format from `{path}`; use a .step, .stp, .stl, .3mf, .obj, .glb, .dxf or .svg name, or pass `format`"
                 ))
             })?,
     };
@@ -1715,14 +1722,7 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
             meshes(open, "file.export", &tess, only.as_deref())?
         }
     };
-    let unit = match open.history.current().units.length {
-        LengthUnit::Micrometre => craft3d_meshio::Unit::Micron,
-        LengthUnit::Millimetre => craft3d_meshio::Unit::Millimeter,
-        LengthUnit::Centimetre => craft3d_meshio::Unit::Centimeter,
-        LengthUnit::Metre => craft3d_meshio::Unit::Meter,
-        LengthUnit::Inch => craft3d_meshio::Unit::Inch,
-        LengthUnit::Foot => craft3d_meshio::Unit::Foot,
-    };
+    let unit = mesh_unit(open.history.current().units.length);
     let mut model = craft3d_meshio::Model {
         unit,
         objects: Vec::new(),
@@ -1852,6 +1852,18 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
     }
     written_bodies.report(&mut out);
     Ok(out)
+}
+
+/// The mesh formats' unit for a document's length unit.
+pub(crate) fn mesh_unit(length: LengthUnit) -> craft3d_meshio::Unit {
+    match length {
+        LengthUnit::Micrometre => craft3d_meshio::Unit::Micron,
+        LengthUnit::Millimetre => craft3d_meshio::Unit::Millimeter,
+        LengthUnit::Centimetre => craft3d_meshio::Unit::Centimeter,
+        LengthUnit::Metre => craft3d_meshio::Unit::Meter,
+        LengthUnit::Inch => craft3d_meshio::Unit::Inch,
+        LengthUnit::Foot => craft3d_meshio::Unit::Foot,
+    }
 }
 
 /// The material library of the OBJ file at `path`: its name as the OBJ
@@ -2010,6 +2022,17 @@ fn export_material(
     if let Some(at) = materials.iter().position(same) {
         return u32::try_from(at).unwrap_or(u32::MAX);
     }
+    let name = appearance_name(appearance);
+    let material = craft3d_meshio::Material { name, ..layered };
+    materials.push(material);
+    u32::try_from(materials.len().saturating_sub(1)).unwrap_or(u32::MAX)
+}
+
+/// The name a mesh export gives the material of `appearance`: its colour
+/// (`#c8102e`), with its metallic and roughness and its layers when it has
+/// them (`#c8102e metallic 1 roughness 0.3`).
+pub(crate) fn appearance_name(appearance: &craft3d_doc::Appearance) -> String {
+    let o = &appearance.optics;
     let mut name = appearance.hex();
     if let Some(metallic) = appearance.metallic {
         name.push_str(&format!(" metallic {metallic}"));
@@ -2027,9 +2050,7 @@ fn export_material(
             name.push_str(&format!(" {what} {v}"));
         }
     }
-    let material = craft3d_meshio::Material { name, ..layered };
-    materials.push(material);
-    u32::try_from(materials.len().saturating_sub(1)).unwrap_or(u32::MAX)
+    name
 }
 
 // ------------------------------------------------------------------- edit

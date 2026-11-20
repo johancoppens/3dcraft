@@ -706,7 +706,7 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
         .is_some_and(|e| e.eq_ignore_ascii_case("step") || e.eq_ignore_ascii_case("stp"));
     if (native || exact) && (tolerance.is_some() || !mesh.is_empty()) {
         return Err(CliError::Usage(
-            "`--tolerance`, `--quality` and `--angle` apply to mesh output (.stl, .3mf, .obj), not to .3dcraft or STEP"
+            "`--tolerance`, `--quality` and `--angle` apply to mesh output (.stl, .3mf, .obj, .glb), not to .3dcraft or STEP"
                 .to_string(),
         ));
     }

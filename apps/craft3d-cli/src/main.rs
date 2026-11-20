@@ -72,7 +72,7 @@ Subcommands:
   run        Open or create a document, run --script and --cmd, save with --out
   info       Print a document's state as JSON
   render     Render a document to a PNG (on the GPU when there is one)
-  convert    Convert a .3dcraft file to STEP, STL, 3MF, OBJ, DXF, SVG or .3dcraft
+  convert    Convert a .3dcraft file to STEP, STL, 3MF, OBJ, glTF, DXF, SVG or .3dcraft
   replay     Make a video (MP4, WebM, GIF) or frames of a document being built
   score      Run a script for a task of the task set and print its scorecard
   check-range  Check a Jig over its parameter range; exit 1 if a point fails
@@ -208,10 +208,12 @@ Usage: craft3d-cli convert IN OUT [--quality Q] [--tolerance T] [--angle A]
 Converts the .3dcraft file IN. The extension of OUT picks the format:
 .step or .stp write the bodies' exact geometry, with the document's units,
 tolerance and names; .stl, .3mf or .obj tessellate the bodies and write a
-mesh; .dxf or .svg write the flat outline of a sketch or of a flat face,
-at true size, for laser cutting, or without --sketch, --face or --set a
-drawing of the model as seen (its edges and silhouettes, a projected
-view); .3dcraft writes the document again in the current format version.
+mesh, and .glb a glTF file of them (metres, +Y up, the colours and the
+faces' names), for showing in a browser or a renderer; .dxf or .svg write
+the flat outline of a sketch or of a flat face, at true size, for laser
+cutting, or without --sketch, --face or --set a drawing of the model as
+seen (its edges and silhouettes, a projected view); .3dcraft writes the
+document again in the current format version.
 
 Options:
   --quality Q     For a mesh: coarse, normal (default) or fine, how

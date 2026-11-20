@@ -1,0 +1,599 @@
+//! glTF export of bodies built on the kernel, read back by a reader written
+//! from the specification independently of the writer
+//! (`craft3d_testkit::readers::gltf`) and held against the binary STL of the
+//! same mesh (triangles, box, enclosed volume) and against closed forms;
+//! and pinned byte for byte, with their SHA-256, for four small models
+//! (`tests/golden/*.glb`: a block, a cylinder, two bodies with colours, a
+//! face on a rational B-spline surface), the files Khronos's glTF-Validator
+//! was run on (docs/file-formats.md › glTF).
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
+#[allow(dead_code)]
+#[path = "common/bodies.rs"]
+mod bodies;
+
+use craft3d_io::gltf::{GltfBody, node};
+use craft3d_io::{MeshFormat, export_mesh};
+use craft3d_kernel::primitives;
+use craft3d_math::{Frame, Vec3};
+use craft3d_meshio::Unit;
+use craft3d_meshio::gltf::{Extra, PbrMaterial, Scene, srgb_to_linear, write_glb};
+use craft3d_tess::{Mesh, TessParams, tessellate_body};
+use craft3d_testkit::readers::gltf::{Gltf, GltfNode, read_glb};
+use craft3d_topo::Body;
+use serde_json::json;
+use std::f64::consts::PI;
+use std::path::PathBuf;
+
+const RED: [u8; 3] = [200, 16, 46];
+const BLUE: [u8; 3] = [30, 90, 220];
+const GREEN: [u8; 3] = [20, 160, 70];
+const GLASS: [u8; 3] = [120, 180, 255];
+
+fn params(scale: f64) -> TessParams {
+    TessParams {
+        chordal_tolerance: 0.05 * scale,
+        max_angle: Some(20.0_f64.to_radians()),
+        ..TessParams::default()
+    }
+}
+
+fn names(feature: u32, body: &Body) -> Vec<String> {
+    (0..body.faces.len())
+        .map(|k| format!("F{feature}:face({k})"))
+        .collect()
+}
+
+/// A body ready for a scene: its name, feature, mesh, face names and
+/// materials.
+struct Part {
+    name: String,
+    feature: u32,
+    mesh: Mesh,
+    faces: Vec<String>,
+    material: u32,
+    face_materials: Vec<Option<u32>>,
+}
+
+fn part(name: &str, feature: u32, body: &Body, scale: f64, material: u32) -> Part {
+    Part {
+        name: name.to_string(),
+        feature,
+        mesh: tessellate_body(body, &params(scale)).unwrap(),
+        faces: names(feature, body),
+        material,
+        face_materials: Vec::new(),
+    }
+}
+
+fn scene(parts: &[Part], materials: Vec<PbrMaterial>, unit: Unit) -> Scene {
+    Scene {
+        generator: "3DCraft".to_string(),
+        unit,
+        nodes: parts
+            .iter()
+            .map(|p| {
+                node(GltfBody {
+                    name: &p.name,
+                    mesh: &p.mesh,
+                    face_names: &p.faces,
+                    face_materials: &p.face_materials,
+                    material: Some(p.material),
+                    extras: vec![("feature".into(), Extra::Text(format!("F{}", p.feature)))],
+                })
+                .unwrap()
+            })
+            .collect(),
+        materials,
+    }
+}
+
+fn look(name: &str, color: [u8; 3]) -> PbrMaterial {
+    PbrMaterial {
+        name: name.to_string(),
+        color,
+        metallic: 0.0,
+        roughness: 0.5,
+        ..PbrMaterial::default()
+    }
+}
+
+/// The four pinned models.
+fn fixtures() -> Vec<(&'static str, Vec<Part>, Scene)> {
+    let block = primitives::block(&Frame::WORLD, 10.0, 20.0, 30.0).unwrap();
+    let cylinder = primitives::cylinder(&Frame::WORLD, 5.0, 10.0).unwrap();
+    let a = primitives::block(&Frame::WORLD, 10.0, 10.0, 10.0).unwrap();
+    let b = primitives::block(
+        &Frame::WORLD.at(Vec3::new(20.0, 0.0, 0.0)).unwrap(),
+        5.0,
+        5.0,
+        5.0,
+    )
+    .unwrap();
+    let round = bodies::quarter_round(&Frame::WORLD, 2.0, 3.0);
+    let grey = || vec![look("#c6ccd6", [198, 204, 214])];
+    let mut out = Vec::new();
+    let parts = vec![part("Block", 1, &block, 1.0, 0)];
+    let s = scene(&parts, grey(), Unit::Millimeter);
+    out.push(("block.glb", parts, s));
+    let parts = vec![part("Cylinder", 1, &cylinder, 1.0, 0)];
+    let s = scene(&parts, grey(), Unit::Millimeter);
+    out.push(("cylinder.glb", parts, s));
+    // A red block with a blue top, and a green metal block with a clear
+    // coat beside it.
+    let mut first = part("Red", 1, &a, 1.0, 0);
+    first.face_materials = vec![None, Some(1)];
+    let parts = vec![first, part("Green", 2, &b, 1.0, 2)];
+    let materials = vec![
+        look("#c8102e", RED),
+        look("#1e5adc", BLUE),
+        PbrMaterial {
+            metallic: 0.9,
+            roughness: 0.25,
+            clearcoat: Some((1.0, 0.1)),
+            ..look("#14a046 metallic 0.9 roughness 0.25 clearcoat 1", GREEN)
+        },
+    ];
+    let s = scene(&parts, materials, Unit::Millimeter);
+    out.push(("two-bodies.glb", parts, s));
+    // A face on a rational B-spline surface, of glass.
+    let parts = vec![part("Round", 1, &round, 1.0, 0)];
+    let glass = PbrMaterial {
+        roughness: 0.1,
+        transmission: Some(0.6),
+        ior: Some(1.45),
+        ..look("#78b4ff roughness 0.1 transmission 0.6", GLASS)
+    };
+    let s = scene(&parts, vec![glass], Unit::Millimeter);
+    out.push(("quarter-round.glb", parts, s));
+    out
+}
+
+/// The SHA-256 of each pinned file.
+const PINNED: [(&str, &str); 4] = [
+    ("block.glb", "unknown"),
+    ("cylinder.glb", "unknown"),
+    ("two-bodies.glb", "unknown"),
+    ("quarter-round.glb", "unknown"),
+];
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// RFC 4648 base64, for a file to be taken from a test's log.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0_u32, |n, (i, &b)| n | (u32::from(b) << (16 - 8 * i)));
+        for k in 0..4 {
+            if k <= chunk.len() {
+                out.push(ALPHABET[((n >> (18 - 6 * k)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// The exact bytes of four small files, so that a change of the writer or
+/// of the meshes shows up in review. Set `CRAFT3D_UPDATE_GOLDEN=1` to
+/// rewrite them after a deliberate change (and the SHA-256 in [`PINNED`]);
+/// a failure says what was written, with the bytes in base64 for a file of
+/// up to 256 KiB, so the new file can be taken from the log of a run on
+/// another machine.
+#[test]
+fn golden_bytes_of_four_small_models() {
+    let mut failures = Vec::new();
+    for (file, _, scene) in fixtures() {
+        let bytes = write_glb(&scene).unwrap();
+        assert_eq!(
+            write_glb(&scene).unwrap(),
+            bytes,
+            "{file}: not deterministic"
+        );
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden")
+            .join(file);
+        if std::env::var_os("CRAFT3D_UPDATE_GOLDEN").is_some() {
+            std::fs::write(&path, &bytes).unwrap();
+        }
+        let sha = hex(&craft3d_doc::sha256(&bytes));
+        let pinned = PINNED.iter().find(|(f, _)| *f == file).unwrap().1;
+        let expected = std::fs::read(&path).ok();
+        if expected.as_deref() != Some(bytes.as_slice()) || sha != pinned {
+            let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(file);
+            std::fs::write(&out, &bytes).unwrap();
+            let dump = if bytes.len() <= 256 * 1024 {
+                format!("\nGOLDEN {file} {sha} {}", base64(&bytes))
+            } else {
+                String::new()
+            };
+            failures.push(format!(
+                "{file} differs from tests/golden/{file} (SHA-256 pinned {pinned}): written {} bytes, SHA-256 {sha}, in {}{dump}",
+                bytes.len(),
+                out.display()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Triangles, box (min x, y, z, max x, y, z) and enclosed volume of a
+/// binary STL file, read by its layout: an 80-byte header, the count, 50
+/// bytes per triangle.
+fn stl_numbers(bytes: &[u8]) -> (usize, [f64; 6], f64) {
+    let count = u32::from_le_bytes(bytes[80..84].try_into().unwrap()) as usize;
+    assert_eq!(bytes.len(), 84 + 50 * count);
+    let mut triangles = Vec::new();
+    for record in bytes[84..].chunks(50) {
+        let f = |i: usize| f64::from(f32::from_le_bytes(record[i..i + 4].try_into().unwrap()));
+        let v = |k: usize| [f(k), f(k + 4), f(k + 8)];
+        triangles.push([v(12), v(24), v(36)]);
+    }
+    (count, bbox(&triangles), volume(&triangles))
+}
+
+fn bbox(triangles: &[[[f64; 3]; 3]]) -> [f64; 6] {
+    let mut b = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for p in triangles.iter().flatten() {
+        for (axis, c) in p.iter().enumerate() {
+            b[axis] = b[axis].min(*c);
+            b[axis + 3] = b[axis + 3].max(*c);
+        }
+    }
+    b
+}
+
+/// The signed volume by the divergence theorem: positive for triangles
+/// that face outward.
+fn volume(triangles: &[[[f64; 3]; 3]]) -> f64 {
+    triangles
+        .iter()
+        .map(|[a, b, c]| {
+            (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]))
+                / 6.0
+        })
+        .sum()
+}
+
+/// A glTF point (metres, +Y up) in the model's unit and axes: the writer's
+/// turn undone, `(X, Y, Z)` to `(X, −Z, Y)`.
+fn model_point(p: [f64; 3], metres: f64) -> [f64; 3] {
+    [p[0] / metres, -p[2] / metres, p[1] / metres]
+}
+
+/// The triangles of a node, in the model's unit and axes.
+fn node_triangles(node: &GltfNode, metres: f64) -> Vec<[[f64; 3]; 3]> {
+    node.primitives
+        .iter()
+        .flat_map(|p| {
+            p.triangles
+                .iter()
+                .map(|t| t.map(|k| model_point(p.positions[k], metres)))
+        })
+        .collect()
+}
+
+fn close(a: f64, b: f64, tolerance: f64) -> bool {
+    (a - b).abs() <= tolerance
+}
+
+/// Read back, every fixture agrees with the binary STL of its own mesh:
+/// the same triangles, box and volume, to the 32-bit rounding of each
+/// file; and with its closed form within the tessellation's bound.
+#[test]
+fn read_back_agrees_with_stl_and_the_closed_forms() {
+    for (file, parts, scene) in fixtures() {
+        let read = read_glb(&write_glb(&scene).unwrap()).unwrap();
+        assert_eq!(read.generator, "3DCraft");
+        assert_eq!(read.nodes.len(), parts.len(), "{file}");
+        for (node, part) in read.nodes.iter().zip(&parts) {
+            assert_eq!(node.name, part.name);
+            assert_eq!(node.mesh.as_deref(), Some(part.name.as_str()));
+            assert!(!node.transformed && node.children == 0);
+            assert_eq!(
+                node.extras,
+                json!({"feature": format!("F{}", part.feature)})
+            );
+            let stl = export_mesh(
+                &part.mesh,
+                &part.name,
+                Unit::Millimeter,
+                MeshFormat::StlBinary,
+            )
+            .unwrap();
+            let (count, stl_box, stl_volume) = stl_numbers(&stl);
+            let triangles = node_triangles(node, 1e-3);
+            let glb_box = bbox(&triangles);
+            let glb_volume = volume(&triangles);
+            let size = (0..3)
+                .map(|k| stl_box[k + 3] - stl_box[k])
+                .fold(0.0, f64::max);
+            println!(
+                "{file} {}: triangles glb {} stl {count}; volume glb {glb_volume} stl {stl_volume}; box glb {glb_box:?} stl {stl_box:?}",
+                part.name,
+                triangles.len()
+            );
+            assert_eq!(triangles.len(), count, "{file}");
+            assert!(
+                glb_box
+                    .iter()
+                    .zip(&stl_box)
+                    .all(|(g, s)| close(*g, *s, 1e-6 * size)),
+                "{file}: {glb_box:?} {stl_box:?}"
+            );
+            assert!(
+                close(glb_volume, stl_volume, 1e-6 * stl_volume.abs()),
+                "{file}: {glb_volume} {stl_volume}"
+            );
+            // Every primitive one name of faces, with the faces it holds.
+            for p in &node.primitives {
+                let face = p.extras["face"].as_str().unwrap();
+                let faces: Vec<usize> = p.extras["faces"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|f| f.as_u64().unwrap() as usize)
+                    .collect();
+                assert!(
+                    faces.iter().all(|&f| part.faces[f] == face),
+                    "{file}: {face} {faces:?}"
+                );
+            }
+            let mut held: Vec<usize> = node
+                .primitives
+                .iter()
+                .flat_map(|p| p.extras["faces"].as_array().unwrap().clone())
+                .map(|f| f.as_u64().unwrap() as usize)
+                .collect();
+            held.sort_unstable();
+            assert_eq!(held, (0..part.faces.len()).collect::<Vec<_>>(), "{file}");
+        }
+        let total: f64 = read
+            .nodes
+            .iter()
+            .map(|n| volume(&node_triangles(n, 1e-3)))
+            .sum();
+        let (exact, bound) = match file {
+            "block.glb" => (6000.0, 0.0),
+            // The mesh is inscribed: short of the solid by at most the
+            // chordal tolerance over the curved wall's area.
+            "cylinder.glb" => (PI * 25.0 * 10.0, 2.0 * PI * 5.0 * 10.0 * 0.05),
+            "two-bodies.glb" => (1125.0, 0.0),
+            "quarter-round.glb" => (PI * 4.0 * 3.0 / 4.0, PI * 2.0 / 2.0 * 3.0 * 0.05),
+            other => panic!("{other}"),
+        };
+        println!("{file}: volume {total}, closed form {exact}, bound {bound}");
+        let rounding = 1e-6 * exact;
+        assert!(
+            total <= exact + rounding && total >= exact - bound - rounding,
+            "{file}: {total} {exact}"
+        );
+    }
+}
+
+/// glTF is metres with +Y up: the block from (0, 0, 0) to (10, 20, 30) mm
+/// stands from (0, 0, −0.02) to (0.01, 0.03, 0) m, its top (+Z, face 1 of
+/// the kernel's block) faces +Y, and its front (−Y) +Z; the normals are the
+/// faces' own, so its edges stay sharp, and the cylinder's wall shades
+/// smooth, with the radial normal at every vertex.
+#[test]
+fn metres_y_up_and_the_normals_of_the_surfaces() {
+    let all = fixtures();
+    let (_, block_parts, block) = &all[0];
+    let read = read_glb(&write_glb(block).unwrap()).unwrap();
+    let node = &read.nodes[0];
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for p in &node.primitives {
+        for (lo, v) in min.iter_mut().zip(p.min) {
+            *lo = lo.min(v);
+        }
+        for (hi, v) in max.iter_mut().zip(p.max) {
+            *hi = hi.max(v);
+        }
+    }
+    let f = |v: f64| f64::from(v as f32);
+    assert_eq!(min, [0.0, 0.0, f(-0.02)]);
+    assert_eq!(max, [f(0.01), f(0.03), 0.0]);
+    for p in &node.primitives {
+        // Every normal of a face is its plane's: one per face.
+        let first = p.normals[0];
+        assert!(p.normals.iter().all(|n| *n == first));
+        assert_eq!(first.iter().filter(|c| c.abs() == 1.0).count(), 1);
+        // And it faces out of the box.
+        let centre: Vec<f64> = (0..3)
+            .map(|k| p.positions.iter().map(|q| q[k]).sum::<f64>() / p.positions.len() as f64)
+            .collect();
+        let middle = [0.005, 0.015, -0.01];
+        let out: f64 = (0..3).map(|k| (centre[k] - middle[k]) * first[k]).sum();
+        assert!(out > 0.0, "{first:?} at {centre:?}");
+    }
+    let top = node
+        .primitives
+        .iter()
+        .find(|p| p.positions.iter().all(|q| q[1] == f(0.03)))
+        .unwrap();
+    assert_eq!(top.normals[0], [0.0, 1.0, 0.0]);
+    let face = top.extras["face"].as_str().unwrap();
+    let index = block_parts[0].faces.iter().position(|n| n == face).unwrap();
+    let kernel_top = block_parts[0]
+        .mesh
+        .face_ids
+        .iter()
+        .position(|&f| f as usize == index)
+        .unwrap();
+    let corner = block_parts[0].mesh.triangles[kernel_top][0];
+    assert_eq!(block_parts[0].mesh.positions[corner as usize].z, 30.0);
+    let front = node
+        .primitives
+        .iter()
+        .find(|p| p.positions.iter().all(|q| q[2] == 0.0))
+        .unwrap();
+    assert_eq!(front.normals[0], [0.0, 0.0, 1.0]);
+
+    // The cylinder's wall: radial normals, in glTF's axes.
+    let (_, _, cylinder) = &all[1];
+    let read = read_glb(&write_glb(cylinder).unwrap()).unwrap();
+    let mut walls = 0;
+    for p in &read.nodes[0].primitives {
+        if p.normals.iter().all(|n| n[1].abs() == 1.0) {
+            continue; // a cap
+        }
+        walls += 1;
+        let mut directions = std::collections::BTreeSet::new();
+        for (q, n) in p.positions.iter().zip(&p.normals) {
+            let [x, y, _] = model_point(*q, 1e-3);
+            let r = (x * x + y * y).sqrt();
+            let want = [x / r, 0.0, -y / r];
+            assert!(
+                n.iter().zip(want).all(|(a, b)| close(*a, b, 1e-5)),
+                "{n:?} {want:?}"
+            );
+            directions.insert(((n[0] * 1e4).round() as i64, (n[2] * 1e4).round() as i64));
+        }
+        // A normal per vertex, not one per triangle: many directions.
+        assert!(directions.len() > 8, "smooth: {}", directions.len());
+    }
+    assert_eq!(walls, 1);
+}
+
+/// The colours and finishes of the two bodies: each primitive's material
+/// is its face's look, the base colour linear, the clear coat in its
+/// extension; glass carries its transmission and index of refraction.
+#[test]
+fn materials_follow_the_faces_and_carry_their_extensions() {
+    let all = fixtures();
+    let (_, _, two) = &all[2];
+    let read = read_glb(&write_glb(two).unwrap()).unwrap();
+    assert_eq!(read.extensions_used, ["KHR_materials_clearcoat"]);
+    assert!(read.extensions_required.is_empty());
+    let linear = |c: [u8; 3]| {
+        let [r, g, b] = c.map(srgb_to_linear);
+        [r, g, b, 1.0]
+    };
+    let colour_of = |p: &craft3d_testkit::readers::gltf::GltfPrimitive| {
+        read.materials[p.material.unwrap()].base_color
+    };
+    let red = &read.nodes[0];
+    for p in &red.primitives {
+        let want = if p.extras["face"] == "F1:face(1)" {
+            BLUE
+        } else {
+            RED
+        };
+        assert_eq!(colour_of(p), linear(want), "{}", p.extras);
+    }
+    let green = &read.materials[read.nodes[1].primitives[0].material.unwrap()];
+    assert_eq!(green.base_color, linear(GREEN));
+    assert_eq!((green.metallic, green.roughness), (0.9, 0.25));
+    assert_eq!(
+        green.extensions,
+        // 1 is written as the integer it is.
+        json!({"KHR_materials_clearcoat": {"clearcoatFactor": 1, "clearcoatRoughnessFactor": 0.1}})
+    );
+    assert!(!green.double_sided);
+    let (_, _, round) = &all[3];
+    let read = read_glb(&write_glb(round).unwrap()).unwrap();
+    assert_eq!(
+        read.extensions_used,
+        ["KHR_materials_ior", "KHR_materials_transmission"]
+    );
+    assert_eq!(
+        read.materials[0].extensions,
+        json!({"KHR_materials_ior": {"ior": 1.45}, "KHR_materials_transmission": {"transmissionFactor": 0.6}})
+    );
+}
+
+/// Names reach the reader as they were, whatever characters they hold
+/// (JSON escapes control characters, quotes and backslashes; the rest is
+/// UTF-8); a body at the scales of rule 3 reads back with its volume; and
+/// the unit is converted to metres.
+#[test]
+fn any_name_any_scale_and_every_unit() {
+    let block = primitives::block(&Frame::WORLD, 1.0, 2.0, 3.0).unwrap();
+    let name = "a\u{0}\u{1}\u{1f}\t\n\"q\" \\ é ✓ 😀 \u{7f}\u{2028}";
+    let mut p = part(name, 7, &block, 1.0, 0);
+    p.faces[0] = format!("{name}:face");
+    let s = scene(&[p], vec![look(name, [1, 2, 3])], Unit::Millimeter);
+    let read = read_glb(&write_glb(&s).unwrap()).unwrap();
+    assert_eq!(read.nodes[0].name, name);
+    assert_eq!(read.nodes[0].mesh.as_deref(), Some(name));
+    assert_eq!(read.materials[0].name, name);
+    assert_eq!(
+        read.nodes[0].primitives[0].extras["face"],
+        json!(format!("{name}:face"))
+    );
+    for scale in [1e-3, 1.0, 1e3, 1e6] {
+        let body = primitives::block(&Frame::WORLD, scale, 2.0 * scale, 3.0 * scale).unwrap();
+        let s = scene(
+            &[part("B", 1, &body, scale, 0)],
+            vec![look("g", [9, 9, 9])],
+            Unit::Millimeter,
+        );
+        let read = read_glb(&write_glb(&s).unwrap()).unwrap();
+        let v = volume(&node_triangles(&read.nodes[0], 1e-3));
+        let exact = 6.0 * scale * scale * scale;
+        assert!(close(v, exact, 1e-6 * exact), "{scale}: {v} {exact}");
+    }
+    for (unit, metres) in [
+        (Unit::Micron, 1e-6),
+        (Unit::Millimeter, 1e-3),
+        (Unit::Centimeter, 1e-2),
+        (Unit::Meter, 1.0),
+        (Unit::Inch, 0.0254),
+        (Unit::Foot, 0.3048),
+    ] {
+        let s = scene(
+            &[part("B", 1, &block, 1.0, 0)],
+            vec![look("g", [9, 9, 9])],
+            unit,
+        );
+        let read = read_glb(&write_glb(&s).unwrap()).unwrap();
+        let top = read.nodes[0]
+            .primitives
+            .iter()
+            .map(|p| p.max[1])
+            .fold(f64::MIN, f64::max);
+        assert_eq!(top, f64::from((3.0 * metres) as f32), "{unit:?}");
+    }
+}
+
+/// A sheet (an open box) is written as it is; the reader takes it, and a
+/// material of an open mesh can be drawn from both sides.
+#[test]
+fn a_sheet_reads_back_open() {
+    let sheet = bodies::open_box(2.0);
+    let p = part("Tray", 1, &sheet, 1.0, 0);
+    let s = scene(
+        &[p],
+        vec![PbrMaterial {
+            double_sided: true,
+            ..look("tray", [5, 6, 7])
+        }],
+        Unit::Millimeter,
+    );
+    let read: Gltf = read_glb(&write_glb(&s).unwrap()).unwrap();
+    assert_eq!(read.nodes[0].primitives.len(), 5);
+    assert!(read.materials[0].double_sided);
+}
