@@ -77,7 +77,8 @@ pub enum Kept {
     Whole,
     /// The part below the plane, as the boolean made it: operand A is the
     /// body, and the only face of operand B any face has a piece of is
-    /// [`CAP`], the plane.
+    /// [`CAP`], the plane. No face has a piece of it where the plane only
+    /// took away lumps of the body that lie wholly above it.
     Cut(Box<BooleanResult>),
 }
 
@@ -179,8 +180,9 @@ fn cap() -> FaceSource {
 /// away from): the body intersected with the block of [`tool`].
 ///
 /// [`Kept::Whole`] when the plane cuts nothing: no face of the result has
-/// a piece of the plane, so the result is the body, which is then not
-/// handed back as a copy. Otherwise the boolean's result, in which every
+/// a piece of the plane and the result has every shell of the body, so
+/// the result is the body, which is then not handed back as a copy.
+/// Otherwise the boolean's result, in which every
 /// face is a piece of a face of `body` (operand A) or of the plane
 /// (operand B, [`CAP`]); a face the boolean merged from both lists both
 /// under [`BooleanResult::merged`].
@@ -214,10 +216,15 @@ pub fn keep_below(
             .merged
             .iter()
             .any(|sources| sources.contains(&in_plane));
-    Ok(if cuts {
-        Kept::Cut(Box::new(result))
-    } else {
+    // No piece of the plane is in the result, yet a lump of a body of
+    // several can lie wholly above it, touching it nowhere: the boolean
+    // left that lump out, and the result is not the body. Without a piece
+    // of the plane no face was cut, so what can be gone is whole shells.
+    let whole = !cuts && result.body.shells.len() == body.shells.len();
+    Ok(if whole {
         Kept::Whole
+    } else {
+        Kept::Cut(Box::new(result))
     })
 }
 
