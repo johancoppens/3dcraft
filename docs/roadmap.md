@@ -101,7 +101,11 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [x] Tolerant modelling, third slice: sewing an edge to several (a T-junction, 216 and 36 of 36 round trips, read from STEP), the mass bound's gap term, the deep check's mesh of loose bodies, chamfer and thicken on loose bodies without refusals (2026-10-22, [`design/topology.md`](design/topology.md) › *Tolerant entities, the third slice*).
 - [x] A bound on a boolean's work (found 2026-11-15, done 2026-11-16): the store of fine pieces holds what the searches look into, and what enters the budget of held trees is held to a bound on a ledger that does not depend on caches, threads or the operations before it; blends, sweeps, lofts, delete face and pattern joins owed ([`design/booleans.md`](design/booleans.md) › *A boolean that runs for most of an hour*).
 - [ ] A fillet of a cylinder's rim refused by the boolean that cuts it, at some document tolerances, fine ones too (found 2026-11-19 by the RC yacht's prompt test; [`design/blends.md`](design/blends.md) › *A fillet of a cylinder's rim refused at some document tolerances, fine ones too*).
-- [ ] Contact where an imprinted curve lies exactly on a face's border (found 2026-11-19 at one point of the gear reducer Jig's range, which exact held values now reach): refused, where *touch* is the answer ([`design/booleans.md`](design/booleans.md) › *Contact refused where a curve lies exactly on a face's border*).
+- [x] Contact where an imprinted curve lies exactly on a face's border (found 2026-11-19 at one point of the gear reducer Jig's range, which exact held values now reach), refused where *touch* is the answer: a stretch of a meeting curve that leaves a face's border tangentially and ends at a vertex one to four tolerances off it is outside the face, or inside it, by where it ends, and a contact in a point that leaves no stretch is a touch, not clear (2026-11-20, [`design/booleans.md`](design/booleans.md) › *Contact refused where a curve lies exactly on a face's border*); the Jig's own point is confirmed on a build of it (both clearances *touch*, its range 104 of 104 points).
+- [ ] A boolean built with parts that touch whose face tapers to a needle between a rim and a border it stays within the tolerance of (a radius within a hundredth of the border's radius of curvature) passes the boolean's checks and cannot be meshed: a feature refuses it by its own check; owed, the boolean's refusal in its own words, or the mesh (found 2026-11-20 by the review of the border repair; [`design/booleans.md`](design/booleans.md) › *Contact refused where a curve lies exactly on a face's border* › *Results that cannot be meshed*).
+- [ ] Between one and two tolerances apart, bodies are told to touch where a vertex of one is next to the other and clear where none is (found 2026-11-20 by the same review, older than the repair; [`design/booleans.md`](design/booleans.md) › *Between one and two tolerances apart*).
+- [ ] The seam of a closed meeting curve left as a vertex where it falls in the stretch that is kept (the keyed shafts' extra edges: found 2026-11-20; [`design/booleans.md`](design/booleans.md) › *The seam of a closed meeting curve left as a vertex*).
+- [ ] A spar's outer face beside a rib's swept spline skin, a plane that crosses the skin's surface at under a degree where the skin was cut away: *"marching an intersection curve stalled"* at seven of the RC wing Jig's points, *"two points closer together than the tolerance can tell apart"* at an eighth (found 2026-11-19, reduced to two bodies 2026-11-20; [`design/booleans.md`](design/booleans.md) › *A spar's face beside a rib's skin*).
 
 **Oracles owed** (the developer, 2026-10-17; approaches seen in another project's test setup, built our own way):
 
@@ -203,6 +207,7 @@ Load/save round trip of every doc type; a document built by commands over MCP sa
 
 #### Open
 - [ ] `mass_properties` for a torus face bounded by loops around the tube and for a boundary through a pole or apex of an analytic surface (refused today, with ignored tests that hold the expected values)
+- [ ] `mass_properties` of a lens a few dozen tolerances thick, measured at scale 1 and refused at 1e-3 and 1e6, and of lenses 2.5 and 6 tolerances wide refused at 1 as well (found 2026-11-20; [`design/topology.md`](design/topology.md) › *A lens a few dozen tolerances thick that is not measured at every scale*)
 - [ ] Thread scaling of the tessellator on a body with many faces (unmeasured)
 
 #### Acceptance
@@ -809,6 +814,8 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-20 | minor | The boolean checklist, after the review of that repair: owed, results with a needle face that cannot be meshed, and a touch between one and two tolerances that follows the vertices; thinner lenses not measured at 1 either |
+| 2026-11-20 | minor | The boolean checklist: contact where a curve leaves a face's border next to a vertex repaired; owed behind it the seam of a closed meeting curve left as a vertex, the RC wing's marching stall, and a lens the measure does not take at every scale |
 | 2026-11-20 | minor | The boolean checklist's Owed: a plane that passes a vertex by about half a tolerance is refused as "imprint lost", without its place |
 | 2026-11-20 | minor | A body cut by planes in one feature (`feature.planeCut`, format 78): M7's Done line, what is left under Open, the current focus |
 | 2026-11-20 | minor | M10: glTF for viewers (a primitive per look, the unit in the file, points that fall together counted), a Done line |

@@ -429,6 +429,30 @@ impl Vertices {
         p: Vec3,
         same: impl Fn(Vec3, &Meeting) -> bool,
     ) -> Result<usize, Stop> {
+        if let Some(index) = self.find_with(p, same)? {
+            return Ok(index);
+        }
+        if !p.is_finite() {
+            return Err(Stop::of(LOST));
+        }
+        let home = self.cell(p);
+        self.points.push(p);
+        self.meetings.push(Meeting::default());
+        let index = self.points.len() - 1;
+        if let Some(key) = home {
+            self.cells.entry(key).or_default().push(index);
+        }
+        Ok(index)
+    }
+
+    /// The vertex [`Vertices::find_or_add_with`] would give `p`, when
+    /// there is one already; `None` where it would make a new one. Refused
+    /// as it refuses.
+    fn find_with(
+        &self,
+        p: Vec3,
+        same: impl Fn(Vec3, &Meeting) -> bool,
+    ) -> Result<Option<usize>, Stop> {
         let mut nearest: Option<(f64, usize)> = None;
         let home = self.cell(p);
         let mut consider = |index: usize, q: Vec3| {
@@ -467,27 +491,16 @@ impl Vertices {
             }
         }
         match nearest {
-            Some((d, index)) if d <= self.merge => Ok(index),
+            Some((d, index)) if d <= self.merge => Ok(Some(index)),
             Some((_, index)) => {
                 let known = self.points.get(index).zip(self.meetings.get(index));
                 if known.is_some_and(|(&q, meeting)| same(q, meeting)) {
-                    Ok(index)
+                    Ok(Some(index))
                 } else {
                     Err(Stop::of(NEAR))
                 }
             }
-            None => {
-                if !p.is_finite() {
-                    return Err(Stop::of(LOST));
-                }
-                self.points.push(p);
-                self.meetings.push(Meeting::default());
-                let index = self.points.len() - 1;
-                if let Some(key) = home {
-                    self.cells.entry(key).or_default().push(index);
-                }
-                Ok(index)
-            }
+            None => Ok(None),
         }
     }
 }
