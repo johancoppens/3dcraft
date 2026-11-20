@@ -280,10 +280,11 @@ pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, Cl
         )?;
         return finish(craft3d_automation::bridge::serve(&config, input, output));
     }
-    // The roots once the command line is known to be sound, so nothing is
-    // made for a start that is refused. The write root first: a missing
+    // The roots once the rest of the command line was found sound, so no
+    // folder is made for a usage error. The write root first: a missing
     // one is made, and a read root naming the same folder (as the MCP
-    // bundle's does) then finds it.
+    // bundle's does) then finds it. A read root refused after that leaves
+    // the write root made, as it was asked for.
     let mut workspace = Workspace::none();
     if let Some(dir) = &roots.1 {
         workspace.write = root("--automation-write-root", dir, true)?;
