@@ -1013,35 +1013,49 @@ fn a_failed_solve_beside_other_problems_is_said_with_them() {
     assert!(!why.contains('`'), "{why}");
 }
 
-/// The form judges the assembly at rest, as `document.check` does: a
-/// hinge past its limit at rest, shown at a moment of its motion inside
-/// the limit, is *Solved* in the heading (which speaks of what is shown)
-/// and *Not solved* in the form. Before (round one), the form read the
-/// placement shown and said *Valid* there.
+/// The form judges the assembly at rest, as `document.check` does: a plate
+/// whose corner follows the timeline (40 mm at rest, past its part's range
+/// of 30, so it is not placed; 1 mm at t = 0.5), shown at that moment, is
+/// *Solved* in the heading (which speaks of what is shown) and *1 failed* in
+/// the form. Before (round one), the form read the placement shown and said
+/// *Valid* there. (A motion whose rest does not solve is not shown at all:
+/// `view.motion` refuses it.)
 #[test]
 fn the_form_weighs_the_assembly_at_rest_while_a_moment_is_shown() {
     let mut s = session("form-at-rest");
-    hinged(&mut s);
+    block_part(&mut s, "block.3dcraft", [20.0, 10.0, 6.0]);
+    filleted_plate(&mut s);
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
     run(&mut s, "variable.set", json!({ "name": "t", "expr": "0" }));
     run(
         &mut s,
         "variable.set",
-        json!({ "name": "swing", "expr": "120 deg" }),
+        json!({ "name": "big", "expr": "40 mm" }),
     );
     run(
         &mut s,
         "variable.publish",
-        json!({ "name": "swing", "min": "0 deg", "max": "180 deg" }),
+        json!({ "name": "big", "min": "0.5 mm", "max": "50 mm" }),
     );
     run(
         &mut s,
-        "variable.set",
-        json!({ "name": "Hinge_angle", "expr": "swing - 100 deg * t" }),
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Base" }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "world/xy", "b": "Base/F1:face(0)", "name": "Ground" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "plate.3dcraft", "name": "Plate", "params": { "corner": "big - 78 mm * t" } }),
     );
     let (mut shell, mut window) = shown(&mut s);
-    assert_eq!(verdict(&mut shell, &mut s)["text"], "Not solved");
-    assert_eq!(form(&mut shell, &mut s)["status"], "Not solved");
-    // At t = 0.5 the hinge stands at 70°: the moment shown solves.
+    assert_eq!(verdict(&mut shell, &mut s)["text"], "1 failed");
+    assert_eq!(form(&mut shell, &mut s)["status"], "1 failed");
+    // At t = 0.5 the corner is 1 mm: the moment shown is right.
     run(&mut s, "view.motion", json!({ "t": 0.5 }));
     window.frames(&mut shell, &mut s);
     let got = call(&mut shell, &mut s, "ui.get", json!({}));
@@ -1050,14 +1064,14 @@ fn the_form_weighs_the_assembly_at_rest_while_a_moment_is_shown() {
     let checked = run(&mut s, "document.check", json!({}));
     assert_eq!(checked["ok"], false, "{checked}");
     assert_eq!(
-        got["parameters"]["status"], "Not solved",
+        got["parameters"]["status"], "1 failed",
         "{}",
         got["parameters"]
     );
     assert!(
         got["parameters"]["why"]
             .as_str()
-            .is_some_and(|w| w.starts_with("the assembly does not solve: ")),
+            .is_some_and(|w| w.starts_with("instance Plate is not placed: ")),
         "{}",
         got["parameters"]
     );
