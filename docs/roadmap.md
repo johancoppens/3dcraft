@@ -758,6 +758,7 @@ STEP files read into the document as bodies (an `Import` feature), a pinned publ
 - [ ] A period for spline surfaces in `craft3d-geom`, so that knots that are not clamped are covered (`geom::closure` reads clamped knots only)
 - [ ] The STEP reader, next slices: faces' own colours and names, mirrored placements, the kinds still refused, one read per part placed many times ([`design/step-import.md`](design/step-import.md) › *Second slice*)
 - [ ] A pinned public STEP corpus
+- [ ] glTF a primitive per look is smaller as a file but usually larger gzipped (the moka pot 562 kB against 436 named): which cure, a vertex budget per primitive, triangles walked within a face, strips or a compression extension, is the developer's choice ([`design/files.md`](design/files.md) › *glTF a primitive per look, on the wire*, 2026-11-20)
 - [x] `craft3d-web`: moved to R1 at the developer's request (2026-10-22)
 - [ ] Performance budgets and a generated scorecard
 
@@ -814,6 +815,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-20 | minor | M10: an Open item, glTF a primitive per look on the wire (measured, the cure the developer's choice) |
 | 2026-11-20 | minor | M10: glTF in the window's export dialog, a Done line; its Open item taken out |
 | 2026-11-20 | minor | The boolean checklist, after the review of that repair: owed, results with a needle face that cannot be meshed, and a touch between one and two tolerances that follows the vertices; thinner lenses not measured at 1 either |
 | 2026-11-20 | minor | The boolean checklist: contact where a curve leaves a face's border next to a vertex repaired; owed behind it the seam of a closed meeting curve left as a vertex, the RC wing's marching stall, and a lens the measure does not take at every scale |
