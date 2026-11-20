@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.2.1 has 184 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.2.1 has 185 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 
@@ -68,6 +68,7 @@ The full description of any command, with every value it takes and what it refus
 | `feature.sheetMetal`, `sheetMetal.edit`, `sheetMetal.bends`, `sheetMetal.bendSequence` | Sheet metal: a base with flanges bent by radius and K-factor, reliefs, the bend table, the press-brake check ([Sheet metal](sheet-metal.md)) |
 | `feature.offsetProfile` | A sketch's profiles grown or shrunk |
 | `feature.boolean` | Union, subtract, intersect |
+| `feature.planeCut` | A body cut by planes, one side of each kept: a corner off, a roof, a cutaway ([Modelling features](features.md#cut-by-planes)) |
 | `feature.pattern`, `feature.mirror`, `feature.transform` | Copies, mirror, move and turn |
 | `feature.fillet`, `feature.chamfer` | Round and bevel edges; a round that fades out to a point on its edge ([Modelling features](features.md#a-fillet-that-fades)) |
 | `feature.shell`, `feature.offsetFace`, `feature.moveFace`, `feature.draft`, `feature.deleteFace` | Operations on faces |

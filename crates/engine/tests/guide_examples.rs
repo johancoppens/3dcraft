@@ -1511,6 +1511,47 @@ fn the_spout_of_the_features_chapter_meets_its_volume() {
     assert_eq!(check["ok"], true, "{check}");
 }
 
+/// The cuts by planes of the features chapter (`features.md` › *Cut by
+/// planes*) run as written: the corner taken off a block, the roof by two
+/// datum planes and the tower under four planes given through one point
+/// each meet the volume their assertion says, and pass the deep check;
+/// every plane leaves one face, named by its id.
+#[test]
+fn the_cuts_by_planes_of_the_features_chapter_meet_their_volumes() {
+    let text = read_text(&docs().join("guide/features.md"));
+    let blocks: Vec<String> = json_blocks(&text)
+        .into_iter()
+        .filter(|b| b.contains("\"feature.planeCut\""))
+        .collect();
+    assert_eq!(blocks.len(), 3, "the chapter has three cuts by planes");
+    for (block, planes) in blocks.iter().zip([1, 2, 4]) {
+        let steps = steps(&serde_json::from_str(block).unwrap()).unwrap();
+        let mut s = common::session();
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        for (id, params) in steps {
+            let out = run(&mut s, &id, params);
+            assert_ne!(out["status"], "failed", "{id}: {out}");
+            if id == "feature.planeCut" {
+                let reported = out["planes"].as_array().unwrap();
+                assert_eq!(reported.len(), planes, "{out}");
+                for (index, plane) in reported.iter().enumerate() {
+                    assert_eq!(
+                        *plane,
+                        json!({"id": index + 1, "cuts": true, "faces": 1}),
+                        "{out}"
+                    );
+                }
+                assert!(out.get("warnings").is_none(), "{out}");
+            }
+        }
+        let assertions = run(&mut s, "assert.list", json!({}));
+        assert_eq!(assertions["ok"], true, "{assertions}");
+        assert_eq!(assertions["passed"], 1, "{assertions}");
+        let check = run(&mut s, "document.check", json!({"deep": true}));
+        assert_eq!(check["ok"], true, "{check}");
+    }
+}
+
 /// The tip of the features chapter (`features.md` › *Tip*) runs as
 /// written: the rod tipped as long as its radius at its end, and at its
 /// start with the point given in the model, meets the volume of a rod

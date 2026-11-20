@@ -713,11 +713,11 @@ fn an_edit_keeps_planes_by_their_ids() {
     assert_eq!(ids(&mut s), [2, 3, 1]);
     run(&mut s, "edit.redo", json!({}));
     assert_eq!(ids(&mut s), [3, 1, 4]);
-    // Another target, and the first one kept.
+    // Another target (a block like the first, in its place), kept.
     built(
         &mut s,
         "feature.block",
-        json!({"size": [40, 30, 20], "position": [100, 0, 0], "name": "Other"}),
+        json!({"size": [40, 30, 20], "name": "Other"}),
     );
     run(
         &mut s,
@@ -931,7 +931,8 @@ fn planes_follow_variables_and_the_document_saves_and_reopens() {
         let before = body(&mut s, "Roof");
         assert_close(
             &before["volume"],
-            18_000.0 * 38.0 / 40.0 * k * k * k,
+            // The ridge stays 8 above the eaves: 38 × (30 × 10 + 120).
+            15_960.0 * k * k * k,
             "volume",
         );
         let report = feature(&mut s, "Roof")["planes"].clone();

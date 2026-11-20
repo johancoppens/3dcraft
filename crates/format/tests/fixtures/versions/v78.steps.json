@@ -1,0 +1,10 @@
+[
+ ["variable.set", {"name": "eaves", "expr": "12 mm"}],
+ ["feature.block", {"name": "House", "size": ["40 mm", "30 mm", "20 mm"]}],
+ ["datum.plane", {"name": "South", "through": [["0 mm", "0 mm", "eaves"], ["40 mm", "0 mm", "eaves"], ["0 mm", "15 mm", "eaves + 8 mm"]]}],
+ ["feature.planeCut", {"name": "Roof", "target": "House", "planes": [
+   "South",
+   {"point": ["40 mm", "30 mm", "eaves"], "normal": [0, 8, 15], "id": 5},
+   {"plane": "House:face(4)", "offset": "-2 mm"}]}],
+ ["feature.planeCut", {"name": "Upper", "target": "Roof", "planes": {"plane": "xy", "offset": "6 mm", "side": "above"}, "keep": true}]
+]

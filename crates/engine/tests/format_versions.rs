@@ -600,6 +600,81 @@ fn the_v73_rod_tipped_at_both_ends_is_its_closed_form() {
     }
 }
 
+/// What pins v78's plane cuts besides their fixture: a block 40 × 30 × 20
+/// mm under a roof of two planes, the eaves at `eaves` = 12 mm and the
+/// ridge 8 mm above them (one a datum plane, one a point and a normal
+/// with the id 5), with 2 mm taken off its left end by the plane of the
+/// block's own left face moved in: `38 × 30 × (eaves + 4)` mm³; and a kept
+/// copy of it cut by the base plane moved up 6 mm, the side above kept:
+/// `38 × 30 × 6` mm³ less. The planes keep their ids, which name their
+/// faces, and the cuts follow `eaves`.
+#[test]
+fn the_v78_roof_cut_by_planes_is_its_closed_form() {
+    let dir = workdir("format-versions", "v78-plane-cut");
+    std::fs::copy(fixtures().join("v78.3dcraft"), dir.join("v78.3dcraft")).unwrap();
+    let mut s = session_in(&dir);
+    run(&mut s, "file.open", json!({"path": "v78.3dcraft"}));
+    for eaves in [12.0_f64, 10.0] {
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "eaves", "expr": format!("{eaves} mm")}),
+        );
+        let inspect = run(&mut s, "document.inspect", json!({}));
+        let found = |name: &str| {
+            inspect["bodies"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|b| b["name"] == name)
+                .unwrap_or_else(|| panic!("no {name} in {inspect}"))
+                .clone()
+        };
+        let roof = 38.0 * 30.0 * (eaves + 4.0);
+        for (name, want) in [("Roof", roof), ("Upper", roof - 38.0 * 30.0 * 6.0)] {
+            let got = found(name)["volume"].as_f64().unwrap();
+            assert!(
+                (got - want).abs() <= 1e-9 * want,
+                "{name}, eaves {eaves}: {got} against {want}"
+            );
+        }
+        let names = |name: &str| -> Vec<String> {
+            found(name)["faceNames"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n.as_str().unwrap().to_string())
+                .collect()
+        };
+        let roof_faces = names("Roof");
+        for wanted in ["F3:cut(5)", "F3:cut(6)", "F3:cut(7)"] {
+            assert!(roof_faces.iter().any(|n| n == wanted), "{roof_faces:?}");
+        }
+        let upper = names("Upper");
+        for wanted in ["F4:cut(1)", "F4:copy(0)/F3:cut(5)"] {
+            assert!(upper.iter().any(|n| n == wanted), "{upper:?}");
+        }
+        let cut = inspect["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == "Roof")
+            .unwrap();
+        assert_eq!(cut["params"]["next_plane"], 8, "{cut}");
+        assert_eq!(
+            cut["planes"],
+            json!([
+                {"id": 6, "cuts": true, "faces": 1},
+                {"id": 5, "cuts": true, "faces": 1},
+                {"id": 7, "cuts": true, "faces": 1},
+            ]),
+            "{cut}"
+        );
+    }
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{check}");
+}
+
 /// What pins v76's fades besides their fixture: two blocks 40 × 30 × 40
 /// mm whose upright edge is rounded 3 mm, the first fading to a point at
 /// its top over `over` = 15 mm, the second at both ends (over 10 mm to a

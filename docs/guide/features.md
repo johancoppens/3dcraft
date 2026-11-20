@@ -263,6 +263,94 @@ yet it **refuses with the reason**, never with a wrong solid. Faces that touch o
 tolerance of each other are the hardest cases; a cutting tool made a little longer than the part avoids
 them and says what is meant (the examples use `thickness + 2 mm` from `-1 mm`).
 
+## Cut by planes
+
+`feature.planeCut` cuts a body by one or more planes and keeps one side of each: a corner taken off a
+block, a roof, a part trimmed to a datum, a model opened up to show its inside. Nothing is drawn or sized
+for it: the cut reaches as far as the body does, at any size.
+
+A plane is one of:
+
+- a base plane (`"xy"`, `"yz"`, `"zx"`), a datum plane (the cut follows it), or a flat face of an
+  earlier body by its name (its normal points out of that body);
+- a point and a normal, `{"point": [x, y, z], "normal": [a, b, c]}`: expressions, so they can follow
+  variables and a Jig's parameters. Only where the normal points counts, not its length. A plane known
+  as `a x + b y + c z = d` is the normal `[a, b, c]` through the point `[a d / s, b d / s, c d / s]` with
+  `s = a a + b b + c c`.
+
+Each may be moved along its normal with `offset`. **`side`** says what is kept: `"below"` (the default)
+keeps what lies on the side the normal points away from, as `measure.below` has it; `"above"` keeps the
+other side. Several planes keep what lies on the kept side of every one of them.
+
+A corner taken off a block, through the points 10 mm along its edges:
+
+```json
+[
+ ["feature.block", {"size": ["40 mm", "30 mm", "20 mm"], "name": "Part"}],
+ ["feature.planeCut", {"target": "Part", "planes": {"point": ["30 mm", "0 mm", "20 mm"], "normal": [1, -1, 1]}, "name": "Bevel"}],
+ ["assert.add", {"name": "a corner of 10 mm taken off", "measure": "volume", "of": "Bevel", "eq": "40 mm * 30 mm * 20 mm - (10 mm)^3 / 6"}]
+]
+```
+
+A roof by two datum planes, the eaves at 12 mm and the ridge at 20 mm; move a datum and the roof follows:
+
+```json
+[
+ ["feature.block", {"size": ["40 mm", "30 mm", "20 mm"], "name": "House"}],
+ ["datum.plane", {"through": [["0 mm", "0 mm", "12 mm"], ["40 mm", "0 mm", "12 mm"], ["0 mm", "15 mm", "20 mm"]], "name": "South"}],
+ ["datum.plane", {"through": [["40 mm", "30 mm", "12 mm"], ["0 mm", "30 mm", "12 mm"], ["40 mm", "15 mm", "20 mm"]], "name": "North"}],
+ ["feature.planeCut", {"target": "House", "planes": ["South", "North"], "name": "Roof"}],
+ ["assert.add", {"name": "walls of 12 mm under a ridge at 20 mm", "measure": "volume", "of": "Roof", "eq": "40 mm * (30 mm * 12 mm + 30 mm * 8 mm / 2)"}]
+]
+```
+
+A prism trimmed by planes that come as numbers (measured, or computed by a program): the outline as a
+polygon whose corners are held where they are given, and the whole roof one feature, however many
+planes it has. The four planes here are given through one point, by the same numbers, so they meet in
+it:
+
+```json
+[
+ ["sketch.create", {"plane": "xy", "name": "Outline"}],
+ ["sketch.polyline", {"sketch": "Outline", "points": [["-10 mm", "-10 mm"], ["10 mm", "-10 mm"], ["10 mm", "10 mm"], ["-10 mm", "10 mm"]], "closed": true}],
+ ["feature.extrude", {"sketch": "Outline", "distance": "30 mm", "name": "Prism"}],
+ ["feature.planeCut", {"target": "Prism", "name": "Tower", "planes": [
+   {"point": ["0 mm", "0 mm", "28 mm"], "normal": [8, 0, 10]},
+   {"point": ["0 mm", "0 mm", "28 mm"], "normal": [0, 8, 10]},
+   {"point": ["0 mm", "0 mm", "28 mm"], "normal": [-8, 0, 10]},
+   {"point": ["0 mm", "0 mm", "28 mm"], "normal": [0, -8, 10]}]}],
+ ["assert.add", {"name": "a pyramid of 8 mm on walls of 20 mm", "measure": "volume", "of": "Tower", "eq": "20 mm * 20 mm * 20 mm + 20 mm * 20 mm * 8 mm / 3"}]
+]
+```
+
+- **`target`** is the feature whose body is cut; the body goes into the cut. With `keep` the target keeps
+  its body and the cut is a copy: cut a kept copy once on each side of a plane to have both parts.
+- **Each plane has an id**, a number from 1 (give one with `id`, or it gets the next free one), listed in
+  the result under `planes` with whether the cut body has a face of it (`cuts`) and how many (`faces`).
+  The face a plane cuts is named by it, `F9:cut(3)`, so a fillet, a sketch or a mate on that face stays
+  on it when planes are added, deleted or put in another order. A plane that cuts the body in two places
+  gives two faces of that name. What is left of the target's faces keeps its names with a prefix,
+  `F9:copy(0)/...`. A piece that joins a face of the target lying in the plane is that face, and answers
+  to both names.
+- **`feature.edit`** changes `target`, `planes` and `keep`. `planes` is the whole list: a plane given with
+  its id stays that plane; one given without is the plane it equals in every field, and else a new plane
+  with a new id, never one a deleted plane had. A plane given through variables is changed with
+  `variable.set`.
+- **A plane that cuts nothing** (it does not meet the body, it lies in a face of it with the body behind,
+  or what it cut was cut away by the others) changes nothing and is listed under `warnings`. A plane that
+  leaves nothing of the body fails the feature, naming the plane.
+- **Nothing is snapped.** The planes are applied in the order given, each a cut of its own, exactly as
+  given. Planes that should meet in one point and, as measured, nearly do, leave the small faces between
+  them; where faces or points come between half and twice the document's tolerance of each other, the
+  feature fails with the plane and the faces (as a boolean does: [Troubleshooting](troubleshooting.md)),
+  also for a place a later plane of the list would cut away (put that plane first). Planes meant to meet
+  in one point: give them that point, the same numbers for each, as above.
+- **Not convex.** Several planes in one cut keep what is below all of them, which is convex where they
+  meet. A shape with a valley (an L-shaped hipped roof, crossing gables) is a cut per convex part, each of
+  a kept copy, joined with `feature.boolean`.
+- **Not built yet**, and refused: a sheet as the target (a sheet is trimmed by a solid with
+  `feature.boolean`).
+
 ## Patterns, mirror, transform
 
 - `feature.pattern`: `count` copies of a body; linear with `step` (`[dx, dy, dz]`), circular with `angle`
