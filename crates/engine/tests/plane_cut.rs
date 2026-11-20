@@ -969,3 +969,210 @@ fn planes_follow_variables_and_the_document_saves_and_reopens() {
         assert_eq!(check["ok"], true, "{check}");
     }
 }
+
+/// The review's (2026-11-20): a plane through the gap between two lumps
+/// of a body meets neither and takes the lump beyond it away. A block
+/// with a slot through its top, cut above 12: two legs of 15 × 30 × 8;
+/// the plane x = 20, in the slot, keeps the left one, whether the legs
+/// come from another cut or from a plane before it in the same list.
+#[test]
+fn a_plane_between_two_lumps_takes_the_one_beyond_it_away() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        part(&mut s, k);
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": [10.0 * k, 32.0 * k, 12.0 * k], "position": [15.0 * k, -k, 10.0 * k], "name": "Slot"}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Part", "tool": "Slot", "name": "Legs"}),
+        );
+        let level = json!({"point": [0.0, 0.0, 12.0 * k], "normal": [0, 0, 1], "side": "above"});
+        let gap = through(k, [20.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        built(
+            &mut s,
+            CUT,
+            json!({"target": "Legs", "planes": [level], "keep": true, "name": "TwoLegs"}),
+        );
+        let two = assert_solid(&mut s, "TwoLegs", 7200.0, Some(3240.0), k);
+        assert_eq!(two["shells"], 2, "{two}");
+        built(
+            &mut s,
+            CUT,
+            json!({"target": "TwoLegs", "planes": [gap], "keep": true, "name": "LeftLeg"}),
+        );
+        let one = assert_solid(&mut s, "LeftLeg", 3600.0, Some(1620.0), k);
+        assert_eq!(one["shells"], 1, "{one}");
+        built(
+            &mut s,
+            CUT,
+            json!({"target": "Legs", "planes": [level, gap], "name": "InOne"}),
+        );
+        let one = assert_solid(&mut s, "InOne", 3600.0, Some(1620.0), k);
+        assert_eq!(one["shells"], 1, "{one}");
+    }
+}
+
+/// The review's (2026-11-20): a lofted body, whose side is a spline
+/// surface, cut on the slant: the two sides add up to the body, each is
+/// valid, a sketch on the cut face lies in the plane, and three planes
+/// leave a valid wedge. At scale 1 (the kernel's suite has a spline body
+/// at three scales).
+#[test]
+fn a_lofted_body_cut_on_the_slant_adds_up() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    for (name, z, center, radius) in [
+        ("Base", 0.0, [0.0, 0.0], 10.0),
+        ("Middle", 30.0, [3.0, 0.0], 14.0),
+        ("End", 60.0, [0.0, 2.0], 8.0),
+    ] {
+        built(
+            &mut s,
+            "sketch.create",
+            json!({"name": name, "plane": "xy", "offset": z}),
+        );
+        run(
+            &mut s,
+            "sketch.circle",
+            json!({"sketch": name, "center": center, "radius": radius}),
+        );
+    }
+    built(
+        &mut s,
+        "feature.loft",
+        json!({"sections": ["Base", "Middle", "End"], "name": "Vase"}),
+    );
+    let slant = json!({"point": [0, 0, 25], "normal": [0.3, 0.2, 1]});
+    let mut other = slant.clone();
+    other["side"] = json!("above");
+    built(
+        &mut s,
+        CUT,
+        json!({"target": "Vase", "planes": [slant], "keep": true, "name": "Low"}),
+    );
+    built(
+        &mut s,
+        CUT,
+        json!({"target": "Vase", "planes": [other], "keep": true, "name": "High"}),
+    );
+    built(
+        &mut s,
+        CUT,
+        json!({"target": "Vase", "planes": [slant, {"normal": [1, 0, 0]}, {"point": [0, 4, 0], "normal": [0, 1, 0], "side": "above"}], "keep": true, "name": "Wedge"}),
+    );
+    let (whole, low, high) = (
+        body(&mut s, "Vase"),
+        body(&mut s, "Low"),
+        body(&mut s, "High"),
+    );
+    let wedge = body(&mut s, "Wedge");
+    for part in [&low, &high, &wedge] {
+        assert_eq!(part["valid"], true, "{part}");
+    }
+    let v = |b: &Value| b["volume"].as_f64().unwrap();
+    let sum = v(&low) + v(&high);
+    assert!(
+        (sum - v(&whole)).abs() <= 1e-8 * v(&whole),
+        "{} + {} is not {}",
+        v(&low),
+        v(&high),
+        v(&whole)
+    );
+    assert!(v(&low) > 0.25 * v(&whole) && v(&high) > 0.25 * v(&whole));
+    let a = |b: &Value| b["area"].as_f64().unwrap();
+    assert!(a(&low) + a(&high) > a(&whole) + 1000.0, "twice the section");
+    let sketch = built(&mut s, "sketch.create", json!({"face": "Low:cut(1)"}));
+    let normal = vec3(&sketch["normal"]);
+    let length = (0.09f64 + 0.04 + 1.0).sqrt();
+    for (got, want) in normal.into_iter().zip([0.3, 0.2, 1.0]) {
+        assert!((got - want / length).abs() <= 1e-12, "{normal:?}");
+    }
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{check}");
+}
+
+/// The review's (2026-11-20): a part of 1 mm, 100 m from the origin, cut
+/// by planes given through points near the origin (so a plane's own
+/// origin is 100 m from what it cuts): through the cube's centre it halves
+/// it; through a corner's three points half way along its edges it takes
+/// off a tetrahedron of 1/48; two planes square to the axes leave a slab.
+#[test]
+fn a_part_far_from_the_origin_is_cut_to_its_closed_forms() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [1, 1, 1], "position": [100_000, -50_000, -50_000], "name": "Part"}),
+    );
+    let diagonal =
+        |at: f64, side: &str| json!({"point": [0, 0, at], "normal": [1, 1, 1], "side": side});
+    for (name, planes, volume) in [
+        ("Half", json!([diagonal(1.5, "below")]), 0.5),
+        ("Corner", json!([diagonal(0.5, "below")]), 1.0 / 48.0),
+        ("Rest", json!([diagonal(0.5, "above")]), 47.0 / 48.0),
+        (
+            "Slab",
+            json!([
+                {"point": [100_000.5, 0, 0], "normal": [1, 0, 0]},
+                {"point": [0, -49_999.75, 0], "normal": [0, -1, 0]}
+            ]),
+            0.375,
+        ),
+    ] {
+        built(
+            &mut s,
+            CUT,
+            json!({"target": "Part", "planes": planes, "keep": true, "name": name}),
+        );
+        assert_solid(&mut s, name, volume, None, 1.0);
+    }
+}
+
+/// The review's (2026-11-20): a plane placed by a feature after the cut,
+/// a plane placed by the cut's own face, and a target after the cut: each
+/// fails the cut with the parameter and what to do, and builds nothing.
+#[test]
+fn planes_and_a_target_from_later_or_from_the_cut_itself_fail_by_name() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    part(&mut s, 1.0);
+    built(
+        &mut s,
+        CUT,
+        json!({"target": "Part", "planes": {"plane": "xy", "offset": 10}, "name": "Half"}),
+    );
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 10, 10], "position": [100, 0, 0], "name": "Later"}),
+    );
+    let first = json!({"plane": "xy", "offset": 10, "id": 1});
+    for (params, says) in [
+        (
+            json!({"feature": "Half", "planes": [first, "Later:face(1)"]}),
+            "planes.1: `Later`, which makes the face F3:face(1), comes after this feature",
+        ),
+        (
+            json!({"feature": "Half", "planes": [first, {"plane": "Half:cut(1)", "offset": -2}]}),
+            "planes.1: `Half`, which makes the face F2:cut(1), is this feature itself",
+        ),
+        (
+            json!({"feature": "Half", "target": "Later"}),
+            "target: `Later` comes after this feature",
+        ),
+    ] {
+        let result = run(&mut s, "feature.edit", params.clone());
+        assert_eq!(result["status"], "failed", "{params}: {result}");
+        let reason = result["error"].as_str().unwrap();
+        assert!(reason.starts_with(says), "{params}: {reason}");
+        assert_eq!(bodies(&mut s), ["Part", "Later"], "{params}");
+        run(&mut s, "edit.undo", json!({}));
+        assert_solid(&mut s, "Half", BLOCK_VOLUME / 2.0, None, 1.0);
+    }
+}

@@ -18,8 +18,8 @@
 mod common;
 
 use common::checked::{
-    assert_close, assert_solid, body, built, failure, feature, names_of, new_document, refused,
-    run, session,
+    assert_close, assert_solid, body, built, failed, failure, feature, names_of, new_document,
+    refused, run, session,
 };
 use craft3d_engine::Session;
 use serde_json::{Value, json};
@@ -536,4 +536,186 @@ fn an_edge_between_cut_faces_is_taken_by_its_own_name() {
         said.contains("F2:between[F2:cut(1),F2:cut(2)](0)"),
         "{said}"
     );
+}
+
+/// The review's (2026-11-20): the target pointed at another body. The
+/// faces the planes cut keep their names, so the round of the ridge, the
+/// sketch and the datum on the north slope stay where they were; the
+/// chamfer, given by an edge whose name holds a face of the old target,
+/// fails with that name; the old target is a body again.
+#[test]
+fn another_target_keeps_the_planes_names_and_fails_the_old_targets() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        roofed(&mut s, k);
+        let was = over(&mut s);
+        // A block like the first, 100 further along x, put before the roof
+        // (F7, second in the history).
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": [40.0 * k, 30.0 * k, 20.0 * k], "position": [100.0 * k, 0.0, 0.0], "name": "Other"}),
+        );
+        run(
+            &mut s,
+            "feature.move",
+            json!({"feature": "Other", "position": 1}),
+        );
+        built(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Roof", "target": "Other"}),
+        );
+        for name in ["Ridge", "OnNorth", "Over"] {
+            assert_eq!(feature(&mut s, name)["status"], "ok", "{name}");
+        }
+        assert_eq!(over(&mut s), was);
+        let reason = failure(&mut s, "Eave");
+        assert!(reason.contains("F2:copy(0)/F1:face(2)"), "{reason}");
+        // The roof is the same shape on the other block.
+        let faces = names_of(&body(&mut s, "Ridge"));
+        for wanted in [
+            "F3:copy(0)/F2:cut(1)",
+            "F3:copy(0)/F2:cut(2)",
+            "F3:copy(0)/F7:face(2)",
+        ] {
+            assert!(faces.iter().any(|n| n == wanted), "{wanted} in {faces:?}");
+        }
+        assert!(!faces.iter().any(|n| n.contains("F1:")), "{faces:?}");
+        assert_close(
+            &body(&mut s, "Part")["volume"],
+            24_000.0 * k * k * k,
+            "volume",
+        );
+    }
+}
+
+/// The review's (2026-11-20): a plane added that cuts a named face away
+/// whole (y ≥ 16 leaves only the north slope). What was placed by the
+/// south slope fails with its name; what lies on the north slope stays
+/// where it was; the south slope's plane is reported as leaving no face.
+#[test]
+fn a_plane_that_cuts_a_named_face_away_fails_what_was_placed_by_it() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        roofed(&mut s, k);
+        let was = over(&mut s);
+        let result = edit_planes(
+            &mut s,
+            json!([
+                south(k, 8.0),
+                north(k, 8.0),
+                plane(k, 0, [0.0, 16.0, 0.0], [0.0, -1.0, 0.0])
+            ]),
+        );
+        assert_eq!(
+            result["planes"],
+            json!([
+                {"id": 1, "cuts": false, "faces": 0},
+                {"id": 2, "cuts": true, "faces": 1},
+                {"id": 3, "cuts": true, "faces": 1},
+            ]),
+            "{result}"
+        );
+        for name in ["Ridge", "Eave"] {
+            let reason = failure(&mut s, name);
+            assert!(reason.contains("F2:cut(1)"), "{name}: {reason}");
+        }
+        assert_eq!(feature(&mut s, "OnNorth")["status"], "ok");
+        assert_eq!(over(&mut s), was);
+        // 40 × the profile from y = 16 to 30 under the north slope:
+        // 40 (8 × 14 + 8/15 × 14² / 2).
+        let roof = body(&mut s, "Roof");
+        assert_close(
+            &roof["volume"],
+            40.0 * (112.0 + 8.0 / 15.0 * 98.0) * k * k * k,
+            "volume",
+        );
+    }
+}
+
+/// The review's (2026-11-20): a gable across a block with a slot in its
+/// top cuts both legs, so each plane leaves two faces of one name and
+/// there are two ridges between them. Each ridge is named by the faces
+/// near it, so a round takes one ridge by its own name; the pair of faces
+/// takes both (the rule for a face in pieces); the bare name of the pair
+/// is no edge's, and fails by name.
+#[test]
+fn two_ridges_between_the_same_planes_are_told_apart_by_the_faces_near_them() {
+    use craft3d_math::Portable;
+    // What a round of radius 2 takes off a ridge between slopes rising
+    // 8 in 15, per unit of its length: r² (tan(φ/2) − φ/2) with φ/2 the
+    // slope's angle.
+    let rounded = 4.0 * (8.0 / 15.0 - (8.0f64 / 15.0).patan());
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": [40.0 * k, 30.0 * k, 20.0 * k], "name": "Part"}),
+        );
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": [10.0 * k, 32.0 * k, 22.0 * k], "position": [15.0 * k, -k, 10.0 * k], "name": "Slot"}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Part", "tool": "Slot", "name": "Legs"}),
+        );
+        let result = built(
+            &mut s,
+            CUT,
+            json!({"target": "Legs", "planes": [south(k, 12.0), north(k, 12.0)], "name": "Roof"}),
+        );
+        assert_eq!(
+            result["planes"],
+            json!([
+                {"id": 1, "cuts": true, "faces": 2},
+                {"id": 2, "cuts": true, "faces": 2},
+            ]),
+            "{result}"
+        );
+        // 19,200 less the slot through the roof's profile above 10:
+        // 10 × (30 × 2 + 120).
+        let roofed = 17_400.0;
+        assert_solid(&mut s, "Roof", roofed, None, k);
+        let listed = distinct_names(&mut s, "Roof", "F4:");
+        let bare = "F4:between[F4:cut(1),F4:cut(2)]";
+        let ridges: Vec<String> = listed["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap().to_string())
+            .filter(|n| n.starts_with("F4:between[F4:cut(1),F4:cut(2)|"))
+            .collect();
+        assert_eq!(ridges.len(), 2, "{listed}");
+        // Both by the pair: two ridges of 15.
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [["Roof:cut(1)", "Roof:cut(2)"]], "radius": 2.0 * k, "name": "Both"}),
+        );
+        assert_solid(&mut s, "Both", roofed - 30.0 * rounded, None, k);
+        run(&mut s, "edit.undo", json!({}));
+        // One by its own name.
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [ridges[0]], "radius": 2.0 * k, "name": "One"}),
+        );
+        assert_solid(&mut s, "One", roofed - 15.0 * rounded, None, k);
+        run(&mut s, "edit.undo", json!({}));
+        // The pair's bare name is no edge's.
+        let reason = failed(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [bare], "radius": 2.0 * k, "name": "Bare"}),
+        );
+        assert!(reason.contains(bare), "{reason}");
+    }
 }

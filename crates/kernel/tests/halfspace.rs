@@ -408,6 +408,44 @@ fn a_ring_halved() {
     }
 }
 
+/// A plane through the hole between the two lumps of a body meets
+/// neither, and still takes the one above it away: no face of what is
+/// left is a piece of the plane, and what is left is not the body. The
+/// two lumps are mirror images, so what is left is half the body.
+#[test]
+fn a_plane_between_two_lumps_takes_the_one_above_it_away() {
+    for k in SCALES {
+        let ring = ring(k, [0.0, 0.0, 0.0], 10.0, 3.0);
+        let upright = plane(k, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        let inner = plane(k, [-5.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        let lumps = below(&below(&ring, &upright, k), &turned(&inner), k);
+        assert_eq!(lumps.shells.len(), 2, "scale {k}");
+        let both = mass(&lumps).volume;
+        let between = plane(k, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        for side in [between, turned(&between)] {
+            let kept = match cut(&lumps, &side, k) {
+                Ok(Kept::Cut(result)) => {
+                    let result = *result;
+                    result.body
+                }
+                Ok(Kept::Whole) => {
+                    panic!("scale {k}: both lumps kept, the one above the plane too")
+                }
+                Err(e) => panic!("scale {k}: {e}"),
+            };
+            assert_eq!(check(&kept, &tolerance(k)), [], "scale {k}");
+            assert_eq!(kept.shells.len(), 1, "scale {k}");
+            let one = mass(&kept).volume;
+            assert!(
+                (one - both / 2.0).abs() <= 1e-7 * both,
+                "scale {k}: {one} is not half of {both}"
+            );
+            let c = mass(&kept).centroid.unwrap();
+            assert!(c.y * side.z().y < 0.0, "scale {k}: the lump kept is above");
+        }
+    }
+}
+
 /// Several planes in turn are the intersection of what each keeps,
 /// whatever the order: a gable roof on the block, eaves at 12 and the
 /// ridge at 20.
