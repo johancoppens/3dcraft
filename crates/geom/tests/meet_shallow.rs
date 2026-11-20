@@ -96,6 +96,18 @@ impl Trough {
         }
     }
 
+    /// The same trough cut off 100 000 tolerances past its turn, where its
+    /// middle is still within the tolerance of the plane: the curve leaves
+    /// through the far end, not through the sides. (At a sine of a few
+    /// 1e-6 the whole trough would be so long that rounding at its size
+    /// leaves a point no nearer the curve than the turn is wide.)
+    fn short(self) -> Self {
+        Self {
+            length: self.y0 + 1e5 * self.tol,
+            ..self
+        }
+    }
+
     /// The trough's height at `(x, y)`.
     fn height(&self, x: f64, y: f64) -> f64 {
         self.a * (y - self.y0)
@@ -398,10 +410,12 @@ fn check(pair: &Pair) -> Result<(f64, usize), String> {
         }
         worst = worst.max(off / t.tol);
     }
-    // The parabola from side to side: closer together about the turn.
+    // The parabola from where it comes into the trough to where it
+    // leaves (its sides, or its far end): closer together about the turn.
+    let reach = pair.x_at(t.length).unwrap_or(t.half);
     for k in -100..=100 {
         let s = f64::from(k) / 100.0;
-        let x = t.half * s * s * s;
+        let x = reach * s * s * s;
         let p = t.frame.point(x, (pair.y_at)(x), (pair.z_at)(x));
         let off = off_polyline(&points, p);
         if !(off <= t.tol) {
@@ -520,4 +534,257 @@ fn two_freeform_surfaces_cross_in_a_hairpin_at_a_shallow_angle() {
             .into_iter()
             .flat_map(|trough| [against_flat(trough, true), against_flat(trough, false)])
     }));
+}
+
+/// The same at a sine of 3e-6, the trough cut short: past the turn of
+/// such a hairpin a point within `on` of the plane has no curve to come
+/// onto, and a step that ended there was taken for a step; the march
+/// went on from a place a third of a millimetre off the curve and
+/// stalled.
+#[test]
+fn a_plane_crosses_a_short_trough_in_a_hairpin_at_a_sine_of_a_few_millionths() {
+    all_come_back(TOLERANCES.into_iter().flat_map(|tol| {
+        let mut pairs = Vec::new();
+        for radius in [0.5, 0.15] {
+            for inset in INSETS {
+                let n = pairs.len() / 2;
+                let twist = if n % 2 == 1 { 0.5 } else { 0.0 };
+                let frame = if n % 3 == 0 {
+                    Frame::WORLD
+                } else {
+                    tilted(1e4 * tol)
+                };
+                let trough = Trough::new(tol, 3e-6, radius, inset, twist, frame).short();
+                pairs.push(against_plane(trough, false));
+                pairs.push(against_plane(trough, true));
+            }
+        }
+        pairs
+    }));
+}
+
+/// The lower skin of a wing blank: a cubic through seven points of its
+/// section (the control points a sketch's spline through
+/// `(100, 0), (75, -2.2), (60, -2.9), (50, -3), (40, -2.9), (25, -2.2),
+/// (0, 0)` has), lofted over `span` to the same section at `taper` of
+/// its size about the middle of its chord, at the scale `k`. Its lowest
+/// line is the ruling from `(50, -3)`; beside it the section rises to a
+/// shoulder and dips again.
+fn skin(taper: f64, span: f64, k: f64) -> Surface {
+    let section = [
+        (100.0, 0.0),
+        (6295.0 / 96.0, -436.0 / 135.0),
+        (1935.0 / 32.0, -145.0 / 54.0),
+        (50.0, -341.0 / 108.0),
+        (1265.0 / 32.0, -145.0 / 54.0),
+        (3305.0 / 96.0, -436.0 / 135.0),
+        (0.0, 0.0),
+    ];
+    let mut ctrl = Vec::new();
+    for (x, y) in section {
+        ctrl.push(Vec3::new(x, y, 0.0) * k);
+        ctrl.push(Vec3::new(50.0 + (x - 50.0) * taper, y * taper, span) * k);
+    }
+    Surface::Nurbs(
+        NurbsSurface::new(
+            3,
+            1,
+            vec![0.0, 0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            7,
+            2,
+            ctrl,
+            vec![1.0; 14],
+        )
+        .unwrap(),
+    )
+}
+
+/// The bottom of a spar in that wing, as `crates/engine/tests/
+/// shallow_crossing.rs` makes it by commands: a plane `lift` above the
+/// root's lowest point at 202 along the span and rising `slope` along
+/// it, with the box of the face on it (13.94 wide, the span long) where
+/// it meets the skin's own, grown as a boolean grows it.
+fn spar_bottom(skin: &Surface, lift: f64, slope: f64, span: f64, k: f64) -> (Surface, Bbox3) {
+    let low = Vec3::new(43.03, -3.0 + lift - slope * 202.0, 0.0) * k;
+    let rise = (1.0 + slope * slope).sqrt();
+    let along = Vec3::new(0.0, slope / rise, 1.0 / rise);
+    let down = Vec3::new(0.0, -1.0 / rise, slope / rise);
+    let face = Bbox3::from_points([
+        low,
+        low + Vec3::new(13.94 * k, 0.0, 0.0),
+        low + along * (span * k),
+        low + along * (span * k) + Vec3::new(13.94 * k, 0.0, 0.0),
+    ]);
+    let Surface::Nurbs(spline) = skin else {
+        panic!("the skin is a spline");
+    };
+    let hull = Bbox3::from_points(spline.control_points().iter().copied());
+    let ((alo, ahi), (blo, bhi)) = (face.corners().unwrap(), hull.corners().unwrap());
+    let room = 16.0 * 0.01 * k + 0.013 * face.diagonal().max(hull.diagonal());
+    let pad = Vec3::new(room, room, room);
+    let within = Bbox3::from_points([alo.max(blo) - pad, ahi.min(bhi) + pad]);
+    (plane(Frame::new(low, down, Vec3::X).unwrap()), within)
+}
+
+/// The curves in which the spar's bottom meets the skin, held to the
+/// skin's own numbers: every point of them has a change of the sign of
+/// its distance to the plane within the tolerance of it along the skin,
+/// and every place where the skin's sections cross the plane (found by
+/// halving along each section, without the marcher) is on a curve.
+fn check_skin(taper: f64, lift: f64, slope: f64, k: f64) -> Result<usize, String> {
+    let span = 1000.0;
+    let tol = tolerance(0.01 * k);
+    let skin = skin(taper, span, k);
+    let (bottom, within) = spar_bottom(&skin, lift, slope, span, k);
+    let Surface::Plane(flat) = &bottom else {
+        panic!("the bottom is a plane");
+    };
+    let (origin, normal) = (flat.frame().origin(), flat.frame().z());
+    let off = |u: f64, v: f64| (skin.eval(u, v) - origin).dot(normal);
+    let meeting = match meet_surfaces(&skin, &bottom, &within, &tol) {
+        Ok(SurfaceMeeting::Meets(m)) => m,
+        Ok(other) => return Err(format!("no curve: {other:?}")),
+        Err(e) => return Err(format!("refused: {e}")),
+    };
+    let mut lines = Vec::new();
+    for curve in &meeting.curves {
+        if curve.tangent || !(curve.deviation <= tol.linear) {
+            return Err(format!(
+                "tangent {}, deviation {}",
+                curve.tangent, curve.deviation
+            ));
+        }
+        let points = along(curve);
+        for (n, p) in points.iter().enumerate() {
+            if !((*p - origin).dot(normal).abs() <= tol.linear) {
+                return Err(format!("point {n} is off the plane"));
+            }
+            let (u, v) = skin.project(*p).unwrap();
+            if !(skin.eval(u, v).distance(*p) <= tol.linear) {
+                return Err(format!("point {n} is off the skin"));
+            }
+            // The crossing itself within the tolerance along the skin:
+            // the distance to the plane changes sign that near, across
+            // or along.
+            let (_, su, sv) = skin.derivatives(u, v);
+            let (wu, wv) = (tol.linear / su.length(), tol.linear / sv.length());
+            let near = [
+                off(u, v),
+                off((u - wu).max(0.0), v),
+                off((u + wu).min(1.0), v),
+                off(u, (v - wv).max(0.0)),
+                off(u, (v + wv).min(1.0)),
+            ];
+            let least = near.iter().copied().fold(f64::INFINITY, f64::min);
+            let most = near.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            if !(least <= 0.0 && most >= 0.0) {
+                return Err(format!(
+                    "point {n} of {} at u {u}, v {v} is not within the tolerance of the crossing: the skin is {least:e} to {most:e} from the plane about it",
+                    points.len()
+                ));
+            }
+        }
+        lines.push(points);
+    }
+    // Where the sections cross the plane, in the box.
+    let mut crossings = 0;
+    for j in 1..100 {
+        let v = f64::from(j) / 100.0;
+        let mut before = (0.0, off(0.0, v));
+        for i in 1..=1000 {
+            let here = (f64::from(i) / 1000.0, off(f64::from(i) / 1000.0, v));
+            if (before.1 < 0.0) != (here.1 < 0.0) {
+                let (mut lo, mut hi) = (before, here);
+                for _ in 0..60 {
+                    let mid = 0.5 * (lo.0 + hi.0);
+                    let at = (mid, off(mid, v));
+                    if (at.1 < 0.0) == (lo.1 < 0.0) {
+                        lo = at;
+                    } else {
+                        hi = at;
+                    }
+                }
+                let p = skin.eval(lo.0, v);
+                if within.contains(p, -tol.linear) {
+                    crossings += 1;
+                    let gap = lines
+                        .iter()
+                        .map(|points| off_polyline(points, p))
+                        .fold(f64::INFINITY, f64::min);
+                    if !(gap <= tol.linear) {
+                        return Err(format!(
+                            "the crossing at u {}, v {v} is {:.3} tolerances from every curve",
+                            lo.0,
+                            gap / tol.linear
+                        ));
+                    }
+                }
+            }
+            before = here;
+        }
+    }
+    if crossings < 100 {
+        return Err(format!(
+            "only {crossings} crossings found to hold the curves to"
+        ));
+    }
+    Ok(lines.iter().map(Vec::len).sum::<usize>() / 4)
+}
+
+/// The spar's bottom along the skin's lowest line, rising off it at `d`
+/// through it `z0` from the root (the settings of the engine's test, of
+/// which eight stalled), and 0.02 inside it rising 0.003 (which could not
+/// be fitted): the plane crosses the skin in a hairpin about the lowest
+/// line and, further along the span, swings across each shoulder of the
+/// section in a few millimetres, where a step of the march passes over
+/// the swing. Every curve on the crossing, every crossing on a curve, at
+/// three scales.
+#[test]
+fn the_bottom_of_a_spar_meets_the_lofted_skin_it_all_but_lies_in() {
+    let span = 1000.0;
+    let mut settings: Vec<(f64, f64, f64)> = [
+        (0.7, 1e-4, 0.3),
+        (0.7, 1e-4, 1.1),
+        (0.7, 1e-4, 5.0),
+        (0.7, 1e-4, 30.0),
+        (0.7, 3.3e-5, 30.0),
+        (0.7, 3e-6, 1.1),
+        (1.0, 1e-4, 1.1),
+        (1.0, 1e-4, 30.0),
+        (0.7, 3.3e-5, 1.1),
+        (1.0, 3.3e-5, 1.1),
+    ]
+    .into_iter()
+    .map(|(taper, d, z0): (f64, f64, f64)| {
+        let slope = 3.0 * (1.0 - taper) / span + d;
+        (taper, slope * 202.0 - d * z0, slope)
+    })
+    .collect();
+    settings.extend([(0.7, 0.02, 0.003), (0.9, 0.02, 0.003)]);
+    let clock = std::time::Instant::now();
+    let (mut failed, mut spans) = (Vec::new(), 0);
+    for k in [1e-3, 1.0, 1e3] {
+        for &(taper, lift, slope) in &settings {
+            match check_skin(taper, lift, slope, k) {
+                Ok(n) => spans += n,
+                Err(why) => failed.push(format!(
+                    "scale {k}, taper {taper}, lift {lift}, slope {slope}: {why}"
+                )),
+            }
+        }
+    }
+    eprintln!(
+        "{} pairs in {:.1} s, {} failed; {spans} spans",
+        3 * settings.len(),
+        clock.elapsed().as_secs_f64(),
+        failed.len()
+    );
+    assert!(
+        failed.is_empty(),
+        "{} of {} pairs:\n{}",
+        failed.len(),
+        3 * settings.len(),
+        failed.join("\n")
+    );
 }

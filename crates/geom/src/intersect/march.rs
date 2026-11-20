@@ -2315,8 +2315,19 @@ impl Marcher {
             // not, such as once around a closed curve smaller than the
             // step, back to just past where it began (the tangent there
             // is the same, so the turn does not show it).
+            // And it ends on the curve: a point within `on` of the field
+            // that could not be brought as near as it is held where the
+            // surfaces cross at a shallow angle ([`Marcher::held`]) is
+            // anywhere across the band about the curve (past the turn of
+            // a hairpin there is no curve to come onto): a shorter step
+            // lands where there is.
+            let on_curve = e.f.abs() <= self.held(&e);
             let Some(new) = new.filter(|_| {
-                step.dot(cur.t) > 0.0 && len >= 0.5 * h && len <= 2.0 * h && turn >= cos_turn
+                step.dot(cur.t) > 0.0
+                    && len >= 0.5 * h
+                    && len <= 2.0 * h
+                    && turn >= cos_turn
+                    && on_curve
             }) else {
                 // Off the edge of the other surface the field has a crease
                 // and no tangent: that is an end, not a stall.
@@ -2334,7 +2345,7 @@ impl Marcher {
                         // predicted from the derivatives on one side goes
                         // as far off however short it is. The parameter
                         // step is then scaled to the length it went.
-                        let ahead = step.dot(cur.t) > 0.0 && turn >= cos_turn;
+                        let ahead = step.dot(cur.t) > 0.0 && turn >= cos_turn && on_curve;
                         let Some(new) = ahead
                             .then(|| self.rescaled(&cur, h, len, sign, cos_turn))
                             .flatten()
@@ -2889,6 +2900,73 @@ impl Marcher {
         })
     }
 
+    /// A point of the branch between `a` and `b` found as the march finds
+    /// its next point, where Newton from between them finds none
+    /// ([`Marcher::between`]): a step from `a` along the branch, or from
+    /// `b` back along it where none from `a` lands.
+    ///
+    /// A step of the march is held at its end only, so it can pass over
+    /// a stretch where the curve swings aside and back (the surfaces
+    /// nearly tangent over a strip the curve crosses: a plane at the
+    /// height of a shoulder of a lofted skin) and land beyond it heading
+    /// as before. The fit then asks for a point between the two, and the
+    /// middle of their parameters lies in that strip, where `f` has
+    /// almost no slope: Newton from it does not settle, or settles on
+    /// another branch. A step from either end follows the curve into the
+    /// stretch as far as the turn of its tangent lets it, and the spans
+    /// it leaves are refined in their turn.
+    fn stepped_between(&mut self, a: &Pt, b: &Pt) -> Option<Pt> {
+        let chord = a.p.distance(b.p);
+        self.step_from(a, chord)
+            .or_else(|| self.step_from(&b.reversed(), chord).map(Pt::reversed))
+    }
+
+    /// The point a step of the march from `from` lands on, the step a
+    /// quarter of `chord` at first and halved until it lands as a step
+    /// must (ahead, about as far as it was asked, the tangent turned no
+    /// more than a step may, on the curve, on the field's surface and in
+    /// the chart). A step of a quarter goes no further than half the
+    /// chord, so the point is short of the chord's other end along the
+    /// branch.
+    fn step_from(&mut self, from: &Pt, chord: f64) -> Option<Pt> {
+        if from.du == 0.0 && from.dv == 0.0 {
+            return None;
+        }
+        let cos_turn = MAX_TURN.pcos();
+        let mut h = 0.25 * chord;
+        for _ in 0..RESCALES {
+            if !(h >= self.hmin) {
+                break;
+            }
+            let landed = self
+                .correct(from.u + h * from.du, from.v + h * from.dv)
+                .filter(|(e, u, v)| {
+                    e.f.abs() <= self.held(e) && e.dist <= self.cut && self.inside(*u, *v)
+                })
+                .and_then(|(e, u, v)| {
+                    let step = e.p - from.p;
+                    let len = step.length();
+                    let new = Self::point(&e, u, v, 1.0)?;
+                    // Travelling the way `from` does.
+                    let new = if new.t.dot(from.t) < 0.0 {
+                        new.reversed()
+                    } else {
+                        new
+                    };
+                    (step.dot(from.t) > 0.0
+                        && len >= 0.5 * h
+                        && len <= 2.0 * h
+                        && new.t.dot(from.t) >= cos_turn)
+                        .then_some(new)
+                });
+            if landed.is_some() {
+                return landed;
+            }
+            h *= 0.5;
+        }
+        None
+    }
+
     /// The point of the branch between `a` and `b` that Newton finds from
     /// `(u, v)`, if it is between them.
     fn between_from(&mut self, a: &Pt, b: &Pt, u: f64, v: f64) -> Option<Pt> {
@@ -3099,6 +3177,7 @@ impl Marcher {
                 self.straight(&a, &b)
             } else {
                 self.between(&a, &b)
+                    .or_else(|| self.stepped_between(&a, &b))
             };
             let middle = middle.ok_or(give_up)?;
             self.evals += 1;
