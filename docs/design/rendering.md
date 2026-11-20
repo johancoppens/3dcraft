@@ -2446,3 +2446,53 @@ outline 10.7 ms; the direct path's 28 833 lines made again for a new outline 0.7
 `HOVER_QUICK_MS` and under the round's 16 ms: on such a model the outline waits until the pointer rests
 80 ms; on a model whose picks cost less it follows the pointer, at most 30 times a second. The cost is the
 pick's own (the same a click pays), not the hover's.
+
+### A crash inside the OpenGL driver while the tests draw side by side (2026-11-20)
+
+`crates/gpu: test studio_cut` died with SIGSEGV in Gate 44632529601 (2026-11-19, 22.1 s into the binary, one of
+its six tests done). A second gate on the same commit passed, and so did every other: it is the one test binary
+killed by a signal in about 340 gates since 2026-10-26.
+
+*The core dump.* The build server keeps a core of every crash (`core_pattern` pipes it to systemd-coredump, with
+no size limit) and the stack traces of the threads systemd unwound; `coredumpctl info <pid>` prints them (read
+here by a probe run on the build server, Check 44740645543). The thread that died was a driver thread of Mesa's
+radeonsi, the Radeon 8060S through OpenGL (Mesa 26.2.0-devel, a development snapshot, git d2a8d15):
+`si_shader_select` ← `si_update_shaders` ← `si_draw_vbo` ← `si_draw_rectangle` ← `util_blitter_clear` ←
+`gfx6_clear` ← `tc_batch_execute`, all in `libgallium`: a clear of a target that a GL context's threaded context
+had queued. At that moment a second radeonsi context's driver thread was flushing (`si_flush_all_queues`), the
+screen's shader compiler built a variant (`si_build_shader_variant` … `nir_opt_dead_write_vars`), and lavapipe's
+raster threads drew. No frame of ours or of wgpu is on the thread that died, and the crate has no `unsafe`. Why
+there were several contexts: libtest runs a binary's tests side by side on threads of their own, and every parity
+test opens a device on each adapter (`common::offscreens`, `devices::devices`), on the build server RADV and
+lavapipe through Vulkan and radeonsi through OpenGL, each wgpu instance with an OpenGL context of its own; the six
+tests of `studio_cut` make up to six OpenGL contexts on one radeonsi screen at once, on six threads.
+
+*Not reproduced.* The binary alone twenty times (Check 44636379594); then 24 runs under a full CPU load (a busy
+thread per hardware thread, load 108 to 163, every other round two binaries at once), and eight child processes
+of 45 s in which six threads each made a device on every adapter, drew a studio picture cut open and seen
+through, and dropped it, beside two threads that kept theirs and drew (two of the eight on Vulkan alone, two on
+OpenGL alone; Check 44740645543); and the whole crate four times (Check 44744936373): no crash. A race of about
+one in some hundreds of gates is not pinned by a test that fails before a fix; the core says where it happens,
+not why.
+
+*A guard built, measured and not taken.* The tests of a GPU binary run one at a time (`cargo xtask` giving the GPU
+binaries `RUST_TEST_THREADS=1`), so that one OpenGL context draws at a time, with the GPU group placed in the
+queue by the sum of its binaries' times (branch `check/studio-cut-crash`, kept for the record). Measured on the
+build server, the two forms interleaved (Check 44744936373): the crate's 22 binaries took 114.6 and 114.0 s with
+each binary's tests side by side and 273 and 238 s one test at a time, about 2.2 times as long. Not taken: one
+crash in about 340 gates costs one re-run, while the guard would cost every gate the GPU group at 2.2 times its
+time and take away the one place where our device code is exercised from several threads at once; the crash site
+is the driver's (radeonsi of a Mesa development snapshot), with no frame of ours on the dying thread, and the
+window draws on one device (eframe's; a second OpenGL context drawing beside it would take a window whose direct
+path cannot run on a machine without a Vulkan driver). So nothing changed, in the window or in the tests, and the
+release notes have no line. What makes a recurrence cheap is recognising it at once.
+
+*How to recognise it next time.* A GPU test binary killed by signal 11 on the build server, and
+`coredumpctl info <pid>` there (the pid is in `coredumpctl list`) showing the dying thread in `libgallium`'s
+`si_*` frames under `tc_batch_execute`, with no frame of ours: this crash; run the gate again. Anything else is a
+new crash to investigate, not this one: a frame of ours or of wgpu on the dying thread, another adapter or
+driver, a machine other than the build server.
+
+*What would settle it.* Mesa's debug symbols for that build (what inside `si_shader_select` was not there, and
+whether the race is between contexts of one screen or within one context against the compiler queue: Mesa's to
+mend), or the build server's Mesa moving off the development snapshot.
