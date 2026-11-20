@@ -826,11 +826,20 @@ fn wheel(k: f64, y: f64, reach: f64, vertex_down: bool) -> Result<Body, String> 
 /// the line runs on the top face from that point both ways. The wheel's
 /// wall and the top's plane only touch along the line, and the line leaves
 /// the top's border tangentially: its ends, where the wheel's rims touch
-/// the level, are 1.4 or 3 tolerances off the arc. (The repair first left
-/// such a stretch out by a branch of its own, and after its review reads
-/// it as any other, at the seven places: no test of either reached it.)
-/// Whatever the rims' vertices: the two touch, they share no volume, and
-/// their booleans are the two bodies and nothing. A refusal is allowed.
+/// the level, are 1.4 or 3 tolerances off the arc. Whatever the rims'
+/// vertices: the two touch, they share no volume, and their booleans are
+/// the two bodies and nothing. A refusal is allowed.
+///
+/// As measured (Check 44803365823): with the ends 3 tolerances off every
+/// pair is a touch along an edge (beside the bump as well: the wheel's
+/// rims are within the tolerance of the top for some ten tolerances'
+/// length) and its booleans are built; with the ends 1.4 off every pair
+/// is refused, two points closer together than the tolerance can tell
+/// apart. So this does not reach what it was made for, a stretch of a
+/// curve along which the surfaces only touch read by its end (the repair
+/// first left such a stretch out by a branch of its own, and after its
+/// review reads it as any other): no test does, and no pair that does was
+/// found.
 #[test]
 fn a_wheel_on_a_line_that_leaves_a_border_touches() {
     let mut tally = Tally::default();
