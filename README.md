@@ -71,6 +71,8 @@ owed, and it is being made better step by step.
   **[assemblies](https://github.com/johancoppens/3dcraft-assemblies-examples)**, all in the website's
   [galleries](https://3dcraft.dev/examples/).
 - **What changed:** [`CHANGELOG.md`](CHANGELOG.md).
+- **A question?** Ask it in [Discussions, Q&A](https://github.com/johancoppens/3dcraft/discussions/categories/q-a);
+  a problem, a refusal included, goes in an [issue](https://github.com/johancoppens/3dcraft/issues/new/choose).
 
 ## What it does
 
