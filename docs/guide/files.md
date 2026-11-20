@@ -105,15 +105,21 @@ is the exact model, 3MF the one to print. The export dialog does not offer it ye
 ```json
 [
  ["file.export", {"path": "part.glb"}],
- ["file.export", {"path": "part-fine.glb", "quality": "fine"}]
+ ["file.export", {"path": "part-fine.glb", "quality": "fine"}],
+ ["file.export", {"path": "part-web.glb", "primitives": "looks"}]
 ]
 ```
 
 `quality`, `tolerance`, `angle` and `bodies` work as for the other meshes. Each primitive of a body's
 mesh holds the triangles of one face (or of the pieces of one face a cut made) and says the face's name
-in its `extras`, so a program can tell which triangles are which face. What glTF cannot show (brushing
-direction, subsurface scattering, solid textures, the refraction through thick glass) is left out and
-listed in the result's `leftOut`; the colour stays. The details: [`file-formats.md`](../file-formats.md#gltf-glb).
+in its `extras`, so a program can tell which triangles are which face. For a page shown on phones, take
+`"primitives": "looks"` (`--primitives looks` on the command line): a primitive per colour of each body
+instead of one per face, so a viewer draws a body of a thousand faces in a few calls and the file is
+smaller; the triangles are the same, but the faces' names are not in it. What glTF cannot show
+(brushing direction, subsurface scattering, solid textures, the refraction through thick glass) is
+left out and listed in the result's `leftOut`; the colour stays. The file says the document's unit and
+how its axes turn (`asset.extras`), and the result counts the points a model far from the origin loses
+in the file's 32-bit numbers (`mergedPoints`). The details: [`file-formats.md`](../file-formats.md#gltf-glb).
 
 ## Other CAD programs: STEP
 

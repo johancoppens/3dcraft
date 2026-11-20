@@ -455,7 +455,7 @@ fn metres_and_y_up_in_every_unit() {
 /// result says so.
 #[test]
 fn a_primitive_per_look_has_the_same_triangles() {
-    let dir = workdir("gltf-export", "looks");
+    let dir = workdir("gltf-export", "per-look");
     let mut s = session_in(&dir);
     run(&mut s, "file.new", json!({"units": "mm"}));
     run(
