@@ -27,15 +27,16 @@ pub const IMPORT_EXTENSIONS: [&str; 12] = [
     "step", "stp", "STEP", "STP", "FCStd", "fcstd", "FCSTD", "brep", "brp", "BREP", "BRP", "Fcstd",
 ];
 
-/// The formats the export dialog offers, of those `file.export` writes (not
-/// glTF yet, `.glb`: docs/roadmap.md, M10 › Open): a name and its
+/// The formats the export dialog offers, one for each kind of file name
+/// `file.export` writes (glTF's `.glb` since 2026-11-20): a name and its
 /// extensions. The format follows the extension of the file the person
 /// names.
-pub const EXPORT_FORMATS: [(&str, &[&str]); 6] = [
+pub const EXPORT_FORMATS: [(&str, &[&str]); 7] = [
     ("STEP", &["step", "stp"]),
     ("STL", &["stl"]),
     ("3MF", &["3mf"]),
     ("OBJ", &["obj"]),
+    ("glTF", &["glb"]),
     ("DXF", &["dxf"]),
     ("SVG", &["svg"]),
 ];
@@ -52,6 +53,9 @@ pub enum ExportFormat {
     ThreeMf,
     #[serde(rename = "obj")]
     Obj,
+    /// glTF 2.0 binary, `.glb`: a mesh with its looks, for showing a model.
+    #[serde(rename = "glb")]
+    Glb,
     #[serde(rename = "dxf")]
     Dxf,
     #[serde(rename = "svg")]
@@ -60,11 +64,12 @@ pub enum ExportFormat {
 
 impl ExportFormat {
     /// Every format, in the order the dialog offers them.
-    pub const ALL: [ExportFormat; 6] = [
+    pub const ALL: [ExportFormat; 7] = [
         Self::Step,
         Self::Stl,
         Self::ThreeMf,
         Self::Obj,
+        Self::Glb,
         Self::Dxf,
         Self::Svg,
     ];
@@ -76,8 +81,9 @@ impl ExportFormat {
             Self::Stl => 1,
             Self::ThreeMf => 2,
             Self::Obj => 3,
-            Self::Dxf => 4,
-            Self::Svg => 5,
+            Self::Glb => 4,
+            Self::Dxf => 5,
+            Self::Svg => 6,
         }
     }
 
@@ -117,14 +123,14 @@ impl ExportFormat {
     /// What a file of this format holds.
     pub fn kind(self) -> ExportKind {
         match self {
-            Self::Step | Self::Stl | Self::ThreeMf | Self::Obj => ExportKind::Bodies,
+            Self::Step | Self::Stl | Self::ThreeMf | Self::Obj | Self::Glb => ExportKind::Bodies,
             Self::Dxf | Self::Svg => ExportKind::Outline,
         }
     }
 
     /// A mesh: its quality applies.
     pub fn is_mesh(self) -> bool {
-        matches!(self, Self::Stl | Self::ThreeMf | Self::Obj)
+        matches!(self, Self::Stl | Self::ThreeMf | Self::Obj | Self::Glb)
     }
 
     /// The formats of a kind, in the dialog's order.
@@ -135,7 +141,8 @@ impl ExportFormat {
 
 /// `name` as a file of `format`: as it is when its extension is one of
 /// the format's (in any case); with another export format's extension,
-/// or one of 3DCraft's own (a document's, a Jig's, an assembly's),
+/// glTF's text form's (`.gltf`, which `file.export` does not write), or
+/// one of 3DCraft's own (a document's, a Jig's, an assembly's),
 /// replaced; and with the format's extension appended
 /// otherwise (`bracket.v2` → `bracket.v2.stl`). So a file is never named
 /// for another format than the bytes it holds. An empty name is
@@ -152,6 +159,7 @@ pub fn export_file_name(name: &str, format: ExportFormat) -> String {
         Some(extension) if format.extensions().contains(&extension.as_str()) => name.to_string(),
         Some(extension)
             if ExportFormat::from_extension(&extension).is_some()
+                || extension == "gltf"
                 || OPEN_EXTENSIONS.contains(&extension.as_str()) =>
         {
             // The extension's bytes are the name's last ones (lower case
@@ -294,7 +302,7 @@ pub fn suggested_export_name(
 /// What an export to a file of this name holds, by its extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExportKind {
-    /// Bodies: every body, or those selected (STEP, STL, 3MF, OBJ).
+    /// Bodies: every body, or those selected (STEP, STL, 3MF, OBJ, glTF).
     Bodies,
     /// The flat outline of faces or of a sketch, or with nothing selected
     /// the model as seen (DXF, SVG).
@@ -325,11 +333,7 @@ pub fn extension_of(name: &str) -> Option<String> {
 /// What an export to the file `name` holds; `None` for a name whose
 /// extension `file.export` does not write.
 pub fn export_kind(name: &str) -> Option<ExportKind> {
-    match extension_of(name)?.as_str() {
-        "step" | "stp" | "stl" | "3mf" | "obj" => Some(ExportKind::Bodies),
-        "dxf" | "svg" => Some(ExportKind::Outline),
-        _ => None,
-    }
+    ExportFormat::of_name(name).map(ExportFormat::kind)
 }
 
 /// A field of a command's result; null when it is not there.
@@ -501,6 +505,57 @@ impl ExportQuality {
             }
             Self::Normal => "Round to the eye and to a printer (10° per chord); the default",
             Self::Fine => "Smooth up close: four times finer, 5° per chord, a larger file",
+        }
+    }
+}
+
+/// How a glTF file groups each body's triangles, as the export dialog
+/// offers it (`file.export {primitives}`): the same triangles either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GltfPrimitives {
+    /// A group per name of the body's faces, the name in the file.
+    #[default]
+    Faces,
+    /// A group per look of the body, without the faces' names: far fewer
+    /// draw calls for a viewer, usually a smaller file.
+    Looks,
+}
+
+impl GltfPrimitives {
+    /// Both, the default first.
+    pub const ALL: [GltfPrimitives; 2] = [Self::Faces, Self::Looks];
+
+    /// What `file.export` calls it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Faces => "faces",
+            Self::Looks => "looks",
+        }
+    }
+
+    /// The default, which the window's state does not write.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// What the dialog calls it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Faces => "By face, named",
+            Self::Looks => "By colour, lighter",
+        }
+    }
+
+    /// What the dialog says of it under the choice.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::Faces => {
+                "A group of triangles per face, with the face's name: for a program that needs to know which face is which; the default"
+            }
+            Self::Looks => {
+                "A group per colour of each body, without the faces' names: far fewer draw calls and usually a smaller file, for a web page or a phone"
+            }
         }
     }
 }
@@ -734,8 +789,11 @@ pub const MAX_EXPORT_TEXT: usize = 200;
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ExportPlan {
     pub what: ExportWhat,
-    /// How finely a mesh follows the model (STL, 3MF, OBJ).
+    /// How finely a mesh follows the model (STL, 3MF, OBJ, glTF).
     pub quality: ExportQuality,
+    /// How a glTF file groups the triangles.
+    #[serde(default)]
+    pub primitives: GltfPrimitives,
     /// A drawing of the model as seen (the model to DXF or SVG).
     pub drawing: DrawingPlan,
     /// The sheet's width as typed (`600 mm`, `600` in the document's
@@ -997,7 +1055,8 @@ fn drawing_params(drawing: DrawingPlan, params: &mut Vec<(&'static str, Value)>)
 
 /// The parameters `file.export` is given besides `path` for an export
 /// to `name` (whose extension is the format) as `plan` says: the model,
-/// the selection's, a sheet or a pattern, and the quality of a mesh. An
+/// the selection's, a sheet or a pattern, the quality of a mesh and how a
+/// glTF file groups its triangles. An
 /// error when the format cannot hold what was chosen (a selection that
 /// does not fit, a pattern to a STEP file): never something else in its
 /// place. A name of no export format gets nothing: `file.export` refuses
@@ -1063,6 +1122,12 @@ pub fn export_params(
     }
     if format.is_mesh() {
         params.push(("quality", Value::String(plan.quality.name().to_string())));
+    }
+    if format == ExportFormat::Glb {
+        params.push((
+            "primitives",
+            Value::String(plan.primitives.name().to_string()),
+        ));
     }
     Ok(params)
 }
@@ -1297,6 +1362,118 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// glTF in the export dialog (2026-11-20): a mesh of bodies, offered
+    /// for the model and for bodies selected; its quality and how it
+    /// groups the triangles (`primitives`, faces by default) are passed,
+    /// and only to a `.glb` file, which `file.export` writes as asked.
+    #[test]
+    fn gltf_is_offered_as_a_mesh_with_its_grouping() {
+        let mut session = Session::new(craft3d_engine::Workspace::memory());
+        guarded(&mut session, "file.new", &json!({"units": "mm"})).unwrap();
+        guarded(&mut session, "feature.block", &json!({"size": [10, 20, 5]})).unwrap();
+        guarded(
+            &mut session,
+            "feature.cylinder",
+            &json!({"radius": 3, "height": 5, "position": [30, 0, 0]}),
+        )
+        .unwrap();
+        let glb = ExportFormat::Glb;
+        assert_eq!((glb.label(), glb.extension()), ("glTF", "glb"));
+        assert_eq!(glb.kind(), ExportKind::Bodies);
+        assert!(glb.is_mesh() && is_mesh("Part.GLB"));
+        assert_eq!(export_kind("a.GLB"), Some(ExportKind::Bodies));
+        assert_eq!(export_kind("a.gltf"), None, "file.export refuses it");
+        assert_eq!(serde_json::to_value(glb).unwrap(), json!("glb"));
+        assert_eq!(
+            serde_json::to_value(GltfPrimitives::Looks).unwrap(),
+            json!("looks")
+        );
+        assert_eq!(GltfPrimitives::default(), GltfPrimitives::Faces);
+        let choices = export_choices(&mut session);
+        assert!(choices.formats(&ExportWhat::Model).contains(&glb));
+        // The default: a group per face, at the normal quality.
+        assert_eq!(
+            export_params(&mut session, "a.glb", &ExportPlan::default()).unwrap(),
+            vec![("quality", json!("normal")), ("primitives", json!("faces"))]
+        );
+        let lighter = ExportPlan {
+            quality: ExportQuality::Coarse,
+            primitives: GltfPrimitives::Looks,
+            ..ExportPlan::default()
+        };
+        let params = export_params(&mut session, "a.glb", &lighter).unwrap();
+        assert_eq!(
+            params,
+            vec![("quality", json!("coarse")), ("primitives", json!("looks"))]
+        );
+        // Not to another mesh: `file.export` refuses `primitives` there.
+        assert_eq!(
+            export_params(&mut session, "a.stl", &lighter).unwrap(),
+            vec![("quality", json!("coarse"))]
+        );
+        assert!(
+            export_params(&mut session, "a.step", &lighter)
+                .unwrap()
+                .is_empty()
+        );
+        let mut call = json!({"path": "a.glb"});
+        for (key, value) in params {
+            call[key] = value;
+        }
+        let written = guarded(&mut session, "file.export", &call).unwrap();
+        assert_eq!(
+            (
+                &written["bodies"],
+                &written["primitives"],
+                &written["faceNames"]
+            ),
+            (&json!(2), &json!("looks"), &json!(false)),
+            "{written}"
+        );
+        let bytes = session.take_file("a.glb").unwrap();
+        assert_eq!(bytes.get(..4), Some(&b"glTF"[..]), "a binary glTF");
+        // One body of two selected: that body, as for the other meshes.
+        guarded(
+            &mut session,
+            "select.set",
+            &json!({"items": [{"kind": "body", "feature": "F2"}]}),
+        )
+        .unwrap();
+        let choices = export_choices(&mut session);
+        assert!(choices.formats(&ExportWhat::Selection).contains(&glb));
+        let selected = ExportPlan {
+            what: ExportWhat::Selection,
+            ..ExportPlan::default()
+        };
+        let params = export_params(&mut session, "pin.glb", &selected).unwrap();
+        assert_eq!(
+            params,
+            vec![
+                ("bodies", json!([2])),
+                ("quality", json!("normal")),
+                ("primitives", json!("faces")),
+            ]
+        );
+        let mut call = json!({"path": "pin.glb"});
+        for (key, value) in params {
+            call[key] = value;
+        }
+        let written = guarded(&mut session, "file.export", &call).unwrap();
+        assert_eq!(
+            (&written["bodies"], &written["faceNames"]),
+            (&json!(1), &json!(true)),
+            "{written}"
+        );
+        assert!(session.take_file("pin.glb").is_some());
+        // A sheet or a pattern is no file of bodies: refused for glTF too.
+        let sheet = ExportPlan {
+            what: ExportWhat::Set("Tops".into()),
+            ..ExportPlan::default()
+        };
+        let refused = export_params(&mut session, "a.glb", &sheet).unwrap_err();
+        assert!(refused.contains("a .glb file holds bodies"), "{refused}");
     }
 
     /// The export dialog offers the document's named sets that may hold
@@ -1590,6 +1767,14 @@ mod tests {
             (".stl", ExportFormat::Dxf, ".stl.dxf"),
             ("a.b.dxf", ExportFormat::Svg, "a.b.svg"),
             ("ünï.cöde", ExportFormat::Stl, "ünï.cöde.stl"),
+            // glTF (2026-11-20): its binary form, and the text form's
+            // name, which `file.export` refuses, made the binary's.
+            ("scene", ExportFormat::Glb, "scene.glb"),
+            ("Scene.GLB", ExportFormat::Glb, "Scene.GLB"),
+            ("part.stl", ExportFormat::Glb, "part.glb"),
+            ("part.glb", ExportFormat::ThreeMf, "part.3mf"),
+            ("scene.gltf", ExportFormat::Glb, "scene.glb"),
+            ("scene.GLTF", ExportFormat::Stl, "scene.stl"),
         ];
         for (name, format, wanted) in cases {
             let named = export_file_name(name, format);

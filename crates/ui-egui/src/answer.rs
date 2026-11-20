@@ -99,8 +99,9 @@ fn verb(label: &str) -> Option<&'static str> {
 /// What went wrong in an answer that is not an error (a feature stored
 /// that fails, a check that found problems): its `status` when that is
 /// not `ok`, its `error`, `ok: false`, and how many `failed`, `errors`,
-/// `problems` and `warnings` it has (a list or a count); nothing when all
-/// is well.
+/// `problems` and `warnings` it has (a list or a count); what an export
+/// left out (bodies; of a glTF file's looks, the layers); nothing when
+/// all is well.
 fn trouble(result: &Value) -> String {
     let mut out = String::new();
     let status = result
@@ -158,7 +159,36 @@ fn trouble(result: &Value) -> String {
             out.push_str(&format!(" · {n} {said} {bodies} left out"));
         }
     }
+    // What of the looks a glTF file cannot hold (`leftOut`, a list of
+    // `{layer, bodies}`; a feature's own `leftOut` names faces and edges
+    // instead, and is not said here).
+    let layers: Vec<&str> = result
+        .get("leftOut")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("layer").and_then(Value::as_str))
+                .map(look_layer)
+                .collect()
+        })
+        .unwrap_or_default();
+    if !layers.is_empty() {
+        out.push_str(&format!(" · left out of the looks: {}", layers.join(", ")));
+    }
     out
+}
+
+/// A layer of a look a glTF file cannot hold, in a person's words (the
+/// guide's): `anisotropy` is the brushing direction.
+fn look_layer(layer: &str) -> &str {
+    match layer {
+        "anisotropy" => "brushing direction",
+        "subsurface" => "subsurface scattering",
+        "pattern" => "solid texture",
+        "volume" => "refraction through thick glass",
+        other => other,
+    }
 }
 
 /// What an answer is about: its `name`, the file of its `path`, or the
@@ -228,6 +258,31 @@ mod tests {
             summary("file.export", &result),
             "Exported part · 2 hidden bodies left out · 1 switched off body left out"
         );
+    }
+
+    /// A glTF export (2026-11-20) says what an STL export says, and the
+    /// layers of the looks the file cannot hold, in a person's words; its
+    /// points that fall together in 32 bits are its warnings, counted as
+    /// for STL. A feature's `leftOut` (faces and edges) is not said so.
+    #[test]
+    fn what_a_gltf_file_leaves_out_of_the_looks_is_said() {
+        let plain = json!({"path": "/m/bracket.glb", "bodies": 1, "primitives": "faces",
+            "leftOut": []});
+        assert_eq!(summary("file.export", &plain), "Exported bracket");
+        let result = json!({"path": "/m/lamp.glb", "bodies": 3,
+            "leftOut": [{"layer": "anisotropy", "bodies": ["Shade"]},
+                        {"layer": "volume", "bodies": ["Bulb"]},
+                        {"layer": "sheen", "bodies": ["Cord"]}],
+            "mergedPoints": 4, "foldedTriangles": 4,
+            "warnings": ["Base: in the file's 32-bit floats, in metres, 4 of its points fall on others"],
+            "hiddenLeftOut": {"count": 1, "bodies": ["Gauge"]}});
+        assert_eq!(
+            summary("file.export", &result),
+            "Exported lamp · 1 warning · 1 hidden body left out · left out of the looks: brushing direction, refraction through thick glass, sheen"
+        );
+        let feature =
+            json!({"name": "Fillet", "leftOut": [{"name": "F1:edge(3)", "why": "F2 is off"}]});
+        assert_eq!(summary("feature.fillet", &feature), "Fillet");
     }
 
     #[test]

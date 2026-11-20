@@ -13,8 +13,8 @@
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::Shell;
 use craft3d_ui_egui::files::{
-    DrawingPlan, DrawingView, ExportFormat, ExportPlan, ExportQuality, ExportWhat, export_choices,
-    export_params,
+    DrawingPlan, DrawingView, ExportFormat, ExportPlan, ExportQuality, ExportWhat, GltfPrimitives,
+    export_choices, export_params,
 };
 use craft3d_ui_egui::shell::ExportRequest;
 use egui::{Event, Pos2, vec2};
@@ -746,7 +746,9 @@ fn every_export_kind_is_named_for_its_format_and_exports() {
             exported += 1;
         }
     }
-    assert_eq!(exported, 6 + 6 * 2);
+    // Seven formats for the model since glTF joined the dialog
+    // (2026-11-20; six before), two for each sheet or pattern.
+    assert_eq!(exported, 7 + 6 * 2);
     // Where the dialog names the file (the browser without file
     // dialogs): a name without an extension gets the format's, one with
     // another format's is corrected, any other extension is kept.
@@ -832,8 +834,9 @@ fn the_export_dialog_is_driven_by_ui_set_and_read_by_ui_get() {
     assert_eq!(
         got["export"]["whats"],
         json!([
+            // glTF since 2026-11-20.
             {"what": "model", "label": "The model",
-             "formats": ["step", "stl", "3mf", "obj", "dxf", "svg"]},
+             "formats": ["step", "stl", "3mf", "obj", "glb", "dxf", "svg"]},
             {"what": {"sheetMetal": "Part"}, "label": "Flat pattern of Part",
              "formats": ["dxf", "svg"]},
         ])
@@ -1001,4 +1004,110 @@ fn the_export_of_the_model_says_which_hidden_bodies_it_leaves_out() {
     assert_eq!(result["hiddenLeftOut"]["count"], 1, "{result}");
     let said = craft3d_ui_egui::answer::summary("file.export", &result);
     assert!(said.ends_with(" · 1 hidden body left out"), "{said}");
+}
+
+/// glTF in the export dialog (2026-11-20): offered for the model with the
+/// other meshes, drawn with its quality and how it groups its triangles
+/// (a group per face with its name by default, or per colour, lighter),
+/// answered with both, written as asked, and kept for the next export
+/// once written; `ui.set {"export": {"primitives": …}}` chooses the
+/// grouping, open or closed, and refuses anything else with nothing
+/// changed.
+#[test]
+fn gltf_is_offered_with_its_grouping_and_kept_once_written() {
+    let ctx = egui::Context::default();
+    let mut session = Session::new(Workspace::memory());
+    let mut shell = Shell::new();
+    fn call(
+        shell: &mut Shell,
+        session: &mut Session,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
+        shell.handle_method(session, method, Some(&params)).unwrap()
+    }
+    session
+        .execute("file.new", &json!({"units": "mm"}))
+        .unwrap();
+    session
+        .execute(
+            "feature.block",
+            &json!({"name": "Plate", "size": [40, 20, 10]}),
+        )
+        .unwrap();
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    shell.open_export(&mut session).unwrap();
+    let offered = shell
+        .export_dialog()
+        .unwrap()
+        .choices
+        .formats(&ExportWhat::Model);
+    assert!(offered.contains(&ExportFormat::Glb), "{offered:?}");
+    shell.set_export_format(ExportFormat::Glb).unwrap();
+    assert_eq!(shell.state.export.name, "untitled.glb");
+    assert_eq!(shell.export_report()["file"], "untitled.glb");
+    assert_eq!(shell.state.export.primitives, GltfPrimitives::Faces);
+    // Drawn with its options, the grouping among them.
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    assert!(shell.export_dialog().is_some());
+    // The lighter grouping, chosen over the control channel as a click
+    // on it chooses it; anything else is refused and nothing changes.
+    let set = call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"export": {"primitives": "looks", "quality": "coarse"}}),
+    )
+    .unwrap();
+    assert_eq!(set["state"]["export"]["primitives"], "looks");
+    let before = shell.state.clone();
+    for refused in [
+        json!({"export": {"primitives": "lighter"}}),
+        json!({"export": {"primitives": 2}}),
+    ] {
+        let error = call(&mut shell, &mut session, "ui.set", refused.clone()).unwrap_err();
+        assert!(error.starts_with("ui.set"), "{refused}: {error}");
+        assert_eq!(shell.state, before, "{refused}");
+        assert!(shell.export_dialog().is_some(), "{refused}");
+    }
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    frame(&ctx, &mut shell, &mut session, key(egui::Key::Enter));
+    let request = shell.take_export_answer().unwrap();
+    assert_eq!(request.name, "untitled.glb");
+    assert_eq!(request.format, ExportFormat::Glb);
+    assert_eq!(request.plan.primitives, GltfPrimitives::Looks);
+    assert_eq!(request.plan.quality, ExportQuality::Coarse);
+    // Not written yet: the next dialog is as before.
+    shell.open_export(&mut session).unwrap();
+    assert_eq!(shell.state.export.format, ExportFormat::Step);
+    assert_eq!(shell.state.export.primitives, GltfPrimitives::Faces);
+    shell.answer_export(false);
+    let bytes = write(&mut session, &request);
+    assert_eq!(bytes.get(..4), Some(&b"glTF"[..]), "a binary glTF");
+    shell.export_written(&request);
+    // Written: offered next time, the grouping with it.
+    shell.open_export(&mut session).unwrap();
+    assert_eq!(shell.state.export.format, ExportFormat::Glb);
+    assert_eq!(shell.state.export.primitives, GltfPrimitives::Looks);
+    frame(&ctx, &mut shell, &mut session, Vec::new());
+    frame(&ctx, &mut shell, &mut session, key(egui::Key::Escape));
+    assert!(shell.export_dialog().is_none());
+    // Chosen while it is closed: the next opening has it.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"export": {"primitives": "faces"}}),
+    )
+    .unwrap();
+    shell.open_export(&mut session).unwrap();
+    assert_eq!(shell.state.export.format, ExportFormat::Glb);
+    assert_eq!(shell.state.export.primitives, GltfPrimitives::Faces);
+    shell.answer_export(true);
+    let request = shell.take_export_answer().unwrap();
+    let params = export_params(&mut session, &request.name, &request.plan).unwrap();
+    assert_eq!(
+        params,
+        vec![("quality", json!("coarse")), ("primitives", json!("faces"))]
+    );
 }

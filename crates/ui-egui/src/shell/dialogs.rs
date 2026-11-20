@@ -14,8 +14,9 @@
 //!   format was picked in it): *What* goes into the file (the model, the
 //!   selection, a set's sheet, a part's flat pattern, a fold's crease
 //!   pattern, every part's flat patterns), the *Format*, only those that
-//!   hold that, and the options (a mesh's quality; a drawing's view,
-//!   projection and hidden lines; a sheet's width and gap). *Export…*
+//!   hold that, and the options (a mesh's quality; how a glTF file groups
+//!   its triangles; a drawing's view, projection and hidden lines; a
+//!   sheet's width and gap). *Export…*
 //!   then leaves the request to the host ([`Shell::take_export_answer`]):
 //!   the desktop asks where with the system's save dialog (that format's
 //!   filter only, the name proposed with its extension) and writes the
@@ -34,8 +35,8 @@
 use super::Shell;
 use crate::files::{
     DrawingView, ExportChoices, ExportFormat, ExportKind, ExportPlan, ExportQuality, ExportWhat,
-    MAX_EXPORT_TEXT, export_choices, export_file_name, plain_message, suggested_export_name,
-    what_hint,
+    GltfPrimitives, MAX_EXPORT_TEXT, export_choices, export_file_name, plain_message,
+    suggested_export_name, what_hint,
 };
 use crate::kit::{Button, Dialog, Glyph, Kit, Segment};
 use crate::theme::color;
@@ -560,6 +561,9 @@ impl Shell {
         if given("quality") {
             export.quality = wanted.quality;
         }
+        if given("primitives") {
+            export.primitives = wanted.primitives;
+        }
         if given("drawing") {
             export.drawing = wanted.drawing;
         }
@@ -898,7 +902,8 @@ fn hint(ui: &mut egui::Ui, kit: &Kit, indent: f32, text: &str) {
 }
 
 /// The options of what is chosen in the format chosen: a mesh's quality,
-/// a drawing's view, projection and hidden lines, a sheet's width and gap.
+/// how a glTF file groups its triangles, a drawing's view, projection and
+/// hidden lines, a sheet's width and gap.
 fn options_ui(ui: &mut egui::Ui, kit: &Kit, label: f32, export: &mut crate::state::ExportState) {
     if export.format.is_mesh() {
         row(ui, kit, "Quality", label, |ui| {
@@ -916,6 +921,25 @@ fn options_ui(ui: &mut egui::Ui, kit: &Kit, label: f32, export: &mut crate::stat
             }
         });
         hint(ui, kit, label, export.quality.hint());
+    }
+    // glTF: a group per face with its name (the default), or per colour,
+    // lighter for a viewer (`file.export {primitives}`).
+    if export.format == ExportFormat::Glb {
+        row(ui, kit, "Grouped", label, |ui| {
+            let segments: Vec<Segment<'_>> = GltfPrimitives::ALL
+                .iter()
+                .map(|p| Segment::Text(p.label()))
+                .collect();
+            let mut chosen = GltfPrimitives::ALL
+                .iter()
+                .position(|p| *p == export.primitives)
+                .unwrap_or(0);
+            kit.segmented(ui, &mut chosen, &segments);
+            if let Some(primitives) = GltfPrimitives::ALL.get(chosen) {
+                export.primitives = *primitives;
+            }
+        });
+        hint(ui, kit, label, export.primitives.hint());
     }
     if export.what == ExportWhat::Model && export.format.kind() == ExportKind::Outline {
         let drawing = &mut export.drawing;

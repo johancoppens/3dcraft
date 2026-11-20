@@ -2701,4 +2701,145 @@ mod tests {
         assert!(!error.message.starts_with("file.open"), "{error:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// glTF in the export dialog (2026-11-20), as the other meshes: offered
+    /// for the model, its quality and how it groups its triangles chosen
+    /// there (a group per face with its name by default, or per colour,
+    /// lighter), the save dialog's filter glTF, the file written at once as
+    /// `.glb` and the choice kept for the next export; the status line says
+    /// what the file left out of the looks. A refusal (a folder that is not
+    /// there, a document without bodies) opens the error dialog as for the
+    /// other formats and writes nothing.
+    #[test]
+    fn the_dialog_exports_gltf_in_either_grouping() {
+        use craft3d_ui_egui::files::{ExportQuality, GltfPrimitives};
+        let dir = workdir("export-gltf");
+        let mine = subdir(&dir, "mine");
+        let mut host = Host::new(Session::new(Workspace::none()));
+        for (command, params) in [
+            ("file.new", json!({"units": "mm"})),
+            (
+                "feature.block",
+                json!({"size": [40, 20, 10], "name": "Plate"}),
+            ),
+            (
+                "feature.cylinder",
+                json!({"radius": 4, "height": 12, "position": [60, 0, 0], "name": "Pin"}),
+            ),
+            // A brushed look: glTF keeps its colour, not its direction.
+            (
+                "body.appearance",
+                json!({"body": "Pin", "color": [180, 180, 185], "metallic": 1, "anisotropy": 0.6}),
+            ),
+        ] {
+            host.session.execute(command, &params).unwrap();
+        }
+        let gone = dir.join("gone").join("x.glb");
+        let person = Person::who_answers(&[
+            Some(&mine.join("plate")),
+            Some(&mine.join("web.glb")),
+            Some(&gone),
+            Some(&mine.join("empty.glb")),
+        ]);
+        let mut dialogs = picker(&person);
+        act(&mut host, &mut dialogs, FileAction::Export);
+        let offered = host
+            .shell
+            .export_dialog()
+            .unwrap()
+            .choices
+            .formats(&ExportWhat::Model);
+        assert!(offered.contains(&ExportFormat::Glb), "{offered:?}");
+        host.shell.set_export_format(ExportFormat::Glb).unwrap();
+        assert_eq!(host.shell.state.export.name, "untitled.glb");
+        assert_eq!(host.shell.state.export.primitives, GltfPrimitives::Faces);
+        host.shell.answer_export(true);
+        assert!(host.pump_files(&mut dialogs));
+        host.file_choice(dialogs.wait().unwrap());
+        assert!(host.shell.error_dialog().is_none());
+        let (label, ok, said) = last(&host);
+        assert_eq!((label.as_str(), ok), ("file.export", true), "{said}");
+        assert_eq!(
+            said,
+            "Exported plate · left out of the looks: brushing direction"
+        );
+        let answer = host.last_answer.clone().unwrap();
+        assert_eq!(
+            (
+                &answer["bodies"],
+                &answer["primitives"],
+                &answer["faceNames"]
+            ),
+            (&json!(2), &json!("faces"), &json!(true)),
+            "{answer}"
+        );
+        assert_eq!(listing(&mine), ["plate.glb"]);
+        let bytes = std::fs::read(mine.join("plate.glb")).unwrap();
+        assert_eq!(bytes.get(..4), Some(&b"glTF"[..]), "a binary glTF");
+        // Written: glTF offered first next time; the lighter grouping at
+        // the coarse quality.
+        act(&mut host, &mut dialogs, FileAction::Export);
+        assert_eq!(host.shell.state.export.format, ExportFormat::Glb);
+        host.shell.state.export.primitives = GltfPrimitives::Looks;
+        host.shell.state.export.quality = ExportQuality::Coarse;
+        host.shell.answer_export(true);
+        assert!(host.pump_files(&mut dialogs));
+        host.file_choice(dialogs.wait().unwrap());
+        let (_, ok, said) = last(&host);
+        assert!(ok, "{said}");
+        assert_eq!(
+            said,
+            "Exported web · left out of the looks: brushing direction"
+        );
+        let answer = host.last_answer.clone().unwrap();
+        // A group per look of each body: one each here.
+        assert_eq!(
+            (
+                &answer["primitives"],
+                &answer["faceNames"],
+                &answer["drawCalls"],
+                &answer["quality"]
+            ),
+            (&json!("looks"), &json!(false), &json!(2), &json!("coarse")),
+            "{answer}"
+        );
+        assert_eq!(listing(&mine), ["plate.glb", "web.glb"]);
+        // A folder that is not there: the error dialog, nothing written,
+        // and the choice kept as it was.
+        act(&mut host, &mut dialogs, FileAction::Export);
+        assert_eq!(host.shell.state.export.primitives, GltfPrimitives::Looks);
+        host.shell.answer_export(true);
+        assert!(host.pump_files(&mut dialogs));
+        host.file_choice(dialogs.wait().unwrap());
+        let error = host.shell.error_dialog().unwrap().clone();
+        assert_eq!(error.title, "Could not export");
+        assert!(!last(&host).1);
+        assert!(!dir.join("gone").exists());
+        host.shell.close_error_dialog();
+        // A document without bodies: refused the same way.
+        host.session.execute("file.new", &json!({})).unwrap();
+        act(&mut host, &mut dialogs, FileAction::Export);
+        assert_eq!(host.shell.state.export.format, ExportFormat::Glb);
+        host.shell.answer_export(true);
+        assert!(host.pump_files(&mut dialogs));
+        host.file_choice(dialogs.wait().unwrap());
+        let error = host.shell.error_dialog().unwrap().clone();
+        assert_eq!(error.title, "Could not export");
+        assert!(error.message.contains("no bodies"), "{error:?}");
+        host.shell.close_error_dialog();
+        assert_eq!(listing(&mine), ["plate.glb", "web.glb"]);
+        // The save dialog had glTF's filter, the name with `.glb`.
+        let in_mine = format!("export untitled.glb [glTF] in {}", mine.display());
+        assert_eq!(
+            person.asked(),
+            [
+                "export untitled.glb [glTF]".to_string(),
+                in_mine.clone(),
+                in_mine.clone(),
+                in_mine,
+            ]
+        );
+        assert_eq!(*host.session.workspace(), Workspace::none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

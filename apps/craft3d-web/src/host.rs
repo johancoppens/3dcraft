@@ -191,6 +191,7 @@ fn export_mime(extension: &str) -> &'static str {
         "stl" => "model/stl",
         "3mf" => "model/3mf",
         "obj" => "model/obj",
+        "glb" => "model/gltf-binary",
         "dxf" => "image/vnd.dxf",
         "svg" => "image/svg+xml",
         _ => "application/octet-stream",
@@ -3444,6 +3445,77 @@ mod tests {
         assert_eq!(
             open_types(Ask::Open)[0].extensions,
             [EXTENSION, JIG_EXTENSION, ASSEMBLY_EXTENSION]
+        );
+    }
+
+    /// glTF in the page's export dialog (2026-11-20), as on the desktop and
+    /// as the other meshes: chosen with how it groups its triangles, made,
+    /// and kept for the next export once it is the person's; without file
+    /// dialogs a download, with them offered to the save dialog as a glTF
+    /// file only (`model/gltf-binary`, `.glb`).
+    #[test]
+    fn the_dialog_exports_gltf_as_the_other_meshes() {
+        use craft3d_ui_egui::files::{ExportFormat, GltfPrimitives};
+        let mut host = modelled();
+        assert_eq!(host.file_action(FileAction::Export), Outcome::default());
+        host.shell.set_export_what(ExportWhat::Model).unwrap();
+        host.shell.set_export_format(ExportFormat::Glb).unwrap();
+        assert_eq!(host.shell.state.export.name, "untitled.glb");
+        assert_eq!(host.shell.state.export.primitives, GltfPrimitives::Faces);
+        host.shell.state.export.primitives = GltfPrimitives::Looks;
+        host.shell.answer_export(true);
+        let request = host.shell.take_export_answer().unwrap();
+        assert_eq!(request.plan.primitives, GltfPrimitives::Looks);
+        let outcome = host.export_request(request);
+        assert_eq!(outcome.downloads.len(), 1);
+        assert_eq!(outcome.downloads[0].name, "untitled.glb");
+        assert_eq!(outcome.downloads[0].bytes.get(..4), Some(&b"glTF"[..]));
+        let answer = host.last_answer.clone().unwrap();
+        assert_eq!(answer["primitives"], "looks", "{answer}");
+        let report = host.shell.last_command.clone().unwrap();
+        assert!(
+            report.ok && report.text.starts_with("Exported untitled"),
+            "{report:?}"
+        );
+        assert!(host.shell.error_dialog().is_none());
+        // Kept for the next export, as the format and quality are.
+        assert_eq!(host.shell.state.export.format, ExportFormat::Glb);
+        assert_eq!(host.shell.state.export.primitives, GltfPrimitives::Looks);
+        // With file dialogs: made first, then the save dialog for a glTF
+        // file only.
+        host.pickers = true;
+        assert!(host.file_action(FileAction::Export).pick.is_none());
+        assert_eq!(host.shell.state.export.name, "untitled.glb");
+        host.shell.answer_export(true);
+        let request = host.shell.take_export_answer().unwrap();
+        let pick = host.export_request(request).pick.unwrap();
+        let types = pick.types();
+        assert_eq!(types.len(), 1);
+        assert_eq!(
+            (types[0].description, types[0].mime),
+            ("glTF", "model/gltf-binary")
+        );
+        assert_eq!(types[0].extensions, ["glb"]);
+        assert!(pick.accepts("scene.GLB") && !pick.accepts("scene.gltf"));
+        assert_eq!(export_types(Some("glb"))[0].description, "glTF");
+        // Nothing to write (every body hidden): refused as for the other
+        // formats, in the error dialog, and no dialog to save.
+        host.session
+            .execute(
+                "feature.visible",
+                &json!({"feature": "Plate", "visible": false}),
+            )
+            .unwrap();
+        assert!(host.file_action(FileAction::Export).pick.is_none());
+        host.shell.set_export_format(ExportFormat::Glb).unwrap();
+        host.shell.answer_export(true);
+        let request = host.shell.take_export_answer().unwrap();
+        assert_eq!(host.export_request(request), Outcome::default());
+        let error = host.shell.error_dialog().unwrap();
+        assert_eq!(error.title, "Could not export");
+        assert!(
+            error.message.starts_with("Every body is hidden"),
+            "{error:?}"
         );
     }
 
