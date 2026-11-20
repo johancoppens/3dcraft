@@ -6,7 +6,7 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ### Added
 
-- **An MCP bundle in every release.** The release carries one more file, `3dcraft-<version>.mcpb`: an MCP bundle with the command-line program for Linux, macOS (Apple Silicon) and Windows, which an MCP client that takes bundles (Claude for macOS and Windows) installs in one go. It starts 3DCraft without a window, `craft3d-cli mcp`, reading and writing only the work folder you choose when you install it; your AI assistant then models there, and shows you pictures it renders. To watch it build in the window instead, install 3DCraft and connect it as the guide says. `SHA256SUMS.txt` lists the bundle with the other files. On a Mac with an Intel processor its server does not start: 3DCraft for macOS is built for Apple Silicon only.
+- **An MCP bundle in every release.** The release carries one more file, `3dcraft-<version>.mcpb`: an MCP bundle with the command-line program for Linux, macOS (Apple Silicon) and Windows, made for the MCP clients that install such bundles, such as Claude for macOS and Windows. It starts 3DCraft without a window, `craft3d-cli mcp`, reading and writing only the work folder you choose when you install it; your AI assistant then models there, and shows you pictures it renders. To watch it build in the window instead, install 3DCraft and connect it as the guide says. `SHA256SUMS.txt` lists the bundle with the other files. On a Mac with an Intel processor its server does not start: 3DCraft for macOS is built for Apple Silicon only.
 
 ## [0.2.1] - 2026-11-20
 
