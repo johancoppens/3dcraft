@@ -20,6 +20,7 @@ use common::{error, session_in, workdir};
 use craft3d_engine::Session;
 use craft3d_meshio::gltf::srgb_to_linear;
 use craft3d_testkit::readers::gltf::{Gltf, GltfNode, GltfPrimitive, read_glb};
+use craft3d_testkit::readers::json::Json;
 use serde_json::{Value, json};
 use std::f64::consts::PI;
 use std::path::Path;
@@ -96,6 +97,16 @@ fn triangles(file: &Gltf, metres: f64) -> Vec<[[f64; 3]; 3]> {
             })
         })
         .collect()
+}
+
+/// The string member `key` of an object of `extras`.
+fn text<'a>(json: &'a Json, key: &str) -> &'a str {
+    json.get(key).and_then(Json::as_str).unwrap()
+}
+
+/// The number at a path of keys.
+fn number(json: &Json, path: &[&str]) -> f64 {
+    json.at(path).and_then(Json::as_f64).unwrap()
 }
 
 fn linear(c: [u8; 3]) -> [f64; 4] {
@@ -198,7 +209,8 @@ fn the_triangles_box_and_volume_are_the_stls() {
     for (node, (name, id)) in file.nodes.iter().zip([("Block", "F1"), ("Pin", "F2")]) {
         assert_eq!(node.name, name);
         assert_eq!(node.mesh.as_deref(), Some(name));
-        assert_eq!(node.extras, json!({"feature": id}));
+        assert_eq!(node.extras.keys(), ["feature"]);
+        assert_eq!(text(&node.extras, "feature"), id);
         assert!(!node.transformed);
         let listed: Vec<String> = bodies.iter().find(|b| b["name"] == name).unwrap()["faceNames"]
             .as_array()
@@ -208,8 +220,8 @@ fn the_triangles_box_and_volume_are_the_stls() {
             .collect();
         let mut held = Vec::new();
         for p in &node.primitives {
-            let face = p.extras["face"].as_str().unwrap();
-            for f in p.extras["faces"].as_array().unwrap() {
+            let face = text(&p.extras, "face");
+            for f in p.extras.get("faces").and_then(Json::as_array).unwrap() {
                 let f = f.as_u64().unwrap() as usize;
                 assert_eq!(listed[f], face);
                 held.push(f);
@@ -334,21 +346,23 @@ fn every_face_has_its_look_and_what_glb_cannot_hold_is_said() {
     for p in &file.nodes[0].primitives {
         let on_top = p.positions.iter().all(|q| q[1] == top);
         let want = if on_top { BLUE } else { RED };
-        assert_eq!(material(p).base_color, linear(want), "{}", p.extras);
-        assert_eq!(on_top, p.extras["face"] == "F1:face(1)");
+        assert_eq!(material(p).base_color, linear(want), "{:?}", p.extras);
+        assert_eq!(on_top, text(&p.extras, "face") == "F1:face(1)");
     }
     let pin = material(&file.nodes[1].primitives[0]);
     assert_eq!(pin.base_color, linear(GREEN));
     assert_eq!((pin.metallic, pin.roughness), (0.9, 0.25));
+    let coat = "KHR_materials_clearcoat";
+    assert_eq!(pin.extensions.keys(), [coat]);
+    assert_eq!(number(&pin.extensions, &[coat, "clearcoatFactor"]), 0.8);
     assert_eq!(
-        pin.extensions,
-        json!({"KHR_materials_clearcoat": {"clearcoatFactor": 0.8, "clearcoatRoughnessFactor": 0.2}})
+        number(&pin.extensions, &[coat, "clearcoatRoughnessFactor"]),
+        0.2
     );
-    let glass = material(&file.nodes[2].primitives[0]);
-    assert_eq!(
-        glass.extensions,
-        json!({"KHR_materials_ior": {"ior": 1.5}, "KHR_materials_transmission": {"transmissionFactor": 0.9}})
-    );
+    let glass = &material(&file.nodes[2].primitives[0]).extensions;
+    assert_eq!(glass.keys(), [used[1], used[2]]);
+    assert_eq!(number(glass, &[used[1], "ior"]), 1.5);
+    assert_eq!(number(glass, &[used[2], "transmissionFactor"]), 0.9);
     let plain = material(&file.nodes[4].primitives[0]);
     assert_eq!(plain.base_color, linear(GREY));
     assert_eq!((plain.metallic, plain.roughness), (0.0, 0.5));

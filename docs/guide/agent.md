@@ -252,7 +252,7 @@ refused, and deleting the notes that are done (`note.delete` with `state: done`)
 - **Notes are part of the document.** They are saved in the `.3dcraft` file, so whoever opens it sees
   them; each change is one step that `edit.undo` takes back. They never change the model.
 - **Published files hold none.** A Jig exported with `jig.export` leaves them out (it says how many), and
-  no export (STEP, STL, 3MF, OBJ, DXF, SVG) carries them. A packed assembly (`assembly.pack`) is a file to
+  no export (STEP, STL, 3MF, OBJ, glTF, DXF, SVG) carries them. A packed assembly (`assembly.pack`) is a file to
   hand on, so its parts keep their notes, and `assembly.pack` and `document.inspect` say how many.
 - **In a part, not yet in an assembly.** Notes are pinned in a part's document; in an assembly
   (`.3dcraftasm`) `note.add` refuses for now: open the part (`instance.open`) and pin the note there.

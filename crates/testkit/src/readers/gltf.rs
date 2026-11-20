@@ -1,7 +1,9 @@
 //! An independent reader of glTF 2.0 binary files (GLB), for the tests
 //! that read exports back. Written from the Khronos glTF 2.0
 //! specification, sharing no code with the writer (`craft3d_meshio::gltf`)
-//! or with `craft3d-io`; the JSON text is parsed by `serde_json`. It reads
+//! or with `craft3d-io`; its JSON is read by [`super::json`], written from
+//! RFC 8259 (not `serde_json`, which the test kit does not depend on). It
+//! reads
 //! what the tests need (the default scene's nodes, their meshes' triangle
 //! primitives with positions, normals and indices, and the materials) and
 //! refuses, on the way, what the specification forbids there, so that a
@@ -23,7 +25,7 @@
 //!   number of vertices and never the largest value of its type;
 //! - the attributes of a primitive all of one count.
 
-use serde_json::Value;
+use super::json::{Json, json_text, parse_json};
 
 /// A glTF file as the tests see it.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,14 +38,14 @@ pub struct Gltf {
     pub nodes: Vec<GltfNode>,
     pub materials: Vec<GltfMaterial>,
     /// The whole JSON chunk, for anything else.
-    pub json: Value,
+    pub json: Json,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GltfNode {
     pub name: String,
     /// `extras`, `Null` when there are none.
-    pub extras: Value,
+    pub extras: Json,
     /// True when the node has a `matrix`, `translation`, `rotation` or
     /// `scale`.
     pub transformed: bool,
@@ -62,7 +64,7 @@ pub struct GltfPrimitive {
     pub normals: Vec<[f64; 3]>,
     pub triangles: Vec<[usize; 3]>,
     pub material: Option<usize>,
-    pub extras: Value,
+    pub extras: Json,
     /// The `min` and `max` of the position accessor.
     pub min: [f64; 3],
     pub max: [f64; 3],
@@ -79,7 +81,7 @@ pub struct GltfMaterial {
     pub roughness: f64,
     pub double_sided: bool,
     /// `extensions`, `Null` when there are none.
-    pub extensions: Value,
+    pub extensions: Json,
 }
 
 const JSON: u32 = 0x4E4F_534A;
@@ -95,28 +97,28 @@ fn word(bytes: &[u8], at: usize) -> Result<u32, String> {
     Ok(u32::from_le_bytes(w))
 }
 
-fn index(value: &Value, key: &str) -> Result<Option<usize>, String> {
+fn index(value: &Json, key: &str) -> Result<Option<usize>, String> {
     match value.get(key) {
         None => Ok(None),
         Some(v) => v
             .as_u64()
             .and_then(|n| usize::try_from(n).ok())
             .map(Some)
-            .ok_or_else(|| format!("`{key}` is not an index: {v}")),
+            .ok_or_else(|| format!("`{key}` is not an index: {}", json_text(v))),
     }
 }
 
-fn required(value: &Value, key: &str) -> Result<usize, String> {
-    index(value, key)?.ok_or_else(|| format!("`{key}` is missing in {value}"))
+fn required(value: &Json, key: &str) -> Result<usize, String> {
+    index(value, key)?.ok_or_else(|| format!("`{key}` is missing"))
 }
 
-fn numbers(value: Option<&Value>) -> Option<Vec<f64>> {
-    value?.as_array()?.iter().map(Value::as_f64).collect()
+fn numbers(value: Option<&Json>) -> Option<Vec<f64>> {
+    value?.as_array()?.iter().map(Json::as_f64).collect()
 }
 
-fn strings(value: Option<&Value>) -> Vec<String> {
+fn strings(value: Option<&Json>) -> Vec<String> {
     value
-        .and_then(Value::as_array)
+        .and_then(Json::as_array)
         .map(|list| {
             list.iter()
                 .filter_map(|s| s.as_str().map(str::to_string))
@@ -146,7 +148,7 @@ impl Accessor {
 
 /// Reads accessor `at`; `vertex` for a vertex attribute (4-byte alignment).
 fn accessor(
-    json: &Value,
+    json: &Json,
     bin: &[u8],
     buffer: usize,
     at: usize,
@@ -154,13 +156,13 @@ fn accessor(
 ) -> Result<Accessor, String> {
     let a = json
         .get("accessors")
-        .and_then(|list| list.get(at))
+        .and_then(|list| list.item(at))
         .ok_or_else(|| format!("no accessor {at}"))?;
     let name = |what: &str| format!("accessor {at}: {what}");
     let view_at = index(a, "bufferView")?.ok_or_else(|| name("no bufferView"))?;
     let component = a
         .get("componentType")
-        .and_then(Value::as_u64)
+        .and_then(Json::as_u64)
         .ok_or_else(|| name("no componentType"))?;
     let size: usize = match component {
         5121 => 1,
@@ -168,7 +170,7 @@ fn accessor(
         5125 | 5126 => 4,
         other => return Err(name(&format!("componentType {other} is not read here"))),
     };
-    let width: usize = match a.get("type").and_then(Value::as_str) {
+    let width: usize = match a.get("type").and_then(Json::as_str) {
         Some("SCALAR") => 1,
         Some("VEC2") => 2,
         Some("VEC3") => 3,
@@ -182,7 +184,7 @@ fn accessor(
     let offset = index(a, "byteOffset")?.unwrap_or(0);
     let view = json
         .get("bufferViews")
-        .and_then(|list| list.get(view_at))
+        .and_then(|list| list.item(view_at))
         .ok_or_else(|| name("its bufferView does not exist"))?;
     if required(view, "buffer")? != 0 {
         return Err(name("a buffer other than the GLB's"));
@@ -293,11 +295,11 @@ pub fn read_glb(bytes: &[u8]) -> Result<Gltf, String> {
         .rposition(|&b| b != b' ')
         .and_then(|last| text.get(..=last))
         .ok_or("GLB: an empty JSON chunk")?;
-    let json: Value = serde_json::from_slice(trimmed).map_err(|e| format!("JSON: {e}"))?;
+    let json = parse_json(trimmed)?;
     let asset = json.get("asset").ok_or("no asset")?;
     let version = asset
         .get("version")
-        .and_then(Value::as_str)
+        .and_then(Json::as_str)
         .ok_or("no asset.version")?
         .to_string();
     if version != "2.0" {
@@ -305,10 +307,10 @@ pub fn read_glb(bytes: &[u8]) -> Result<Gltf, String> {
     }
     let generator = asset
         .get("generator")
-        .and_then(Value::as_str)
+        .and_then(Json::as_str)
         .unwrap_or_default()
         .to_string();
-    let buffer = match json.get("buffers").and_then(Value::as_array) {
+    let buffer = match json.get("buffers").and_then(Json::as_array) {
         None => 0,
         Some(buffers) => {
             let [only] = buffers.as_slice() else {
@@ -330,14 +332,14 @@ pub fn read_glb(bytes: &[u8]) -> Result<Gltf, String> {
     let mut materials = Vec::new();
     for m in json
         .get("materials")
-        .and_then(Value::as_array)
+        .and_then(Json::as_array)
         .into_iter()
         .flatten()
     {
         let pbr = m.get("pbrMetallicRoughness");
         let factor = |key: &str| {
             pbr.and_then(|p| p.get(key))
-                .map_or(Some(1.0), Value::as_f64)
+                .map_or(Some(1.0), Json::as_f64)
                 .ok_or_else(|| format!("material: {key} is not a number"))
         };
         let colour = match pbr.and_then(|p| p.get("baseColorFactor")) {
@@ -350,7 +352,7 @@ pub fn read_glb(bytes: &[u8]) -> Result<Gltf, String> {
         materials.push(GltfMaterial {
             name: m
                 .get("name")
-                .and_then(Value::as_str)
+                .and_then(Json::as_str)
                 .unwrap_or_default()
                 .to_string(),
             base_color,
@@ -358,20 +360,20 @@ pub fn read_glb(bytes: &[u8]) -> Result<Gltf, String> {
             roughness: factor("roughnessFactor")?,
             double_sided: m
                 .get("doubleSided")
-                .and_then(Value::as_bool)
+                .and_then(Json::as_bool)
                 .unwrap_or(false),
-            extensions: m.get("extensions").cloned().unwrap_or(Value::Null),
+            extensions: m.get("extensions").cloned().unwrap_or(Json::Null),
         });
     }
     let scene_at = required(&json, "scene")?;
     let scene = json
         .get("scenes")
-        .and_then(|s| s.get(scene_at))
+        .and_then(|s| s.item(scene_at))
         .ok_or("the scene does not exist")?;
     let mut nodes = Vec::new();
     for at in scene
         .get("nodes")
-        .and_then(Value::as_array)
+        .and_then(Json::as_array)
         .into_iter()
         .flatten()
     {
@@ -381,39 +383,39 @@ pub fn read_glb(bytes: &[u8]) -> Result<Gltf, String> {
             .ok_or("a node index")?;
         let node = json
             .get("nodes")
-            .and_then(|n| n.get(at))
+            .and_then(|n| n.item(at))
             .ok_or_else(|| format!("node {at} does not exist"))?;
         let mut read = GltfNode {
             name: node
                 .get("name")
-                .and_then(Value::as_str)
+                .and_then(Json::as_str)
                 .unwrap_or_default()
                 .to_string(),
-            extras: node.get("extras").cloned().unwrap_or(Value::Null),
+            extras: node.get("extras").cloned().unwrap_or(Json::Null),
             transformed: ["matrix", "translation", "rotation", "scale"]
                 .iter()
                 .any(|k| node.get(*k).is_some()),
             children: node
                 .get("children")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len),
+                .and_then(Json::as_array)
+                .map_or(0, <[Json]>::len),
             mesh: None,
             primitives: Vec::new(),
         };
         if let Some(mesh_at) = index(node, "mesh")? {
             let mesh = json
                 .get("meshes")
-                .and_then(|m| m.get(mesh_at))
+                .and_then(|m| m.item(mesh_at))
                 .ok_or_else(|| format!("mesh {mesh_at} does not exist"))?;
             read.mesh = Some(
                 mesh.get("name")
-                    .and_then(Value::as_str)
+                    .and_then(Json::as_str)
                     .unwrap_or_default()
                     .to_string(),
             );
             for p in mesh
                 .get("primitives")
-                .and_then(Value::as_array)
+                .and_then(Json::as_array)
                 .into_iter()
                 .flatten()
             {
@@ -435,14 +437,17 @@ pub fn read_glb(bytes: &[u8]) -> Result<Gltf, String> {
 }
 
 fn primitive(
-    json: &Value,
+    json: &Json,
     bin: &[u8],
     buffer: usize,
-    p: &Value,
+    p: &Json,
     materials: usize,
 ) -> Result<GltfPrimitive, String> {
     if p.get("mode").is_some_and(|m| m.as_u64() != Some(4)) {
-        return Err(format!("a primitive that is not triangles: {p}"));
+        return Err(format!(
+            "a primitive that is not triangles: {}",
+            json_text(p)
+        ));
     }
     let attributes = p
         .get("attributes")
@@ -530,7 +535,7 @@ fn primitive(
         normals,
         triangles,
         material,
-        extras: p.get("extras").cloned().unwrap_or(Value::Null),
+        extras: p.get("extras").cloned().unwrap_or(Json::Null),
         min,
         max,
         index_type: indices.component,
@@ -607,7 +612,7 @@ mod tests {
             (node.name.as_str(), node.mesh.as_deref()),
             ("tetra", Some("m"))
         );
-        assert_eq!(node.extras["k"], 1);
+        assert_eq!(node.extras.get("k").and_then(Json::as_u64), Some(1));
         let p = &node.primitives[0];
         assert_eq!(p.positions[3], [0.0, 0.0, 1.0]);
         assert_eq!(p.triangles, [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]);

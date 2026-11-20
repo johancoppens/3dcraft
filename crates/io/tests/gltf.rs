@@ -26,8 +26,8 @@ use craft3d_meshio::Unit;
 use craft3d_meshio::gltf::{Extra, PbrMaterial, Scene, srgb_to_linear, write_glb};
 use craft3d_tess::{Mesh, TessParams, tessellate_body};
 use craft3d_testkit::readers::gltf::{Gltf, GltfNode, read_glb};
+use craft3d_testkit::readers::json::Json;
 use craft3d_topo::Body;
-use serde_json::json;
 use std::f64::consts::PI;
 use std::path::PathBuf;
 
@@ -162,6 +162,26 @@ const PINNED: [(&str, &str); 4] = [
     ("two-bodies.glb", "unknown"),
     ("quarter-round.glb", "unknown"),
 ];
+
+/// The string member `key` of an object of `extras`.
+fn text<'a>(json: &'a Json, key: &str) -> &'a str {
+    json.get(key).and_then(Json::as_str).unwrap()
+}
+
+/// The list of indices at `key`.
+fn indices(json: &Json, key: &str) -> Vec<usize> {
+    json.get(key)
+        .and_then(Json::as_array)
+        .unwrap()
+        .iter()
+        .map(|f| f.as_u64().unwrap() as usize)
+        .collect()
+}
+
+/// The number at a path of keys.
+fn number(json: &Json, path: &[&str]) -> f64 {
+    json.at(path).and_then(Json::as_f64).unwrap()
+}
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -311,10 +331,8 @@ fn read_back_agrees_with_stl_and_the_closed_forms() {
             assert_eq!(node.name, part.name);
             assert_eq!(node.mesh.as_deref(), Some(part.name.as_str()));
             assert!(!node.transformed && node.children == 0);
-            assert_eq!(
-                node.extras,
-                json!({"feature": format!("F{}", part.feature)})
-            );
+            assert_eq!(node.extras.keys(), ["feature"]);
+            assert_eq!(text(&node.extras, "feature"), format!("F{}", part.feature));
             let stl = export_mesh(
                 &part.mesh,
                 &part.name,
@@ -348,13 +366,8 @@ fn read_back_agrees_with_stl_and_the_closed_forms() {
             );
             // Every primitive one name of faces, with the faces it holds.
             for p in &node.primitives {
-                let face = p.extras["face"].as_str().unwrap();
-                let faces: Vec<usize> = p.extras["faces"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|f| f.as_u64().unwrap() as usize)
-                    .collect();
+                let face = text(&p.extras, "face");
+                let faces = indices(&p.extras, "faces");
                 assert!(
                     faces.iter().all(|&f| part.faces[f] == face),
                     "{file}: {face} {faces:?}"
@@ -363,8 +376,7 @@ fn read_back_agrees_with_stl_and_the_closed_forms() {
             let mut held: Vec<usize> = node
                 .primitives
                 .iter()
-                .flat_map(|p| p.extras["faces"].as_array().unwrap().clone())
-                .map(|f| f.as_u64().unwrap() as usize)
+                .flat_map(|p| indices(&p.extras, "faces"))
                 .collect();
             held.sort_unstable();
             assert_eq!(held, (0..part.faces.len()).collect::<Vec<_>>(), "{file}");
@@ -435,7 +447,7 @@ fn metres_y_up_and_the_normals_of_the_surfaces() {
         .find(|p| p.positions.iter().all(|q| q[1] == f(0.03)))
         .unwrap();
     assert_eq!(top.normals[0], [0.0, 1.0, 0.0]);
-    let face = top.extras["face"].as_str().unwrap();
+    let face = text(&top.extras, "face");
     let index = block_parts[0].faces.iter().position(|n| n == face).unwrap();
     let kernel_top = block_parts[0]
         .mesh
@@ -497,32 +509,32 @@ fn materials_follow_the_faces_and_carry_their_extensions() {
     };
     let red = &read.nodes[0];
     for p in &red.primitives {
-        let want = if p.extras["face"] == "F1:face(1)" {
+        let want = if text(&p.extras, "face") == "F1:face(1)" {
             BLUE
         } else {
             RED
         };
-        assert_eq!(colour_of(p), linear(want), "{}", p.extras);
+        assert_eq!(colour_of(p), linear(want), "{:?}", p.extras);
     }
     let green = &read.materials[read.nodes[1].primitives[0].material.unwrap()];
     assert_eq!(green.base_color, linear(GREEN));
     assert_eq!((green.metallic, green.roughness), (0.9, 0.25));
+    let coat = "KHR_materials_clearcoat";
+    assert_eq!(green.extensions.keys(), [coat]);
+    assert_eq!(number(&green.extensions, &[coat, "clearcoatFactor"]), 1.0);
     assert_eq!(
-        green.extensions,
-        // 1 is written as the integer it is.
-        json!({"KHR_materials_clearcoat": {"clearcoatFactor": 1, "clearcoatRoughnessFactor": 0.1}})
+        number(&green.extensions, &[coat, "clearcoatRoughnessFactor"]),
+        0.1
     );
     assert!(!green.double_sided);
     let (_, _, round) = &all[3];
     let read = read_glb(&write_glb(round).unwrap()).unwrap();
-    assert_eq!(
-        read.extensions_used,
-        ["KHR_materials_ior", "KHR_materials_transmission"]
-    );
-    assert_eq!(
-        read.materials[0].extensions,
-        json!({"KHR_materials_ior": {"ior": 1.45}, "KHR_materials_transmission": {"transmissionFactor": 0.6}})
-    );
+    let used = ["KHR_materials_ior", "KHR_materials_transmission"];
+    assert_eq!(read.extensions_used, used);
+    let glass = &read.materials[0].extensions;
+    assert_eq!(glass.keys(), used);
+    assert_eq!(number(glass, &[used[0], "ior"]), 1.45);
+    assert_eq!(number(glass, &[used[1], "transmissionFactor"]), 0.6);
 }
 
 /// Names reach the reader as they were, whatever characters they hold
@@ -541,8 +553,8 @@ fn any_name_any_scale_and_every_unit() {
     assert_eq!(read.nodes[0].mesh.as_deref(), Some(name));
     assert_eq!(read.materials[0].name, name);
     assert_eq!(
-        read.nodes[0].primitives[0].extras["face"],
-        json!(format!("{name}:face"))
+        text(&read.nodes[0].primitives[0].extras, "face"),
+        format!("{name}:face")
     );
     for scale in [1e-3, 1.0, 1e3, 1e6] {
         let body = primitives::block(&Frame::WORLD, scale, 2.0 * scale, 3.0 * scale).unwrap();

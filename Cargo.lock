@@ -711,7 +711,6 @@ dependencies = [
  "craft3d-math",
  "craft3d-tess",
  "craft3d-topo",
- "serde_json",
 ]
 
 [[package]]

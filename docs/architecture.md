@@ -35,7 +35,7 @@ These are the invariants. Every part is built so that they hold by construction,
  L8  apps          craft3d (window), craft3d-cli, craft3d-fuzz, craft3d-web (the page), craft3d-launcher
  L7  clients       ui-egui (the shell), automation (control server, MCP)
  L6  engine        Session: open documents, commands, undo, scenes
- L5  io            bodies and meshes <-> STEP, STL, 3MF, OBJ, DXF, SVG
+ L5  io            bodies and meshes <-> STEP, STL, 3MF, OBJ, glTF, DXF, SVG
  L4  derivation    regen (history -> bodies), render (CPU oracle), gpu (wgpu), format (.3dcraft)
  L3  algorithms    kernel (operations on bodies), tess (meshes), solve (sketch solver), assembly (assembly solver), ops (undo history), stepread (STEP -> bodies), fcstdread (FreeCAD documents -> bodies)
  L2  document      doc (pure data: the recipe)
@@ -50,7 +50,7 @@ These are the invariants. Every part is built so that they hold by construction,
 | `math` | L0 | `f64` vectors, boxes, frames, transforms, `Tolerance` as data, quadrature, the exact bits of values (`Bits`) | knows a curve or a surface |
 | `geom` | L0 | the `Curve3` and `Surface` enums (analytic kinds and NURBS): evaluation, projection, poles, closure, knot refinement, every surface/surface and curve/surface intersection | knows topology |
 | `step` | L0 | ISO 10303-21 reader and writer with its own record model | knows CAD entities (that is `io`'s) |
-| `meshio` | L0 | STL, 3MF and OBJ writers with their own mesh model | depends on a workspace crate but `zipstore` |
+| `meshio` | L0 | STL, 3MF, OBJ and glTF writers with their own mesh models | depends on a workspace crate but `zipstore` |
 | `drawing` | L0 | DXF and SVG writers with their own 2D model | depends on a workspace crate |
 | `font` | L0 | font files read into exact outlines, kerning, layout, the nonzero fill rule, the single-stroke font as data ([`design/text.md`](design/text.md)) | depends on a workspace crate; reads files (the engine finds the built-in fonts) |
 | `zipstore` | L0 | a stored (uncompressed) ZIP container with a hardened reader, and reading of deflated entries | depends on a workspace crate |
