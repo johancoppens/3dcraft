@@ -500,9 +500,7 @@ impl ExportQuality {
     /// What the dialog says of it under the pointer.
     pub fn hint(self) -> &'static str {
         match self {
-            Self::Coarse => {
-                "Fewer triangles: a small file, curves in visible steps (20° per chord)"
-            }
+            Self::Coarse => "A small file, curves in visible steps (20° per chord)",
             Self::Normal => "Round to the eye and to a printer (10° per chord); the default",
             Self::Fine => "Smooth up close: four times finer, 5° per chord, a larger file",
         }
