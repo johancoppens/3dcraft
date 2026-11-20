@@ -3907,25 +3907,35 @@ mod tests {
         let side = Surface::Cylinder(Cylinder::new(Frame::WORLD, 4.0).unwrap());
         let centre = Vec3::new(100_003.999_997, 0.0, 0.7);
         let ball = Surface::Sphere(Sphere::new(Frame::WORLD.at(centre).unwrap(), 1e5).unwrap());
-        let within = Bbox3::from_points([Vec3::new(-4.2, -4.2, -5.2), Vec3::new(4.2, 4.2, 5.2)]);
         let tol = Tolerance::new(1e-6, 1e-9).unwrap();
-        let field = Field::new(&ball).unwrap();
-        let chart = Chart::new(&side, &within, &tol, &field).unwrap().unwrap();
-        let mut m = Marcher::new(chart, field, &within, &tol).unwrap();
-        let met = m.solve(&within);
-        eprintln!(
-            "COUNT {} evaluations, on {:e}, floor {:e}: {:?}",
-            m.evals,
-            m.on,
-            m.floor,
-            met.as_ref()
-                .map(|found| (found.curves.len(), found.points.len()))
-        );
-        assert!(
-            m.evals <= EVALUATIONS_OF_THE_STALL,
-            "{} evaluations",
-            m.evals
-        );
+        // The boxes a boolean asks the pair in: the part of the side's box
+        // the ball's box holds (a sliver at x = 4), grown by the room of
+        // the larger face, then of the smaller.
+        let (side_diagonal, ball_diagonal) = (228.0_f64.sqrt(), 2e5 * 3.0_f64.sqrt());
+        let mut most = 0;
+        for room in [
+            16.0 * 1e-6 + 0.013 * ball_diagonal,
+            16.0 * 1e-6 + 0.013 * side_diagonal,
+        ] {
+            let within = Bbox3::from_points([
+                Vec3::new(centre.x - 1e5 - room, -4.0 - room, -5.0 - room),
+                Vec3::new(4.0 + room, 4.0 + room, 5.0 + room),
+            ]);
+            let field = Field::new(&ball).unwrap();
+            let chart = Chart::new(&side, &within, &tol, &field).unwrap().unwrap();
+            let mut m = Marcher::new(chart, field, &within, &tol).unwrap();
+            let met = m.solve(&within);
+            eprintln!(
+                "COUNT room {room}: {} evaluations, on {:e}, floor {:e}: {:?}",
+                m.evals,
+                m.on,
+                m.floor,
+                met.as_ref()
+                    .map(|found| (found.curves.len(), found.points.len()))
+            );
+            most = most.max(m.evals);
+        }
+        assert!(most <= EVALUATIONS_OF_THE_STALL, "{most} evaluations");
     }
 
     /// No point is asked nearer `f = 0` than rounding leaves at the size
