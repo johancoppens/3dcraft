@@ -174,6 +174,18 @@ enum Side {
     Outside,
 }
 
+/// Where along the plate's front edge the footprint is nearest to it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Along {
+    /// At the middle of the edge.
+    Middle,
+    /// At the edge's end, a corner of the top face (half the footprint
+    /// is then beside the plate), the rim's vertex on the plate's side.
+    Corner,
+    /// At the corner, the rim's vertex on the side past the edge's end.
+    PastCorner,
+}
+
 /// One place of the grid.
 #[derive(Clone, Copy, Debug)]
 struct Place {
@@ -184,6 +196,7 @@ struct Place {
     splines: bool,
     /// Both bodies turned by this about z.
     turn: f64,
+    along: Along,
     side: Side,
     /// How far the footprint is moved into the plate from tangency, in
     /// tolerances.
@@ -245,10 +258,11 @@ impl Place {
     /// be measured names it.
     fn name(&self) -> String {
         format!(
-            "{} {} turn {} {:?} shift {} lift {} offset {:?}",
+            "{} {} turn {} {:?} {:?} shift {} lift {} offset {:?}",
             if self.coarse { "coarse" } else { "fine" },
             if self.splines { "splines" } else { "lines" },
             self.turn,
+            self.along,
             self.side,
             self.shift,
             self.lift,
@@ -266,13 +280,24 @@ impl Place {
             None => FRAC_PI_2,
         };
         // The place of the rim nearest the edge is towards -y from inside
-        // and towards +y from outside.
+        // and towards +y from outside; from there the vertex is towards
+        // +x (the plate's side of its corner at x = -10), or towards -x.
+        let away = if self.along == Along::PastCorner {
+            -away
+        } else {
+            away
+        };
         let angle = match self.side {
             Side::Inside => -FRAC_PI_2 + away,
             Side::Outside => FRAC_PI_2 - away,
         };
+        let x = if self.along == Along::Middle {
+            0.0
+        } else {
+            -10.0 * k
+        };
         let frame = Frame::new(
-            self.turned(Vec3::new(0.0, self.centre(), self.lift * tol)),
+            self.turned(Vec3::new(x, self.centre(), self.lift * tol)),
             Vec3::Z,
             self.turned(Vec3::new(angle.pcos(), angle.psin(), 0.0)),
         )
@@ -281,15 +306,22 @@ impl Place {
     }
 
     /// The area the footprint and the plate's top share: of the disc of
-    /// radius `r` about `(0, c)`, the part with `y ≥ 0`.
+    /// radius `r` about `(0, c)`, the part with `y ≥ 0`; half of it with
+    /// the disc's centre over the plate's side (the disc is as much on
+    /// one side of that line as on the other).
     fn shared(&self) -> f64 {
         let (r, c) = (RADIUS * self.k, self.centre());
-        if c >= r {
+        let above = if c >= r {
             PI * r * r
         } else if c <= -r {
             0.0
         } else {
             r * r * (PI - (c / r).pacos()) + c * (r * r - c * c).sqrt()
+        };
+        if self.along == Along::Middle {
+            above
+        } else {
+            0.5 * above
         }
     }
 
@@ -425,11 +457,11 @@ fn held(place: &Place, faults: &mut Vec<String>) -> bool {
 fn unmeasured_at(k: f64) -> &'static [&'static str] {
     if k < 1.0 {
         &[
-            "fine lines turn 0 Outside shift 40 lift -50 offset Some(0.4)",
-            "fine splines turn 0 Outside shift 40 lift -50 offset Some(1.4)",
+            "fine lines turn 0 Middle Outside shift 40 lift -50 offset Some(0.4)",
+            "fine splines turn 0 Middle Outside shift 40 lift -50 offset Some(1.4)",
         ]
     } else if k > 1.0 {
-        &["fine lines turn 0 Outside shift 40 lift -50 offset Some(0.4)"]
+        &["fine lines turn 0 Middle Outside shift 40 lift -50 offset Some(0.4)"]
     } else {
         &[]
     }
@@ -444,24 +476,27 @@ fn grid(k: f64) {
     for coarse in [false, true] {
         for splines in [false, true] {
             for turn in [0.0, 0.5] {
-                for side in [Side::Inside, Side::Outside] {
-                    for shift in [0.0, 40.0, -40.0] {
-                        for lift in [0.0, 5.0, -50.0] {
-                            for offset in OFFSETS {
-                                let place = Place {
-                                    k,
-                                    coarse,
-                                    splines,
-                                    turn,
-                                    side,
-                                    shift,
-                                    lift,
-                                    offset,
-                                };
-                                if held(&place, &mut faults) {
-                                    unmeasured.insert(place.name());
+                for along in [Along::Middle, Along::Corner, Along::PastCorner] {
+                    for side in [Side::Inside, Side::Outside] {
+                        for shift in [0.0, 40.0, -40.0] {
+                            for lift in [0.0, 5.0, -50.0] {
+                                for offset in OFFSETS {
+                                    let place = Place {
+                                        k,
+                                        coarse,
+                                        splines,
+                                        turn,
+                                        along,
+                                        side,
+                                        shift,
+                                        lift,
+                                        offset,
+                                    };
+                                    if held(&place, &mut faults) {
+                                        unmeasured.insert(place.name());
+                                    }
+                                    places += 1;
                                 }
-                                places += 1;
                             }
                         }
                     }
