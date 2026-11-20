@@ -146,6 +146,14 @@ fn booleans(
             }
             Err(why) => faults.push(format!("{what}: {op:?} {why}")),
         }
+        // As a feature runs it (parts of the result that touch refused):
+        // built, empty, or refused as zero thickness (a vertex of the
+        // result within twice the tolerance of an edge it is not on: the
+        // rim's vertex beside the plate's edge), never for the contact.
+        match boolean(a, b, op, tol) {
+            Ok(_) | Err(KernelError::EmptyResult { .. } | KernelError::ZeroThickness { .. }) => {}
+            Err(e) => faults.push(format!("{what}: {op:?} as a feature runs it refused: {e}")),
+        }
     }
     unmeasured
 }
@@ -412,8 +420,8 @@ fn held(place: &Place, faults: &mut Vec<String>) -> bool {
 /// settle"): at 1e-3 and at 1e6, none at 1. A fault of the measure, owed
 /// (docs/design/topology.md › *A lens a few dozen tolerances thick that
 /// is not measured at every scale*), which the change these tests are
-/// for does not touch: the same places on the commit before it. Held as
-/// a list, so a place that joins it or leaves it fails.
+/// for does not touch (the first of them on the commit before it as
+/// well). Held as a list, so a place that joins it or leaves it fails.
 fn unmeasured_at(k: f64) -> &'static [&'static str] {
     if k < 1.0 {
         &[

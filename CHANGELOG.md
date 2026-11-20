@@ -4,6 +4,13 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Results that changed
+
+What 3DCraft answered before can differ now: a measure, a proof, a check, a body that was built wrong while it looked right, or a body that was built and is now refused. If you relied on one of these, check it again.
+
+- **Two parts that touch where a curve of the one leaves the border of a face of the other are told to touch.** A wheel on a keyed shaft, its bore on the shaft's seat and its own keyway as wide as the shaft's: the rim of the keyway's rounded end in the shaft is tangent to the side of the wheel's keyway, and stays within the tolerance of it for a while. Where the shaft had a vertex on that rim between one and four tolerances off the side (3DCraft leaves one where its trace of the rim began; an end drawn as two arcs has one too), the clearance could not be measured (*"an imprinted curve that does not fit the edges it should coincide with"*, or *"a curve that is partly on and partly off a face boundary"*), `document.interference` answered `unknown`, and a union, a subtract or an intersect of the two parts was refused with the same words; 0.1.x refused the same bodies. Such a curve is now read as leaving the face (or as running into it, where it leaves the border inwards: a boss on a plate that reaches the plate's edge), so the clearance is a touch, and a boolean of the two parts is built, or refused only where its result would be too thin (a corner within twice the tolerance of an edge it is not on). The gear reducer Jig met this at one setting of its range, with two wheels on their keyed shafts (0.2.0's known limitations). Every body that was built before is built the same.
+- **Two parts that touch in one point, where an edge of the one runs past an edge of the other, are told to touch.** A cylinder standing beside a plate at the level of its top, its rim touching the plate's top edge in one point: `document.interference` and `measure.clearance` answered `clear`, at a distance of 0, because no corner of either part lies at that point. They answer `touch` now (contact `point`). A union of such a pair was already refused as two parts that touch in a point; an assertion of a clearance of at least 0 passes as it did.
+
 ## [0.2.1] - 2026-11-20
 
 Three fixes. In the web version, what you select is measured, as it is in the installed 3DCraft. *Keep as a check* no longer says it kept a check that was refused. And the check of an assembly no longer says ok while an instance is not placed, or a mate, a coupling or the solve failed. Files of 0.2.0 open unchanged.
