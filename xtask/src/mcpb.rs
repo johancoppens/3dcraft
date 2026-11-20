@@ -575,7 +575,7 @@ pub(crate) fn archive(contents: &Contents<'_>) -> Result<Vec<u8>, String> {
         .iter()
         .map(|(name, data, mode)| craft3d_zipstore::NewEntry {
             name: name.as_str(),
-            data: *data,
+            data,
             unix_mode: Some(*mode),
         })
         .collect();
