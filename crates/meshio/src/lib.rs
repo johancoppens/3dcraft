@@ -1,4 +1,5 @@
-//! STL, 3MF and OBJ writers with their own mesh model.
+//! STL, 3MF and OBJ writers with their own mesh model, and a glTF 2.0
+//! binary writer ([`gltf`]) with its own.
 //!
 //! Standalone: depends on no workspace crate (docs/architecture.md §2)
 //! except the equally standalone `craft3d-zipstore`, the ZIP container of
@@ -6,12 +7,15 @@
 //!
 //! Sources: the 3D Systems StereoLithography interface description (1989)
 //! for STL; the 3MF Core Specification and the Open Packaging Conventions it
-//! builds on (a ZIP container) for 3MF; the Wavefront OBJ format description.
+//! builds on (a ZIP container) for 3MF; the Wavefront OBJ format description;
+//! the Khronos glTF 2.0 specification for glTF.
+
+pub mod gltf;
 
 use std::fmt::{self, Write as _};
 
-/// Length unit of the coordinates. Only 3MF records it; STL and OBJ have no
-/// notion of units.
+/// Length unit of the coordinates. 3MF records it and glTF converts to
+/// metres by it; STL and OBJ have no notion of units.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Unit {
     Micron,
@@ -24,6 +28,19 @@ pub enum Unit {
 }
 
 impl Unit {
+    /// How many metres one unit is: exact by definition (the inch is
+    /// 25.4 mm, the foot 12 inches), as decimal literals.
+    pub fn metres(self) -> f64 {
+        match self {
+            Unit::Micron => 1e-6,
+            Unit::Millimeter => 1e-3,
+            Unit::Centimeter => 1e-2,
+            Unit::Inch => 0.0254,
+            Unit::Foot => 0.3048,
+            Unit::Meter => 1.0,
+        }
+    }
+
     /// The unit's name in a 3MF `<model unit="…">` attribute.
     pub fn as_3mf(self) -> &'static str {
         match self {
@@ -145,6 +162,18 @@ pub enum MeshError {
     /// The name of an OBJ file's material library is empty, or has white
     /// space or a `#` in it.
     BadLibraryName,
+    /// A group of triangles of a glTF node ([`gltf::Group`]) that cannot be
+    /// written, and why: `object` is the node, `group` the group in it.
+    BadGroup {
+        object: usize,
+        group: usize,
+        what: String,
+    },
+    /// A number of a glTF material that is not finite or out of its range.
+    BadMaterialValue {
+        material: usize,
+        what: &'static str,
+    },
 }
 
 impl fmt::Display for MeshError {
@@ -173,6 +202,14 @@ impl fmt::Display for MeshError {
                 f,
                 "the name of the OBJ material library must not be empty or contain white space or `#`"
             ),
+            MeshError::BadGroup {
+                object,
+                group,
+                what,
+            } => write!(f, "object {object}, group {group}: {what}"),
+            MeshError::BadMaterialValue { material, what } => {
+                write!(f, "material {material}: {what}")
+            }
         }
     }
 }

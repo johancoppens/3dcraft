@@ -16,7 +16,7 @@
 | [`testing.md`](testing.md) | The AI test loop, the oracles, test kinds per crate, the task set, the guide's checked examples, performance and web-size budgets, evidence |
 | [`contributing.md`](contributing.md) | Rules and the "add a command" / "add a feature type" / "add a geometry kind" checklists |
 | [`control-protocol.md`](control-protocol.md) | JSON control channel, headless server, MCP tools, every `ui.*` method |
-| [`file-formats.md`](file-formats.md) | `.3dcraft`, `.3dcraftjig` and `.3dcraftasm`, STEP, FreeCAD documents, STL, 3MF, OBJ, DXF and SVG: scope, specs, the format promise, tests |
+| [`file-formats.md`](file-formats.md) | `.3dcraft`, `.3dcraftjig` and `.3dcraftasm`, STEP, FreeCAD documents, STL, 3MF, OBJ, glTF, DXF and SVG: scope, specs, the format promise, tests |
 | [`roadmap.md`](roadmap.md) | Current focus, one line per milestone, a section per milestone (Goal, Done, Open, Acceptance), the boolean checklist, ideas, projects on 3DCraft |
 | [`decisions.md`](decisions.md) | Decisions taken and open |
 | [`tasks/`](tasks/) | The task set: 22 ordinary parts with descriptions in English and Dutch, closed-form expectations and reference solutions, scored by `craft3d-cli score` ([`testing.md`](testing.md) › *The task set*) |

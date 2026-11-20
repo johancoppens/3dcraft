@@ -54,6 +54,7 @@ mod face_cmds;
 mod file_cmds;
 mod fold_cmds;
 pub mod fonts;
+mod gltf_export;
 mod helix_cmds;
 pub mod history_view;
 mod import_cmds;

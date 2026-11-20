@@ -18,7 +18,7 @@ The full description of any command, with every value it takes and what it refus
 | `file.open`, `file.save`, `file.close` | Open a `.3dcraft`, `.3dcraftjig` or `.3dcraftasm`, save, close |
 | `file.list`, `file.activate` | List the open documents, switch to one |
 | `file.import` | Read a STEP file, a FreeCAD document (`.FCStd`) or a BRep file into the document |
-| `file.export` | Write STEP, STL, 3MF, OBJ, DXF or SVG ([Files, export and drawings](files.md)) |
+| `file.export` | Write STEP, STL, 3MF, OBJ, glTF, DXF or SVG ([Files, export and drawings](files.md)) |
 | `cut.list`, `cut.export` | The cut list of the plates and sheet-metal parts (JSON or CSV), their outlines to DXF or SVG with a kerf ([Files, export and drawings](files.md#cut-lists-the-plates-of-a-design)) |
 | `edit.undo`, `edit.redo` | Undo and redo, one change at a time |
 | `recovery.list`, `recovery.open`, `recovery.discard` | What was autosaved before a crash |
@@ -316,7 +316,7 @@ the options of the same name: `CRAFT3D_CONTROL_PORT`, `CRAFT3D_CONTROL_TOKEN_FIL
 | `run` | Open or create a document, run commands or a script, save it |
 | `info` | Print a document's state as JSON |
 | `render` | Draw a document into a PNG |
-| `convert` | Convert a `.3dcraft` file to STEP, STL, 3MF, OBJ, DXF or SVG |
+| `convert` | Convert a `.3dcraft` file to STEP, STL, 3MF, OBJ, glTF, DXF or SVG |
 | `replay` | A video of how a document is built |
 | `check-range` | Prove a Jig over its parameter range |
 | `score` | Score a script against a task of the task set (in a source checkout) |
@@ -333,6 +333,7 @@ the options of the same name: `CRAFT3D_CONTROL_PORT`, `CRAFT3D_CONTROL_TOKEN_FIL
 | `.3dcraftasm` | An assembly: its instances, mates and couplings, and the parts it carries when packed ([Assemblies](assemblies.md)) |
 | `.step`, `.stp` | STEP, exact solids for other CAD programs |
 | `.stl`, `.3mf`, `.obj` (`.mtl`) | Meshes for 3D printing and rendering |
+| `.glb` | glTF: a model to show in a web page, a game engine or a renderer, with its colours and names |
 | `.dxf`, `.svg` | Outlines and drawings for laser cutters and drawing programs |
 
 The technical details of every format are in [`file-formats.md`](../file-formats.md), and of the control

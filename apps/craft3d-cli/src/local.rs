@@ -650,14 +650,15 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
             "--view",
             "--projection",
             "--hidden",
+            "--primitives",
         ],
         |name, value| {
             if matches!(name, "--view" | "--projection" | "--hidden") {
                 view.insert(name.trim_start_matches('-').to_string(), value.into());
                 return Ok(());
             }
-            if name == "--quality" {
-                mesh.insert("quality".to_string(), value.into());
+            if matches!(name, "--quality" | "--primitives") {
+                mesh.insert(name.trim_start_matches('-').to_string(), value.into());
                 return Ok(());
             }
             if name == "--angle" {
@@ -706,7 +707,7 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
         .is_some_and(|e| e.eq_ignore_ascii_case("step") || e.eq_ignore_ascii_case("stp"));
     if (native || exact) && (tolerance.is_some() || !mesh.is_empty()) {
         return Err(CliError::Usage(
-            "`--tolerance`, `--quality` and `--angle` apply to mesh output (.stl, .3mf, .obj), not to .3dcraft or STEP"
+            "`--tolerance`, `--quality`, `--angle` and `--primitives` apply to mesh output (.stl, .3mf, .obj, .glb; `--primitives` to .glb alone), not to .3dcraft or STEP"
                 .to_string(),
         ));
     }

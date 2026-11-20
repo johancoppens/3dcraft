@@ -21,6 +21,11 @@
 //!   assignment down to a `COLOUR_RGB`).
 //! - OBJ and MTL: the Wavefront OBJ and MTL format descriptions (`mtllib`,
 //!   `usemtl`, `newmtl`, `Kd`), with `Pr` and `Pm` of the PBR extension.
+//! - glTF 2.0 binary files, with the rules they must keep: [`gltf`], and the
+//!   JSON they hold, from RFC 8259: [`json`].
+
+pub mod gltf;
+pub mod json;
 
 use std::collections::BTreeMap;
 

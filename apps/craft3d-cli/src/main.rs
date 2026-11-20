@@ -72,7 +72,7 @@ Subcommands:
   run        Open or create a document, run --script and --cmd, save with --out
   info       Print a document's state as JSON
   render     Render a document to a PNG (on the GPU when there is one)
-  convert    Convert a .3dcraft file to STEP, STL, 3MF, OBJ, DXF, SVG or .3dcraft
+  convert    Convert a .3dcraft file to STEP, STL, 3MF, OBJ, glTF, DXF, SVG or .3dcraft
   replay     Make a video (MP4, WebM, GIF) or frames of a document being built
   score      Run a script for a task of the task set and print its scorecard
   check-range  Check a Jig over its parameter range; exit 1 if a point fails
@@ -201,6 +201,7 @@ Options:
 
 const HELP_CONVERT: &str = "\
 Usage: craft3d-cli convert IN OUT [--quality Q] [--tolerance T] [--angle A]
+                           [--primitives P]
                            [--sketch S | --face F [--feature B]
                             | --set S [--width W] [--gap G]
                             | --view V [--projection P] [--hidden H]]
@@ -208,10 +209,12 @@ Usage: craft3d-cli convert IN OUT [--quality Q] [--tolerance T] [--angle A]
 Converts the .3dcraft file IN. The extension of OUT picks the format:
 .step or .stp write the bodies' exact geometry, with the document's units,
 tolerance and names; .stl, .3mf or .obj tessellate the bodies and write a
-mesh; .dxf or .svg write the flat outline of a sketch or of a flat face,
-at true size, for laser cutting, or without --sketch, --face or --set a
-drawing of the model as seen (its edges and silhouettes, a projected
-view); .3dcraft writes the document again in the current format version.
+mesh, and .glb a glTF file of them (metres, +Y up, the colours and the
+faces' names), for showing in a browser or a renderer; .dxf or .svg write
+the flat outline of a sketch or of a flat face, at true size, for laser
+cutting, or without --sketch, --face or --set a drawing of the model as
+seen (its edges and silhouettes, a projected view); .3dcraft writes the
+document again in the current format version.
 
 Options:
   --quality Q     For a mesh: coarse, normal (default) or fine, how
@@ -223,6 +226,9 @@ Options:
                   Default: chosen from the size of the model. For .svg:
                   how far the Béziers written for a spline of a degree
                   above 3 may lie from it. Default: the document's
+  --primitives P  For .glb: faces (default: a primitive per face name, the
+                  names in the file) or looks (a primitive per look of a
+                  body: far fewer draw calls for a viewer, no face names)
   --sketch S      For .dxf and .svg: the sketch to draw, by id or name
   --face F        For .dxf and .svg: the flat face to draw, by its name
                   from `info` (faceNames), e.g. 'F2:endCap(e1,e2,e3,e4)'

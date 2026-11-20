@@ -10,6 +10,7 @@ other CAD programs and drawings.*
 | STEP (`.step`, `.stp`) | **Import…** (`file.import`) | **Export…** (`file.export`) | Exact solids, units, names, colours; no history. For other CAD programs |
 | FreeCAD (`.FCStd`), BRep (`.brep`) | **Import…** (`file.import`) | no | The finished objects as exact solids, with their names, places and colours; no history |
 | STL, 3MF, OBJ | no | **Export…** | Triangle meshes, for 3D printing and rendering |
+| glTF (`.glb`) | no | `file.export` (not yet in the export dialog) | Triangles with colours, materials and the names of bodies and faces, in metres: for showing a model in a web page, a game engine or a renderer |
 | DXF, SVG | no | **Export…** | Flat outlines at true size, for laser cutting; or a drawing of the model as seen |
 
 In the window, the **File** menu does all of this with your system's file dialogs. An agent uses the
@@ -92,6 +93,34 @@ yourself; a `tolerance` alone, with no `quality` or `angle`, has no angle criter
 `tolerance`, `angle`, `quality` and how many meshes are `closed` (watertight). A mesh of more than 20
 million triangles, all bodies together, is refused: choose a coarser quality.
 
+## Showing a model: glTF
+
+**glTF** (`.glb`, one binary file) is the format web pages, game engines and renderers load. It carries
+the triangles with their colours and finishes (metallic, roughness, a clear coat, glass), each body as a
+node named after its feature and each face's name, in metres with +Y up as glTF wants (3DCraft's +Z
+becomes glTF's +Y, whatever the document's unit). It is for showing a model, not for making it: STEP
+is the exact model, 3MF the one to print. The export dialog does not offer it yet; an agent, a script or
+`craft3d-cli convert part.3dcraft part.glb` writes it:
+
+```json
+[
+ ["file.export", {"path": "part.glb"}],
+ ["file.export", {"path": "part-fine.glb", "quality": "fine"}],
+ ["file.export", {"path": "part-web.glb", "primitives": "looks"}]
+]
+```
+
+`quality`, `tolerance`, `angle` and `bodies` work as for the other meshes. Each primitive of a body's
+mesh holds the triangles of one face (or of the pieces of one face a cut made) and says the face's name
+in its `extras`, so a program can tell which triangles are which face. For a page shown on phones, take
+`"primitives": "looks"` (`--primitives looks` on the command line): a primitive per colour of each body
+instead of one per face, so a viewer draws a body of a thousand faces in a few calls and the file is
+usually smaller; the triangles are the same, but the faces' names are not in it. What glTF cannot show
+(brushing direction, subsurface scattering, solid textures, the refraction through thick glass) is
+left out and listed in the result's `leftOut`; the colour stays. The file says the document's unit and
+how its axes turn (`asset.extras`), and the result counts the points a model far from the origin loses
+in the file's 32-bit numbers (`mergedPoints`). The details: [`file-formats.md`](../file-formats.md#gltf-glb).
+
 ## Other CAD programs: STEP
 
 Export, then import a STEP file you have (`supplier-part.step` stands for its name):
@@ -105,10 +134,10 @@ Export, then import a STEP file you have (`supplier-part.step` stands for its na
 
 **Export** writes every body as an exact solid (AP214), with the document's unit, each body under its
 feature's name and with its colours. To export some of the bodies, select them in the window, or name them:
-`"bodies": ["Bracket", "F4"]` (also for STL, 3MF and OBJ). A body switched off by its condition (`when`) or
+`"bodies": ["Bracket", "F4"]` (also for STL, 3MF, OBJ and glTF). A body switched off by its condition (`when`) or
 suppressed is left out of the list, so one list serves every option of a Jig; `cut.list` and `cut.export` take
 `bodies` the same way. Without `bodies`, a body hidden in the view (`feature.visible`, the eye in the feature
-list) is left out of STEP, STL, 3MF and OBJ, as a drawing leaves it out, and of the cut list; the result's
+list) is left out of STEP, STL, 3MF, OBJ and glTF, as a drawing leaves it out, and of the cut list; the result's
 `hiddenLeftOut` says which. Named in `bodies`, a hidden body is written all the same. A body named in `bodies`
 and switched off is listed under `switchedOffLeftOut`, as the measures do.
 

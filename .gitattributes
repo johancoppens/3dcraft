@@ -48,3 +48,5 @@ packaging/** text eol=lf
 *.3dcraft binary
 *.3dcraftjig binary
 *.3dcraftasm binary
+# glTF binary, also the golden files under crates/*/tests/golden/ (2026-11-20).
+*.glb binary
