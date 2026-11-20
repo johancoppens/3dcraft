@@ -30,7 +30,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "feature.planeCut",
     "Cut by Planes",
     r#"{"target": id or name, "planes": [plane, ...] where plane is "xy|yz|zx" or datum plane (id or name) or a flat face by name, or {plane: one of those, offset: expr = 0, side: below|above = below, id: number = a new one}, or {point: [expr, expr, expr] = [0, 0, 0], normal: [expr, expr, expr], offset: expr = 0, side: below|above = below, id: number = a new one}, "keep": boolean = false, "name": string = automatic, "when": expr = always on}"#,
-    "Adds a feature whose body is the body of target cut by planes, one side of each kept: what lies on the kept side of every plane (several planes: the intersection of what each keeps). No tool is drawn or sized: the cut reaches as far as the body does. A plane is a base plane, a datum plane (the cut follows it), a flat face of an earlier body by its name (its normal points out of that body), or a point and a normal given as expressions (the point three lengths, the normal three plain numbers or three lengths of any length, so both can follow variables; a plane a x + b y + c z = d is normal [a, b, c] through the point [a d / s, b d / s, c d / s] with s = a a + b b + c c), each moved by offset along its normal. side says what is kept: below (the default) is the side the normal points away from, as measure.below has it, above the side it points to. One plane may be given alone instead of a list; at most 256. The target's body goes into this feature; with keep it keeps its body and this is a cut copy (a kept copy cut once on each side gives both parts). Each plane has an id (given, or the next free one from 1; never one a deleted plane had), and the face it cuts is named by it, \"F9:cut(3)\", so the name stays with its plane when planes are added, deleted or put in another order; a plane that cuts the body in several places gives several faces of that name, and a piece that joins a face of the target lying in the plane is that face, answering to both names. What is left of the target's faces keeps its names with a prefix, \"F9:copy(0)/...\"; a name of the target's body is followed into the cut body by the features after it, as through every feature that takes a body. The result lists the planes under planes ({id, cuts, faces}: whether the cut body has a face of that plane, and how many); one that has none (it does not meet the body, lies in a face of it with the body behind, or what it cut was cut away by the others) changes nothing and is listed under warnings. A plane that leaves nothing of the body fails the feature, naming the plane. The planes are applied in the order given, each a cut of its own: nothing is snapped, so planes that nearly meet in a point leave the small faces between them, and where faces or points come between half and twice the document's tolerance of each other the feature fails with the plane and the faces (planes meant to meet in one point: give them the same point), also for a place a later plane of the list would cut away (put that plane first). Refused as well: a sheet as the target, a face that is not flat, a normal of no length, parts left touching along an edge or in a point. feature.edit changes target, planes (the whole list: a plane given with its id stays that plane; one given without is the plane it equals in every field, else a new plane with a new id) and keep.",
+    "Adds a feature whose body is the body of target cut by planes, one side of each kept: what lies on the kept side of every plane (several planes: the intersection of what each keeps). No tool is drawn or sized: the cut reaches as far as the body does. A plane is a base plane, a datum plane (the cut follows it), a flat face of an earlier body by its name (its normal points out of that body), or a point and a normal given as expressions (the point three lengths, the normal three plain numbers or three lengths of any length, so both can follow variables; a plane a x + b y + c z = d is normal [a, b, c] through the point [a d / s, b d / s, c d / s] with s = a a + b b + c c), each moved by offset along its normal. side says what is kept: below (the default) is the side the normal points away from, as measure.below has it, above the side it points to. One plane may be given alone instead of a list; at most 256. The target's body goes into this feature; with keep it keeps its body and this is a cut copy (a kept copy cut once on each side gives both parts). Each plane has an id (given, or the next free one from 1; never one a deleted plane had), and the face it cuts is named by it, \"F9:cut(3)\", so the name stays with its plane when planes are added, deleted or put in another order; a plane that cuts the body in several places gives several faces of that name, and a piece that joins a face of the target lying in the plane is that face, answering to both names. What is left of the target's faces keeps its names with a prefix, \"F9:copy(0)/...\"; a name of the target's body is followed into the cut body by the features after it, as through every feature that takes a body. The result lists the planes under planes ({id, cuts, faces}): cuts says whether the plane took anything away when it was applied, the planes in the order given (a piece of the body it passes through, or whole parts of a body in several parts that lie beyond it without touching it); faces how many faces of the cut body are pieces of it, which is none for a plane whose face the planes after it cut away and for one that only took whole parts away. A plane that took nothing away (the body the planes before it leave lies wholly on the side it keeps: it does not meet that body, or lies in a face of it with the body behind) changes nothing and is listed under warnings. A plane that leaves nothing of the body fails the feature, naming the plane. The planes are applied in the order given, each a cut of its own: nothing is snapped, so planes that nearly meet in a point leave the small faces between them, and where faces or points come between half and twice the document's tolerance of each other the feature fails with the plane and the faces (planes meant to meet in one point: give them the same point), also for a place a later plane of the list would cut away (put that plane first). Refused as well: a sheet as the target, a face that is not flat, a normal of no length, parts left touching along an edge or in a point, and a plane placed by a datum or a face of a feature that is switched off (the whole cut fails, naming the plane: a plane cannot be left out by a condition yet). feature.edit changes target, planes (the whole list: a plane given with its id stays that plane; one given without is the plane it equals in every field, else a new plane with a new id) and keep.",
     doc: true,
     names: ["planes"],
     feature_plane_cut
@@ -252,26 +252,31 @@ pub(crate) fn edit(doc: &Document, p: &Params, cut: &mut PlaneCut) -> Result<(),
     Ok(())
 }
 
-/// What each plane of a cut left, into a feature's result: `planes`, per
-/// plane its id, whether the cut body has a face of it and how many.
+/// What each plane of a cut did, into a feature's result: `planes`, per
+/// plane its id, whether it took anything away when it was applied (in
+/// the order of the list) and how many faces of the cut body are pieces
+/// of it. A plane that cut can have none: the planes after it cut its
+/// face away, or it took away only lumps it does not pass through.
 pub(crate) fn report_json(map: &mut Map<String, Value>, reports: &[CutReport]) {
     let planes: Vec<Value> = reports
         .iter()
-        .map(|r| json!({ "id": r.id, "cuts": r.faces > 0, "faces": r.faces }))
+        .map(|r| json!({ "id": r.id, "cuts": r.cuts, "faces": r.faces }))
         .collect();
     map.insert("planes".into(), planes.into());
 }
 
-/// [`report_json`], and under `warnings` every plane the cut body has no
-/// face of.
+/// [`report_json`], and under `warnings` every plane that changed
+/// nothing: one that took nothing away when it was applied. A plane that
+/// took something away and left no face of its own changed the body, and
+/// is no warning.
 pub(crate) fn report_with_warnings(map: &mut Map<String, Value>, reports: &[CutReport]) {
     report_json(map, reports);
     let idle: Vec<Value> = reports
         .iter()
-        .filter(|r| r.faces == 0)
+        .filter(|r| !r.cuts)
         .map(|r| {
             format!(
-                "plane {} cuts nothing: the body has no face of it (it does not meet the body, lies in a face of it with the body behind, or what it cut was cut away by the other planes)",
+                "plane {} changes nothing: the body, as the planes before it in the list leave it, lies wholly on the side it keeps (the plane does not meet it, or lies in a face of it with the body behind)",
                 r.id
             )
             .into()

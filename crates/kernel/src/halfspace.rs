@@ -203,7 +203,20 @@ pub fn keep_below(
         Tool::Whole => return Ok(Kept::Whole),
         Tool::Block(block) => block,
     };
-    let result = boolean_with(body, &block, BooleanOp::Intersect, tolerance, options)?;
+    kept_in(body, &block, tolerance, options)
+}
+
+/// [`keep_below`] with the block given: `block` is what [`tool`] makes
+/// for `body`, its face [`CAP`] in the plane. Apart so that a test can
+/// hand in a block that does not hold the body, which [`tool`] never
+/// makes.
+fn kept_in(
+    body: &Body,
+    block: &Body,
+    tolerance: &Tolerance,
+    options: &BooleanOptions,
+) -> Result<Kept, KernelError> {
+    let result = boolean_with(body, block, BooleanOp::Intersect, tolerance, options)?;
     let far = |source: &FaceSource| source.operand == Operand::B && source.face != CAP;
     if result.faces.iter().any(far) || result.merged.iter().flatten().any(far) {
         return Err(refused(craft3d_math::bug_text!(
@@ -294,5 +307,42 @@ mod tests {
             tool(&sheet, &on, &tolerance),
             Err(KernelError::Unsupported { .. })
         ));
+    }
+
+    /// A block that does not hold the body, which [`tool`] never makes,
+    /// leaves a side of its own in the result: that is refused in the
+    /// words of a bug, never returned as the body cut short. The block
+    /// [`tool`] makes for the same plane is taken, and cuts the cube at
+    /// half its height.
+    #[test]
+    fn a_block_that_does_not_hold_the_body_is_refused() {
+        for k in [1e-3, 1.0, 1e6] {
+            let tolerance = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+            let options = BooleanOptions::default();
+            let body = cube(10.0 * k);
+            let half = Frame::new(Vec3::new(0.0, 0.0, 5.0 * k), Vec3::Z, Vec3::X).unwrap();
+            let Tool::Block(good) = tool(&body, &half, &tolerance).unwrap() else {
+                panic!("the plane crosses the cube at scale {k}");
+            };
+            let Ok(Kept::Cut(result)) = kept_in(&body, &good, &tolerance, &options) else {
+                panic!("scale {k}: the cube is not cut");
+            };
+            assert_eq!(result.body.faces.len(), 6, "scale {k}");
+            // Its top in the same plane, but reaching over a quarter of
+            // the cube only: its sides x = 6 and y = 6 pass through the
+            // cube.
+            let corner =
+                Frame::new(Vec3::new(-4.0 * k, -4.0 * k, -5.0 * k), Vec3::Z, Vec3::X).unwrap();
+            let short = block(&corner, 10.0 * k, 10.0 * k, 10.0 * k).unwrap();
+            match kept_in(&body, &short, &tolerance, &options) {
+                Err(KernelError::Refused { reason, .. }) => {
+                    assert!(
+                        reason.contains("did not hold the body"),
+                        "scale {k}: {reason}"
+                    );
+                }
+                other => panic!("scale {k}: a body cut short was not refused: {other:?}"),
+            }
+        }
     }
 }

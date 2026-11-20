@@ -446,6 +446,109 @@ fn a_plane_between_two_lumps_takes_the_one_above_it_away() {
     }
 }
 
+/// A block of 40 × 30 × 20 with a closed hollow of 20 × 10 × 10 in its
+/// middle: two shells. A plane through the hollow opens it: one shell,
+/// the cut face a ring, either side the same by symmetry. A plane over
+/// the hollow, through solid only, leaves the hollow whole under it (two
+/// shells) and a plain slab over it.
+#[test]
+fn a_body_with_a_cavity_is_cut_through_it_and_past_it() {
+    for k in SCALES {
+        let hollow = boxed(k, [10.0, 10.0, 5.0], [30.0, 20.0, 15.0]);
+        let body = solve(&slab(k), &hollow, BooleanOp::Subtract, k).body;
+        assert_eq!(body.shells.len(), 2, "scale {k}");
+        assert_measures(&body, SLAB_VOLUME - 2000.0, SLAB_AREA + 1000.0, k, "hollow");
+        // Through the middle of the hollow: 40 × 30 × 10 less 20 × 10 × 5;
+        // the bottom, the walls, the ring (1200 − 200), and of the hollow
+        // its floor and half its walls.
+        let across = plane(k, [0.0, 0.0, 10.0], [0.0, 0.0, 1.0]);
+        for side in [across, turned(&across)] {
+            let half = below(&body, &side, k);
+            assert_eq!(half.shells.len(), 1, "scale {k}");
+            assert_measures(
+                &half,
+                11_000.0,
+                1200.0 + 1400.0 + 1000.0 + 200.0 + 300.0,
+                k,
+                "through the hollow",
+            );
+        }
+        // Over the hollow, at 17.
+        let over = plane(k, [0.0, 0.0, 17.0], [0.0, 0.0, 1.0]);
+        let low = below(&body, &over, k);
+        assert_eq!(low.shells.len(), 2, "scale {k}");
+        assert_measures(
+            &low,
+            40.0 * 30.0 * 17.0 - 2000.0,
+            2400.0 + 140.0 * 17.0 + 1000.0,
+            k,
+            "under a plane over the hollow",
+        );
+        let high = below(&body, &turned(&over), k);
+        assert_eq!(high.shells.len(), 1, "scale {k}");
+        assert_measures(&high, 3600.0, 2400.0 + 140.0 * 3.0, k, "the slab over it");
+        // On the slant through the hollow: the two sides add up.
+        let slant = plane(k, [20.0, 15.0, 10.0], [0.3, -0.2, 1.0]);
+        let (under, above) = (below(&body, &slant, k), below(&body, &turned(&slant), k));
+        assert_close(
+            mass(&under).volume + mass(&above).volume,
+            (SLAB_VOLUME - 2000.0) * k * k * k,
+            "the two sides of a slant through the hollow",
+        );
+    }
+}
+
+/// Two lumps, 10 × 10 × 10 each and 10 apart, the right one with a closed
+/// hollow of 6 × 6 × 6: three shells. A plane between them takes one lump
+/// away whole, with its hollow when it is the right one, and no face of
+/// what is left is a piece of the plane. A plane through the right lump's
+/// hollow leaves the left lump as it was and opens the hollow.
+#[test]
+fn a_plane_between_two_lumps_takes_a_lump_with_its_cavity() {
+    for k in SCALES {
+        let bar = boxed(k, [0.0, 0.0, 0.0], [30.0, 10.0, 10.0]);
+        let hollow = boxed(k, [22.0, 2.0, 2.0], [28.0, 8.0, 8.0]);
+        let gap = boxed(k, [10.0, -1.0, -1.0], [20.0, 11.0, 11.0]);
+        let hollowed = solve(&bar, &hollow, BooleanOp::Subtract, k).body;
+        let lumps = solve(&hollowed, &gap, BooleanOp::Subtract, k).body;
+        assert_eq!(lumps.shells.len(), 3, "scale {k}");
+        assert_measures(&lumps, 2000.0 - 216.0, 1200.0 + 216.0, k, "two lumps");
+        let between = plane(k, [15.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        for (side, shells, volume, area) in [
+            (between, 1, 1000.0, 600.0),
+            (turned(&between), 2, 784.0, 816.0),
+        ] {
+            let kept = match cut(&lumps, &side, k) {
+                Ok(Kept::Cut(result)) => {
+                    let result = *result;
+                    assert!(
+                        result.faces.iter().all(|s| s.operand == Operand::A),
+                        "scale {k}: a face of the plane where it touches nothing"
+                    );
+                    result.body
+                }
+                Ok(Kept::Whole) => panic!("scale {k}: both lumps kept"),
+                Err(e) => panic!("scale {k}: {e}"),
+            };
+            assert_eq!(check(&kept, &tolerance(k)), [], "scale {k}");
+            assert_eq!(kept.shells.len(), shells, "scale {k}");
+            assert_measures(&kept, volume, area, k, "one lump of two");
+        }
+        // Through the hollow, at x = 25: the left lump whole, and of the
+        // right one 5 × 10 × 10 less 3 × 6 × 6, the hollow open to the cut.
+        let through = plane(k, [25.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        let kept = below(&lumps, &through, k);
+        assert_eq!(kept.shells.len(), 2, "scale {k}");
+        assert_measures(
+            &kept,
+            1000.0 + 500.0 - 108.0,
+            600.0 + (100.0 + 200.0 + 64.0) + (36.0 + 72.0),
+            k,
+            "a lump whole and a lump cut through its hollow",
+        );
+    }
+}
+
 /// Several planes in turn are the intersection of what each keeps,
 /// whatever the order: a gable roof on the block, eaves at 12 and the
 /// ridge at 20.

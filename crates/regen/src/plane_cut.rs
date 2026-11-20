@@ -290,7 +290,7 @@ fn explain(
 }
 
 /// The body of the target cut by the planes, its names, and per plane
-/// what it left ([`CutReport`]).
+/// what it did ([`CutReport`]).
 pub(crate) fn build(
     doc: &Document,
     variables: &Evaluation,
@@ -327,13 +327,19 @@ pub(crate) fn build(
     let names = target.names.as_deref();
     let mut running = Running::start(feature, whole, names)?;
     let mut body: Cow<'_, Body> = Cow::Borrowed(whole.as_ref());
+    // Per plane: its frame, and whether it took anything away at its turn.
+    let mut applied: Vec<(Frame, bool)> = Vec::with_capacity(cut.planes.len());
     for (index, plane) in cut.planes.iter().enumerate() {
         let frame = frame_of(doc, variables, earlier, index, plane)?;
         match keep_below(&body, &frame, &tolerance, &options) {
-            Ok(halfspace::Kept::Whole) => {}
+            Ok(halfspace::Kept::Whole) => applied.push((frame, false)),
             Ok(halfspace::Kept::Cut(result)) => {
+                // A piece of the plane is in the body, or lumps wholly
+                // beyond the plane are gone from it: either way the body
+                // is another.
                 running = running.after(feature, plane.id, &result)?;
                 body = Cow::Owned(result.body);
+                applied.push((frame, true));
             }
             Err(error) => {
                 return Err(explain(
@@ -351,13 +357,16 @@ pub(crate) fn build(
     let reports: Vec<CutReport> = cut
         .planes
         .iter()
-        .map(|plane| CutReport {
+        .zip(&applied)
+        .map(|(plane, &(frame, cuts))| CutReport {
             id: plane.id,
+            cuts,
             faces: running
                 .planes
                 .iter()
                 .filter(|ids| ids.contains(&plane.id))
                 .count(),
+            frame,
         })
         .collect();
     let cut_any = matches!(body, Cow::Owned(_));

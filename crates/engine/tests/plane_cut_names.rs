@@ -594,7 +594,10 @@ fn another_target_keeps_the_planes_names_and_fails_the_old_targets() {
 /// The review's (2026-11-20): a plane added that cuts a named face away
 /// whole (y ≥ 16 leaves only the north slope). What was placed by the
 /// south slope fails with its name; what lies on the north slope stays
-/// where it was; the south slope's plane is reported as leaving no face.
+/// where it was; the south slope's plane is reported as leaving no face
+/// (it cut when it was applied, and the plane after it cut its face away:
+/// `cuts` with no face, since the review's second round; before, `cuts`
+/// said whether a face was left).
 #[test]
 fn a_plane_that_cuts_a_named_face_away_fails_what_was_placed_by_it() {
     for k in SCALES {
@@ -613,7 +616,7 @@ fn a_plane_that_cuts_a_named_face_away_fails_what_was_placed_by_it() {
         assert_eq!(
             result["planes"],
             json!([
-                {"id": 1, "cuts": false, "faces": 0},
+                {"id": 1, "cuts": true, "faces": 0},
                 {"id": 2, "cuts": true, "faces": 1},
                 {"id": 3, "cuts": true, "faces": 1},
             ]),
@@ -717,5 +720,99 @@ fn two_ridges_between_the_same_planes_are_told_apart_by_the_faces_near_them() {
             json!({"edges": [bare], "radius": 2.0 * k, "name": "Bare"}),
         );
         assert!(reason.contains(bare), "{reason}");
+    }
+}
+
+/// The frame of a cut face is the plane's own, also where the face is
+/// found by its alias (the review's second round, 2026-11-20). A stepped
+/// block cut at its shoulder by a plane given through (25, 7, 10): the
+/// piece the plane cuts joins the base's top, a face of the target, whose
+/// own origin is another point. A sketch and a datum plane on
+/// `Level:cut(1)` have the plane's point as their origin, and when the
+/// plane is moved down by 1 they move down by 1 and not sideways (before:
+/// the target face's origin, (0, 0, 10), and a jump of 26 sideways when
+/// the plane left the face).
+#[test]
+fn a_cut_face_found_by_its_alias_has_the_planes_own_frame() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": [40.0 * k, 30.0 * k, 10.0 * k], "name": "Base"}),
+        );
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": [20.0 * k, 30.0 * k, 10.0 * k], "position": [0.0, 0.0, 10.0 * k], "name": "Step"}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "union", "target": "Base", "tool": "Step", "name": "Stepped"}),
+        );
+        built(
+            &mut s,
+            CUT,
+            json!({"target": "Stepped", "planes": [plane(k, 1, [25.0, 7.0, 10.0], [0.0, 0.0, 1.0])], "name": "Level"}),
+        );
+        // The top is the target's face, answering to the plane's name.
+        let level = body(&mut s, "Level");
+        assert!(
+            !names_of(&level).contains(&"F4:cut(1)".to_string()),
+            "{level}"
+        );
+        assert!(level["faceAliases"].to_string().contains("F4:cut(1)"));
+        let sketch = built(
+            &mut s,
+            "sketch.create",
+            json!({"face": "Level:cut(1)", "name": "OnTop"}),
+        );
+        println!(
+            "alias: scale {k}: the sketch on the joined face: {}",
+            sketch["frame"]
+        );
+        assert_eq!(
+            sketch["frame"],
+            json!({"origin": [25.0 * k, 7.0 * k, 10.0 * k], "x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0]}),
+            "scale {k}: {sketch}"
+        );
+        let datum = built(
+            &mut s,
+            "datum.plane",
+            json!({"from": "Level:cut(1)", "distance": 0, "name": "OnIt"}),
+        );
+        assert_eq!(
+            datum["datum"]["origin"],
+            json!([25.0 * k, 7.0 * k, 10.0 * k]),
+            "scale {k}: {datum}"
+        );
+        // The plane 1 lower: a face of its own now, and what was placed
+        // went down with it, not sideways.
+        run(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Level", "planes": [plane(k, 1, [25.0, 7.0, 9.0], [0.0, 0.0, 1.0])]}),
+        );
+        let lower = body(&mut s, "Level");
+        assert!(
+            names_of(&lower).contains(&"F4:cut(1)".to_string()),
+            "{lower}"
+        );
+        let moved = run(&mut s, "sketch.inspect", json!({"sketch": "OnTop"}));
+        println!(
+            "alias: scale {k}: the sketch after the plane moved: {}",
+            moved["frame"]
+        );
+        assert_eq!(
+            moved["frame"],
+            json!({"origin": [25.0 * k, 7.0 * k, 9.0 * k], "x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0]}),
+            "scale {k}: {moved}"
+        );
+        assert_eq!(
+            feature(&mut s, "OnIt")["datum"]["origin"],
+            json!([25.0 * k, 7.0 * k, 9.0 * k]),
+        );
     }
 }

@@ -966,15 +966,27 @@ pub struct ThreadReport {
     pub tap_drill: Option<f64>,
 }
 
-/// What one plane of a plane cut left (`craft3d_doc::CutPlane`), as built.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What one plane of a plane cut did (`craft3d_doc::CutPlane`), as built.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CutReport {
     /// The plane's id in its feature: its face is `F9:cut(id)`.
     pub id: u32,
+    /// Whether the plane took anything away when it was applied, the
+    /// planes in the order of the list: a piece of the body it passes
+    /// through, or whole lumps of it that lie beyond the plane without
+    /// touching it. False: the body, as the planes before it left it, lay
+    /// wholly on the side kept, and the plane changed nothing.
+    pub cuts: bool,
     /// How many faces of the cut body are pieces of this plane (named by
-    /// it, or answering to its name as an alias). None: the plane cuts
-    /// nothing, or what it cut was cut away by the other planes.
+    /// it, or answering to its name as an alias). None although it cut:
+    /// the planes after it cut its face away, or it took away only lumps
+    /// it does not pass through.
     pub faces: usize,
+    /// The plane as it was applied: its origin on the plane, moved by its
+    /// offset, its z axis pointing to the side cut away, out of the body
+    /// that is left. The frame of the face it leaves, by whichever of its
+    /// names the face is found.
+    pub frame: craft3d_math::Frame,
 }
 
 /// Where a fillet fades, as built (`craft3d_doc::FilletFade`): the point

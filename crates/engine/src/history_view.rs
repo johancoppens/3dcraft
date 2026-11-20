@@ -712,6 +712,37 @@ mod tests {
         assert!(!view.variables[0].formula);
     }
 
+    /// A cut by planes shows how many planes it has, and uses its target.
+    #[test]
+    fn a_cut_by_planes_shows_how_many_planes_it_has() {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Part", "size": [40, 30, 20]}),
+        );
+        run(
+            &mut s,
+            "feature.planeCut",
+            json!({"name": "Bevel", "target": "Part", "keep": true,
+                "planes": {"point": [30, 0, 20], "normal": [1, -1, 1]}}),
+        );
+        run(
+            &mut s,
+            "feature.planeCut",
+            json!({"name": "Roof", "target": "Part", "planes": [
+                {"point": [0, 0, 12], "normal": [0, -8, 15]},
+                {"point": [40, 30, 12], "normal": [0, 8, 15]}]}),
+        );
+        let view = s.history_view().unwrap();
+        assert_eq!(key(&view, "Bevel"), "1 plane");
+        assert_eq!(key(&view, "Roof"), "2 planes");
+        let find = |name: &str| view.features.iter().find(|f| f.name == name).unwrap();
+        assert_eq!(find("Roof").uses, vec![find("Part").id.clone()]);
+        assert_eq!(find("Roof").edit, None);
+    }
+
     /// An extrusion, its sketch's curves, a fillet; formulas and groups.
     #[test]
     fn extrusions_sketches_fillets_and_variables() {
