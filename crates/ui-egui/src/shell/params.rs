@@ -1119,7 +1119,8 @@ impl Shell {
     /// state. Part of every sync.
     pub(super) fn sync_params(&mut self, session: &mut Session) {
         let doc = session.document_status().map(|s| s.id);
-        self.params.at_rest = session.assembly_at_rest();
+        // Asked below, for a form only.
+        self.params.at_rest = craft3d_engine::AssemblyAtRest::Part;
         let form = &mut self.params;
         let on_player = std::mem::take(&mut form.opens_on_player);
         if doc != form.doc {
@@ -1175,6 +1176,12 @@ impl Shell {
             }
             form.list = Some(list);
             form.read_for = Some((doc, revision));
+        }
+        // The verdict at rest only where a form reads it (public
+        // parameters): asking may place the state at rest, which nothing
+        // else of an assembly without a form needs.
+        if form.list.as_ref().is_some_and(|l| l.jig) {
+            self.params.at_rest = session.assembly_at_rest();
         }
         let (faults, measuring) = self.faults_now();
         let form = &mut self.params;

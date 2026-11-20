@@ -1215,3 +1215,55 @@ fn a_source_followed_during_a_moment_leaves_the_form_its_verdict() {
         "{said}"
     );
 }
+
+/// The verdict at rest is asked for only where a form reads it (round
+/// four): an assembly without public parameters has nothing in a form's
+/// place (`parameters.status` null), and one with them gets its verdict.
+/// A moment shown after a state change places the state at rest once,
+/// form or not, and the form's asking adds no placement of its own: the
+/// motion's state is made from the state at rest
+/// (`make_motion_state` › `scrubbed_regen` › `OpenDocument::placed`).
+#[test]
+fn only_a_form_asks_for_the_verdict_at_rest() {
+    let mut placed = Vec::new();
+    for with_form in [false, true] {
+        let mut s = session(&format!("ask-{with_form}"));
+        hinged(&mut s);
+        run(&mut s, "variable.set", json!({ "name": "t", "expr": "0" }));
+        run(
+            &mut s,
+            "variable.set",
+            json!({ "name": "Hinge_angle", "expr": "90 deg * t" }),
+        );
+        run(
+            &mut s,
+            "variable.set",
+            json!({ "name": "spare", "expr": "1 mm" }),
+        );
+        if with_form {
+            run(
+                &mut s,
+                "variable.publish",
+                json!({ "name": "spare", "min": "0 mm", "max": "10 mm" }),
+            );
+        }
+        let (mut shell, mut window) = shown(&mut s);
+        run(&mut s, "view.motion", json!({ "t": 0.5 }));
+        window.frames(&mut shell, &mut s);
+        // A state change while the moment is shown.
+        run(&mut s, "document.info", json!({ "title": "Rig" }));
+        let before = s.work_here().placements;
+        window.frames(&mut shell, &mut s);
+        let header = form(&mut shell, &mut s);
+        placed.push(s.work_here().placements - before);
+        assert!(s.motion().is_some(), "{with_form}: the moment is shown");
+        if with_form {
+            assert_eq!(header["status"], "Valid", "{header}");
+        } else {
+            assert_eq!(header["jig"], false, "{header}");
+            assert_eq!(header["status"], Value::Null, "{header}");
+        }
+    }
+    assert_eq!(placed[0], placed[1], "the form's asking placed: {placed:?}");
+    assert!(placed[0] <= 1, "{placed:?}");
+}
