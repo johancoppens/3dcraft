@@ -151,7 +151,7 @@ The **File** menu:
 | **Save** | Ctrl+S | Saves to the document's file (asks for a name the first time) |
 | **Save As…** | Ctrl+Shift+S | Saves under a new name |
 | **Import…** | Ctrl+I | Reads a STEP file or a FreeCAD document into the document |
-| **Export…** | Ctrl+E | Writes STEP, STL, 3MF, OBJ, DXF or SVG ([Files, export and drawings](files.md)) |
+| **Export…** | Ctrl+E | Writes STEP, STL, 3MF, OBJ, glTF, DXF or SVG ([Files, export and drawings](files.md)) |
 | **Export as Jig…** | | Publishes a document with parameters as a `.3dcraftjig` ([Making Jigs](making-jigs.md)) |
 | **Open recent** | | The last ten files opened or saved, by you or by an agent, newest first; **Clear recent** empties the list |
 | **Close** | Ctrl+W | Closes the active tab |

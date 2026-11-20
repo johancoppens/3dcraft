@@ -36,7 +36,10 @@
 //! {params}]` or `{"command": id, "params": {...}}`) after the documents
 //! are opened, as an agent would (a variable, a failing edit, a
 //! selection); with `--actor NAME` they run as that agent's, each with the
-//! `intent` its step gives, so the Agent tab and the ✦ show. `--agents FILE` sets how agents stand from FILE (an
+//! `intent` its step gives, so the Agent tab and the ✦ show; with
+//! `--said` the status bar says what the last step answered, as the
+//! window says what the person did (`answer::summary`: `Exported part ·
+//! glTF cannot show: …` after a `file.export`). `--agents FILE` sets how agents stand from FILE (an
 //! `AgentsStatus` as `ui.get` gives it under `agents`, with `home` for
 //! the `~`), so the pill, its popover and the questions show; the
 //! agents' clock is then the clients' latest command plus half a second.
@@ -63,7 +66,7 @@ use serde_json::json;
 
 const DEFAULT_SIZE: [u32; 2] = [1280, 800];
 
-const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] [--subject NAME] [--run FILE] [--actor NAME] [--agents FILE] [--whats-new FILE,VERSION,SEEN] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
+const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] [--click X,Y] [--dialog export:NAME|error:TEXT] [--recent FILE] [--subject NAME] [--run FILE] [--said] [--actor NAME] [--agents FILE] [--whats-new FILE,VERSION,SEEN] FILE.3dcraft [FILE.3dcraft | untitled | none ...] OUT.png";
 
 /// The release notes of `--whats-new FILE,VERSION,SEEN`.
 fn whats_new(spec: &str) -> Result<Option<craft3d_ui_egui::shell::WhatsNew>, String> {
@@ -104,6 +107,7 @@ fn main() -> Result<(), String> {
     let mut recent = None;
     let mut subject: Option<String> = None;
     let mut run: Option<String> = None;
+    let mut said = false;
     let mut agents: Option<craft3d_ui_egui::AgentsStatus> = None;
     let mut actor: Option<String> = None;
     let mut notes: Option<craft3d_ui_egui::shell::WhatsNew> = None;
@@ -118,6 +122,7 @@ fn main() -> Result<(), String> {
         match arg.as_str() {
             "--idle" => idle = true,
             "--first" => first = true,
+            "--said" => said = true,
             "--active" => active = Some(number("--active")?),
             "--edit" => edit = Some(number("--edit")?),
             "--ask" => ask = Some(number("--ask")?),
@@ -267,6 +272,8 @@ fn main() -> Result<(), String> {
             json!({ "document": document }),
         )?;
     }
+    // The last step of `--run` and its answer, for `--said`.
+    let mut last_step: Option<(String, Result<serde_json::Value, String>)> = None;
     if let Some(file) = &run {
         let text = std::fs::read_to_string(file).map_err(|e| format!("--run {file}: {e}"))?;
         let steps: serde_json::Value =
@@ -288,15 +295,29 @@ fn main() -> Result<(), String> {
             session.set_intent(step.get("intent").and_then(serde_json::Value::as_str));
             // A step may fail on purpose (an edit that breaks a feature):
             // said, and the run goes on.
-            if let Err(e) = execute(&mut session, command, params) {
+            let answer = session.execute(command, &params).map_err(|e| e.to_string());
+            if let Err(e) = &answer {
                 eprintln!("--run: {command}: {e}");
             }
+            last_step = Some((command.to_string(), answer));
         }
     }
     session.set_actor(None);
     session.set_refine_elsewhere(first);
     let mut shell = Shell::new();
     shell.attach_gpu(&state)?;
+    // What the last step answered, in the status bar as the window says
+    // what the person did.
+    if said && let Some((label, answer)) = &last_step {
+        shell.last_command = Some(craft3d_ui_egui::CommandReport {
+            label: label.clone(),
+            ok: answer.is_ok(),
+            text: match answer {
+                Ok(result) => craft3d_ui_egui::answer::summary(label, result),
+                Err(e) => e.clone(),
+            },
+        });
+    }
     if let Some(recent) = recent {
         shell.set_recent_files(recent);
     }
