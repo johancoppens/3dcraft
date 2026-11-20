@@ -266,9 +266,13 @@ impl Generator {
         let n = bodies.len();
         let name = format!("N{k}");
         // Drawn for every group, with a body in the document or not, from
-        // the cuts' own stream: which groups can be cuts is the seed's
-        // alone, and every other group draws from `rng` what it drew before
-        // the step was added.
+        // the cuts' own stream: up to the first cut, which groups can be
+        // cuts is the seed's alone, and every other group draws from `rng`
+        // what it drew before the step was added. A cut draws nothing from
+        // `rng`, so the groups after it draw what the group it took the
+        // place of would have drawn; and how many numbers it takes from
+        // `cuts` hangs on the document (its bodies, faces, vertices and
+        // flat faces), so which later groups are cuts does too.
         let drawn = self.cuts.chance(CUT_PERCENT);
         let (step, commands) = if drawn && n > 0 {
             ("planeCut", self.plane_cut(runner, &bodies, &name))

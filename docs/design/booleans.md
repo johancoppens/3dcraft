@@ -975,3 +975,9 @@ So each part that is kept has a test that fails without it, and neither part tak
 *For whoever gives planes:* numbers from a computation unrounded, and a plane through a side of an outline with a normal exactly square to that side from the side's own numbers ([`plane-cut.md`](plane-cut.md) › *Planes from measured data*; the guide says so). That avoids the state; it does not mend the words.
 
 **Owed:** the refusal with its place, faces and tolerance (or the cut) at every distance of the sweep; the ignored test `a_block_whose_top_passes_a_vertex_by_less_than_a_tolerance_cuts_or_says_where` holds it and prints the table. The distances that build today are held by the test beside it.
+
+### A plane cut the boolean's own check refused as an invalid body: owed (2026-11-20, fuzz seeds 118385 and 115098)
+
+*Found* by the plane cut's step of the random designs ([`plane-cut.md`](plane-cut.md) › *As built: the machines*; Heavy 44825476736): two cuts refused as *"boolean produced an invalid body"*, the boolean's own check of what it had made, so nothing invalid was handed on and each group counted as a refusal, not a finding. Seed 118385 (scale 1e3, tolerance 1e-3), group 1, at the cut's second plane: *"edge 1 is used 1 times …; edge 3 is used 1 times …; Euler-Poincaré fails: V - E + F - R = 3 - 4 + 2 - 0"*, a piece of two faces left open. Seed 115098 (scale 1), group 5, at the cut's first plane: *"edge 14 is used 1 times …; Euler-Poincaré fails: V - E + F - R = 10 - 15 + 7 - 1"*. Not reduced (the fuzzer shrinks findings, not refusals): each seed is its reproducer, `craft3d-fuzz seed N`, the cut at the group named.
+
+**Owed:** both reduced to a body and the planes that cut it (or to plain booleans, as the plane past a vertex above), the cause traced, and the cut built or refused in words that name the place.

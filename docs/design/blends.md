@@ -81,6 +81,12 @@ Conditions that exist for one configuration and are not (yet) a general method. 
 
 **Owed:** the fillet of a cylinder's rim at every document tolerance (other closed rims not tried); if the cause is the one inferred above, the boolean that cuts a fillet must not refuse at the fillet's own tangent joins. The same test's subtract where a deck crosses a torus-to-wall tangent circle (refused as *"tangent contact of higher order"*, at 0.02 to 0.002 mm) may be the same nearness; it was not reduced.
 
+## A chamfer that loses track of an entity: owed (2026-11-20, fuzz seeds 109228 and 117254)
+
+*Found* by the random designs' 30-minute run of the plane cut's machines (Heavy 44825476736, [`plane-cut.md`](plane-cut.md) › *As built: the machines*): a chamfer fails with a bug the code caught itself, *"the chamfer lost track of an entity"* (`kernel::blend`, `Reason::Lost`), where it must be built or refused with a reason. Seed 109228 (scale 1e-3, tolerance 1e-9): a cone's rim chamfered, cut by four planes to a slab, the slab taken out of a slanted cylinder, and the edge between the cylinder's end and the slab's cut face chamfered by 0.005, more than the slab is thick. Seed 117254 (scale 1): a block's chamfered edges patterned five times round an axis, cut by an extrusion, filleted, and three edges chamfered by 5; it has no plane cut, so the fault is the chamfer's. Both shrunk designs are `crates/engine/tests/chamfer.rs` › `a_chamfer_never_loses_track_of_an_entity`, ignored as owed (run alone it fails on both with the bug's words, Check 44832050033). Cause not traced.
+
+**Owed:** the chamfer built, or refused with a reason, on both designs; then the test's `#[ignore]` comes off.
+
 ## Findings
 
 > The findings were moved from `docs/architecture.md` on 2026-10-15 (§ numbers in older text are that file's before the split; [README.md](README.md) says where each is now) and shortened to what still describes live code on 2026-10-17.
