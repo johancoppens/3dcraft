@@ -142,10 +142,43 @@ fn wing(lift: f64, slope: f64, taper: f64) -> Session {
     s
 }
 
+/// A body's volume with how far off it can be by the integrator's own
+/// account, and its counts of shells, faces, edges and vertices.
+fn measured(s: &mut Session, body: &str) -> ((f64, f64), [u64; 4]) {
+    let out = run(
+        s,
+        "document.measure",
+        json!({"feature": body, "inertia": false, "bound": true}),
+    );
+    let volume = (
+        out["volume"].as_f64().unwrap(),
+        out["volumeBound"].as_f64().unwrap(),
+    );
+    let out = run(s, "document.inspect", json!({"measures": false}));
+    let found = out["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["name"] == body)
+        .unwrap_or_else(|| panic!("no body {body}: {out}"));
+    let count = |what: &str| found[what].as_u64().unwrap();
+    (
+        volume,
+        [
+            count("shells"),
+            count("faces"),
+            count("edges"),
+            count("vertices"),
+        ],
+    )
+}
+
 /// The spar is clear of the rib by its fit in the notch, by every way of
 /// asking: the distance between them (which asks no boolean), the
-/// interference check, their intersection (nothing) and their union (two
-/// lumps, the volume of both).
+/// interference check, their intersection (nothing) and their union: two
+/// shells with the faces, edges and vertices of both, nothing imprinted
+/// and nothing lost, and the volume of both as far as the measure tells
+/// (the rib's spline skin leaves it a bound of a few cubic millimetres).
 fn clear_in_the_notch(s: &mut Session, what: &str) -> Result<(), String> {
     let out = run(s, "measure.clearance", json!({"from": "Spar", "to": "Rib"}));
     let gap = out["clearance"].as_f64();
@@ -163,16 +196,7 @@ fn clear_in_the_notch(s: &mut Session, what: &str) -> Result<(), String> {
             out["pairs"][0]["status"], out["pairs"][0]["reason"]
         ));
     }
-    let volume = |s: &mut Session, body: &str| {
-        run(
-            s,
-            "document.measure",
-            json!({"feature": body, "inertia": false}),
-        )["volume"]
-            .as_f64()
-            .unwrap()
-    };
-    let (spar, rib) = (volume(s, "Spar"), volume(s, "Rib"));
+    let (spar, rib) = (measured(s, "Spar"), measured(s, "Rib"));
     let common = s.execute(
         "feature.boolean",
         &json!({"op": "intersect", "target": "Spar", "tool": "Rib", "name": "Common"}),
@@ -194,10 +218,19 @@ fn clear_in_the_notch(s: &mut Session, what: &str) -> Result<(), String> {
         Ok(out) if out["status"] == "ok" => {}
         _ => return Err(format!("{what}: the union: {both:?}")),
     }
-    let all = volume(s, "Both");
-    if !((all - spar - rib).abs() <= 1e-6 * (spar + rib)) {
+    let all = measured(s, "Both");
+    let counts: Vec<u64> = spar.1.iter().zip(rib.1).map(|(a, b)| a + b).collect();
+    if spar.1[0] != 1 || rib.1[0] != 1 || all.1.as_slice() != counts.as_slice() {
         return Err(format!(
-            "{what}: the union's volume {all}, not {spar} + {rib}"
+            "{what}: the union's shells, faces, edges and vertices {:?}, not those of {:?} and {:?}",
+            all.1, spar.1, rib.1
+        ));
+    }
+    let (sum, bound) = (spar.0.0 + rib.0.0, spar.0.1 + rib.0.1 + all.0.1);
+    if !((all.0.0 - sum).abs() <= bound + 1e-9 * sum) {
+        return Err(format!(
+            "{what}: the union's volume {} is not {} + {} within {bound}",
+            all.0.0, spar.0.0, rib.0.0
         ));
     }
     Ok(())

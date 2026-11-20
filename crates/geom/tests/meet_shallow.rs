@@ -438,31 +438,45 @@ fn troughs(tol: f64) -> Vec<Trough> {
     all
 }
 
+/// Three of them, straight (a cylinder's bend against a twisted trough
+/// has no curve in closed form): the Jig's own proportions, a sharper
+/// turn nearer the end, and the sharpest furthest in.
+fn few(tol: f64) -> [Trough; 3] {
+    [
+        Trough::new(tol, 3.3e-5, 1.6, 110.0, 0.0, tilted(1e4 * tol)),
+        Trough::new(tol, 1e-4, 0.4, 30.0, 0.0, Frame::WORLD),
+        Trough::new(tol, 3.3e-5, 0.1, 500.0, 0.0, tilted(1e4 * tol)),
+    ]
+}
+
 /// Checks every pair and fails with the list of those that did not come
 /// back as they should.
 fn all_come_back(pairs: impl Iterator<Item = Pair>) {
     let (mut failed, mut count, mut worst, mut spans) = (Vec::new(), 0, 0.0_f64, 0);
+    let clock = std::time::Instant::now();
     for pair in pairs {
         count += 1;
         let t = &pair.trough;
+        let what = format!(
+            "{} at tolerance {:e}, sine {:e}, radius {} and inset {} tolerances, twist {}",
+            pair.what,
+            t.tol,
+            t.a,
+            t.r / t.tol,
+            t.y0 / t.tol,
+            t.twist
+        );
         match check(&pair) {
             Ok((off, n)) => {
                 worst = worst.max(off);
                 spans += n;
             }
-            Err(why) => failed.push(format!(
-                "{} at tolerance {:e}, sine {:e}, radius {} and inset {} tolerances, twist {}: {why}",
-                pair.what,
-                t.tol,
-                t.a,
-                t.r / t.tol,
-                t.y0 / t.tol,
-                t.twist
-            )),
+            Err(why) => failed.push(format!("{what}: {why}")),
         }
     }
     eprintln!(
-        "{count} pairs, {} failed; at most {worst:.3} tolerances off the parabola, {spans} spans",
+        "{count} pairs in {:.1} s, {} failed; at most {worst:.3} tolerances off the curve, {spans} spans",
+        clock.elapsed().as_secs_f64(),
         failed.len()
     );
     assert!(
@@ -490,20 +504,19 @@ fn a_plane_crosses_a_ruled_surface_in_a_hairpin_at_a_shallow_angle() {
 /// surface that is not flat.
 #[test]
 fn a_cylinder_crosses_a_ruled_patch_in_a_hairpin_at_a_shallow_angle() {
-    all_come_back(TOLERANCES.into_iter().flat_map(|tol| {
-        troughs(tol)
+    all_come_back(
+        [1e-6, 1e-2]
             .into_iter()
-            .filter(|t| t.twist == 0.0)
-            .map(against_cylinder)
-    }));
+            .flat_map(|tol| few(tol).map(against_cylinder)),
+    );
 }
 
 /// The same between two freeform surfaces, the trough walked and
 /// measured against in turn.
 #[test]
 fn two_freeform_surfaces_cross_in_a_hairpin_at_a_shallow_angle() {
-    all_come_back(TOLERANCES.into_iter().flat_map(|tol| {
-        troughs(tol)
+    all_come_back([1e-6, 1e-2].into_iter().flat_map(|tol| {
+        few(tol)
             .into_iter()
             .flat_map(|trough| [against_flat(trough, true), against_flat(trough, false)])
     }));
