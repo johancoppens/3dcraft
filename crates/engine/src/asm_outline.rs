@@ -173,7 +173,76 @@ pub struct JointHandle {
     pub size: f64,
 }
 
+/// What `document.check` lists for an assembly at rest, as a form of its
+/// public parameters weighs it ([`Session::assembly_at_rest`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum AssemblyAtRest {
+    /// No document, or a part: there is no assembly to weigh.
+    #[default]
+    Part,
+    /// An assembly whose placement at rest is not known here yet: not
+    /// placed at this revision, or on the page while the facts of the
+    /// state shown have not come (or came without it). A form says it does
+    /// not know, never *Valid*.
+    Unknown,
+    /// What the check lists for it at rest, in its order and words; empty
+    /// when nothing is wrong with how it is placed.
+    Known(Vec<OutlineProblem>),
+}
+
+/// What `document.check` lists for `placed` (`asm::wrong_in`), each by
+/// what it names.
+fn problems_of(placed: &Placed) -> Vec<OutlineProblem> {
+    crate::asm::wrong_in(placed)
+        .into_iter()
+        .map(|(what, problem)| {
+            let (what, name) = match what {
+                Wrong::Instance(name) => ("instance", name),
+                Wrong::Mate(name) => ("mate", name),
+                Wrong::Coupling(name) => ("coupling", name),
+                Wrong::Solve => ("solve", String::new()),
+            };
+            OutlineProblem {
+                what,
+                name,
+                problem,
+            }
+        })
+        .collect()
+}
+
 impl Session {
+    /// What `document.check` lists for the active assembly at rest: the
+    /// document's own placement, which the check reads, whatever the view
+    /// shows (a moment of a motion, a joint held by hand), as a form of its
+    /// public parameters weighs it. It never places anything: unknown while
+    /// the placement at rest is not made at this revision. Placed elsewhere
+    /// (the page's worker), as the other side said it for this state at
+    /// rest, never for an older state, nor for a moment (whose stand-in has
+    /// its timeline set).
+    pub fn assembly_at_rest(&mut self) -> AssemblyAtRest {
+        let Some(open) = self.documents.get_mut(self.active) else {
+            return AssemblyAtRest::Part;
+        };
+        if !open.history.current().is_assembly() {
+            return AssemblyAtRest::Part;
+        }
+        if open.remote_wanted() {
+            return match open.remote_rest() {
+                Some(problems) => AssemblyAtRest::Known(problems),
+                None => AssemblyAtRest::Unknown,
+            };
+        }
+        let revision = open.history.revision();
+        if !open.asm.is_placed(revision) {
+            return AssemblyAtRest::Unknown;
+        }
+        match open.placed() {
+            Some(placed) => AssemblyAtRest::Known(problems_of(&placed)),
+            None => AssemblyAtRest::Unknown,
+        }
+    }
+
     /// The active document's outline when it is an assembly, as the view
     /// shows it: placed at the moment of the motion shown, else at rest.
     pub fn assembly_outline(&mut self) -> Option<AssemblyOutline> {
@@ -196,22 +265,7 @@ impl Session {
             solve_error: placed.solve_error.clone(),
             unit: crate::commands::length_unit(&doc).to_string(),
             // The check's own list, so that the window says what it says.
-            problems: crate::asm::wrong_in(&placed)
-                .into_iter()
-                .map(|(what, problem)| {
-                    let (what, name) = match what {
-                        Wrong::Instance(name) => ("instance", name),
-                        Wrong::Mate(name) => ("mate", name),
-                        Wrong::Coupling(name) => ("coupling", name),
-                        Wrong::Solve => ("solve", String::new()),
-                    };
-                    OutlineProblem {
-                        what,
-                        name,
-                        problem,
-                    }
-                })
-                .collect(),
+            problems: problems_of(&placed),
             couplings: assembly
                 .couplings
                 .iter()

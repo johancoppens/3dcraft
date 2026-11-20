@@ -1537,3 +1537,89 @@ fn a_check_kept_beside_the_page_that_never_comes_back_is_said_not_kept() {
         page.said()
     );
 }
+
+/// An assembly with a public parameter, a block held to the world, its
+/// part packed in it: the bytes of `rig.3dcraftasm`.
+fn rig() -> Vec<u8> {
+    let mut s = Session::new(Workspace::memory());
+    for (id, params) in [
+        ("file.new", json!({"units": "mm"})),
+        (
+            "feature.block",
+            json!({"size": [20, 10, 6], "name": "Base"}),
+        ),
+        ("file.save", json!({"path": "block.3dcraft"})),
+        ("assembly.new", json!({"units": "mm"})),
+        ("variable.set", json!({"name": "lift", "expr": "0 mm"})),
+        (
+            "variable.publish",
+            json!({"name": "lift", "min": "0 mm", "max": "20 mm"}),
+        ),
+        (
+            "instance.add",
+            json!({"source": "block.3dcraft", "name": "Base"}),
+        ),
+        (
+            "mate.add",
+            json!({"kind": "fixed", "a": "world/xy", "b": "Base/F1:face(0)", "name": "Ground"}),
+        ),
+        ("assembly.pack", json!({})),
+        ("file.save", json!({"path": "rig.3dcraftasm"})),
+    ] {
+        s.execute(id, &params)
+            .unwrap_or_else(|e| panic!("{id}: {}", e.message()));
+    }
+    s.take_file("rig.3dcraftasm").unwrap()
+}
+
+/// What the page's form says in its header (`ui.get` › `parameters` ›
+/// `status`).
+fn form_status(page: &mut Page) -> Value {
+    page.host
+        .shell
+        .handle_method(&mut page.host.session, "ui.get", None)
+        .unwrap()
+        .unwrap()["parameters"]["status"]
+        .clone()
+}
+
+/// The form of an assembly on the page stands on the worker's verdict at
+/// rest: until the worker said it (its facts pending), and when the
+/// worker died with the view's job, the form says what it says while it
+/// works, never *Valid*; once the worker said it, *Valid* for an assembly
+/// it found nothing wrong with (review of the window's verdict, R2).
+#[test]
+fn an_assembly_s_form_on_the_page_says_valid_only_on_the_worker_s_verdict() {
+    let bytes = rig();
+    let mut page = Page::new(false);
+    page.host
+        .session
+        .open_bytes("rig.3dcraftasm", &bytes)
+        .unwrap();
+    assert_eq!(form_status(&mut page), "Regenerating…");
+    page.settle();
+    assert_eq!(form_status(&mut page), "Valid");
+    assert_eq!(
+        page.host.session.assembly_at_rest(),
+        craft3d_engine::AssemblyAtRest::Known(Vec::new())
+    );
+    // A new state whose view's job the worker dies with: the verdict of
+    // the state before is not this one's, and nothing else came.
+    page.host
+        .session
+        .execute("param.set", &json!({"values": {"lift": 5}}))
+        .unwrap();
+    *page.worker.dies.borrow_mut() = true;
+    for _ in 0..5 {
+        page.frame();
+        if !*page.worker.dies.borrow() {
+            break;
+        }
+    }
+    assert!(!*page.worker.dies.borrow(), "the worker died");
+    assert_eq!(form_status(&mut page), "Regenerating…");
+    assert_eq!(
+        page.host.session.assembly_at_rest(),
+        craft3d_engine::AssemblyAtRest::Unknown
+    );
+}

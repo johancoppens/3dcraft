@@ -367,7 +367,17 @@ impl Shell {
         self.mate_view.rows.clear();
         self.mate_view.couplings.clear();
         self.joints.hits.clear();
-        kit.fold_header(ui, open, "Mates", Some(outline.mates.len()), None);
+        // What the heading counts of the mates and couplings, also while
+        // the section is folded.
+        let failing = crate::state::AssemblyVerdict::of(outline).mates_failed;
+        let note = (failing > 0).then(|| format!("{failing} failed"));
+        kit.fold_header(
+            ui,
+            open,
+            "Mates",
+            Some(outline.mates.len()),
+            note.as_deref().map(|n| (n, s.failed)),
+        );
         if !*open {
             return statuses;
         }
@@ -394,10 +404,10 @@ impl Shell {
             };
             let driven = if mate.driven { " · driven" } else { "" };
             let status = format!("{}{value}{driven}", mate.kind);
-            let hover = mate
-                .error
-                .clone()
-                .unwrap_or_else(|| format!("{} · {}", mate.kind, mate.status));
+            let hover = mate.error.as_deref().map_or_else(
+                || format!("{} · {}", mate.kind, mate.status),
+                crate::shell::readable_problem,
+            );
             let chosen = self.state.side_panel.mate.as_deref() == Some(mate.name.as_str());
             let hits = kit.list_row_hits(
                 ui,
@@ -419,7 +429,9 @@ impl Shell {
                 self.state.side_panel.mate = (!chosen).then(|| mate.name.clone());
                 ui.ctx().request_repaint();
             }
+            // Up to the instance that is not placed, whose row says why.
             if let Some(error) = &mate.error {
+                let error = crate::shell::readable_problem(crate::shell::short_cause(error));
                 ui.indent(("craft3d-mate-error", &mate.name), |ui| {
                     ui.add(
                         egui::Label::new(
@@ -451,7 +463,11 @@ impl Shell {
         // why, as a failed mate is. One that takes part is not listed: the
         // mates it couples show their motion.
         for coupling in &outline.couplings {
-            let Some(error) = &coupling.error else {
+            let Some(error) = coupling
+                .error
+                .as_deref()
+                .map(crate::shell::readable_problem)
+            else {
                 continue;
             };
             let hits = kit.list_row_hits(
@@ -462,7 +478,7 @@ impl Shell {
                     .value("coupling")
                     .failed(true),
             );
-            let tip = hits.tip(&coupling.name, "coupling", error);
+            let tip = hits.tip(&coupling.name, "coupling", &error);
             let shown = hits.response.on_hover_text(tip);
             statuses.push(shown.rect);
             self.mate_view

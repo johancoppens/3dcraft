@@ -112,8 +112,8 @@ set of values is a *configuration*, built once however many instances use it.
 When a feature of the part fails with the values given (a fillet too large for the plate), the instance is
 still placed with the bodies from before that feature, as the part itself shows them, but it says so:
 `assembly.inspect` gives the instance `featureFailed` (*its feature `Plate` (F2) failed: radius: too large
-for edges.0*; through a subassembly, *its instance `Plate`: …*), its row in the Assembly tab is marked ⚠
-with the reason in its tooltip, and the assembly's `document.check` is not ok.
+for edges.0*; through a subassembly, *its instance `Plate`: …*), its row in the Assembly tab has a red dot
+after its name and the reason under it, and the assembly's `document.check` is not ok.
 
 **When an instance is not placed.** An instance whose values its part refuses (a value outside a
 parameter's range), whose file is gone or is not a 3DCraft document, or whose picked body is gone,
@@ -226,14 +226,20 @@ fly to it; the eye hides it, and **Open** opens its part in a tab of its own.
 The tab's heading says **Solved** (with the degrees of freedom left) only while the assembly's
 `document.check` finds nothing wrong with how it is placed: every instance placed and its part built, every
 mate and coupling taking part, the solve met, inside its subassemblies too. Otherwise it says **Not
-solved**, or how many problems the check lists (**2 failed**); point at it for each in the check's words.
-Each is also on the row it names: an instance that is not placed is red with why, also inside a
-subassembly; a mate that fails is red; a coupling that takes no part is a red row after the mates; a
-subassembly with something wrong in its own mates or solve is marked ⚠, with what is wrong under it (*its
-mate `Ground`: …*). The **Parameters** tab of an assembly with public parameters says the same in the place
-of **Valid**. A check of the assembly that fails (a clearance, a distance) is shown with its checks under
-the tree, not in the heading; and while the player shows a moment of the motion, or you hold a joint, the
-heading speaks of what is shown.
+solved** (**Not solved · 2 failed** when other problems stand beside it), or how many problems the check
+lists (**2 failed**); point at it for each. The **Instances** and **Mates** headers say how many are
+theirs (**1 failed**), also when folded. Each is also on the row it names: an instance that is not placed
+is red with why, also inside a subassembly; a part whose feature failed has a red dot after its name and
+why under it; a subassembly with something wrong in its own mates or solve has the dot and what is wrong
+under it (*its mate Ground: its instance Plate is not placed*), and every row above a problem has the dot;
+a mate that fails is red; a coupling that takes no part is a red row after the mates. A ⚠ after a part's
+file name means it is held to a version its file no longer has. The assembly's checks stand beside the
+heading (**1 of 3 checks fails**) and with the checks under the tree, not in the heading's verdict; and
+while the player shows a moment of the motion, or you hold a joint, the heading speaks of what is shown.
+
+The **Parameters** tab of an assembly with public parameters says, in the place of **Valid**, what the
+heading would say of the assembly at rest, as `document.check` reads it whatever the player shows, with
+the first problem under it and how many more the Assembly tab lists.
 
 Every joint you can set by hand is a slider on the **Parameters** tab: the joints the assembly stays
 solved with. In a linkage that moves one way (a four-bar), the joints that move it have a slider until you

@@ -357,16 +357,20 @@ pub struct TreeRow {
     pub failed: Option<String>,
     /// In an assembly's tree: for a subassembly, what is wrong in it
     /// itself, in the words of the assembly's check (its mates, its
-    /// couplings, its solve; `OutlineInstance::inside`). The row is marked
-    /// as for `held`, and the lines are shown under it.
+    /// couplings, its solve; `OutlineInstance::inside`). The row is
+    /// `marked`, and the lines are shown under it.
     pub inside: Vec<String>,
+    /// In an assembly's tree: a problem the heading counts is on this row
+    /// without making it red (a feature of its part failed, something is
+    /// wrong in it itself) or below it (an ancestor of such a row or of a
+    /// red one): a dot in the failure colour after the name, which a long
+    /// source never cuts.
+    pub marked: bool,
 }
 
 /// The mark after the source of an instance row whose source changed and
-/// is not followed ([`TreeRow::held`]), whose part has a feature that
-/// failed in its configuration ([`TreeRow::failed`]), or, a subassembly,
-/// with something wrong in it ([`TreeRow::inside`]). In egui's default
-/// fonts.
+/// is not followed ([`TreeRow::held`]): held, which is no failure (a
+/// failure is [`TreeRow::marked`]). In egui's default fonts.
 pub const HELD_MARK: char = '⚠';
 
 /// The marks of the feature tree, by state: built, failed, suppressed,
@@ -2982,6 +2986,7 @@ impl Shell {
                 held: None,
                 failed: None,
                 inside: Vec::new(),
+                marked: false,
             })
             .collect();
         // An assembly lists its instances, nested by subassembly, and its
@@ -3028,10 +3033,12 @@ impl Shell {
             }
         }
         if let Some(outline) = &self.outline {
+            let marked = marked_rows(&outline.instances);
             self.rows = outline
                 .instances
                 .iter()
-                .map(|i| {
+                .zip(marked)
+                .map(|(i, marked)| {
                     let id = i.features.first().cloned().unwrap_or_default();
                     TreeRow {
                         selected: !id.is_empty() && selected == Some(id.as_str()),
@@ -3047,14 +3054,15 @@ impl Shell {
                         } else {
                             FeatureState::Ok
                         },
-                        status: if i.held.is_some()
-                            || i.feature_failed.is_some()
-                            || !i.inside.is_empty()
-                        {
+                        // The dim mark after the source says held, which
+                        // is no failure; a failure is the dot after the
+                        // name (`marked`), which is never cut.
+                        status: if i.held.is_some() {
                             format!("{} {HELD_MARK}", i.source)
                         } else {
                             i.source.clone()
                         },
+                        marked,
                         error: i.error.clone(),
                         caused_by: None,
                         hidden: !i.visible,
@@ -4795,6 +4803,13 @@ impl Shell {
         let mut instance_drawn = Vec::new();
         let in_use = self.jig_in_use();
         let outline = self.outline.clone();
+        let verdict = outline.as_ref().map(crate::state::AssemblyVerdict::of);
+        // An assembly's checks beside its heading, as the Features tab's
+        // line has them, so a tick never stands alone over a failing check.
+        let checks = outline
+            .is_some()
+            .then(|| crate::shell::sidepanel::features::checks_part(&self.side_summary()))
+            .flatten();
         let mut hits = Vec::new();
         let scroll_to = self.tree_scroll.take();
         let mut rows_drawn = Vec::new();
@@ -4822,20 +4837,41 @@ impl Shell {
                         // that fold, with their counts, of the kit's rows.
                         let kit = crate::kit::Kit::panel(&tokens);
                         if let Some(outline) = &outline {
-                            assembly_status(ui, &kit, outline);
+                            assembly_status(ui, &kit, outline, checks.as_ref());
                         }
                         let title = if outline.is_some() {
                             "Instances"
                         } else {
                             "Features"
                         };
+                        // What the heading counts of the instances, also
+                        // while the section is folded.
+                        let note = verdict
+                            .as_ref()
+                            .filter(|v| v.instances_failed > 0)
+                            .map(|v| format!("{} failed", v.instances_failed));
                         let mut open = !self.state.side_panel.is_open("instances-folded");
                         if kit
-                            .fold_header(ui, &mut open, title, Some(self.rows.len()), None)
+                            .fold_header(
+                                ui,
+                                &mut open,
+                                title,
+                                Some(self.rows.len()),
+                                note.as_deref().map(|n| (n, tokens.failed)),
+                            )
                             .changed()
                         {
                             self.state.side_panel.set_open("instances-folded", !open);
                         }
+                        // An assembly's words written as the window writes
+                        // them (a part's rows as before).
+                        let plain = |text: &str| {
+                            if outline.is_some() {
+                                readable_problem(text)
+                            } else {
+                                text.to_string()
+                            }
+                        };
                         for row in self.rows.iter().filter(|_| open) {
                             let failed = row.state == FeatureState::Failed;
                             let dimmed = matches!(
@@ -4845,17 +4881,19 @@ impl Shell {
                                     | FeatureState::RolledBack
                             );
                             let mut hover = match (&row.error, &row.held, &row.failed) {
-                                (Some(error), ..) => error.clone(),
+                                (Some(error), ..) => plain(error.as_str()),
                                 (None, Some(held), Some(failed)) => {
-                                    format!("{} · {held} · {failed}", row.kind)
+                                    format!("{} · {held} · {}", row.kind, plain(failed.as_str()))
                                 }
                                 (None, Some(held), None) => format!("{} · {held}", row.kind),
-                                (None, None, Some(failed)) => format!("{} · {failed}", row.kind),
+                                (None, None, Some(failed)) => {
+                                    format!("{} · {}", row.kind, plain(failed.as_str()))
+                                }
                                 (None, None, None) => format!("{} · {}", row.kind, row.status),
                             };
                             for line in &row.inside {
                                 hover.push('\n');
-                                hover.push_str(line);
+                                hover.push_str(&plain(line.as_str()));
                             }
                             let icon = match row.kind {
                                 "subassembly" => crate::kit::Glyph::Assembly,
@@ -4881,6 +4919,10 @@ impl Shell {
                                     .selected(row.selected || row.made_selection)
                                     .failed(failed)
                                     .dimmed(dimmed)
+                                    .mark(
+                                        row.marked
+                                            .then_some(crate::kit::RowMark::Dot(tokens.failed)),
+                                    )
                                     .indent(row.depth.min(8) as u8)
                                     .eye(eye && (row.hidden || row_hovered))
                                     .hidden(row.hidden)
@@ -4990,7 +5032,7 @@ impl Shell {
                                 ui.indent(("craft3d-error", &row.id), |ui| {
                                     ui.add(
                                         egui::Label::new(
-                                            egui::RichText::new(error)
+                                            egui::RichText::new(plain(error.as_str()))
                                                 .color(color(tokens.failed))
                                                 .size(tokens.secondary_font),
                                         )
@@ -4998,11 +5040,20 @@ impl Shell {
                                     );
                                 });
                             }
-                            // What is wrong in a subassembly itself (its
-                            // mates, couplings, solve), as the check says it.
-                            if !row.inside.is_empty() {
+                            // Under a part's row, why a feature of its part
+                            // failed: once, on the part's own row, not on
+                            // the subassemblies above it. Under a
+                            // subassembly's, what is wrong in it itself (its
+                            // mates, couplings, solve), up to the instance
+                            // that is not placed, whose row says why.
+                            let mut under: Vec<String> = Vec::new();
+                            if let (Some(failed), "instance") = (&row.failed, row.kind) {
+                                under.push(plain(failed.as_str()));
+                            }
+                            under.extend(row.inside.iter().map(|l| plain(short_cause(l))));
+                            if !under.is_empty() {
                                 ui.indent(("craft3d-inside", &row.name, row.depth), |ui| {
-                                    for line in &row.inside {
+                                    for line in &under {
                                         ui.add(
                                             egui::Label::new(
                                                 egui::RichText::new(line)
@@ -5573,11 +5624,21 @@ impl Shell {
         // Nothing drawn yet while a file opens: what is opening, in the
         // middle, gone with the first body.
         let nothing_yet = scene.is_none_or(|scene| scene.bodies.is_empty());
+        // An assembly with instances, none of them placed, is not empty:
+        // the Assembly tab says why each is not.
+        let nothing_placed = self.outline.as_ref().is_some_and(|o| {
+            let own = || o.instances.iter().filter(|i| i.depth == 0);
+            own().next().is_some() && own().all(|i| i.error.is_some())
+        });
         match (&self.work, scene, self.problem()) {
             (Some(work), _, None) if nothing_yet && self.calm.work_shown.is_some() => {
                 self.work_note(&painter, rect, work);
             }
-            (None, Some(scene), _) if scene.bbox.is_empty() => hint("Empty document."),
+            (None, Some(scene), _) if scene.bbox.is_empty() => hint(if nothing_placed {
+                "Nothing is placed."
+            } else {
+                "Empty document."
+            }),
             _ => {}
         }
         // The caption of a narrated demo, then the history player's step
@@ -6341,17 +6402,18 @@ fn assembly_status(
     ui: &mut egui::Ui,
     kit: &crate::kit::Kit,
     outline: &craft3d_engine::AssemblyOutline,
+    checks: Option<&(crate::shell::sidepanel::features::Dot, String)>,
 ) {
     let s = kit.skin;
     let verdict = crate::state::AssemblyVerdict::of(outline);
-    let (glyph, ink) = if verdict.ok {
-        (crate::kit::Glyph::Check, s.ok)
+    let (glyph, ink, text_ink) = if verdict.ok {
+        (crate::kit::Glyph::Check, s.ok, s.text)
     } else {
-        (crate::kit::Glyph::Warning, s.failed)
+        (crate::kit::Glyph::Warning, s.failed, s.failed)
     };
     let text = verdict.text;
     let hover = match (verdict.ok, outline.dof) {
-        (false, _) => verdict.problems.join("\n"),
+        (false, _) => problems_hover(&verdict.problems),
         (true, Some(0)) => "Fully constrained (0 degrees of freedom left)".to_string(),
         (true, Some(1)) => format!("1 degree of freedom left: {}", outline.free.join(", ")),
         (true, Some(n)) => format!("{n} degrees of freedom left: {}", outline.free.join(", ")),
@@ -6366,23 +6428,102 @@ fn assembly_status(
             ui.label(
                 egui::RichText::new(text)
                     .font(kit.font())
-                    .color(color(s.text)),
+                    .color(color(text_ink)),
             );
+            // The checks as the Features tab's line says them.
+            if let Some((dot, words)) = checks {
+                let words_ink = if *dot == crate::shell::sidepanel::features::Dot::Failed {
+                    s.failed
+                } else {
+                    s.text_dim
+                };
+                ui.label(
+                    egui::RichText::new(format!("· {words}"))
+                        .font(kit.font())
+                        .color(color(words_ink)),
+                );
+            }
         })
         .response;
     if !hover.is_empty() {
         response.on_hover_text(hover);
     }
+    // Why the solve failed, under a heading that says it already.
     if let Some(why) = &outline.solve_error {
         ui.add(
             egui::Label::new(
-                egui::RichText::new(format!("Not solved: {why}"))
+                egui::RichText::new(readable_problem(why))
                     .font(kit.small_font())
                     .color(color(s.failed)),
             )
             .wrap(),
         );
     }
+}
+
+/// A problem of an assembly as the window writes it, at paint time only
+/// (`ui.get` keeps the check's own text): the names without their
+/// backticks, the numbers as the banner writes them
+/// (`params::readable_numbers`).
+pub(crate) fn readable_problem(text: &str) -> String {
+    crate::shell::params::readable_numbers(&text.replace('`', ""))
+}
+
+/// A reason that ends in an instance's own (`… its instance Plate is not
+/// placed: its configuration failed: …`) up to "is not placed": the
+/// instance's row says why. The whole text where that is not there.
+pub(crate) fn short_cause(text: &str) -> &str {
+    const NOT_PLACED: &str = " is not placed";
+    match text.find(" is not placed: ") {
+        Some(at) => text
+            .get(..at.saturating_add(NOT_PLACED.len()))
+            .unwrap_or(text),
+        None => text,
+    }
+}
+
+/// Most problems a hover lists before "and n more".
+pub(crate) const HOVER_PROBLEMS: usize = 6;
+
+/// An assembly's problems as a hover says them: one a line, written as the
+/// window writes them, at most [`HOVER_PROBLEMS`], then "and n more".
+pub(crate) fn problems_hover(problems: &[String]) -> String {
+    let mut lines: Vec<String> = problems
+        .iter()
+        .take(HOVER_PROBLEMS)
+        .map(|p| readable_problem(p.as_str()))
+        .collect();
+    let more = problems.len().saturating_sub(HOVER_PROBLEMS);
+    if more > 0 {
+        lines.push(format!("and {more} more"));
+    }
+    lines.join("\n")
+}
+
+/// Which rows of an assembly's outline carry the dot of a failure that
+/// does not make them red ([`TreeRow::marked`]): a part whose feature
+/// failed, a subassembly with something wrong in itself, and every row
+/// above a row with a fault of any kind (red included), by depth.
+fn marked_rows(instances: &[craft3d_engine::OutlineInstance]) -> Vec<bool> {
+    let mut marked = vec![false; instances.len()];
+    // The rows above the one being looked at, by depth.
+    let mut above: Vec<usize> = Vec::new();
+    for (k, row) in instances.iter().enumerate() {
+        above.truncate(row.depth.min(above.len()));
+        let own = row.feature_failed.is_some() || !row.inside.is_empty();
+        if own || row.error.is_some() {
+            for &up in &above {
+                if let Some(m) = marked.get_mut(up) {
+                    *m = true;
+                }
+            }
+        }
+        if own && let Some(m) = marked.get_mut(k) {
+            *m = true;
+        }
+        above.push(k);
+    }
+    marked
 }
 
 /// The "Checks" heading of the Assembly tab without instances, always

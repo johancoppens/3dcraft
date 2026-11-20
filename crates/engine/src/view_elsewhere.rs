@@ -23,8 +23,8 @@
 //! itself draws, bit for bit (`crates/engine/tests/view_elsewhere.rs`).
 
 use crate::asm_outline::{
-    AssemblyOutline, JointHandle, MateFrame, OutlineCoupling, OutlineInstance, OutlineMate,
-    OutlineProblem,
+    AssemblyAtRest, AssemblyOutline, JointHandle, MateFrame, OutlineCoupling, OutlineInstance,
+    OutlineMate, OutlineProblem,
 };
 use crate::{OpenDocument, Session};
 use craft3d_doc::{Blob, Document};
@@ -94,6 +94,9 @@ pub(crate) struct Remote {
     /// lists while the next moment of it is made (the tree does not
     /// flicker as a motion plays).
     last: Option<(Arc<Document>, u64, Arc<ViewFacts>)>,
+    /// What the check lists at rest for a state below the view, from the
+    /// facts of a view of it without a moment ([`OpenDocument::remote_rest`]).
+    rest: Option<(Arc<Document>, u64, Vec<OutlineProblem>)>,
     pub(crate) bake: Option<BakeWanted>,
     /// Facts came since the host last polled ([`Session::poll_motion`]).
     fresh: bool,
@@ -112,6 +115,11 @@ pub(crate) struct ViewFacts {
     pub error: Option<String>,
     /// An assembly's outline there ([`Session::assembly_outline`]).
     pub outline: Option<AssemblyOutline>,
+    /// What the check lists for the assembly at rest there
+    /// ([`Session::assembly_at_rest`]), when it was known there; crossed
+    /// also when the outline is more than crosses (cut to as many as
+    /// cross), so a form on the page always has a verdict to stand on.
+    pub rest: Option<Vec<OutlineProblem>>,
     /// The joints a drag on each placed feature moves
     /// ([`Session::assembly_joint_of`]).
     pub joints: BTreeMap<String, JointHandle>,
@@ -296,6 +304,18 @@ impl OpenDocument {
         self.remote.view.as_ref()
     }
 
+    /// What the check lists at rest for the state below the view, as the
+    /// other side said it for a view of that state without a moment (the
+    /// stand-in of a moment has its timeline set, so its own placement is
+    /// the moment's); `None` until it said, and never a state before it's
+    /// (what a judgement of this state must not stand on).
+    pub(crate) fn remote_rest(&mut self) -> Option<Vec<OutlineProblem>> {
+        self.remote_shown()?;
+        let view = self.remote.view.as_ref()?;
+        let (base, generation, problems) = self.remote.rest.as_ref()?;
+        (Arc::ptr_eq(base, &view.base) && *generation == view.generation).then(|| problems.clone())
+    }
+
     /// The facts of the view shown, or while they are not there, the last
     /// ones of the same state below it.
     pub(crate) fn remote_facts(&mut self) -> Option<Arc<ViewFacts>> {
@@ -387,6 +407,12 @@ impl OpenDocument {
             return false;
         }
         if let Some(facts) = facts {
+            // At rest only: a moment's stand-in has its timeline set.
+            if view.moment.is_none()
+                && let Some(rest) = &facts.rest
+            {
+                self.remote.rest = Some((Arc::clone(&view.base), view.generation, rest.clone()));
+            }
             let facts = Arc::new(facts);
             view.facts = Some(Arc::clone(&facts));
             self.remote.last = Some((Arc::clone(&view.base), view.generation, facts));
@@ -615,21 +641,12 @@ pub(crate) fn facts_bytes(
             .map(OpenDocument::shown);
         // Never cut short: an assembly whose lists pass what crosses says
         // so, by number.
-        let rows = outline.as_ref().map_or(0, |o| {
-            let lists = o.instances.iter().map(|i| i.features.len());
-            let lists = lists.chain(o.instances.iter().map(|i| i.inside.len()));
-            let lists = lists.chain(o.mates.iter().map(|m| m.variables.len()));
-            lists
-                .chain([
-                    o.instances.len(),
-                    o.mates.len(),
-                    o.couplings.len(),
-                    o.free.len(),
-                    o.problems.len(),
-                ])
-                .max()
-                .unwrap_or(0)
-        });
+        let rows = outline.as_ref().map_or(0, outline_rows);
+        // What a form weighs crosses whatever the outline does: the page
+        // has a verdict to stand on, not ok while there are problems.
+        if let Some(rest) = rest_json(&session.assembly_at_rest()) {
+            facts.insert("rest".into(), rest);
+        }
         let bodies = placed.as_ref().map_or(0, |p| p.features.len());
         if rows > MAX_ROWS || bodies > MAX_ROWS {
             error = Some(format!(
@@ -668,6 +685,67 @@ pub(crate) fn facts_bytes(
     out
 }
 
+/// The longest list `o` would cross (rows, the features of one, the lines
+/// under one, the variables of a mate, the problems): what is held to
+/// [`MAX_ROWS`].
+fn outline_rows(o: &AssemblyOutline) -> usize {
+    let lists = o.instances.iter().map(|i| i.features.len());
+    let lists = lists.chain(o.instances.iter().map(|i| i.inside.len()));
+    let lists = lists.chain(o.mates.iter().map(|m| m.variables.len()));
+    lists
+        .chain([
+            o.instances.len(),
+            o.mates.len(),
+            o.couplings.len(),
+            o.free.len(),
+            o.problems.len(),
+        ])
+        .max()
+        .unwrap_or(0)
+}
+
+/// What a form weighs, as it crosses: the problems at rest when they are
+/// known, at most [`MAX_ROWS`] of them (more stays not ok); `None` for a
+/// part or while they are not known.
+fn rest_json(rest: &AssemblyAtRest) -> Option<Value> {
+    match rest {
+        AssemblyAtRest::Known(problems) => Some(problems_json(problems.iter().take(MAX_ROWS))),
+        AssemblyAtRest::Part | AssemblyAtRest::Unknown => None,
+    }
+}
+
+fn problems_json<'a>(problems: impl Iterator<Item = &'a OutlineProblem>) -> Value {
+    Value::Array(
+        problems
+            .map(|p| {
+                json!({
+                    "what": p.what,
+                    "name": p.name,
+                    "problem": p.problem,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// The problems `value` holds ([`problems_json`]); `None` for anything
+/// else, or more than cross.
+fn problems_from(value: &Value) -> Option<Vec<OutlineProblem>> {
+    let list = value.as_array()?;
+    if list.len() > MAX_ROWS {
+        return None;
+    }
+    list.iter()
+        .map(|p| {
+            Some(OutlineProblem {
+                what: problem_name(p.get("what")?.as_str()?)?,
+                name: text(p, "name")?,
+                problem: text(p, "problem")?,
+            })
+        })
+        .collect()
+}
+
 /// The bytes of a bake piece's answer, as a part of facts that holds
 /// only it.
 pub(crate) fn bake_bytes(answer: &Value) -> Vec<u8> {
@@ -702,6 +780,9 @@ pub(crate) fn decode_facts(bytes: &[u8]) -> Result<(ViewFacts, Option<Value>), S
     };
     if let Some(outline) = value.get("outline") {
         facts.outline = Some(outline_from(outline).ok_or("the assembly's outline cannot be read")?);
+    }
+    if let Some(rest) = value.get("rest") {
+        facts.rest = Some(problems_from(rest).ok_or("the assembly's verdict cannot be read")?);
     }
     if let Some(joints) = value.get("joints").and_then(Value::as_object) {
         if joints.len() > MAX_ROWS {
@@ -774,11 +855,7 @@ fn outline_json(o: &AssemblyOutline) -> Value {
         "free": o.free,
         "solveError": o.solve_error,
         "unit": o.unit,
-        "problems": o.problems.iter().map(|p| json!({
-            "what": p.what,
-            "name": p.name,
-            "problem": p.problem,
-        })).collect::<Vec<_>>(),
+        "problems": problems_json(o.problems.iter()),
     })
 }
 
@@ -857,8 +934,7 @@ fn outline_from(value: &Value) -> Option<AssemblyOutline> {
     let instances = value.get("instances")?.as_array()?;
     let mates = value.get("mates")?.as_array()?;
     let couplings = value.get("couplings")?.as_array()?;
-    let problems = value.get("problems")?.as_array()?;
-    if [instances, mates, couplings, problems]
+    if [instances, mates, couplings]
         .iter()
         .any(|list| list.len() > MAX_ROWS)
     {
@@ -870,13 +946,7 @@ fn outline_from(value: &Value) -> Option<AssemblyOutline> {
             error: opt_text(c, "error")?,
         });
     }
-    for p in problems {
-        out.problems.push(OutlineProblem {
-            what: problem_name(p.get("what")?.as_str()?)?,
-            name: text(p, "name")?,
-            problem: text(p, "problem")?,
-        });
-    }
+    out.problems = problems_from(value.get("problems")?)?;
     for i in instances {
         out.instances.push(OutlineInstance {
             name: text(i, "name")?,
@@ -1276,5 +1346,65 @@ mod tests {
         }
         let (facts, bake) = decode_facts(b"\x02\x00\x00\x00{}").unwrap();
         assert!(facts.motion.is_none() && facts.shown.is_none() && bake.is_none());
+        assert_eq!(facts.rest, None);
+    }
+
+    /// The facts as `facts_bytes` frames them: the length, then the JSON.
+    fn framed(value: &Value) -> Vec<u8> {
+        let text = value.to_string();
+        let mut out = u32::try_from(text.len()).unwrap().to_le_bytes().to_vec();
+        out.extend(text.as_bytes());
+        out
+    }
+
+    /// An outline with more mates than cross does not cross, but what a
+    /// form weighs does, cut to as many as cross and still not ok; a
+    /// verdict not known crosses nothing (the page then says it does not
+    /// know), and one that cannot be read is an error.
+    #[test]
+    fn what_a_form_weighs_crosses_also_when_the_outline_does_not() {
+        let mate = OutlineMate {
+            name: "M".into(),
+            kind: "fixed",
+            status: "ok",
+            error: None,
+            value: None,
+            driven: false,
+            variables: Vec::new(),
+            settable: false,
+            limits: None,
+            parts: ["world".into(), "A".into()],
+            frame: None,
+        };
+        let big = AssemblyOutline {
+            mates: vec![mate; MAX_ROWS + 1],
+            ..AssemblyOutline::default()
+        };
+        assert!(outline_rows(&big) > MAX_ROWS);
+        let problem = OutlineProblem {
+            what: "mate",
+            name: "M".into(),
+            problem: "mate `M`: no body has a face `F1:face(9)`".into(),
+        };
+        let many = AssemblyAtRest::Known(vec![problem.clone(); MAX_ROWS + 3]);
+        let rest = rest_json(&many).unwrap();
+        assert_eq!(rest.as_array().unwrap().len(), MAX_ROWS);
+        let (facts, _) = decode_facts(&framed(&json!({ "rest": rest }))).unwrap();
+        assert_eq!(facts.outline, None);
+        let crossed = facts.rest.unwrap();
+        assert_eq!(crossed.len(), MAX_ROWS);
+        assert_eq!(crossed[0], problem);
+        // Nothing wrong crosses as nothing wrong, not as unknown.
+        let right = rest_json(&AssemblyAtRest::Known(Vec::new())).unwrap();
+        let (facts, _) = decode_facts(&framed(&json!({ "rest": right }))).unwrap();
+        assert_eq!(facts.rest, Some(Vec::new()));
+        assert_eq!(rest_json(&AssemblyAtRest::Unknown), None);
+        assert_eq!(rest_json(&AssemblyAtRest::Part), None);
+        for bad in [
+            json!({ "rest": 3 }),
+            json!({ "rest": [{ "what": "feature", "name": "F1", "problem": "x" }] }),
+        ] {
+            assert!(decode_facts(&framed(&bad)).is_err(), "{bad}");
+        }
     }
 }

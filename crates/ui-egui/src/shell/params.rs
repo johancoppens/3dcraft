@@ -683,6 +683,10 @@ pub struct ParamForm {
     note: Option<Note>,
     trouble: Option<Trouble>,
     last_good: Option<LastGood>,
+    /// For an assembly, what its check lists at rest as of the last sync:
+    /// what the form weighs and says, whatever the view shows (a moment of
+    /// a motion, a joint held by hand), as `document.check` does.
+    at_rest: craft3d_engine::AssemblyAtRest,
     /// A parameter moved off the last good values by something other than
     /// the form (an undo, a redo, an agent), seen when the revision
     /// changed: judged once the assertions are measured.
@@ -1030,16 +1034,18 @@ impl Shell {
     /// rows of the feature list, or for an assembly what its check lists
     /// (`AssemblyOutline::problems`), and the assertions measured broken.
     fn faults_now(&self) -> (Faults, bool) {
-        use craft3d_engine::AssertionStatus as A;
+        use craft3d_engine::{AssemblyAtRest, AssertionStatus as A};
         let mut faults = Faults::default();
-        match &self.outline {
+        let mut pending = false;
+        match &self.params.at_rest {
             // Each by what it names (the second problem of one instance as
-            // `instance Sub 2`), in the check's words: a commit that adds
-            // one breaks the model, one that changes only a reason does
-            // not. Before, only the instances that were not placed counted.
-            Some(outline) => {
+            // `instance Sub 2`), in the check's words, at rest as the check
+            // reads it (not the moment shown): a commit that adds one breaks
+            // the model, one that changes only a reason does not. Before,
+            // only the instances that were not placed counted.
+            AssemblyAtRest::Known(problems) => {
                 let mut seen: BTreeMap<String, usize> = BTreeMap::new();
-                for problem in &outline.problems {
+                for problem in problems {
                     let named = format!("{} {}", problem.what, problem.name);
                     let count = seen.entry(named.clone()).or_insert(0);
                     *count = count.saturating_add(1);
@@ -1051,7 +1057,10 @@ impl Shell {
                     faults.features.insert(key, problem.problem.clone());
                 }
             }
-            None => {
+            // Not known yet (on the page, until the worker says): judged
+            // once it is, as a check still being measured is.
+            AssemblyAtRest::Unknown => pending = true,
+            AssemblyAtRest::Part => {
                 for row in self.rows.iter().filter(|r| r.state == FeatureState::Failed) {
                     let error = row.error.clone().unwrap_or_default();
                     faults
@@ -1060,7 +1069,6 @@ impl Shell {
                 }
             }
         }
-        let mut pending = false;
         for a in &self.assertion_rows {
             match a.status {
                 A::Failed | A::Error => {
@@ -1080,6 +1088,7 @@ impl Shell {
     /// state. Part of every sync.
     pub(super) fn sync_params(&mut self, session: &mut Session) {
         let doc = session.document_status().map(|s| s.id);
+        self.params.at_rest = session.assembly_at_rest();
         let form = &mut self.params;
         let on_player = std::mem::take(&mut form.opens_on_player);
         if doc != form.doc {
@@ -1298,21 +1307,44 @@ impl Shell {
     }
 
     /// What the form's header says while no value is being applied,
-    /// whether that is good, and what its hover adds: `Valid`; `Breaks the
-    /// model` after a value that broke it (against the last good state);
-    /// for an assembly that its check finds something wrong with, what
-    /// its Assembly tab heads with (`Not solved`, `2 failed`) whatever the
-    /// last good state, each problem on hover in the check's words. Before,
-    /// an assembly that opened with an instance not placed, or broke by a
-    /// mate, a coupling or its solve, was said *Valid*.
-    fn form_said(&self) -> (bool, String, String) {
+    /// whether that is good, and the problems it stands on: `Valid`;
+    /// `Breaks the model` after a value that broke it (against the last
+    /// good state); for an assembly that its check finds something wrong
+    /// with at rest, what its Assembly tab heads with (`Not solved`,
+    /// `2 failed`) whatever the last good state, with the check's problems.
+    /// `None` while an assembly's verdict at rest is not known (on the page,
+    /// until the worker says): the form says what it says while it works,
+    /// never *Valid*. Before, an assembly that opened with an instance not
+    /// placed, or broke by a mate, a coupling or its solve, was said
+    /// *Valid*, and so was one past a limit at rest while a moment of its
+    /// motion inside the limit was shown.
+    fn form_said(&self) -> Option<(bool, String, Vec<String>)> {
+        use craft3d_engine::AssemblyAtRest;
         if self.params.trouble.as_ref().is_some_and(|t| t.broke) {
-            return (false, "Breaks the model".to_string(), String::new());
+            return Some((false, "Breaks the model".to_string(), Vec::new()));
         }
-        match self.assembly_verdict().filter(|v| !v.ok) {
-            Some(verdict) => (false, verdict.text, verdict.problems.join("\n")),
-            None => (true, "Valid".to_string(), String::new()),
+        match &self.params.at_rest {
+            AssemblyAtRest::Unknown => None,
+            AssemblyAtRest::Known(problems) if !problems.is_empty() => {
+                let verdict = crate::state::AssemblyVerdict::new(problems, false, None);
+                Some((false, verdict.text, verdict.problems))
+            }
+            AssemblyAtRest::Known(_) | AssemblyAtRest::Part => {
+                Some((true, "Valid".to_string(), Vec::new()))
+            }
         }
+    }
+
+    /// What the form says under its header of the problems it stands on,
+    /// as the window writes them: the first, and how many more the
+    /// Assembly tab lists; `None` without one.
+    fn form_why(problems: &[String]) -> Option<(String, Option<String>)> {
+        let first = crate::shell::readable_problem(problems.first()?);
+        let more = problems.len().saturating_sub(1);
+        Some((
+            first,
+            (more > 0).then(|| format!("and {more} more on the Assembly tab")),
+        ))
     }
 
     /// `ui.get`'s `parameters`: what the form shows besides the values
@@ -1320,12 +1352,23 @@ impl Shell {
     pub(crate) fn parameters_report(&self) -> Value {
         let form = &self.params;
         let list = form.list.as_ref();
-        // What the form's header says; none without a form.
-        let status = match (list.is_some_and(|l| l.jig), form.busy()) {
-            (false, _) => None,
-            (true, true) => Some("Regenerating…".to_string()),
-            (true, false) => Some(self.form_said().1),
+        let jig = list.is_some_and(|l| l.jig);
+        let said = self.form_said();
+        // What the form's header says, and the line under it; none without
+        // a form.
+        let status = match (jig, form.busy(), &said) {
+            (false, ..) => None,
+            (true, true, _) | (true, false, None) => Some("Regenerating…".to_string()),
+            (true, false, Some((_, words, _))) => Some(words.clone()),
         };
+        let why = said
+            .as_ref()
+            .filter(|_| jig && !form.busy())
+            .and_then(|(_, _, problems)| Self::form_why(problems))
+            .map(|(first, more)| match more {
+                Some(more) => format!("{first}\n{more}"),
+                None => first,
+            });
         json!({
             "jig": list.is_some_and(|l| l.jig),
             "tab": if self.state.parameters.open && list.is_some_and(|l| l.jig) {
@@ -1337,6 +1380,7 @@ impl Shell {
             "inUse": self.jig_in_use(),
             "busy": form.busy(),
             "status": status,
+            "why": why,
             "live": form.live.as_ref().map(|l| json!({
                 "name": l.name, "value": l.value, "dragging": l.dragging,
             })),
@@ -1670,8 +1714,14 @@ impl Shell {
     fn parameters_header(&mut self, ui: &mut egui::Ui, list: &ParamList, compact: bool) {
         let kit = crate::kit::Kit::panel(&self.tokens);
         let s = kit.skin;
-        let (good, words, why) = self.form_said();
+        let said = self.form_said();
         let busy = self.params.busy();
+        // Why, under the header: the first problem it stands on, as the
+        // window writes it, and how many more the Assembly tab lists.
+        let why_line = said
+            .as_ref()
+            .filter(|_| !busy)
+            .and_then(|(_, _, problems)| Self::form_why(problems));
         ui.horizontal(|ui| {
             ui.set_min_height(kit.hit(self.tokens.control_height));
             if compact {
@@ -1685,29 +1735,34 @@ impl Shell {
                 );
                 ui.add_space(self.tokens.inset);
             }
-            if busy {
-                kit.spinner(ui, "Regenerating…");
-            } else {
-                let (glyph, ink) = if good {
-                    (crate::kit::Glyph::Check, s.ok)
-                } else {
-                    (crate::kit::Glyph::Warning, s.failed)
-                };
-                let side = self.tokens.nav_icon_size * 0.875;
-                let (place, _) =
-                    ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
-                crate::kit::glyphs::paint(ui.painter(), glyph, place, color(ink), &self.tokens);
-                let mut said = ui.label(
-                    egui::RichText::new(words)
-                        .font(kit.font())
-                        .color(color(ink)),
-                );
-                if !why.is_empty() {
-                    said = said.on_hover_text(why);
+            match (busy, &said) {
+                // Working, or an assembly's verdict not known yet: what
+                // the form says while it does not know, never Valid.
+                (true, _) | (false, None) => {
+                    kit.spinner(ui, "Regenerating…");
                 }
-                self.params
-                    .hits
-                    .push(("status".to_string(), place.union(said.rect)));
+                (false, Some((good, words, problems))) => {
+                    let (glyph, ink) = if *good {
+                        (crate::kit::Glyph::Check, s.ok)
+                    } else {
+                        (crate::kit::Glyph::Warning, s.failed)
+                    };
+                    let side = self.tokens.nav_icon_size * 0.875;
+                    let (place, _) =
+                        ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+                    crate::kit::glyphs::paint(ui.painter(), glyph, place, color(ink), &self.tokens);
+                    let mut shown = ui.label(
+                        egui::RichText::new(words.as_str())
+                            .font(kit.font())
+                            .color(color(ink)),
+                    );
+                    if !problems.is_empty() {
+                        shown = shown.on_hover_text(crate::shell::problems_hover(problems));
+                    }
+                    self.params
+                        .hits
+                        .push(("status".to_string(), place.union(shown.rect)));
+                }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let about = [list.info.title.as_str(), list.info.description.as_str()]
@@ -1747,6 +1802,18 @@ impl Shell {
             && trouble.name.is_none()
         {
             self.trouble_line(ui, &trouble);
+        }
+        if let Some((first, more)) = why_line {
+            for line in std::iter::once(first).chain(more) {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(line)
+                            .size(self.tokens.secondary_font)
+                            .color(color(self.tokens.failed)),
+                    )
+                    .wrap(),
+                );
+            }
         }
     }
 

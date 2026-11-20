@@ -265,8 +265,13 @@ fn an_instance_whose_part_has_a_failed_feature_is_marked_in_the_instances_panel(
     assert!((width(&shell) - 30.0).abs() < 1e-6, "{}", width(&shell));
     let row = &shell.tree_rows()[0];
     assert_eq!(row.state, craft3d_engine::FeatureState::Ok, "{row:?}");
+    // Expectation changed (2026-11-20, the UX pass on the window's
+    // verdict): the dim ⚠ after the source, cut first where the file's
+    // name is long, says held only, which is no failure; a failed feature
+    // is the dot after the name (`marked`), with its reason under the row.
+    assert!(row.marked, "{row:?}");
     assert!(
-        row.status.contains(craft3d_ui_egui::shell::HELD_MARK),
+        !row.status.contains(craft3d_ui_egui::shell::HELD_MARK),
         "{row:?}"
     );
     let failed = row.failed.as_deref().unwrap_or_else(|| panic!("{row:?}"));

@@ -261,8 +261,9 @@ fn the_heading_is_solved_only_while_the_check_finds_nothing_wrong() {
     assert_eq!(said["text"], "Solved · 0 DOF", "{said}");
     assert_eq!(said["problems"], json!([]), "{said}");
 
-    // A feature of the plate's part that fails (A-023): placed, marked ⚠,
-    // and not Solved (its mate's face is the fillet's, gone with it).
+    // A feature of the plate's part that fails (A-023): placed, not Solved
+    // (its mate's face is the fillet's, gone with it), and its row carries
+    // the dot after its name; the dim mark after the source says held only.
     run(
         &mut s,
         "instance.edit",
@@ -280,7 +281,14 @@ fn the_heading_is_solved_only_while_the_check_finds_nothing_wrong() {
     );
     let plate = row(&shell, "Plate");
     assert_eq!(plate.state, FeatureState::Ok, "{plate:?}");
-    assert!(plate.status.contains(HELD_MARK), "{plate:?}");
+    assert!(plate.marked, "{plate:?}");
+    assert!(!plate.status.contains(HELD_MARK), "{plate:?}");
+    assert!(!row(&shell, "Base").marked);
+    // The sections' notes add up to the heading: the instance under
+    // Instances, the mate under Mates.
+    assert_eq!(said["text"], "2 failed", "{said}");
+    assert_eq!(said["instancesFailed"], 1, "{said}");
+    assert_eq!(said["matesFailed"], 1, "{said}");
 }
 
 /// Case 2: a coupling that takes no part. Every mate holds and the solve
@@ -438,7 +446,11 @@ fn what_is_wrong_inside_a_subassembly_is_on_its_rows() {
         );
         let sub = row(&shell, "Sub").clone();
         assert_eq!(sub.state, FeatureState::Ok, "{mode}: {sub:?}");
-        assert!(sub.status.contains(HELD_MARK), "{mode}: {sub:?}");
+        assert!(sub.marked, "{mode}: {sub:?}");
+        assert!(!sub.status.contains(HELD_MARK), "{mode}: {sub:?}");
+        // Both under Instances: the subassembly's own mate is its row's.
+        assert_eq!(said["instancesFailed"], 2, "{mode}: {said}");
+        assert_eq!(said["matesFailed"], 0, "{mode}: {said}");
         assert_eq!(sub.inside.len(), 1, "{mode}: {sub:?}");
         assert!(
             sub.inside[0].starts_with("its mate `Ground`: "),
@@ -449,9 +461,11 @@ fn what_is_wrong_inside_a_subassembly_is_on_its_rows() {
             format!("instance `Sub`: {}", sub.inside[0]),
             "{mode}"
         );
-        // `ui.get` lists the lines with the row.
+        // `ui.get` lists the lines with the row, and its dot.
         let got = call(&mut shell, &mut s, "ui.get", json!({}));
         assert_eq!(got["features"][0]["inside"], json!(sub.inside), "{mode}");
+        assert_eq!(got["features"][0]["marked"], true, "{mode}");
+        assert_eq!(got["features"][1]["marked"], false, "{mode}: red already");
         run(&mut s, "file.close", json!({ "discard": true }));
 
         // A subassembly that does not solve: a rigid one says so under its
@@ -529,6 +543,10 @@ fn what_is_wrong_two_subassemblies_down_is_on_its_rows() {
             "{outer} {inner}"
         );
         assert!(row(&shell, "Mid").inside.is_empty(), "{outer} {inner}");
+        // The dot on the subassembly and on the one above it: what is
+        // wrong two levels down is seen from the top.
+        let marks: Vec<bool> = shell.tree_rows().iter().map(|r| r.marked).collect();
+        assert_eq!(marks, [true, true, false], "{outer} {inner}");
         let sub = row(&shell, "Sub");
         assert_eq!(sub.inside.len(), 1, "{outer} {inner}: {sub:?}");
         assert_eq!(
@@ -605,6 +623,18 @@ fn a_value_that_fails_a_feature_of_an_instance_breaks_the_assembly() {
 /// A base and an arm on a hinge between 0° and 90°, its angle the public
 /// parameter `Hinge_angle` (0° to 180°) at `angle`.
 fn hinge(s: &mut Session, angle: &str) {
+    hinged(s);
+    run(s, "joint.set", json!({ "mate": "Hinge", "value": angle }));
+    run(
+        s,
+        "variable.publish",
+        json!({ "name": "Hinge_angle", "min": "0 deg", "max": "180 deg" }),
+    );
+}
+
+/// A base held to the world and an arm on a hinge between 0° and 90°,
+/// nothing driving it yet.
+fn hinged(s: &mut Session) {
     block_part(s, "block.3dcraft", [10.0, 2.0, 2.0]);
     run(s, "assembly.new", json!({ "units": "mm" }));
     for name in ["Base", "Arm"] {
@@ -623,12 +653,6 @@ fn hinge(s: &mut Session, angle: &str) {
         s,
         "mate.add",
         json!({ "kind": "revolute", "a": "Base/F1:face(1)", "b": "Arm/F1:face(0)", "name": "Hinge", "limits": ["0 deg", "90 deg"] }),
-    );
-    run(s, "joint.set", json!({ "mate": "Hinge", "value": angle }));
-    run(
-        s,
-        "variable.publish",
-        json!({ "name": "Hinge_angle", "min": "0 deg", "max": "180 deg" }),
     );
 }
 
@@ -684,12 +708,13 @@ fn a_form_of_an_assembly_is_valid_only_while_its_check_is_ok() {
     );
 }
 
-/// No row of `shell` is failed, marked ⚠ or says anything under it, and no
-/// coupling row is drawn.
+/// No row of `shell` is failed, marked (the dot, or ⚠) or says anything
+/// under it, and no coupling row is drawn.
 fn nothing_marked(shell: &Shell, what: &str) {
     for r in shell.tree_rows() {
         assert_eq!(r.state, FeatureState::Ok, "{what}: {r:?}");
         assert!(r.inside.is_empty(), "{what}: {r:?}");
+        assert!(!r.marked, "{what}: {r:?}");
         assert!(!r.status.contains(HELD_MARK), "{what}: {r:?}");
     }
     assert!(shell.coupling_row_hits().is_empty(), "{what}");
@@ -871,4 +896,169 @@ fn closing_the_last_assembly_leaves_no_verdict() {
     assert_eq!(got["startScreen"], true, "{}", got["startScreen"]);
     assert_eq!(got["assembly"], Value::Null, "{}", got["assembly"]);
     assert!(shell.assembly_outline().is_none());
+}
+
+/// The longest run of digits in `text`: a number written out to its last
+/// bit (2.0943951023931953) has many, one the window writes has few.
+fn longest_digits(text: &str) -> usize {
+    text.split(|c: char| !c.is_ascii_digit())
+        .map(str::len)
+        .max()
+        .unwrap_or(0)
+}
+
+/// The form says why, under its header, in the window's words: the first
+/// problem it stands on, without the check's backticks, and how many more
+/// the Assembly tab lists. `ui.get` › `assembly.problems` keeps the
+/// check's own text. Before, the header said *2 failed* alone.
+#[test]
+fn the_form_says_why_in_the_window_s_words() {
+    let mut s = session("form-why");
+    block_part(&mut s, "block.3dcraft", [20.0, 10.0, 6.0]);
+    filleted_plate(&mut s);
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "corner", "expr": "40 mm" }),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({ "name": "corner", "min": "0.5 mm", "max": "50 mm" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Base" }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "world/xy", "b": "Base/F1:face(0)", "name": "Ground" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "plate.3dcraft", "name": "Plate", "params": { "corner": "corner" } }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "Base/F1:face(1)", "b": "Plate/F2:copy(0)/F1:face(1)", "name": "OnBase", "flip": true }),
+    );
+    let (mut shell, mut window) = shown(&mut s);
+    let said = verdict(&mut shell, &mut s);
+    let raw = said["problems"][0].as_str().unwrap().to_string();
+    assert!(raw.starts_with("instance `Plate` is not placed: "), "{raw}");
+    let header = form(&mut shell, &mut s);
+    assert_eq!(header["status"], "2 failed", "{header}");
+    let why = header["why"].as_str().unwrap_or_else(|| panic!("{header}"));
+    let (first, more) = why.split_once('\n').unwrap_or_else(|| panic!("{why}"));
+    assert!(first.starts_with("instance Plate is not placed: "), "{why}");
+    assert!(first.contains("corner: its value 40 mm"), "{why}");
+    assert!(!why.contains('`'), "{why}");
+    assert_eq!(more, "and 1 more on the Assembly tab");
+    // A value the part takes: nothing to say, Valid.
+    call(
+        &mut shell,
+        &mut s,
+        "ui.param",
+        json!({ "name": "corner", "value": 1 }),
+    );
+    window.frames(&mut shell, &mut s);
+    let header = form(&mut shell, &mut s);
+    assert_eq!(header["status"], "Valid", "{header}");
+    assert_eq!(header["why"], Value::Null, "{header}");
+}
+
+/// A failed solve beside other problems: the heading says both (*Not
+/// solved · 2 failed*), the sections' notes count the two others (an
+/// instance under Instances, a mate under Mates), and the form's line
+/// writes the solve's numbers as the window writes them while
+/// `ui.get` › `assembly.problems` keeps the check's. Before, *Not solved*
+/// alone, and the solve's radians to their last bit everywhere.
+#[test]
+fn a_failed_solve_beside_other_problems_is_said_with_them() {
+    let mut s = session("solve-and-more");
+    filleted_plate(&mut s);
+    hinge(&mut s, "120 deg");
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "plate.3dcraft", "name": "Plate", "params": { "corner": "40 mm" } }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "Base/F1:face(1)", "b": "Plate/F1:face(1)", "name": "OnBase", "flip": true }),
+    );
+    let (mut shell, _window) = shown(&mut s);
+    let said = verdict(&mut shell, &mut s);
+    assert_eq!(said["text"], "Not solved · 2 failed", "{said}");
+    assert_eq!(said["instancesFailed"], 1, "{said}");
+    assert_eq!(said["matesFailed"], 1, "{said}");
+    let problems = said["problems"].as_array().unwrap();
+    assert_eq!(problems.len(), 3, "{said}");
+    let solve = problems[2].as_str().unwrap();
+    assert!(
+        solve.starts_with("the assembly does not solve: "),
+        "{solve}"
+    );
+    assert!(longest_digits(solve) > 10, "the check's own: {solve}");
+    let header = form(&mut shell, &mut s);
+    assert_eq!(header["status"], "Not solved · 2 failed", "{header}");
+    let why = header["why"].as_str().unwrap_or_else(|| panic!("{header}"));
+    assert!(why.ends_with("and 2 more on the Assembly tab"), "{why}");
+    assert!(!why.contains('`'), "{why}");
+}
+
+/// The form judges the assembly at rest, as `document.check` does: a
+/// hinge past its limit at rest, shown at a moment of its motion inside
+/// the limit, is *Solved* in the heading (which speaks of what is shown)
+/// and *Not solved* in the form. Before (round one), the form read the
+/// placement shown and said *Valid* there.
+#[test]
+fn the_form_weighs_the_assembly_at_rest_while_a_moment_is_shown() {
+    let mut s = session("form-at-rest");
+    hinged(&mut s);
+    run(&mut s, "variable.set", json!({ "name": "t", "expr": "0" }));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "swing", "expr": "120 deg" }),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({ "name": "swing", "min": "0 deg", "max": "180 deg" }),
+    );
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "Hinge_angle", "expr": "swing - 100 deg * t" }),
+    );
+    let (mut shell, mut window) = shown(&mut s);
+    assert_eq!(verdict(&mut shell, &mut s)["text"], "Not solved");
+    assert_eq!(form(&mut shell, &mut s)["status"], "Not solved");
+    // At t = 0.5 the hinge stands at 70°: the moment shown solves.
+    run(&mut s, "view.motion", json!({ "t": 0.5 }));
+    window.frames(&mut shell, &mut s);
+    let got = call(&mut shell, &mut s, "ui.get", json!({}));
+    assert_eq!(got["assembly"]["ok"], true, "{}", got["assembly"]);
+    // The check reads the document at rest, and so does the form.
+    let checked = run(&mut s, "document.check", json!({}));
+    assert_eq!(checked["ok"], false, "{checked}");
+    assert_eq!(
+        got["parameters"]["status"], "Not solved",
+        "{}",
+        got["parameters"]
+    );
+    assert!(
+        got["parameters"]["why"]
+            .as_str()
+            .is_some_and(|w| w.starts_with("the assembly does not solve: ")),
+        "{}",
+        got["parameters"]
+    );
 }

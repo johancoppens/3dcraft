@@ -147,8 +147,8 @@ pub const PANICKED: &str = "it panicked";
 pub use craft3d_math::BUG;
 
 pub use asm_outline::{
-    AssemblyOutline, JointHandle, MateFrame, OutlineCoupling, OutlineInstance, OutlineMate,
-    OutlineProblem,
+    AssemblyAtRest, AssemblyOutline, JointHandle, MateFrame, OutlineCoupling, OutlineInstance,
+    OutlineMate, OutlineProblem,
 };
 pub use assert_cmds::{AssertionState, AssertionStatus};
 pub use checks_elsewhere::{CheckRequest, measure_checks};
