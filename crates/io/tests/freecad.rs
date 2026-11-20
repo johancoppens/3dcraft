@@ -39,36 +39,7 @@ struct Report {
 }
 
 fn freecad_reads(file_name: &str, bytes: &[u8]) -> Report {
-    let freecad = std::env::var("CRAFT3D_FREECAD").expect(
-        "set CRAFT3D_FREECAD to a FreeCAD AppImage or FreeCADCmd executable to run these tests",
-    );
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("freecad");
-    std::fs::create_dir_all(&dir).unwrap();
-    let input = dir.join(file_name);
-    let output = dir.join(format!("{file_name}.report"));
-    std::fs::write(&input, bytes).unwrap();
-    let _ = std::fs::remove_file(&output);
-
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/mesh_report.py");
-    let mut command = Command::new(&freecad);
-    if freecad.ends_with(".AppImage") {
-        command.arg("freecadcmd");
-    }
-    let run = command
-        .arg(&script)
-        .env("CRAFT3D_FC_IN", &input)
-        .env("CRAFT3D_FC_OUT", &output)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .unwrap_or_else(|e| panic!("cannot run {freecad}: {e}"));
-    let text = std::fs::read_to_string(&output).unwrap_or_else(|_| {
-        panic!(
-            "FreeCAD wrote no report for {file_name} ({}):\n{}\n{}",
-            run.status,
-            String::from_utf8_lossy(&run.stdout),
-            String::from_utf8_lossy(&run.stderr)
-        )
-    });
+    let text = freecad_report("mesh_report.py", file_name, bytes);
     let fields: BTreeMap<&str, &str> = text.lines().filter_map(|l| l.split_once('=')).collect();
     let number = |key: &str| -> f64 { fields[key].parse().unwrap() };
     let bbox: Vec<f64> = fields["bbox"]
@@ -83,6 +54,78 @@ fn freecad_reads(file_name: &str, bytes: &[u8]) -> Report {
         solid: fields["solid"] == "1",
         bbox: bbox.try_into().unwrap(),
     }
+}
+
+/// What FreeCAD reports for a glTF file (`tests/gltf_report.py`): in its
+/// millimetres and with +Z up.
+#[derive(Debug)]
+struct GltfReport {
+    labels: Vec<String>,
+    faces: usize,
+    area: f64,
+    volume: f64,
+    bbox: [f64; 6],
+}
+
+fn freecad_reads_gltf(file_name: &str, bytes: &[u8]) -> GltfReport {
+    let text = freecad_report("gltf_report.py", file_name, bytes);
+    let fields: BTreeMap<&str, &str> = text.lines().filter_map(|l| l.split_once('=')).collect();
+    let number = |key: &str| -> f64 { fields[key].parse().unwrap() };
+    let bbox: Vec<f64> = fields["bbox"]
+        .split(' ')
+        .map(|v| v.parse().unwrap())
+        .collect();
+    // A JSON list of plain names, as the tests give them.
+    let labels = fields["labels"]
+        .trim_matches(['[', ']'])
+        .split(", ")
+        .filter(|l| !l.is_empty())
+        .map(|l| l.trim_matches('"').to_string())
+        .collect();
+    GltfReport {
+        labels,
+        faces: number("faces") as usize,
+        area: number("area"),
+        volume: number("volume"),
+        bbox: bbox.try_into().unwrap(),
+    }
+}
+
+/// Runs the report `script` (in `tests/`) in FreeCAD on `bytes` written as
+/// `file_name`: the report's text.
+fn freecad_report(script: &str, file_name: &str, bytes: &[u8]) -> String {
+    let freecad = std::env::var("CRAFT3D_FREECAD").expect(
+        "set CRAFT3D_FREECAD to a FreeCAD AppImage or FreeCADCmd executable to run these tests",
+    );
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("freecad");
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join(file_name);
+    let output = dir.join(format!("{file_name}.report"));
+    std::fs::write(&input, bytes).unwrap();
+    let _ = std::fs::remove_file(&output);
+
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join(script);
+    let mut command = Command::new(&freecad);
+    if freecad.ends_with(".AppImage") {
+        command.arg("freecadcmd");
+    }
+    let run = command
+        .arg(&script)
+        .env("CRAFT3D_FC_IN", &input)
+        .env("CRAFT3D_FC_OUT", &output)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run {freecad}: {e}"));
+    std::fs::read_to_string(&output).unwrap_or_else(|_| {
+        panic!(
+            "FreeCAD wrote no report for {file_name} ({}):\n{}\n{}",
+            run.status,
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        )
+    })
 }
 
 /// FreeCAD's mesh kernel stores 32-bit floats.
@@ -390,5 +433,101 @@ fn freecad_reads_a_needle_cut_along_its_axis_as_a_solid() {
             "{what}: FreeCAD's volume {} is not within area x tolerance of the exact {volume}",
             report.volume
         );
+    }
+}
+
+/// glTF, read by FreeCAD's own glTF reader (Open CASCADE's, through
+/// `Import.insert`), which turns glTF's metres and +Y up into FreeCAD's
+/// millimetres and +Z up: so it must give the box back where 3DCraft has
+/// it and at its size, in millimetres and in inches, and a cylinder
+/// tessellated by the kernel with the volume of our own mesh. The proof,
+/// by a reader that is not ours, that the export turns and scales the
+/// model as it says (docs/file-formats.md › glTF). A triangle is a face to
+/// FreeCAD; the volume is summed over them by the divergence theorem.
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
+fn freecad_reads_gltf_in_place_and_to_scale() {
+    use craft3d_io::gltf::{GltfBody, node};
+    use craft3d_kernel::primitives;
+    use craft3d_math::Frame;
+    use craft3d_meshio::gltf::{PbrMaterial, Scene, write_glb};
+    use craft3d_tess::tessellate_body;
+
+    let glb = |name: &str, mesh: &Mesh, unit: Unit| {
+        let faces: Vec<String> = (0..mesh.face_ids.iter().max().map_or(0, |f| f + 1))
+            .map(|k| format!("F1:face({k})"))
+            .collect();
+        let node = node(GltfBody {
+            name,
+            mesh,
+            face_names: &faces,
+            face_materials: &[],
+            material: Some(0),
+            extras: Vec::new(),
+        })
+        .unwrap();
+        write_glb(&Scene {
+            generator: "3DCraft".to_string(),
+            unit,
+            nodes: vec![node],
+            materials: vec![PbrMaterial {
+                name: "grey".to_string(),
+                color: [198, 204, 214],
+                roughness: 0.5,
+                ..PbrMaterial::default()
+            }],
+        })
+        .unwrap()
+    };
+    let mesh = cuboid();
+    for (unit, mm) in [(Unit::Millimeter, 1.0), (Unit::Inch, 25.4)] {
+        let file = format!("box-{}.glb", unit.as_3mf());
+        let report = freecad_reads_gltf(&file, &glb("box", &mesh, unit));
+        println!("{file}: {report:?}");
+        assert_eq!(report.faces, 12, "{file}");
+        assert!(
+            report.labels.iter().any(|l| l == "box"),
+            "{file}: {report:?}"
+        );
+        assert!(
+            close(report.volume, 24.0 * mm * mm * mm),
+            "{file}: volume {}",
+            report.volume
+        );
+        assert!(
+            close(report.area, 52.0 * mm * mm),
+            "{file}: area {}",
+            report.area
+        );
+        for (got, want) in report.bbox.iter().zip([10.0, -5.0, 1.5, 12.0, -2.0, 5.5]) {
+            assert!(close(*got, want * mm), "{file}: bbox {:?}", report.bbox);
+        }
+    }
+    let frame = Frame::new(Vec3::new(3.0, -1.0, 2.0), Vec3::new(0.2, 0.3, 1.0), Vec3::X).unwrap();
+    let cylinder = primitives::cylinder(&frame, 2.0, 5.0).unwrap();
+    let params = TessParams {
+        chordal_tolerance: 0.01,
+        ..TessParams::default()
+    };
+    let mesh = tessellate_body(&cylinder, &params).unwrap();
+    let welded = mesh.weld().unwrap();
+    let report = freecad_reads_gltf("cylinder.glb", &glb("cylinder", &mesh, Unit::Millimeter));
+    println!("cylinder.glb: {report:?} against {}", welded.volume());
+    assert_eq!(report.faces, welded.triangles.len());
+    assert!(
+        close(report.volume, welded.volume()),
+        "{} vs {}",
+        report.volume,
+        welded.volume()
+    );
+    assert!(
+        close(report.area, mesh.area()),
+        "{} vs {}",
+        report.area,
+        mesh.area()
+    );
+    let (lo, hi) = mesh.bbox().corners().unwrap();
+    for (got, want) in report.bbox.iter().zip([lo.x, lo.y, lo.z, hi.x, hi.y, hi.z]) {
+        assert!(close(*got, want), "bbox {:?}", report.bbox);
     }
 }

@@ -313,7 +313,7 @@ pub fn read_glb(bytes: &[u8]) -> Result<Gltf, String> {
     let buffer = match json.get("buffers").and_then(Json::as_array) {
         None => 0,
         Some(buffers) => {
-            let [only] = buffers.as_slice() else {
+            let [only] = buffers else {
                 return Err("more than one buffer".to_string());
             };
             if only.get("uri").is_some() {
