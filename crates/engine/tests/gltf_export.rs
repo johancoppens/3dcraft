@@ -399,7 +399,7 @@ fn metres_and_y_up_in_every_unit() {
             }
         }
         assert_eq!(min, [0.0, 0.0, f(-(2.0 * metres))], "{unit}");
-        assert_eq!(max, [f(1.0 * metres), f(3.0 * metres), 0.0], "{unit}");
+        assert_eq!(max, [f(metres), f(3.0 * metres), 0.0], "{unit}");
         let top = file.nodes[0]
             .primitives
             .iter()

@@ -140,10 +140,7 @@ impl Accessor {
     }
 
     fn vec3(&self) -> Vec<[f64; 3]> {
-        self.values
-            .chunks_exact(3)
-            .map(|c| [c.first(), c.get(1), c.get(2)].map(|v| v.copied().unwrap_or(f64::NAN)))
-            .collect()
+        self.values.as_chunks::<3>().0.to_vec()
     }
 }
 
@@ -508,7 +505,7 @@ fn primitive(
     }
     let vertices = positions.len();
     let mut triangles = Vec::with_capacity(indices.values.len() / 3);
-    for t in indices.values.chunks_exact(3) {
+    for t in indices.values.as_chunks::<3>().0 {
         let mut corner = [0_usize; 3];
         for (slot, &k) in corner.iter_mut().zip(t) {
             if k == largest {

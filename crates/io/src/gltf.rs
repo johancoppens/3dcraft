@@ -228,7 +228,7 @@ mod tests {
         };
         assert_eq!(
             summary,
-            vec![
+            [
                 (named("F1:face(0)", vec![0]), Some(0), 4, 2),
                 (named("F1:face(1)", vec![1]), Some(1), 4, 2),
                 (named("F1:face(2)", vec![2, 3]), Some(0), 8, 4),
@@ -315,8 +315,8 @@ mod tests {
         assert_eq!(made.groups.len(), 2);
         for group in &made.groups {
             assert_eq!(group.positions.len(), 3);
-            assert_eq!(group.normals, vec![[0.0, 0.0, 1.0]; 3]);
-            assert_eq!(group.triangles, vec![[0, 1, 2]]);
+            assert_eq!(group.normals, [[0.0, 0.0, 1.0]; 3]);
+            assert_eq!(group.triangles, [[0, 1, 2]]);
         }
         assert_eq!(made.groups[1].positions[0], [0.0, 1.0, 0.0]);
     }
