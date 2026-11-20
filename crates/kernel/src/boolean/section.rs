@@ -3261,4 +3261,145 @@ pub(super) mod tests {
             }
         }
     }
+
+    /// The face of `solid` that `p` lies inside.
+    fn face_holding(solid: &Solid, p: Vec3, tol: f64) -> usize {
+        (0..solid.faces())
+            .find(|&f| {
+                solid.outline(f).is_ok_and(|outline| {
+                    outline.surface.project(p).is_ok_and(|(u, v)| {
+                        let foot = outline.surface.eval(u, v);
+                        foot.distance(p) <= tol && outline.side(foot, tol) == Ok(Side::In)
+                    })
+                })
+            })
+            .unwrap()
+    }
+
+    /// What `clip` makes of a stretch.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Reading {
+        /// No part of the imprint.
+        LeftOut,
+        /// A curve partly on and partly off the boundary.
+        Refused,
+        /// Along the boundary (what the imprint then holds to an edge of
+        /// the face).
+        Along,
+    }
+
+    /// A stretch that leaves a face's boundary is left out only where no
+    /// place of it is past half the tolerance inside the face (the review
+    /// of 2026-11-20: without the seven places `clip` reads, every test of
+    /// the repair still passed). A plate's top face and the wall of a
+    /// cylinder through it, whose circle in the top's plane comes nearest
+    /// the plate at one place of its front edge; the stretch is cut at
+    /// two places outside the plate either side of that place, and the
+    /// crossings with the front edge are not among the cuts: a crossing
+    /// whose cut was lost.
+    ///
+    /// - The circle 0.3 tolerances short of the edge: the stretch is
+    ///   outside, and left out; by the rule for a sample clear outside
+    ///   (its ends 10 tolerances out, the plate turned so that the top's
+    ///   box holds them) and by the rule for three samples on the
+    ///   boundary (its ends 1.9 tolerances out).
+    /// - The circle 0.9 tolerances into the plate: the stretch crosses the
+    ///   edge twice, and its middle is inside by more than half the
+    ///   tolerance. It keeps the reading it had: refused as partly on and
+    ///   partly off, or taken as along the boundary, never left out.
+    ///
+    /// At three scales, the tolerance a quarter of a percent of the
+    /// radius.
+    #[test]
+    fn a_stretch_past_half_the_tolerance_inside_is_not_left_out() {
+        use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, TAU};
+        for k in [1e-3, 1.0, 1e6] {
+            let tolerance = Tolerance::new(1e-2 * k, 1e-9).unwrap();
+            let tol = tolerance.linear;
+            let r = 4.0 * k;
+            // The plate turned by `turn`; the circle's highest point
+            // `bite` tolerances inside the plate; the ends `ends`
+            // tolerances outside it.
+            for (turn, bite, ends, want) in [
+                (0.5, -0.3, 10.3, Reading::LeftOut),
+                (0.5, 0.9, 9.1, Reading::Refused),
+                (0.0, -0.3, 1.9, Reading::LeftOut),
+                (0.0, 0.9, 1.9, Reading::Along),
+            ] {
+                let what = format!("turned by {turn}, {bite} tolerances inside, at {k}");
+                let (s, c) = f64::psin_cos(turn);
+                let turned = |x: f64, y: f64, z: f64| Vec3::new(c * x - s * y, s * x + c * y, z);
+                let x_axis = turned(1.0, 0.0, 0.0);
+                let plate = crate::primitives::block(
+                    &Frame::new(turned(-10.0 * k, 0.0, -5.0 * k), Vec3::Z, x_axis).unwrap(),
+                    20.0 * k,
+                    10.0 * k,
+                    5.0 * k,
+                )
+                .unwrap();
+                let centre = -r + bite * tol;
+                let cylinder = crate::primitives::cylinder(
+                    &Frame::new(turned(0.0, centre, -k), Vec3::Z, x_axis).unwrap(),
+                    r,
+                    6.0 * k,
+                )
+                .unwrap();
+                let circle = craft3d_geom::Circle::new(
+                    Frame::new(turned(0.0, centre, 0.0), Vec3::Z, x_axis).unwrap(),
+                    r,
+                )
+                .unwrap();
+                let meeting = MeetingCurve {
+                    curve: Curve3::Circle(circle),
+                    range: (0.0, TAU),
+                    closed: true,
+                    tangent: false,
+                    exact: true,
+                    deviation: 0.0,
+                };
+                // The highest point is a quarter turn round the circle.
+                let away = (1.0 - (ends + bite) * tol / r).pacos();
+                let cut = |angle: f64| Cut {
+                    t: 0.0,
+                    point: meeting.curve.eval(angle),
+                    a_edge: None,
+                    b_edge: None,
+                    end: false,
+                };
+                let cuts = [cut(FRAC_PI_2 - away), cut(FRAC_PI_2 + away)];
+                let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
+                let a = prepare(&plate, Operand::A, &mut vertices, &tolerance, true).unwrap();
+                let b = prepare(&cylinder, Operand::B, &mut vertices, &tolerance, true).unwrap();
+                let fa = face_holding(&a, turned(0.0, 5.0 * k, 0.0), tol);
+                let wall = turned(-r * FRAC_1_SQRT_2, centre - r * FRAC_1_SQRT_2, 2.0 * k);
+                let fb = face_holding(&b, wall, tol);
+                let mut sections = Sections::default();
+                let made = clip(
+                    &meeting,
+                    &cuts,
+                    &a,
+                    fa,
+                    &b,
+                    fb,
+                    &mut vertices,
+                    &tolerance,
+                    &mut sections,
+                );
+                let found = match &made {
+                    Ok(()) if sections.stretches.is_empty() => Reading::LeftOut,
+                    Ok(()) => {
+                        assert_eq!(sections.stretches.len(), 1, "{what}");
+                        let stretch = &sections.stretches[0];
+                        assert!(!stretch.inside_a && stretch.inside_b, "{what}");
+                        Reading::Along
+                    }
+                    Err(Stop::Unsupported { reason, .. }) if *reason == AMBIGUOUS => {
+                        Reading::Refused
+                    }
+                    Err(other) => panic!("{what}: {other:?}"),
+                };
+                assert_eq!(found, want, "{what}");
+            }
+        }
+    }
 }
