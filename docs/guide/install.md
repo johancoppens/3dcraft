@@ -347,6 +347,11 @@ In the client's configuration, write `"args": ["mcp", "--automation-read-root", 
 "--automation-write-root", "/path/to/work"]`. This is useful on a server, or to let the agent work while
 you do something else. Open the file it saved in the window afterwards.
 
+**In Claude Desktop.** Each release also has `3dcraft-<version>.mcpb`: open it in Claude Desktop, choose a
+work folder (a folder of its own, such as `3DCraft` in your documents; it is made when it does not exist
+yet), and this headless server is installed with it. Tried in a Linux build of Claude Desktop; on Windows and macOS it has not been
+tried yet, and on a Mac it needs Apple Silicon.
+
 ### What the agent gets
 
 The server gives the agent these tools, and tells it how to start when it connects:

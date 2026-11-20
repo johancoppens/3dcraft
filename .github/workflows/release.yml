@@ -677,7 +677,8 @@ jobs:
       # built-in font, saved in the work folder. The fonts must come from
       # the bundle (server/share/craft3d/fonts): the checkout's own, which
       # a program built in this path would find as a last resort, are moved
-      # away first.
+      # away first. Then once more with a work folder that does not exist
+      # yet, which the server makes.
       - name: smoke test
         run: |
           mv assets/fonts target/checkout-fonts
@@ -708,6 +709,25 @@ jobs:
           grep -qF '\"completed\":6' "$smoke/replies.txt"
           test -s "$work/text.3dcraft"
           mv target/checkout-fonts assets/fonts
+          # A work folder that does not exist yet, as the bundle's default
+          # (`${DOCUMENTS}/3DCraft`) on a fresh machine: the server makes
+          # that one folder as it starts, and saves in it.
+          fresh="$smoke/documents/3DCraft"
+          mkdir -p "$smoke/documents"
+          steps='[{"id":"file.new"},{"id":"feature.block","params":{"size":[1,2,3]}},{"id":"file.save","params":{"path":"'"$fresh"'/block.3dcraft"}}]'
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release","version":"0"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"command_batch","arguments":{"terse":true,"steps":'"$steps"'}}}' \
+            | (cd / && "$cli" mcp --automation-read-root "$fresh" --automation-write-root "$fresh") \
+            > "$smoke/fresh.txt"
+          cat "$smoke/fresh.txt"
+          grep -q '"serverInfo"' "$smoke/fresh.txt"
+          if grep -q '"isError":true' "$smoke/fresh.txt"; then
+            echo "::error::the bundle's server refused a step in a work folder it made (above)"; exit 1
+          fi
+          grep -qF '\"completed\":3' "$smoke/fresh.txt"
+          test -s "$fresh/block.3dcraft"
 
       - uses: actions/upload-artifact@v4
         with:

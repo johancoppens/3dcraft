@@ -6,7 +6,11 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ### Added
 
-- **An MCP bundle in every release.** The release carries one more file, `3dcraft-<version>.mcpb`: an MCP bundle with the command-line program for Linux, macOS (Apple Silicon) and Windows, made for the MCP clients that install such bundles, such as Claude for macOS and Windows. It starts 3DCraft without a window, `craft3d-cli mcp`, reading and writing only the work folder you choose when you install it; your AI assistant then models there, and shows you pictures it renders. To watch it build in the window instead, install 3DCraft and connect it as the guide says. `SHA256SUMS.txt` lists the bundle with the other files. On a Mac with an Intel processor its server does not start: 3DCraft for macOS is built for Apple Silicon only.
+- **An MCP bundle in every release.** The release carries one more file, `3dcraft-<version>.mcpb`: an MCP bundle with the command-line program for Linux, macOS (Apple Silicon) and Windows, made for the MCP clients that install such bundles, such as Claude Desktop. It starts 3DCraft without a window, `craft3d-cli mcp`, reading and writing only the work folder you choose when you install it (a folder of its own, such as `3DCraft` in your documents; it is made when it does not exist yet); your AI assistant then models there, and shows you pictures it renders. To watch it build in the window instead, install 3DCraft and connect it as the guide says. `SHA256SUMS.txt` lists the bundle with the other files. It was installed and used in a Linux build of Claude Desktop on 2026-11-20; in Claude Desktop on Windows and macOS it has not been tried. On a Mac with an Intel processor its server does not start: 3DCraft for macOS is built for Apple Silicon only.
+
+### Changed
+
+- **`craft3d-cli serve` and `mcp` make a write folder that does not exist yet.** When the folder given with `--automation-write-root` is missing and its parent folder exists, the server makes that one folder as it starts, then works as before; until now it refused to start. A folder given with `--automation-read-root` must still exist (the same folder given for both, as the MCP bundle gives it, is made and then found). A folder that starts with a variable no one filled in, such as `${DOCUMENTS}/3DCraft`, is refused with a message that says to choose a folder. What the commands answer does not change.
 
 ### Fixed
 

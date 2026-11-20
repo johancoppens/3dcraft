@@ -17,13 +17,61 @@ pub(crate) enum Protocol {
 /// Turns a root flag's value into an access rule. The directory must exist,
 /// and is made absolute with its symbolic links resolved: the engine
 /// compares paths as text, so the root has to be the one true spelling.
-fn root(flag: &str, dir: &str) -> Result<Access, CliError> {
-    let path = craft3d_engine::canonical(std::path::Path::new(dir))
+///
+/// With `make` (the write root), a directory that does not exist yet is
+/// made first when its parent exists: that one folder, never its parents.
+/// The MCP bundle starts the server with the work folder the person chose
+/// in the client, whose default (`${DOCUMENTS}/3DCraft`) a fresh machine
+/// does not have yet (2026-11-20). A read root is never made: there would
+/// be nothing in it to read.
+///
+/// A root that does not exist and starts with a variable (`${DOCUMENTS}`)
+/// is one a client passed without filling it in, as MCPB's issue 251
+/// reports of Claude Desktop with `${HOME}` in a default (Claude Desktop on
+/// Linux shows the bundle's default `${DOCUMENTS}/3DCraft` unfilled and
+/// saves nothing until a folder is chosen, 2026-11-20). It is refused with
+/// what to do, and nothing is made; the server fills in no variable.
+fn root(flag: &str, dir: &str, make: bool) -> Result<Access, CliError> {
+    let wanted = std::path::Path::new(dir);
+    let missing = matches!(wanted.try_exists(), Ok(false));
+    if missing && let Some(variable) = unfilled(dir) {
+        return Err(CliError::Failed(format!(
+            "`{flag} {dir}`: `{variable}` was not filled in by the client that started 3DCraft, \
+             which passed its default folder as written; choose a folder in its settings for \
+             3DCraft, such as 3DCraft in your documents"
+        )));
+    }
+    if make
+        && missing
+        && wanted
+            .parent()
+            .is_some_and(|parent| parent.as_os_str().is_empty() || parent.is_dir())
+    {
+        // One made meanwhile (by another start) is no error: the checks
+        // below hold it to being a directory.
+        if let Err(e) = std::fs::create_dir(wanted)
+            && e.kind() != ErrorKind::AlreadyExists
+        {
+            return Err(CliError::Failed(format!(
+                "`{flag} {dir}`: cannot make this directory: {e}"
+            )));
+        }
+    }
+    let path = craft3d_engine::canonical(wanted)
         .map_err(|e| CliError::Failed(format!("`{flag} {dir}`: cannot use this directory: {e}")))?;
     if !path.is_dir() {
         return Err(CliError::Failed(format!("`{flag} {dir}`: not a directory")));
     }
     Ok(Access::Root(path))
+}
+
+/// The variable at the start of a root's text, `${...}`, if there is one
+/// (the whole text when its `}` is missing).
+fn unfilled(dir: &str) -> Option<&str> {
+    if !dir.starts_with("${") {
+        return None;
+    }
+    Some(dir.find('}').and_then(|end| dir.get(..=end)).unwrap_or(dir))
 }
 
 /// The address of a running window's control channel: `7878`,
@@ -166,8 +214,8 @@ fn recovery(
 }
 
 pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, CliError> {
-    let mut workspace = Workspace::none();
-    let mut seen = (false, false);
+    // The values of `--automation-read-root` and `--automation-write-root`.
+    let mut roots: (Option<String>, Option<String>) = (None, None);
     let mut bridge: Option<Option<String>> = None;
     let mut token_file = None;
     let mut state_dir = None;
@@ -181,18 +229,15 @@ pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, Cl
                     return Ok(Parsed::Help);
                 }
                 "--automation-read-root" | "--automation-write-root" => {
-                    let reading = name == "--automation-read-root";
-                    let given = if reading { &mut seen.0 } else { &mut seen.1 };
-                    if std::mem::replace(given, true) {
+                    let slot = if name == "--automation-read-root" {
+                        &mut roots.0
+                    } else {
+                        &mut roots.1
+                    };
+                    if slot.is_some() {
                         return Err(CliError::Usage(format!("`{name}` was given twice")));
                     }
-                    let dir = args.value(&name, inline)?;
-                    let access = root(&name, &dir)?;
-                    if reading {
-                        workspace.read = access;
-                    } else {
-                        workspace.write = access;
-                    }
+                    *slot = Some(args.value(&name, inline)?);
                 }
                 "--recovery-dir" | "--autosave-interval" => {
                     let slot = if name == "--recovery-dir" {
@@ -240,7 +285,7 @@ pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, Cl
                 "`--control-token-file` and `--state-dir` go with `--bridge`: they say which window to pass the messages to".to_string(),
             ));
         };
-        if seen.0 || seen.1 {
+        if roots.0.is_some() || roots.1.is_some() {
             return Err(CliError::Usage(
                 "with `--bridge` the files a command may touch are the window's: give the root flags to `craft3d`, not here".to_string(),
             ));
@@ -258,6 +303,18 @@ pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, Cl
             &env,
         )?;
         return finish(craft3d_automation::bridge::serve(&config, input, output));
+    }
+    // The roots once the rest of the command line was found sound, so no
+    // folder is made for a usage error. The write root first: a missing
+    // one is made, and a read root naming the same folder (as the MCP
+    // bundle's does) then finds it. A read root refused after that leaves
+    // the write root made, as it was asked for.
+    let mut workspace = Workspace::none();
+    if let Some(dir) = &roots.1 {
+        workspace.write = root("--automation-write-root", dir, true)?;
+    }
+    if let Some(dir) = &roots.0 {
+        workspace.read = root("--automation-read-root", dir, false)?;
     }
     let mut session = crate::session(workspace);
     if let Some(options) = recovery {
