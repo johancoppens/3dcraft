@@ -153,6 +153,10 @@ pub struct Generator {
     /// made before the step was added, and one that has a cut makes it up
     /// to the cut.
     cuts: Rng,
+    /// Whether a group drawn as a cut is one (the default); off, the step
+    /// is never taken, though `cuts` is drawn from as always, so a design
+    /// is the same as with it up to its first cut (`seeds.rs` holds that).
+    plane_cuts: bool,
     /// A quarter of the base size: the grid step.
     q: f64,
 }
@@ -169,8 +173,15 @@ impl Generator {
         Generator {
             rng: Rng::new(setup.seed),
             cuts: Rng::new(setup.seed ^ 0x0c07_c075),
+            plane_cuts: true,
             q: setup.base() / 4.0,
         }
+    }
+
+    /// The same generator with the plane cut step off.
+    pub fn without_plane_cuts(mut self) -> Generator {
+        self.plane_cuts = false;
+        self
     }
 
     /// The scale a seed is built at: mostly 1, a quarter each at 1e-3 and
@@ -274,7 +285,7 @@ impl Generator {
         // `cuts` hangs on the document (its bodies, faces, vertices and
         // flat faces), so which later groups are cuts does too.
         let drawn = self.cuts.chance(CUT_PERCENT);
-        let (step, commands) = if drawn && n > 0 {
+        let (step, commands) = if drawn && n > 0 && self.plane_cuts {
             ("planeCut", self.plane_cut(runner, &bodies, &name))
         } else {
             let weights: [u64; 12] = if n == 0 {
@@ -1122,8 +1133,18 @@ pub fn run_seed(
     options: Options,
     before: &mut dyn FnMut(&Design),
 ) -> Result<(Design, Runner), String> {
+    run_generated(Generator::new(setup), setup, options, before)
+}
+
+/// [`run_seed`] with the generator given (made for `setup`'s seed; with
+/// the plane cut step off, say).
+pub fn run_generated(
+    mut generator: Generator,
+    setup: Setup,
+    options: Options,
+    before: &mut dyn FnMut(&Design),
+) -> Result<(Design, Runner), String> {
     let mut runner = Runner::new(setup, options)?;
-    let mut generator = Generator::new(setup);
     let mut design = Design {
         setup,
         groups: Vec::new(),

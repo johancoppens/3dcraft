@@ -159,10 +159,19 @@ pub struct Report {
     pub identities_skipped: usize,
     /// Per kind of step, its groups and how many were accepted.
     pub steps: BTreeMap<String, Steps>,
-    /// Plane cuts held to "no more volume than the target had".
+    /// Plane cuts held to "a positive volume, no more than the target had".
     pub cut_volumes: Tally,
     /// Plane cuts by one plane held to "the two sides add up".
     pub cut_sides: Tally,
+    /// Plane cuts held, plane by plane, to the volume `measure.below`
+    /// gives below each plane.
+    pub cut_below: Tally,
+    /// Built plane cuts in which some plane took something away (the
+    /// result's `planes[].cuts`).
+    pub cuts_changed: usize,
+    /// Built plane cuts in which no plane took anything away (every plane
+    /// misses the body or lies in a face of it with the body behind).
+    pub cuts_unchanged: usize,
     pub finding: Option<Finding>,
 }
 
@@ -189,7 +198,13 @@ impl Report {
             "booleans": self.booleans,
             "identities": {"checked": self.identities_checked, "skipped": self.identities_skipped},
             "steps": steps,
-            "cuts": {"volumes": self.cut_volumes.to_json(), "sides": self.cut_sides.to_json()},
+            "cuts": {
+                "volumes": self.cut_volumes.to_json(),
+                "sides": self.cut_sides.to_json(),
+                "below": self.cut_below.to_json(),
+                "changed": self.cuts_changed,
+                "unchanged": self.cuts_unchanged,
+            },
             "refused": self.refused.iter().map(|r| json!({
                 "group": r.group, "command": r.command, "reason": r.reason, "key": r.key(),
             })).collect::<Vec<_>>(),
@@ -331,6 +346,38 @@ fn other_side(params: &Value) -> Option<Value> {
     Some(Value::Object(out))
 }
 
+/// `measure.below`'s params for one plane of a cut, as the cut takes it
+/// (a base plane, a datum plane or a face by name, alone or as
+/// `{plane, offset, side}`; or `{point, normal, offset, side}`), applied to
+/// the body of the feature `of`; and whether the plane keeps the side
+/// above it. `None` for a plane the cut would not take.
+fn below_params(of: &str, plane: &Value) -> Option<(Value, bool)> {
+    let map = match plane {
+        Value::String(_) => return Some((json!({"of": of, "plane": plane}), false)),
+        Value::Object(map) => map,
+        _ => return None,
+    };
+    let given = |key: &str| map.get(key).filter(|v| !v.is_null());
+    let above = match given("side") {
+        None => false,
+        Some(side) => match side.as_str()? {
+            "below" => false,
+            "above" => true,
+            _ => return None,
+        },
+    };
+    let offset = given("offset").cloned().unwrap_or_else(|| json!(0));
+    let at = match (given("plane"), given("normal")) {
+        (Some(by), None) => by.clone(),
+        (None, Some(normal)) => {
+            let point = given("point").cloned().unwrap_or_else(|| json!([0, 0, 0]));
+            json!({"point": point, "normal": normal})
+        }
+        _ => return None,
+    };
+    Some((json!({"of": of, "plane": at, "offset": offset}), above))
+}
+
 /// The volume and area of a feature's body.
 fn measure(session: &mut Session, feature: &str) -> Option<(f64, f64)> {
     let m = session
@@ -396,6 +443,9 @@ impl Runner {
                 steps: BTreeMap::new(),
                 cut_volumes: Tally::default(),
                 cut_sides: Tally::default(),
+                cut_below: Tally::default(),
+                cuts_changed: 0,
+                cuts_unchanged: 0,
                 finding: None,
             },
         })
@@ -414,17 +464,42 @@ impl Runner {
 
     /// The faces of `faces` that are flat: those a datum plane can be put
     /// on, tried on a copy of the document, so nothing of it reaches the
-    /// design.
-    pub fn flat_faces(&self, faces: &[String]) -> Vec<String> {
+    /// design. A datum plane refused in a bug's words or by a caught panic
+    /// is not "not flat" but a finding of the seed, at the group being made
+    /// (the group then comes to [`Applied::Found`] without running); the
+    /// seed reproduces it, the design file alone does not (the question is
+    /// asked by the generator).
+    pub fn flat_faces(&mut self, faces: &[String]) -> Vec<String> {
         let mut copy = self.session.clone();
-        faces
-            .iter()
-            .filter(|face| {
-                copy.execute("datum.plane", &json!({"from": face, "distance": 0}))
-                    .is_ok_and(|r| r.get("status").and_then(Value::as_str) == Some("ok"))
-            })
-            .cloned()
-            .collect()
+        let mut flat = Vec::new();
+        for face in faces {
+            let reason = match copy.execute("datum.plane", &json!({"from": face, "distance": 0})) {
+                Ok(r) if r.get("status").and_then(Value::as_str) == Some("ok") => {
+                    flat.push(face.clone());
+                    continue;
+                }
+                Ok(r) => r
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                Err(e) => e.message().to_string(),
+            };
+            if let Some(kind) = bug_kind(&reason) {
+                let detail = format!(
+                    "a datum plane on {face}, asked whether the face is flat for a plane cut: {reason}"
+                );
+                self.report.finding = Some(Finding {
+                    kind,
+                    oracle: oracle_of_bug(kind).to_string(),
+                    group: self.report.groups,
+                    command: "datum.plane".to_string(),
+                    detail: cut(&detail),
+                });
+                return flat;
+            }
+        }
+        flat
     }
 
     fn refresh_names(&mut self) {
@@ -578,35 +653,45 @@ impl Runner {
     }
 
     /// The checks of an accepted plane cut, beyond those of every group:
-    /// its body has no more volume than its target had, and, when it cuts
-    /// by one plane, the same cut with the other side kept (on a copy of
-    /// the document before the group) has the rest, so that the two add up
-    /// to the target (a side that leaves nothing has none). Each within
-    /// what a boolean may decide either way, `2 t (S(A) + S(result))` per
-    /// result (`craft3d_kernel::boolean::verify`, rule 1: a cut is the
-    /// boolean intersection of the target with a block of which only the
-    /// top, the plane, meets it, and that face's piece is in the result),
-    /// and the integrator's `1e-9` of the volume.
+    /// counted by whether a plane took anything away; its body has a
+    /// positive volume, no more than its target had; it keeps, plane by
+    /// plane, what `measure.below` gives on the kept side of each plane
+    /// ([`Runner::cut_below`]); and, when it cuts by one plane, the same
+    /// cut with the other side kept (on a copy of the document before the
+    /// group) has the rest, so that the two add up to the target (a side
+    /// that leaves nothing has none). Each within what a boolean may decide
+    /// either way, `2 t (S(A) + S(result))` per result
+    /// (`craft3d_kernel::boolean::verify`, rule 1: a cut is the boolean
+    /// intersection of the target with a block of which only the top, the
+    /// plane, meets it, and that face's piece is in the result), and the
+    /// integrator's `1e-9` of the volume.
     fn cut_checks(&mut self, cut: &CutBefore, before: &Session) -> Applied {
         let t = self.setup.tolerance();
         let name = cut.params.get("name").and_then(Value::as_str).unwrap_or("");
+        self.count_changed(name);
         let made = self.ids.get(name).cloned();
         let after = made
             .as_deref()
             .and_then(|id| measure(&mut self.session, id));
         let (Some((va, sa)), Some((vc, sc))) = (cut.measured, after) else {
             self.report.cut_volumes.skipped += 1;
+            self.report.cut_below.skipped += 1;
             return Applied::Accepted;
         };
         self.report.cut_volumes.checked += 1;
         let allowed = 2.0 * t * (sa + sc) + 1e-9 * va.abs();
-        if !(vc.is_finite() && vc - va <= allowed) {
+        if !(vc.is_finite() && vc > 0.0 && vc - va <= allowed) {
             let detail = format!(
-                "the cut {name} has volume {vc:e}, its target {} had {va:e}: more by {:e}, allowed {allowed:e}",
+                "the cut {name} has volume {vc:e}, its target {} had {va:e}: not positive, or more by {:e}, allowed {allowed:e}",
                 cut.target,
                 vc - va
             );
             return self.found("wrong", "cut-volume", PLANE_CUT, &detail);
+        }
+        match self.cut_below(cut, before, (vc, sc)) {
+            Ok(true) => self.report.cut_below.checked += 1,
+            Ok(false) => self.report.cut_below.skipped += 1,
+            Err(found) => return found,
         }
         if !self.options.identities {
             return Applied::Accepted;
@@ -649,6 +734,150 @@ impl Runner {
             cut.target
         );
         self.found("wrong", "cut-sides", PLANE_CUT, &detail)
+    }
+
+    /// Counts the accepted cut `name` as changed (some plane took
+    /// something away: `planes[].cuts` of `document.inspect`) or unchanged.
+    fn count_changed(&mut self, name: &str) {
+        let Some(inspect) = self.query("document.inspect", &json!({"measures": false})) else {
+            return;
+        };
+        let planes = inspect
+            .get("features")
+            .and_then(Value::as_array)
+            .and_then(|all| {
+                all.iter()
+                    .find(|f| f.get("name").and_then(Value::as_str) == Some(name))
+            })
+            .and_then(|f| f.get("planes"))
+            .and_then(Value::as_array);
+        let Some(planes) = planes else {
+            return;
+        };
+        if planes
+            .iter()
+            .any(|p| p.get("cuts").and_then(Value::as_bool) == Some(true))
+        {
+            self.report.cuts_changed += 1;
+        } else {
+            self.report.cuts_unchanged += 1;
+        }
+    }
+
+    /// The accepted cut held plane by plane to `measure.below`, on a copy
+    /// of the document before the group: plane `k` is applied to what the
+    /// planes before it left (made on the copy as a cut of the target by
+    /// plane 1 alone, kept, that body cut by plane 2 alone, and so on: a
+    /// cut by planes 1 to `k` is the cut by plane `k` of what planes 1 to
+    /// `k − 1` left, `plane-cut.md` › *One feature against a feature a
+    /// plane, bit for bit*); `measure.below` of that body by plane `k`
+    /// gives what the plane keeps (below it, or for `above` the body less
+    /// that), and the body plane `k` leaves (the next copy, or for the last
+    /// plane the cut itself) has it, within `4 t (S + A) + 2e-9 V` of the
+    /// body the plane is applied to: each of the two within `2 t (S + A)`
+    /// of the exact part (rule 1, `A` the section) and the integrator's
+    /// `1e-9` each, as the action matrix holds a cut. `measure.below`
+    /// reads the plane from the parameter by its own code, not by the
+    /// cut's regeneration, so a plane put in the wrong place, a side
+    /// turned, or a body handed back unchanged shows. A `measure.below`
+    /// refused where the cut was built is a finding, as in the matrix.
+    /// `Ok(true)` when every plane was held, `Ok(false)` when a copy could
+    /// not be made or measured (counted), `Err` with the finding.
+    fn cut_below(
+        &mut self,
+        cut: &CutBefore,
+        before: &Session,
+        made: (f64, f64),
+    ) -> Result<bool, Applied> {
+        let t = self.setup.tolerance();
+        let name = cut.params.get("name").and_then(Value::as_str).unwrap_or("");
+        let planes: Vec<Value> = match cut.params.get("planes") {
+            Some(Value::Array(items)) => items.clone(),
+            Some(one) => vec![one.clone()],
+            None => return Ok(false),
+        };
+        let Some(mut applied_to) = cut.measured else {
+            return Ok(false);
+        };
+        let mut copy = before.clone();
+        let mut base = cut.target.clone();
+        let number = |v: Option<&Value>| v.and_then(Value::as_f64).filter(|x| x.is_finite());
+        for (k, plane) in planes.iter().enumerate() {
+            let Some((params, above)) = below_params(&base, plane) else {
+                return Ok(false);
+            };
+            let answer = match copy.execute("measure.below", &params) {
+                Ok(answer) => answer,
+                Err(e) => {
+                    let message = e.message().to_string();
+                    let detail = format!(
+                        "measure.below refused plane {} of the cut {name}, which was built: {message}",
+                        k + 1
+                    );
+                    return Err(match bug_kind(&message) {
+                        Some(kind) => {
+                            self.found(kind, oracle_of_bug(kind), "measure.below", &detail)
+                        }
+                        None => self.found("wrong", "cut-below", PLANE_CUT, &detail),
+                    });
+                }
+            };
+            let section = answer.get("section").and_then(|s| s.get("area"));
+            let (Some(below), Some(section)) = (number(answer.get("volume")), number(section))
+            else {
+                let detail = format!(
+                    "measure.below gave no volume and section for plane {} of the cut {name}: {answer}",
+                    k + 1
+                );
+                return Err(self.found("wrong", "cut-below", PLANE_CUT, &detail));
+            };
+            let (vb, sb) = applied_to;
+            let expected = if above { vb - below } else { below };
+            let got = if k + 1 == planes.len() {
+                made
+            } else {
+                let step = format!("__plane{}", k + 1);
+                let params = json!({"target": base, "planes": [plane], "keep": true, "name": step});
+                let refused = match copy.execute(PLANE_CUT, &params) {
+                    Ok(r) if r.get("status").and_then(Value::as_str) == Some("failed") => Some(
+                        r.get("error")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    ),
+                    Ok(_) => None,
+                    Err(e) => Some(e.message().to_string()),
+                };
+                if let Some(reason) = refused {
+                    if let Some(kind) = bug_kind(&reason) {
+                        let detail = format!(
+                            "the cut {name} by its plane {} alone, made to hold it to measure.below: {reason}",
+                            k + 1
+                        );
+                        return Err(self.found(kind, oracle_of_bug(kind), PLANE_CUT, &detail));
+                    }
+                    return Ok(false);
+                }
+                let Some(size) = measure(&mut copy, &step) else {
+                    return Ok(false);
+                };
+                base = step;
+                size
+            };
+            let allowed = 4.0 * t * (sb + section) + 2e-9 * vb.abs();
+            let gap = got.0 - expected;
+            if !(gap.is_finite() && gap.abs() <= allowed) {
+                let side = if above { "above" } else { "below" };
+                let detail = format!(
+                    "plane {} of the cut {name} keeps {:e} of the {vb:e} it is applied to, but measure.below gives {below:e} below it, so {expected:e} on the side kept ({side}): off by {gap:e}, allowed {allowed:e}",
+                    k + 1,
+                    got.0
+                );
+                return Err(self.found("wrong", "cut-below", PLANE_CUT, &detail));
+            }
+            applied_to = got;
+        }
+        Ok(true)
     }
 
     /// `document.check`; a finding for its first problem.
@@ -988,6 +1217,50 @@ mod tests {
             None
         );
         assert_eq!(other_side(&json!({"target": "F1"})), None);
+    }
+
+    #[test]
+    fn a_plane_of_a_cut_as_measure_below_takes_it() {
+        assert_eq!(
+            below_params("F1", &json!("xy")),
+            Some((json!({"of": "F1", "plane": "xy"}), false))
+        );
+        assert_eq!(
+            below_params(
+                "F1",
+                &json!({"plane": "F1:face(1)", "offset": -2, "side": "above"})
+            ),
+            Some((
+                json!({"of": "F1", "plane": "F1:face(1)", "offset": -2}),
+                true
+            ))
+        );
+        assert_eq!(
+            below_params(
+                "__plane1",
+                &json!({"point": [1, 2, 3], "normal": [0, 0, 1], "side": "below"})
+            ),
+            Some((
+                json!({"of": "__plane1", "plane": {"point": [1, 2, 3], "normal": [0, 0, 1]}, "offset": 0}),
+                false
+            ))
+        );
+        // No point: the origin, as the cut takes it.
+        assert_eq!(
+            below_params("F1", &json!({"normal": [1, 0, 0], "offset": 5})),
+            Some((
+                json!({"of": "F1", "plane": {"point": [0, 0, 0], "normal": [1, 0, 0]}, "offset": 5}),
+                false
+            ))
+        );
+        for bad in [
+            json!({"plane": "xy", "normal": [0, 0, 1]}),
+            json!({"offset": 1}),
+            json!({"plane": "xy", "side": "left"}),
+            json!(5),
+        ] {
+            assert_eq!(below_params("F1", &bad), None, "{bad}");
+        }
     }
 
     #[test]
