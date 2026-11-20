@@ -5,8 +5,8 @@
 //! manifest version 0.3): a ZIP archive with `manifest.json` at its root
 //! and `craft3d-cli` for Linux, macOS and Windows, which an MCP client such
 //! as Claude Desktop installs with one click and starts headless
-//! (`craft3d-cli mcp`) with a work folder the person chooses (offered:
-//! `${DOCUMENTS}/3DCraft`). And
+//! (`craft3d-cli mcp`) with a work folder the person chooses (its default
+//! `${DOCUMENTS}/3DCraft`, for a client that fills that in). And
 //! beside it `server.json`, the entry of the official MCP registry
 //! (`registry.modelcontextprotocol.io`, `io.github.johancoppens/3dcraft`)
 //! that points at the bundle as a release asset, with its SHA-256: made by
@@ -229,6 +229,13 @@ const DEFAULT_VARIABLES: [&str; 3] = ["HOME", "DESKTOP", "DOCUMENTS"];
 /// server makes it at the start when it does not exist yet.
 const WORK_FOLDER_DEFAULT: &str = "${DOCUMENTS}/3DCraft";
 
+/// What the work folder's description asks of the person (approved by the
+/// developer, 2026-11-20). A client that does not fill in the default's
+/// variable shows it as it is written (Claude Desktop on Linux shows
+/// `${DOCUMENTS}/3DCraft` and lets nothing be saved until a folder is
+/// chosen with Browse), so the description says what to choose.
+const WORK_FOLDER_ASKS: &str = "Choose a folder of its own, such as 3DCraft in your documents.";
+
 /// The names of the `${...}` variables in `text` in order, each one added
 /// to `problems` when `known` refuses it with a reason; a `${` that is not
 /// closed is a problem too, and ends the reading.
@@ -347,9 +354,10 @@ pub(crate) fn manifest(template: &str, version: &str) -> Result<String, String> 
 /// platform whose command is not its program in the bundle (or one not
 /// listed under `compatibility.platforms`), an entry point that is none of
 /// the programs, a variable the validator does not know, one in a default
-/// the specification does not name, a work folder not asked for or not
-/// offered as [`WORK_FOLDER_DEFAULT`], and a server that is not the
-/// headless one (`mcp`, not `--bridge`). Every problem is named.
+/// the specification does not name, a work folder not asked for, without
+/// [`WORK_FOLDER_DEFAULT`] as its default or whose description does not end
+/// with [`WORK_FOLDER_ASKS`], and a server that is not the headless one
+/// (`mcp`, not `--bridge`). Every problem is named.
 pub(crate) fn check_manifest(manifest: &Value, version: &str) -> Result<(), String> {
     let mut problems: Vec<String> = Vec::new();
     let Some(fields) = manifest.as_object() else {
@@ -511,8 +519,16 @@ pub(crate) fn check_manifest(manifest: &Value, version: &str) -> Result<(), Stri
     }
     if text(manifest, &["user_config", "work_folder", "default"]) != Some(WORK_FOLDER_DEFAULT) {
         problems.push(format!(
-            "user_config.work_folder.default is not `{WORK_FOLDER_DEFAULT}`: the work folder \
-             offered is a folder of 3DCraft's, never the home folder"
+            "user_config.work_folder.default is not `{WORK_FOLDER_DEFAULT}`: the work folder's \
+             default is a folder of 3DCraft's, never the home folder"
+        ));
+    }
+    if !text(manifest, &["user_config", "work_folder", "description"])
+        .is_some_and(|said| said.ends_with(WORK_FOLDER_ASKS))
+    {
+        problems.push(format!(
+            "user_config.work_folder.description does not end with `{WORK_FOLDER_ASKS}`: a client \
+             that shows the default unfilled leaves the person to choose"
         ));
     }
     if text(manifest, &["icon"]) != Some("icon.png") {
@@ -1133,7 +1149,7 @@ mod tests {
             &|m| m["user_config"]["work_folder"]["required"] = false.into(),
             "is not required",
         );
-        // The work folder is offered as a folder of 3DCraft's: never the
+        // The work folder's default is a folder of 3DCraft's: never the
         // home folder, never none (2026-11-20).
         assert_eq!(
             good["user_config"]["work_folder"]["default"],
@@ -1153,6 +1169,15 @@ mod tests {
                     .remove("default");
             },
             "user_config.work_folder.default is not",
+        );
+        // A client that shows the default unfilled (Claude Desktop on
+        // Linux, 2026-11-20) leaves the description to say what to choose.
+        broken(
+            &|m| {
+                m["user_config"]["work_folder"]["description"] =
+                    "The folder 3DCraft may read and write.".into()
+            },
+            "user_config.work_folder.description does not end with `Choose a folder of its own",
         );
         // Only the variables the specification names for a default:
         // `${DOWNLOADS}` it names for `mcp_config` alone.

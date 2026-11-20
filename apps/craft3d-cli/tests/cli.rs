@@ -1384,10 +1384,8 @@ fn a_root_must_be_a_directory() {
 /// folder only, nothing beside it, nothing said on stderr), the read root
 /// naming the same folder then finds it, and the commands answer as with
 /// a folder that existed: a save beneath it works, one outside it is
-/// refused. A client that passes the default without filling in
-/// `${DOCUMENTS}` (MCPB's issue 251) gives a path whose parent does not
-/// exist: refused, nothing made. So is a start with `--bridge`, which
-/// takes no roots.
+/// refused. A start with `--bridge`, which takes no roots, is refused and
+/// makes nothing.
 #[test]
 fn a_missing_write_root_is_made_at_the_start() {
     let dir = workdir("made-root");
@@ -1455,20 +1453,6 @@ fn a_missing_write_root_is_made_at_the_start() {
     assert_eq!(ran.json_lines()[2]["ok"], true, "{}", ran.stdout);
     assert!(dir.join("out/saved.3dcraft").is_file());
 
-    // The default as the client wrote it, not filled in.
-    let ran = cli_in(
-        &dir,
-        &["mcp", "--automation-write-root", "${DOCUMENTS}/3DCraft"],
-        Some(""),
-    )
-    .failed(1);
-    assert!(
-        ran.stderr
-            .contains("`--automation-write-root ${DOCUMENTS}/3DCraft`: cannot use this directory"),
-        "{}",
-        ran.stderr
-    );
-    assert_eq!(ran.stdout, "");
     let ran = cli_in(
         &dir,
         &["mcp", "--bridge", "1", "--automation-write-root", "bridged"],
@@ -1481,6 +1465,75 @@ fn a_missing_write_root_is_made_at_the_start() {
         ran.stderr
     );
     assert_eq!(names(&dir), ["Documents", "out"]);
+}
+
+/// A client may pass the bundle's default work folder,
+/// `${DOCUMENTS}/3DCraft`, without filling in `${DOCUMENTS}` (MCPB's issue
+/// 251 reports Claude Desktop passing `${HOME}` so; Claude Desktop on Linux
+/// shows this default unfilled, 2026-11-20). A root that does not exist
+/// and starts with a variable is refused with what happened and what to
+/// do, and nothing is made. The server fills in no variable: a folder
+/// that is named so and exists is used as it is.
+#[test]
+fn a_root_a_client_did_not_fill_in_is_refused_with_what_to_do() {
+    let dir = workdir("unfilled-root");
+    let said = |flag: &str, dir: &str, variable: &str| {
+        format!(
+            "craft3d-cli: `{flag} {dir}`: `{variable}` was not filled in by the client that \
+             started 3DCraft, which passed its default folder as written; choose a folder in its \
+             settings for 3DCraft, such as 3DCraft in your documents"
+        )
+    };
+    // As the bundle starts it: the same text for both roots, the write
+    // root looked at first.
+    let ran = cli_in(
+        &dir,
+        &[
+            "mcp",
+            "--automation-read-root",
+            "${DOCUMENTS}/3DCraft",
+            "--automation-write-root",
+            "${DOCUMENTS}/3DCraft",
+        ],
+        Some(""),
+    )
+    .failed(1);
+    assert_eq!(
+        ran.stderr.trim_end(),
+        said(
+            "--automation-write-root",
+            "${DOCUMENTS}/3DCraft",
+            "${DOCUMENTS}"
+        )
+    );
+    assert_eq!(ran.stdout, "");
+    for (flag, text, variable) in [
+        ("--automation-read-root", "${HOME}", "${HOME}"),
+        (
+            "--automation-write-root",
+            "${DOCUMENTS/3DCraft",
+            "${DOCUMENTS/3DCraft",
+        ),
+    ] {
+        let ran = cli_in(&dir, &["serve", flag, text], Some("")).failed(1);
+        assert_eq!(ran.stderr.trim_end(), said(flag, text, variable));
+    }
+    assert_eq!(
+        std::fs::read_dir(&dir).unwrap().count(),
+        0,
+        "nothing was made"
+    );
+
+    // A folder that is named so and exists is a folder like any other.
+    std::fs::create_dir(dir.join("${DOCUMENTS}")).unwrap();
+    let ran = cli_in(
+        &dir,
+        &["serve", "--automation-write-root", "${DOCUMENTS}"],
+        Some(&save_session("saved.3dcraft")),
+    )
+    .ok();
+    assert_eq!(ran.json_lines()[2]["ok"], true, "{}", ran.stdout);
+    assert!(dir.join("${DOCUMENTS}/saved.3dcraft").is_file());
 }
 
 #[test]

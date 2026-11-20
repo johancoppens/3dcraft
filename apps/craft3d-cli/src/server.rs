@@ -24,10 +24,25 @@ pub(crate) enum Protocol {
 /// in the client, whose default (`${DOCUMENTS}/3DCraft`) a fresh machine
 /// does not have yet (2026-11-20). A read root is never made: there would
 /// be nothing in it to read.
+///
+/// A root that does not exist and starts with a variable (`${DOCUMENTS}`)
+/// is one a client passed without filling it in, as MCPB's issue 251
+/// reports of Claude Desktop with `${HOME}` in a default (Claude Desktop on
+/// Linux shows the bundle's default `${DOCUMENTS}/3DCraft` unfilled and
+/// saves nothing until a folder is chosen, 2026-11-20). It is refused with
+/// what to do, and nothing is made; the server fills in no variable.
 fn root(flag: &str, dir: &str, make: bool) -> Result<Access, CliError> {
     let wanted = std::path::Path::new(dir);
+    let missing = matches!(wanted.try_exists(), Ok(false));
+    if missing && let Some(variable) = unfilled(dir) {
+        return Err(CliError::Failed(format!(
+            "`{flag} {dir}`: `{variable}` was not filled in by the client that started 3DCraft, \
+             which passed its default folder as written; choose a folder in its settings for \
+             3DCraft, such as 3DCraft in your documents"
+        )));
+    }
     if make
-        && matches!(wanted.try_exists(), Ok(false))
+        && missing
         && wanted
             .parent()
             .is_some_and(|parent| parent.as_os_str().is_empty() || parent.is_dir())
@@ -48,6 +63,15 @@ fn root(flag: &str, dir: &str, make: bool) -> Result<Access, CliError> {
         return Err(CliError::Failed(format!("`{flag} {dir}`: not a directory")));
     }
     Ok(Access::Root(path))
+}
+
+/// The variable at the start of a root's text, `${...}`, if there is one
+/// (the whole text when its `}` is missing).
+fn unfilled(dir: &str) -> Option<&str> {
+    if !dir.starts_with("${") {
+        return None;
+    }
+    Some(dir.find('}').and_then(|end| dir.get(..=end)).unwrap_or(dir))
 }
 
 /// The address of a running window's control channel: `7878`,
