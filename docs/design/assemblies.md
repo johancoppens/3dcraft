@@ -929,7 +929,8 @@ each published assembly as 0.2.0 answered it.
   *Valid*, as did an assembly that opened unsolved. Principle broken: one truth; the window had a second, weaker
   rule. Rule: the window's verdict on an assembly is what the check lists for it, and each problem is shown where
   the person looks for the thing it names. Built: `AssemblyOutline::problems` is `asm::wrong_in` of the placement the
-  view shows (the document's at rest, as the check's); `AssemblyVerdict::of` makes the heading from it (*Solved*,
+  view shows (at rest the document's, which the check reads; a moment of a motion or a held joint while one
+  is shown, which the check does not see); `AssemblyVerdict::of` makes the heading from it (*Solved*,
   *Solved · n DOF* only while it is empty; *Not solved* when the solve failed; else *n failed*, the check's words one
   per line on hover), and `ui.get` › `assembly` gives it (`{ok, text, problems}`, `null` for a part). The outline
   carries the couplings (`OutlineCoupling`), and the Mates section draws one that takes no part as a red row after

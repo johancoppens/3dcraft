@@ -224,12 +224,16 @@ the assembly's checks, with the player at the foot. Click a row to select the in
 fly to it; the eye hides it, and **Open** opens its part in a tab of its own.
 
 The tab's heading says **Solved** (with the degrees of freedom left) only while the assembly's
-`document.check` finds nothing wrong with it. Otherwise it says **Not solved**, or how many problems the
-check lists (**2 failed**); point at it for each in the check's words. Each is also on the row it names: an
-instance that is not placed is red with why, also inside a subassembly; a mate that fails is red; a coupling
-that takes no part is a red row after the mates; a subassembly with something wrong in its own mates or
-solve is marked ⚠, with what is wrong under it (*its mate `Ground`: …*). The **Parameters** tab of an
-assembly with public parameters says the same in the place of **Valid**.
+`document.check` finds nothing wrong with how it is placed: every instance placed and its part built, every
+mate and coupling taking part, the solve met, inside its subassemblies too. Otherwise it says **Not
+solved**, or how many problems the check lists (**2 failed**); point at it for each in the check's words.
+Each is also on the row it names: an instance that is not placed is red with why, also inside a
+subassembly; a mate that fails is red; a coupling that takes no part is a red row after the mates; a
+subassembly with something wrong in its own mates or solve is marked ⚠, with what is wrong under it (*its
+mate `Ground`: …*). The **Parameters** tab of an assembly with public parameters says the same in the place
+of **Valid**. A check of the assembly that fails (a clearance, a distance) is shown with its checks under
+the tree, not in the heading; and while the player shows a moment of the motion, or you hold a joint, the
+heading speaks of what is shown.
 
 Every joint you can set by hand is a slider on the **Parameters** tab: the joints the assembly stays
 solved with. In a linkage that moves one way (a four-bar), the joints that move it have a slider until you
