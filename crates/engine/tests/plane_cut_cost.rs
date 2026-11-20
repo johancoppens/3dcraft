@@ -75,7 +75,7 @@ struct Slope {
 /// at radius 10 and height 18, scattered as measured planes are: a
 /// third of a millimetre in height, a few hundredths in slope.
 fn slopes(count: usize) -> Vec<Slope> {
-    let mut rng = Rng(2026_11_20);
+    let mut rng = Rng(20_261_120);
     // The 24 directions; fewer planes take every third, more none.
     let directions = round(24, STEP_24);
     (0..count)
