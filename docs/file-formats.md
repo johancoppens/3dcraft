@@ -296,4 +296,4 @@ Written from the DXF Reference (Autodesk publishes one per release: the group co
 
 ## Later candidates
 
-IGES, DXF/SVG import, glTF (viewing), AMF, and reading the mesh formats. None is planned before M10; each needs a roadmap entry first.
+IGES, DXF/SVG import, AMF, and reading the mesh formats. None is planned before M10; each needs a roadmap entry first. glTF export has its entry since 2026-11-20 ([`roadmap.md`](roadmap.md) › M10 › *Open*).

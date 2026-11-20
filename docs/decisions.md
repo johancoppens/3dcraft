@@ -1,12 +1,16 @@
 # Decisions
 
-> **Last updated:** 2026-11-19
+> **Last updated:** 2026-11-20
 
 This is the record of the decisions taken while 3DCraft was built, written at the time and kept as it was. "The developer" is the project's maintainer; "an agent" and "the coordinator" are the AI agents that built it (the coordinator plans the others' work and merges it). A decision made by an agent "for the developer to overturn" (some of them overnight, while nobody could be asked) stood unless it was overturned, and a later entry says so where it was; dates are when a decision was taken, ids of runs and commits are the workshop's evidence of the day. From outside the project, an open decision is raised in an issue.
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-11-20: A cut by planes in one feature and glTF export go on the roadmap, for the next version (decided by the developer)
+
+The first report from someone who builds on 3DCraft as a library ([issue 3](https://github.com/johancoppens/3dcraft/issues/3) of the public repository, 2026-11-18: prisms trimmed by 2 to 25 measured planes, natively and on wasm32) asked for three things. Two pass the test of rule 14, any shape and anyone who designs with 3DCraft, and the developer said yes to both for the next version, the cut first: **a body cut by planes in one feature** (a boolean with a half-space; today five features per plane), under M7, and **glTF 2.0 binary export** (the format that carries face colours, materials and names to a browser or a renderer; triangles, for showing, not for making), under M10, which amends *Later candidates* of [`file-formats.md`](file-formats.md). Neither is for a patch release: each is a new command or a new format. The third, merging faces and vertices that lie within a given distance in a boolean, is kernel work on the boolean checklist with no date; the refusal between half and twice the tolerance stays as it is until then. The smaller ideas (a prism command, face provenance per triangle, machine-readable failure reasons, cargo features for a lean wasm build) are noted, not decided; a polygon given by numbers is held today when its coordinates are given as expressions.
 
 ### 2026-11-19: After 0.2.0: fixes for 0.2 from `release/0.2`, and the 0.1 line ends (decided by the developer; amends 2026-11-13)
 

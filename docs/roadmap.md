@@ -351,6 +351,8 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.
 
+- [ ] A body cut by planes in one feature, one side kept: the plane a datum plane, a flat face, or a point and a normal given as numbers; a boolean with a half-space, so no tool body has to be sized (today each plane costs a datum plane, a sketch, a rectangle, an extrusion and a boolean). For the next version (the developer, 2026-11-20); asked from outside, with measured cases ([issue 3](https://github.com/johancoppens/3dcraft/issues/3))
+
 #### Acceptance
 Oracle 3 on generated inputs; the box-minus-cylinder family exact; the naming suite extended through booleans; no invalid body ever returned (proptest).
 
@@ -735,6 +737,7 @@ STEP files read into the document as bodies (an `Import` feature), a pinned publ
 - Faces drawn at a very uneven pace (weights a thousandfold apart) meshed on a grid graded to their shape, so such STEP parts are drawn, exported and cut ([`design/tessellator.md`](design/tessellator.md) › *A grid graded to the shape*) (2026-11-16)
 
 #### Open
+- [ ] glTF 2.0 binary (`.glb`) export from `file.export`: triangles as the mesh exports make them, a node per body with its name, a material per face colour (base colour, metallic, roughness), the document's unit carried to metres; checked by Khronos's validator. For the next version (the developer, 2026-11-20); asked from outside ([issue 3](https://github.com/johancoppens/3dcraft/issues/3))
 - [ ] Share large blobs between undo snapshots instead of copying them: done for imported files (2026-10-21, an `Arc` per file); open for anything else large a document may hold
 - [ ] The tessellator on what such booleans leave (a closed spline face that is everything outside its loops, a ball's face cut along its seam: 77 of 594 results declined, listed by that test)
 - [ ] The measure of a boundary through both poles of a spline surface that also crosses its seam (declined by `topo`)
@@ -802,6 +805,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-20 | minor | Two Open items for the next version, asked in the public repository's issue 3 (the developer, 2026-11-20): a body cut by planes in one feature (M7), glTF export (M10) |
 | 2026-11-20 | minor | 0.2.1 released (2026-11-20): the stage and R1's Done line |
 | 2026-11-19 | minor | 0.2.0 released (2026-11-19): the stage, the current focus and R1's Done line; fixes for 0.2 from `release/0.2` and the 0.1 line ended (the developer, 2026-11-19): the stage and the current focus |
 | 2026-11-19 | minor | Before 0.2.0: Done lines for the work merged since 0.1.3 (M4, M5, M7, M8.5, M9, R1, V1, M10), the Open items it closed taken out, the current focus |
