@@ -513,6 +513,92 @@ fn an_assembly_is_placed_and_played_beside_the_page() {
     assert_eq!(page.work_here(), before, "the page placed or regenerated");
 }
 
+/// Two bars on a hinge with a coupling that takes no part (a linear one
+/// on a distance the revolute lacks), and a rigid subassembly whose bar
+/// its part refuses (600 mm, its range ends at 500), so its mate on it
+/// fails: the solve of what is placed succeeds.
+fn wrong_assembly(s: &mut Session) {
+    run(s, "assembly.new", json!({}));
+    run(
+        s,
+        "instance.add",
+        json!({"source": "bar.3dcraft", "name": "A", "body": "Bar"}),
+    );
+    run(
+        s,
+        "instance.add",
+        json!({"source": "bar.3dcraft", "name": "B", "body": "Bar", "position": [0, 10, 0]}),
+    );
+    run(
+        s,
+        "instance.add",
+        json!({"source": "inner.3dcraftasm", "name": "Sub", "position": [0, 30, 0]}),
+    );
+    run(
+        s,
+        "mate.add",
+        json!({"kind": "fixed", "a": "world/z", "b": "A/End1", "name": "Base", "flip": true}),
+    );
+    run(
+        s,
+        "mate.add",
+        json!({"kind": "revolute", "a": "A/End2", "b": "B/End1", "name": "Turn", "flip": true}),
+    );
+    run(
+        s,
+        "coupling.add",
+        json!({"kind": "linear", "name": "NoSlide", "terms": [{"mate": "Turn", "motion": "distance"}]}),
+    );
+}
+
+/// An assembly its check finds wrong, placed beside the page: its outline
+/// crosses with what the check lists (`problems`), its couplings and what
+/// is wrong in a subassembly itself (`inside`), as a session that places
+/// it itself lists them, so the page's Assembly tab never says *Solved*
+/// over it (review of the window's verdict, 2026-11-20).
+#[test]
+fn what_the_check_finds_wrong_crosses_to_the_page() {
+    let dir = workdir("view-elsewhere", "verdict");
+    let mut here = session_in(&dir);
+    bar_part(&mut here);
+    run(&mut here, "assembly.new", json!({}));
+    run(
+        &mut here,
+        "instance.add",
+        json!({"source": "bar.3dcraft", "name": "Long", "body": "Bar", "params": {"len": "600 mm"}}),
+    );
+    run(
+        &mut here,
+        "mate.add",
+        json!({"kind": "fixed", "a": "world/z", "b": "Long/End1", "name": "Ground", "flip": true}),
+    );
+    run(&mut here, "file.save", json!({"path": "inner.3dcraftasm"}));
+    run(&mut here, "file.close", json!({}));
+    wrong_assembly(&mut here);
+    let mut page = page_of(session_in(&dir));
+    wrong_assembly(&mut page);
+    answer_scenes(&mut page, SceneQuality::display());
+    answer_checks(&mut page);
+    let mine = here.assembly_outline().unwrap();
+    assert_eq!(mine.solve_error, None, "{mine:?}");
+    assert!(
+        mine.problems.iter().any(|p| p.what == "coupling"),
+        "{mine:?}"
+    );
+    assert!(
+        mine.problems
+            .iter()
+            .any(|p| p.what == "instance" && p.name == "Sub"),
+        "{mine:?}"
+    );
+    assert!(mine.couplings.iter().any(|c| c.error.is_some()), "{mine:?}");
+    assert!(
+        mine.instances.iter().any(|i| !i.inside.is_empty()),
+        "{mine:?}"
+    );
+    assert_eq!(page.assembly_outline(), Some(mine));
+}
+
 /// A packed assembly (the published planetary gearbox) opened on the
 /// page: placed beside it, and its motion played there, bit for bit.
 #[test]
