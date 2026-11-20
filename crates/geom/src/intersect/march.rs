@@ -2345,7 +2345,7 @@ impl Marcher {
                         // predicted from the derivatives on one side goes
                         // as far off however short it is. The parameter
                         // step is then scaled to the length it went.
-                        let ahead = step.dot(cur.t) > 0.0 && turn >= cos_turn && on_curve;
+                        let ahead = step.dot(cur.t) > 0.0 && turn >= cos_turn;
                         let Some(new) = ahead
                             .then(|| self.rescaled(&cur, h, len, sign, cos_turn))
                             .flatten()
