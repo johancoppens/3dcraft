@@ -93,6 +93,85 @@ const MANIFEST_FIELDS: [&str; 28] = [
     "_meta",
 ];
 
+/// The fields of the strict objects inside a 0.3 manifest (the same
+/// schema; `_meta` is a free map): where the object is, `*` standing for
+/// every entry of a map or a list, and the fields it may hold. MCPB's
+/// validator refuses any other (`server.mcp_config: Unrecognized key(s)
+/// in object: 'cwd'`), so this check holds every run to what the
+/// validator, which runs on a rehearsal only, would say.
+const NESTED_FIELDS: [(&[&str], &[&str]); 12] = [
+    (&["author"], &["name", "email", "url"]),
+    (&["repository"], &["type", "url"]),
+    (&["server"], &["type", "entry_point", "mcp_config"]),
+    (
+        &["server", "mcp_config"],
+        &["command", "args", "env", "platform_overrides"],
+    ),
+    (
+        &["server", "mcp_config", "platform_overrides", "*"],
+        &["command", "args", "env"],
+    ),
+    (
+        &["compatibility"],
+        &["claude_desktop", "platforms", "runtimes"],
+    ),
+    (&["compatibility", "runtimes"], &["python", "node"]),
+    (&["tools", "*"], &["name", "description"]),
+    (
+        &["prompts", "*"],
+        &["name", "description", "arguments", "text"],
+    ),
+    (
+        &["user_config", "*"],
+        &[
+            "type",
+            "title",
+            "description",
+            "required",
+            "default",
+            "multiple",
+            "sensitive",
+            "min",
+            "max",
+        ],
+    ),
+    (&["localization"], &["resources", "default_locale"]),
+    (&["icons", "*"], &["src", "size", "theme"]),
+];
+
+/// The values at `path` in `value` with where each is (`tools[0]`,
+/// `user_config.work_folder`), `*` standing for every entry of a map or a
+/// list.
+fn at_path<'a>(value: &'a Value, path: &[&str]) -> Vec<(String, &'a Value)> {
+    let mut found = vec![(String::new(), value)];
+    for key in path {
+        let mut next = Vec::new();
+        for (at, value) in found {
+            let dot = if at.is_empty() { "" } else { "." };
+            if *key == "*" {
+                match value {
+                    Value::Object(map) => {
+                        next.extend(map.iter().map(|(k, v)| (format!("{at}{dot}{k}"), v)));
+                    }
+                    Value::Array(items) => {
+                        next.extend(
+                            items
+                                .iter()
+                                .enumerate()
+                                .map(|(i, v)| (format!("{at}[{i}]"), v)),
+                        );
+                    }
+                    _ => {}
+                }
+            } else if let Some(v) = value.get(key) {
+                next.push((format!("{at}{dot}{key}"), v));
+            }
+        }
+        found = next;
+    }
+    found
+}
+
 /// One program of the bundle.
 pub(crate) struct Platform {
     /// The platform as MCPB names it (Node's `process.platform`): a key of
@@ -233,7 +312,8 @@ pub(crate) fn manifest(template: &str, version: &str) -> Result<String, String> 
 
 /// Refuses a manifest MCPB's validator or a client would refuse, or that
 /// does not start this bundle's programs as decided: a field the schema of
-/// its version does not know, another version than the workspace's, a
+/// its version does not know (at the top or in any of its strict objects,
+/// [`NESTED_FIELDS`]), another version than the workspace's, a
 /// platform whose command is not its program in the bundle (or one not
 /// listed under `compatibility.platforms`), an entry point that is none of
 /// the programs, a variable the validator does not know or a work folder
@@ -249,6 +329,17 @@ pub(crate) fn check_manifest(manifest: &Value, version: &str) -> Result<(), Stri
             problems.push(format!(
                 "`{key}` is no field of an MCPB {MANIFEST_VERSION} manifest"
             ));
+        }
+    }
+    for (path, known) in NESTED_FIELDS {
+        for (at, object) in at_path(manifest, path) {
+            for key in object.as_object().into_iter().flat_map(|o| o.keys()) {
+                if !known.contains(&key.as_str()) {
+                    problems.push(format!(
+                        "`{at}.{key}` is no field of an MCPB {MANIFEST_VERSION} manifest"
+                    ));
+                }
+            }
         }
     }
     if text(manifest, &["manifest_version"]) != Some(MANIFEST_VERSION) {
@@ -931,6 +1022,37 @@ mod tests {
             &|m| m["permissions"] = Value::Bool(true),
             "`permissions` is no field",
         );
+        // The strict objects inside it: MCPB 2.1.2's validator refuses the
+        // first two with "Unrecognized key(s) in object" (tried on the
+        // bundle of 0.2.1, 2026-11-20).
+        broken(
+            &|m| m["server"]["mcp_config"]["cwd"] = "${__dirname}".into(),
+            "`server.mcp_config.cwd` is no field",
+        );
+        broken(
+            &|m| m["user_config"]["work_folder"]["placeholder"] = "x".into(),
+            "`user_config.work_folder.placeholder` is no field",
+        );
+        broken(
+            &|m| m["server"]["mcp_config"]["platform_overrides"]["win32"]["cwd"] = "x".into(),
+            "`server.mcp_config.platform_overrides.win32.cwd` is no field",
+        );
+        broken(
+            &|m| m["tools"][0]["title"] = "x".into(),
+            "`tools[0].title` is no field",
+        );
+        broken(
+            &|m| m["author"]["company"] = "x".into(),
+            "`author.company` is no field",
+        );
+        broken(
+            &|m| m["compatibility"]["runtimes"] = serde_json::json!({"rust": "1"}),
+            "`compatibility.runtimes.rust` is no field",
+        );
+        // `_meta` is a free map: anything under it is kept.
+        let mut free = good.clone();
+        free["_meta"] = serde_json::json!({"com.example": {"anything": 1}});
+        check_manifest(&free, VERSION).unwrap();
         broken(
             &|m| m["version"] = "0.0.1".into(),
             "version is not the workspace's",

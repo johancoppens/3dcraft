@@ -675,15 +675,25 @@ jobs:
           path: dist/server.json
 
       # MCPB's own tools (the CLI of the specification's repository,
-      # github.com/modelcontextprotocol/mcpb, from npm at a pinned version;
-      # its dependencies are resolved by npm): its unpacker, which restores
-      # the programs' modes as the clients' does, and its validator, which
-      # in 2.1.2 holds the manifest to the schema of its manifest_version
-      # (a strict one: an unknown field fails) and checks the icon. That
-      # the three programs unpack executable is checked here. After the
-      # uploads, so no code from npm runs before the bundle is kept; a
-      # failure still fails the job, and with it the draft.
+      # github.com/modelcontextprotocol/mcpb, from npm at a pinned version):
+      # its unpacker, which restores the programs' modes as the clients'
+      # does, and its validator, which in 2.1.2 holds the manifest to the
+      # schema of its manifest_version (a strict one: an unknown field
+      # fails) and checks the icon. That the three programs unpack
+      # executable is checked here.
+      # On a dispatch only, the rehearsal of the commit to be tagged, never
+      # in a tag's run: npm resolves the tool's dependencies at run time,
+      # within the ranges of its package.json, so this is code no lock
+      # file pins, and a step of a run holds that run's credentials for
+      # its artifacts: it could replace any package of the release (the
+      # bundle and server.json together pass the draft's own checks). The
+      # tag is made on the rehearsed commit, whose xtask fills in the same
+      # manifest, so the rehearsal's verdict holds for the tag. No
+      # dependency's install script runs (`npm_config_ignore_scripts`).
       - name: MCPB's validator
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          npm_config_ignore_scripts: "true"
         run: |
           mcpb="npx --yes @anthropic-ai/mcpb@2.1.2"
           $mcpb info dist/3dcraft-*.mcpb
