@@ -394,7 +394,7 @@ pub fn read_glb(bytes: &[u8]) -> Result<Gltf, String> {
             extras: node.get("extras").cloned().unwrap_or(Json::Null),
             transformed: ["matrix", "translation", "rotation", "scale"]
                 .iter()
-                .any(|k| node.get(*k).is_some()),
+                .any(|k| node.get(k).is_some()),
             children: node
                 .get("children")
                 .and_then(Json::as_array)

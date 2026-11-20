@@ -33,8 +33,7 @@ const GREEN: [u8; 3] = [20, 160, 70];
 const GREY: [u8; 3] = [198, 204, 214];
 
 /// Exports `name` with `params` and reads it back.
-fn export(s: &mut Session, dir: &Path, name: &str, params: Value) -> (Value, Gltf) {
-    let mut params = params;
+fn export(s: &mut Session, dir: &Path, name: &str, mut params: Value) -> (Value, Gltf) {
     params["path"] = json!(name);
     let out = run(s, "file.export", params);
     let bytes = std::fs::read(dir.join(name)).unwrap();
@@ -478,4 +477,53 @@ fn names_formats_and_refusals() {
     }
     assert!(!dir.join("x.glb").exists() && !dir.join("x.gltf").exists());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Real models: three of the guide's examples (a bracket, a gear and a
+/// case) exported at the default quality, read back with every rule of the
+/// reader, and against the binary STL of the very same mesh (its tolerance
+/// and angle given): the same triangles and volume. Their sizes are
+/// printed for the record.
+#[test]
+fn the_guides_examples_export_and_read_back() {
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples");
+    for name in ["bracket", "gear", "case"] {
+        let dir = workdir("gltf-export", name);
+        let mut s = session_in(&dir);
+        s.execute("file.new", &json!({"units": "mm"})).unwrap();
+        let script: Value = serde_json::from_str(
+            &std::fs::read_to_string(examples.join(format!("{name}.json"))).unwrap(),
+        )
+        .unwrap();
+        for step in script.as_array().unwrap() {
+            let id = step[0].as_str().unwrap();
+            let params = step.get(1).cloned().unwrap_or_else(|| json!({}));
+            s.execute(id, &params)
+                .unwrap_or_else(|e| panic!("{name}: {id}: {e}"));
+        }
+        let (out, file) = export(&mut s, &dir, "model.glb", json!({}));
+        let stl = run(
+            &mut s,
+            "file.export",
+            json!({"path": "model.stl", "tolerance": out["tolerance"], "angle": out["angle"]}),
+        );
+        let (count, _, stl_volume) = stl_numbers(&std::fs::read(dir.join("model.stl")).unwrap());
+        let read = triangles(&file, 1e-3);
+        assert_eq!(read.len(), count, "{name}");
+        assert!(
+            (volume(&read) - stl_volume).abs() <= 1e-6 * stl_volume.abs(),
+            "{name}: {} {stl_volume}",
+            volume(&read)
+        );
+        println!(
+            "{name}: glb {} bytes, {} triangles, {} bodies, {} face groups, {} materials; stl {} bytes",
+            out["bytes"],
+            out["triangles"],
+            out["bodies"],
+            out["faceGroups"],
+            out["materials"],
+            stl["bytes"]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

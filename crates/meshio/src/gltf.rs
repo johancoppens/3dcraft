@@ -972,7 +972,7 @@ mod tests {
                 .collect(),
             triangles: (0..n - 2)
                 .map(|k| {
-                    if k % 2 == 0 {
+                    if k.is_multiple_of(2) {
                         [k, k + 1, k + 2]
                     } else {
                         [k + 1, k, k + 2]
