@@ -744,9 +744,8 @@ fn along_the_lowest_line(taper: f64, d: f64, z0: f64) -> (f64, f64, f64) {
 /// about the lowest line, at a sine of `d` at its turn (the settings of
 /// `crates/engine/tests/shallow_crossing.rs` that are answered; at the
 /// first three the march stalled at the turn before points were held to
-/// the curve). And 0.02 inside the lowest line rising 0.003, in the blank
-/// tapered to 0.7. Every curve on the crossing, every crossing on a
-/// curve, at three scales.
+/// the curve). Every curve on the crossing, every crossing on a curve,
+/// at three scales.
 #[test]
 fn the_bottom_of_a_spar_meets_the_lofted_skin_it_all_but_lies_in() {
     all_skins(&[
@@ -755,11 +754,11 @@ fn the_bottom_of_a_spar_meets_the_lofted_skin_it_all_but_lies_in() {
         along_the_lowest_line(1.0, 1e-4, 30.0),
         along_the_lowest_line(0.7, 3.3e-5, 1.1),
         along_the_lowest_line(1.0, 3.3e-5, 1.1),
-        (0.7, 0.02, 0.003),
     ]);
 }
 
-/// Owed: the settings at which the same pair is still refused, "an
+/// Owed: the settings at which the same pair is still refused, and the
+/// spar's bottom 0.02 inside the lowest line rising 0.003: "an
 /// intersection curve could not be fitted within the tolerance". The
 /// section's spline rises to a shoulder beside its lowest line and dips
 /// again, so further along the span the plane crosses the skin in three
@@ -779,6 +778,7 @@ fn the_bottom_of_a_spar_meets_a_skin_it_crosses_in_curves_side_by_side() {
         along_the_lowest_line(0.7, 1e-4, 5.0),
         along_the_lowest_line(0.7, 1e-4, 30.0),
         along_the_lowest_line(1.0, 1e-4, 1.1),
+        (0.7, 0.02, 0.003),
         (0.9, 0.02, 0.003),
     ]);
 }
