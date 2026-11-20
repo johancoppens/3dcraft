@@ -2869,6 +2869,13 @@ impl Shell {
             // The section stays as it is set: it is resolved again when
             // there is a document to cut.
             self.section_cache = None;
+            // Without a document there is no assembly to speak of: the
+            // last one closed leaves no verdict behind (`ui.get` ›
+            // `assembly`). The outline is otherwise read below, with a
+            // scene, as before.
+            if !session.has_document() {
+                self.outline = None;
+            }
             return None;
         };
         self.resolve_section(session, &scene);

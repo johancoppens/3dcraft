@@ -854,3 +854,21 @@ fn limits_redundant_floating_and_right_assemblies_stay_solved_and_valid() {
         "{names:?}"
     );
 }
+
+/// The last assembly closed leaves no verdict behind: on the start screen
+/// `ui.get` › `assembly` is null and the shell holds no outline. Before
+/// (review, 2026-11-20), the outline was read again only with a scene, so
+/// the closed assembly's *Not solved* stayed under `assembly`.
+#[test]
+fn closing_the_last_assembly_leaves_no_verdict() {
+    let mut s = session("closed");
+    hinge(&mut s, "120 deg");
+    let (mut shell, mut window) = shown(&mut s);
+    assert_eq!(verdict(&mut shell, &mut s)["text"], "Not solved");
+    run(&mut s, "file.close", json!({ "discard": true }));
+    window.frames(&mut shell, &mut s);
+    let got = call(&mut shell, &mut s, "ui.get", json!({}));
+    assert_eq!(got["startScreen"], true, "{}", got["startScreen"]);
+    assert_eq!(got["assembly"], Value::Null, "{}", got["assembly"]);
+    assert!(shell.assembly_outline().is_none());
+}
