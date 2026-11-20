@@ -1604,7 +1604,10 @@ fn an_assembly_s_form_on_the_page_says_valid_only_on_the_worker_s_verdict() {
         craft3d_engine::AssemblyAtRest::Known(Vec::new())
     );
     // A new state whose view's job the worker dies with: the verdict of
-    // the state before is not this one's, and nothing else came.
+    // the state before is not this one's, and none can be had for it: Not
+    // checked (before round three, Regenerating… with nothing left to wait
+    // for), also once the page settled and frames went by, until the next
+    // state is answered.
     page.host
         .session
         .execute("param.set", &json!({"values": {"lift": 5}}))
@@ -1617,9 +1620,99 @@ fn an_assembly_s_form_on_the_page_says_valid_only_on_the_worker_s_verdict() {
         }
     }
     assert!(!*page.worker.dies.borrow(), "the worker died");
-    assert_eq!(form_status(&mut page), "Regenerating…");
+    page.settle();
+    for _ in 0..30 {
+        page.frame();
+    }
+    assert_eq!(form_status(&mut page), "Not checked");
+    assert!(matches!(
+        page.host.session.assembly_at_rest(),
+        craft3d_engine::AssemblyAtRest::Unavailable(_)
+    ));
+    // The next state is answered: its verdict, Valid.
+    page.host
+        .session
+        .execute("param.set", &json!({"values": {"lift": 6}}))
+        .unwrap();
+    page.settle();
+    assert_eq!(form_status(&mut page), "Valid");
+}
+
+/// A hinge driven by `t`, an assembly with a public parameter, its part
+/// packed in it: the bytes of `swing.3dcraftasm` (the review's probe).
+fn swing() -> Vec<u8> {
+    let mut s = Session::new(Workspace::memory());
+    for (id, params) in [
+        ("file.new", json!({"units": "mm"})),
+        ("feature.block", json!({"size": [10, 2, 2], "name": "Bar"})),
+        ("file.save", json!({"path": "bar.3dcraft"})),
+        ("assembly.new", json!({"units": "mm"})),
+        ("variable.set", json!({"name": "t", "expr": "0"})),
+        ("variable.set", json!({"name": "lift", "expr": "0 mm"})),
+        (
+            "variable.publish",
+            json!({"name": "lift", "min": "0 mm", "max": "20 mm"}),
+        ),
+        (
+            "instance.add",
+            json!({"source": "bar.3dcraft", "name": "Base"}),
+        ),
+        (
+            "instance.add",
+            json!({"source": "bar.3dcraft", "name": "Arm"}),
+        ),
+        (
+            "mate.add",
+            json!({"kind": "fixed", "a": "world/xy", "b": "Base/F1:face(0)", "name": "Ground"}),
+        ),
+        (
+            "mate.add",
+            json!({"kind": "revolute", "a": "Base/F1:face(1)", "b": "Arm/F1:face(0)", "name": "Hinge"}),
+        ),
+        (
+            "variable.set",
+            json!({"name": "Hinge_angle", "expr": "90 deg * t"}),
+        ),
+        ("assembly.pack", json!({})),
+        ("file.save", json!({"path": "swing.3dcraftasm"})),
+    ] {
+        s.execute(id, &params)
+            .unwrap_or_else(|e| panic!("{id}: {}", e.message()));
+    }
+    s.take_file("swing.3dcraftasm").unwrap()
+}
+
+/// A value set on the page while a moment of the motion is shown: the
+/// form has its verdict at rest for the new state from the worker's
+/// answer to the moment (the worker holds the state itself, the moment
+/// beside it), and never waits for the moment to be let go of. Before
+/// (the review's probe of round two), it said Regenerating… until then,
+/// with nothing left to wait for, and a value that broke the model was not
+/// said meanwhile.
+#[test]
+fn a_value_set_during_a_moment_on_the_page_is_judged_at_once() {
+    let mut page = Page::new(false);
+    page.host
+        .session
+        .open_bytes("swing.3dcraftasm", &swing())
+        .unwrap();
+    page.settle();
+    assert_eq!(form_status(&mut page), "Valid");
+    page.host
+        .session
+        .execute("view.motion", &json!({"t": 0.5}))
+        .unwrap();
+    page.settle();
+    assert_eq!(form_status(&mut page), "Valid");
+    page.host
+        .session
+        .execute("param.set", &json!({"values": {"lift": 5}}))
+        .unwrap();
+    page.settle();
+    assert!(page.host.session.motion().is_some(), "the moment is shown");
+    assert_eq!(form_status(&mut page), "Valid");
     assert_eq!(
         page.host.session.assembly_at_rest(),
-        craft3d_engine::AssemblyAtRest::Unknown
+        craft3d_engine::AssemblyAtRest::Known(Vec::new())
     );
 }

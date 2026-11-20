@@ -95,7 +95,7 @@ pub(crate) struct Remote {
     /// flicker as a motion plays).
     last: Option<(Arc<Document>, u64, Arc<ViewFacts>)>,
     /// What the check lists at rest for a state below the view, from the
-    /// facts of a view of it without a moment ([`OpenDocument::remote_rest`]).
+    /// facts of any view of it ([`OpenDocument::remote_rest`]).
     rest: Option<(Arc<Document>, u64, Vec<OutlineProblem>)>,
     pub(crate) bake: Option<BakeWanted>,
     /// Facts came since the host last polled ([`Session::poll_motion`]).
@@ -305,15 +305,24 @@ impl OpenDocument {
     }
 
     /// What the check lists at rest for the state below the view, as the
-    /// other side said it for a view of that state without a moment (the
-    /// stand-in of a moment has its timeline set, so its own placement is
-    /// the moment's); `None` until it said, and never a state before it's
-    /// (what a judgement of this state must not stand on).
-    pub(crate) fn remote_rest(&mut self) -> Option<Vec<OutlineProblem>> {
+    /// other side said it with any view of that state (it holds the state
+    /// itself, the moment or the held joint shown beside it); never a state
+    /// before it's (what a judgement of this state must not stand on).
+    /// `None` while its facts have not come; why it cannot be had when they
+    /// came without it (the other side stopped with the view's job).
+    pub(crate) fn remote_rest(&mut self) -> Option<Result<Vec<OutlineProblem>, String>> {
         self.remote_shown()?;
         let view = self.remote.view.as_ref()?;
-        let (base, generation, problems) = self.remote.rest.as_ref()?;
-        (Arc::ptr_eq(base, &view.base) && *generation == view.generation).then(|| problems.clone())
+        if let Some((base, generation, problems)) = &self.remote.rest
+            && Arc::ptr_eq(base, &view.base)
+            && *generation == view.generation
+        {
+            return Some(Ok(problems.clone()));
+        }
+        let facts = view.facts.as_ref()?;
+        Some(Err(facts.error.clone().unwrap_or_else(|| {
+            "its answer said nothing of how the assembly is placed".to_string()
+        })))
     }
 
     /// The facts of the view shown, or while they are not there, the last
@@ -407,10 +416,9 @@ impl OpenDocument {
             return false;
         }
         if let Some(facts) = facts {
-            // At rest only: a moment's stand-in has its timeline set.
-            if view.moment.is_none()
-                && let Some(rest) = &facts.rest
-            {
+            // Any view of the state says it: the other side holds the
+            // state below the view, the moment shown beside it.
+            if let Some(rest) = &facts.rest {
                 self.remote.rest = Some((Arc::clone(&view.base), view.generation, rest.clone()));
             }
             let facts = Arc::new(facts);
@@ -710,7 +718,7 @@ fn outline_rows(o: &AssemblyOutline) -> usize {
 fn rest_json(rest: &AssemblyAtRest) -> Option<Value> {
     match rest {
         AssemblyAtRest::Known(problems) => Some(problems_json(problems.iter().take(MAX_ROWS))),
-        AssemblyAtRest::Part | AssemblyAtRest::Unknown => None,
+        AssemblyAtRest::Part | AssemblyAtRest::Unknown | AssemblyAtRest::Unavailable(_) => None,
     }
 }
 
@@ -1399,6 +1407,10 @@ mod tests {
         let (facts, _) = decode_facts(&framed(&json!({ "rest": right }))).unwrap();
         assert_eq!(facts.rest, Some(Vec::new()));
         assert_eq!(rest_json(&AssemblyAtRest::Unknown), None);
+        assert_eq!(
+            rest_json(&AssemblyAtRest::Unavailable("it stopped".into())),
+            None
+        );
         assert_eq!(rest_json(&AssemblyAtRest::Part), None);
         for bad in [
             json!({ "rest": 3 }),

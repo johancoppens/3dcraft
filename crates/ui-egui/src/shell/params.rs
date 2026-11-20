@@ -613,6 +613,36 @@ pub struct Trouble {
     pub elsewhere: bool,
 }
 
+/// What the form's header says ([`Shell::form_said`]).
+#[derive(Clone, Debug, PartialEq)]
+enum FormSaid {
+    /// A value is being applied, or an assembly's verdict at rest is not
+    /// known yet: the spinner and *Regenerating…*.
+    Waiting,
+    /// An assembly's verdict at rest cannot be had (the page's worker
+    /// stopped with the view's job): *Not checked*, why on hover; neither
+    /// valid nor failed.
+    NotChecked(String),
+    /// *Valid*.
+    Valid,
+    /// Not valid: the words (*Breaks the model*, *Not solved*, *2 failed*)
+    /// and the problems they stand on, in the check's words (none for a
+    /// break, whose trouble line says it).
+    Wrong(String, Vec<String>),
+}
+
+impl FormSaid {
+    /// The header's words.
+    fn words(&self) -> String {
+        match self {
+            FormSaid::Waiting => "Regenerating…".to_string(),
+            FormSaid::NotChecked(_) => "Not checked".to_string(),
+            FormSaid::Valid => "Valid".to_string(),
+            FormSaid::Wrong(words, _) => words.clone(),
+        }
+    }
+}
+
 /// The last state the form took as good: the parameters' expressions
 /// then (Back to last good sets them) and the model's faults then (a
 /// commit that adds one broke the model).
@@ -1057,9 +1087,10 @@ impl Shell {
                     faults.features.insert(key, problem.problem.clone());
                 }
             }
-            // Not known yet (on the page, until the worker says): judged
-            // once it is, as a check still being measured is.
-            AssemblyAtRest::Unknown => pending = true,
+            // Not known yet (on the page, until the worker says), or not to
+            // be had for this state (the worker stopped with its view):
+            // judged once it is known, as a check still being measured is.
+            AssemblyAtRest::Unknown | AssemblyAtRest::Unavailable(_) => pending = true,
             AssemblyAtRest::Part => {
                 for row in self.rows.iter().filter(|r| r.state == FeatureState::Failed) {
                     let error = row.error.clone().unwrap_or_default();
@@ -1306,32 +1337,39 @@ impl Shell {
         }
     }
 
-    /// What the form's header says while no value is being applied,
-    /// whether that is good, and the problems it stands on: `Valid`;
-    /// `Breaks the model` after a value that broke it (against the last
-    /// good state); for an assembly that its check finds something wrong
-    /// with at rest, what its Assembly tab heads with (`Not solved`,
-    /// `2 failed`) whatever the last good state, with the check's problems.
-    /// `None` while an assembly's verdict at rest is not known (on the page,
-    /// until the worker says): the form says what it says while it works,
-    /// never *Valid*. Before, an assembly that opened with an instance not
-    /// placed, or broke by a mate, a coupling or its solve, was said
-    /// *Valid*, and so was one past a limit at rest while a moment of its
-    /// motion inside the limit was shown.
-    fn form_said(&self) -> Option<(bool, String, Vec<String>)> {
+    /// What the form's header says while no value is being applied
+    /// ([`FormSaid`]): `Valid`; `Breaks the model` after a value that broke
+    /// it (against the last good state); for an assembly that its check
+    /// finds something wrong with at rest, what its Assembly tab heads with
+    /// (`Not solved`, `2 failed`) whatever the last good state, with the
+    /// check's problems, the solve's first when it failed (the words lead
+    /// with it); while an assembly's verdict at rest is not known (on the
+    /// page, until the worker says), what it says while it works; where it
+    /// cannot be had (the worker stopped with the view's job), *Not
+    /// checked*. Never *Valid* without a verdict. Before, an assembly that
+    /// opened with an instance not placed, or broke by a mate, a coupling
+    /// or its solve, was said *Valid*, and so was one past a limit at rest
+    /// while a moment of its motion inside the limit was shown.
+    fn form_said(&self) -> FormSaid {
         use craft3d_engine::AssemblyAtRest;
         if self.params.trouble.as_ref().is_some_and(|t| t.broke) {
-            return Some((false, "Breaks the model".to_string(), Vec::new()));
+            return FormSaid::Wrong("Breaks the model".to_string(), Vec::new());
         }
         match &self.params.at_rest {
-            AssemblyAtRest::Unknown => None,
+            AssemblyAtRest::Unknown => FormSaid::Waiting,
+            AssemblyAtRest::Unavailable(why) => FormSaid::NotChecked(format!(
+                "the model is built elsewhere, and how it is placed could not be had there: {why}"
+            )),
             AssemblyAtRest::Known(problems) if !problems.is_empty() => {
-                let verdict = crate::state::AssemblyVerdict::new(problems, false, None);
-                Some((false, verdict.text, verdict.problems))
+                let mut ordered = problems.clone();
+                if let Some(at) = ordered.iter().position(|p| p.what == "solve") {
+                    let solve = ordered.remove(at);
+                    ordered.insert(0, solve);
+                }
+                let verdict = crate::state::AssemblyVerdict::new(&ordered, false, None);
+                FormSaid::Wrong(verdict.text, verdict.problems)
             }
-            AssemblyAtRest::Known(_) | AssemblyAtRest::Part => {
-                Some((true, "Valid".to_string(), Vec::new()))
-            }
+            AssemblyAtRest::Known(_) | AssemblyAtRest::Part => FormSaid::Valid,
         }
     }
 
@@ -1353,22 +1391,23 @@ impl Shell {
         let form = &self.params;
         let list = form.list.as_ref();
         let jig = list.is_some_and(|l| l.jig);
-        let said = self.form_said();
+        let said = if form.busy() {
+            FormSaid::Waiting
+        } else {
+            self.form_said()
+        };
         // What the form's header says, and the line under it; none without
         // a form.
-        let status = match (jig, form.busy(), &said) {
-            (false, ..) => None,
-            (true, true, _) | (true, false, None) => Some("Regenerating…".to_string()),
-            (true, false, Some((_, words, _))) => Some(words.clone()),
+        let status = jig.then(|| said.words());
+        let why = match &said {
+            FormSaid::Wrong(_, problems) if jig => {
+                Self::form_why(problems).map(|(first, more)| match more {
+                    Some(more) => format!("{first}\n{more}"),
+                    None => first,
+                })
+            }
+            _ => None,
         };
-        let why = said
-            .as_ref()
-            .filter(|_| jig && !form.busy())
-            .and_then(|(_, _, problems)| Self::form_why(problems))
-            .map(|(first, more)| match more {
-                Some(more) => format!("{first}\n{more}"),
-                None => first,
-            });
         json!({
             "jig": list.is_some_and(|l| l.jig),
             "tab": if self.state.parameters.open && list.is_some_and(|l| l.jig) {
@@ -1714,14 +1753,17 @@ impl Shell {
     fn parameters_header(&mut self, ui: &mut egui::Ui, list: &ParamList, compact: bool) {
         let kit = crate::kit::Kit::panel(&self.tokens);
         let s = kit.skin;
-        let said = self.form_said();
-        let busy = self.params.busy();
+        let said = if self.params.busy() {
+            FormSaid::Waiting
+        } else {
+            self.form_said()
+        };
         // Why, under the header: the first problem it stands on, as the
         // window writes it, and how many more the Assembly tab lists.
-        let why_line = said
-            .as_ref()
-            .filter(|_| !busy)
-            .and_then(|(_, _, problems)| Self::form_why(problems));
+        let why_line = match &said {
+            FormSaid::Wrong(_, problems) => Self::form_why(problems),
+            _ => None,
+        };
         ui.horizontal(|ui| {
             ui.set_min_height(kit.hit(self.tokens.control_height));
             if compact {
@@ -1735,34 +1777,45 @@ impl Shell {
                 );
                 ui.add_space(self.tokens.inset);
             }
-            match (busy, &said) {
-                // Working, or an assembly's verdict not known yet: what
-                // the form says while it does not know, never Valid.
-                (true, _) | (false, None) => {
+            // Working, or an assembly's verdict not known yet: what the
+            // form says while it does not know, never Valid.
+            let (glyph, ink, hover) = match &said {
+                FormSaid::Waiting => {
                     kit.spinner(ui, "Regenerating…");
+                    (None, s.text, String::new())
                 }
-                (false, Some((good, words, problems))) => {
-                    let (glyph, ink) = if *good {
-                        (crate::kit::Glyph::Check, s.ok)
-                    } else {
-                        (crate::kit::Glyph::Warning, s.failed)
-                    };
-                    let side = self.tokens.nav_icon_size * 0.875;
-                    let (place, _) =
-                        ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
-                    crate::kit::glyphs::paint(ui.painter(), glyph, place, color(ink), &self.tokens);
-                    let mut shown = ui.label(
-                        egui::RichText::new(words.as_str())
+                // Neither valid nor failed: why on hover.
+                FormSaid::NotChecked(why) => {
+                    (Some(crate::kit::Glyph::Info), s.text_dim, why.clone())
+                }
+                FormSaid::Valid => (Some(crate::kit::Glyph::Check), s.ok, String::new()),
+                FormSaid::Wrong(_, problems) => (
+                    Some(crate::kit::Glyph::Warning),
+                    s.failed,
+                    crate::shell::problems_hover(problems),
+                ),
+            };
+            if let Some(glyph) = glyph {
+                let side = self.tokens.nav_icon_size * 0.875;
+                let (place, _) =
+                    ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+                crate::kit::glyphs::paint(ui.painter(), glyph, place, color(ink), &self.tokens);
+                // Never wider than the room it has: cut with "…", whole
+                // on hover.
+                let mut shown = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(said.words())
                             .font(kit.font())
                             .color(color(ink)),
-                    );
-                    if !problems.is_empty() {
-                        shown = shown.on_hover_text(crate::shell::problems_hover(problems));
-                    }
-                    self.params
-                        .hits
-                        .push(("status".to_string(), place.union(shown.rect)));
+                    )
+                    .truncate(),
+                );
+                if !hover.is_empty() {
+                    shown = shown.on_hover_text(hover);
                 }
+                self.params
+                    .hits
+                    .push(("status".to_string(), place.union(shown.rect)));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let about = [list.info.title.as_str(), list.info.description.as_str()]

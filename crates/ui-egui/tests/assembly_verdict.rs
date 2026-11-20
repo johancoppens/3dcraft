@@ -282,7 +282,9 @@ fn the_heading_is_solved_only_while_the_check_finds_nothing_wrong() {
     let plate = row(&shell, "Plate");
     assert_eq!(plate.state, FeatureState::Ok, "{plate:?}");
     assert!(plate.marked, "{plate:?}");
-    assert!(!plate.status.contains(HELD_MARK), "{plate:?}");
+    // `ui.get` reports the ⚠ after its source as since 0.2.0; the panel
+    // paints it for held only.
+    assert!(plate.status.contains(HELD_MARK), "{plate:?}");
     assert!(!row(&shell, "Base").marked);
     // The sections' notes add up to the heading: the instance under
     // Instances, the mate under Mates.
@@ -1009,7 +1011,12 @@ fn a_failed_solve_beside_other_problems_is_said_with_them() {
     let header = form(&mut shell, &mut s);
     assert_eq!(header["status"], "Not solved · 2 failed", "{header}");
     let why = header["why"].as_str().unwrap_or_else(|| panic!("{header}"));
-    assert!(why.ends_with("and 2 more on the Assembly tab"), "{why}");
+    // The header leads with the solve, and so does the line under it, its
+    // numbers as the window writes them.
+    let (first, more) = why.split_once('\n').unwrap_or_else(|| panic!("{why}"));
+    assert!(first.starts_with("the assembly does not solve: "), "{why}");
+    assert!(longest_digits(first) <= 6, "{why}");
+    assert_eq!(more, "and 2 more on the Assembly tab");
     assert!(!why.contains('`'), "{why}");
 }
 
@@ -1074,5 +1081,136 @@ fn the_form_weighs_the_assembly_at_rest_while_a_moment_is_shown() {
             .is_some_and(|w| w.starts_with("instance Plate is not placed: ")),
         "{}",
         got["parameters"]
+    );
+}
+
+/// The heading never makes the panel wider than it is (the UX pass, round
+/// three): its longest words, *Not solved · 2 failed* with *1 of 3 checks
+/// fails* beside them, at a panel of 200 and of 260 points, and every row
+/// under it (instances, mates, the checks' statuses) inside the panel.
+/// Before, the heading was one line that neither wrapped nor was cut, and
+/// every row under it was laid out to its width and cut at the panel's
+/// edge. The checks part is what `ui.get` › `assembly.checks` says.
+#[test]
+fn the_heading_keeps_to_the_panel_s_width() {
+    let mut s = session("narrow");
+    filleted_plate(&mut s);
+    hinge(&mut s, "120 deg");
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "plate.3dcraft", "name": "Plate", "params": { "corner": "40 mm" } }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "Base/F1:face(1)", "b": "Plate/F1:face(1)", "name": "OnBase", "flip": true }),
+    );
+    for (name, of, key, bound) in [
+        ("base", "Base", "min", 1),
+        ("arm", "Arm", "min", 1),
+        ("tiny", "Base", "max", 1),
+    ] {
+        run(
+            &mut s,
+            "assert.add",
+            json!({ "name": name, "measure": "volume", "of": of, key: bound }),
+        );
+    }
+    let (mut shell, mut window) = shown(&mut s);
+    for width in [200.0, 260.0] {
+        call(
+            &mut shell,
+            &mut s,
+            "ui.set",
+            json!({ "panels": { "treeWidth": width } }),
+        );
+        window.frames(&mut shell, &mut s);
+        window.frames(&mut shell, &mut s);
+        let got = call(&mut shell, &mut s, "ui.get", json!({}));
+        assert_eq!(got["assembly"]["text"], "Not solved · 2 failed", "{width}");
+        assert_eq!(got["assembly"]["checks"], "1 of 3 checks fails", "{width}");
+        let panel = shell.side_hits().panel.expect("the side panel");
+        let mut rects: Vec<Rect> = shell.tree_row_hits().iter().map(|(_, r)| *r).collect();
+        rects.extend(shell.mate_row_hits().iter().map(|(_, r)| *r));
+        rects.extend(shell.side_hits().statuses.iter().copied());
+        assert!(rects.len() >= 4, "{width}: {rects:?}");
+        for rect in rects {
+            assert!(
+                rect.right() <= panel.right() + 0.5,
+                "{width}: a row {rect:?} past the panel {panel:?}"
+            );
+        }
+    }
+}
+
+/// A source file that changes while a moment of the motion is shown (as
+/// the window follows it when it gets the focus back): the form still
+/// weighs the assembly at rest, placed again with the file read now, and
+/// never waits for the moment to be let go of. Before (the review's probe
+/// of round two), it said *Regenerating…* until then, with nothing being
+/// regenerated.
+#[test]
+fn a_source_followed_during_a_moment_leaves_the_form_its_verdict() {
+    let mut s = session("follow-moment");
+    block_part(&mut s, "block.3dcraft", [20.0, 10.0, 6.0]);
+    filleted_plate(&mut s);
+    run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    run(&mut s, "variable.set", json!({ "name": "t", "expr": "0" }));
+    run(
+        &mut s,
+        "variable.set",
+        json!({ "name": "big", "expr": "40 mm" }),
+    );
+    run(
+        &mut s,
+        "variable.publish",
+        json!({ "name": "big", "min": "0.5 mm", "max": "50 mm" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "block.3dcraft", "name": "Base" }),
+    );
+    run(
+        &mut s,
+        "mate.add",
+        json!({ "kind": "fixed", "a": "world/xy", "b": "Base/F1:face(0)", "name": "Ground" }),
+    );
+    run(
+        &mut s,
+        "instance.add",
+        json!({ "source": "plate.3dcraft", "name": "Plate", "params": { "corner": "big - 78 mm * t" } }),
+    );
+    let (mut shell, mut window) = shown(&mut s);
+    assert_eq!(form(&mut shell, &mut s)["status"], "1 failed");
+    run(&mut s, "view.motion", json!({ "t": 0.5 }));
+    window.frames(&mut shell, &mut s);
+    // The block's file changes beside it, and is followed.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("ui-asm-verdict-follow-moment");
+    let mut other = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir),
+    });
+    run(&mut other, "file.new", json!({ "units": "mm" }));
+    run(
+        &mut other,
+        "feature.block",
+        json!({ "name": "Base", "size": [20.0, 10.0, 9.0] }),
+    );
+    run(
+        &mut other,
+        "file.save",
+        json!({ "path": "block.3dcraft", "overwrite": true }),
+    );
+    run(&mut s, "assembly.follow", json!({}));
+    window.frames(&mut shell, &mut s);
+    let said = form(&mut shell, &mut s);
+    assert_eq!(said["status"], "1 failed", "{said}");
+    assert!(
+        said["why"]
+            .as_str()
+            .is_some_and(|w| w.starts_with("instance Plate is not placed: ")),
+        "{said}"
     );
 }

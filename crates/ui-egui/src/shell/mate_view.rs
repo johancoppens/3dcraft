@@ -431,7 +431,10 @@ impl Shell {
             }
             // Up to the instance that is not placed, whose row says why.
             if let Some(error) = &mate.error {
-                let error = crate::shell::readable_problem(crate::shell::short_cause(error));
+                let [a, b] = &mate.parts;
+                let parts = [a.as_str(), b.as_str()];
+                let error =
+                    crate::shell::readable_problem(crate::shell::short_cause(error, &parts));
                 ui.indent(("craft3d-mate-error", &mate.name), |ui| {
                     ui.add(
                         egui::Label::new(

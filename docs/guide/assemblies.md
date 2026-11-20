@@ -239,7 +239,9 @@ while the player shows a moment of the motion, or you hold a joint, the heading 
 
 The **Parameters** tab of an assembly with public parameters says, in the place of **Valid**, what the
 heading would say of the assembly at rest, as `document.check` reads it whatever the player shows, with
-the first problem under it and how many more the Assembly tab lists.
+the first problem under it and how many more the Assembly tab lists. In the web version it says
+**Regenerating…** until the assembly is placed beside the page, and **Not checked** if that could not be done
+(point at it for why); it never says **Valid** without knowing.
 
 Every joint you can set by hand is a slider on the **Parameters** tab: the joints the assembly stays
 solved with. In a linkage that moves one way (a four-bar), the joints that move it have a slider until you

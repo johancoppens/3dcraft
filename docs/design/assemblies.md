@@ -802,8 +802,11 @@ each published assembly as 0.2.0 answered it.
   reads, whatever moment or held joint the view shows), says what the heading would say then in the place of
   *Valid*, with the first problem under it and *and n more on the Assembly tab*, and weighs a commit by those
   problems ([`document.md`](document.md) › *Good and broken are sets*); where that verdict is not known (the
-  page, until the worker said it for this state at rest) it says *Regenerating…*, never *Valid*. Over an
-  assembly none of whose own instances is placed the view says *Nothing is placed.*
+  page, until the worker said it for the state shown) it says *Regenerating…*, and where it cannot be had (the
+  worker stopped with the view's job) *Not checked*, why on hover; never *Valid*. The heading is never wider
+  than the panel: the checks go on a line of their own when both do not fit, each line wrapped (the form's
+  header is cut with *…*, whole on hover). Over an assembly none of whose own instances is placed the view says
+  *Nothing is placed.*
 - **Joints** (`ui-egui/src/shell/joints.rs`): a mate whose main free motion can be set by hand and leaves the
   assembly solved (`OutlineMate::settable`) is a slider on the Parameters tab, between its limits or a turn either
   way (a distance: the model's size either way). Settable means: it has a free motion, no formula of other
@@ -976,13 +979,11 @@ each published assembly as 0.2.0 answered it.
   *Round two* (the review's R1 to R3 and the UX pass, same day). The form read the placement shown, so a hinge
   past its limit at rest, shown at a moment of its motion inside it, was *Valid* while the check said not ok:
   the form now weighs `Session::assembly_at_rest`, the check's problems for the document's own placement
-  (`Known`), never placing anything (`Unknown` until it is placed at this revision); on the page the worker's
-  facts carry it as `rest`, apart from the outline, so it crosses also when the outline is more than crosses (cut
-  to 4096, still not ok), and the page keeps it per state below the view only from a view without a moment (a
-  moment's stand-in has its timeline set, so its own placement is the moment's), never an older state's
-  (`OpenDocument::remote_rest`). Where it is not known (facts pending, a worker that died with the view's job)
-  the form says *Regenerating…*, what it says while it works, never *Valid*, and judges a commit once it is
-  known, as it does a check being measured. In the form's words: what the heading would say at rest, the first
+  (`Known`); on the page the worker's facts carry it as `rest`, apart from the outline, so it crosses also when
+  the outline is more than crosses (cut to 4096, still not ok), and the page keeps it per state below the view,
+  never an older state's (`OpenDocument::remote_rest`). Where it is not known (facts pending) the form says
+  *Regenerating…*, what it says while it works, never *Valid*, and judges a commit once it is known, as it does a
+  check being measured (round three below changed when it is known). In the form's words: what the heading would say at rest, the first
   problem under the header in the trouble line's look, then *and n more on the Assembly tab*
   (`ui.get` › `parameters` › `why`). A failed feature's row was marked only by the dim ⚠ after its file name,
   the first thing cut in a narrow panel, its reason on hover: its reason is now under the part's own row (once,
@@ -1005,6 +1006,35 @@ each published assembly as 0.2.0 answered it.
   rows' dots and the sections' counts in the existing cases), the verdict's words in `state::tests`, the rest
   crossing and its cap in `view_elsewhere::tests`, and the page's form before the worker said and after it died in
   `apps/craft3d-web/src/beside_tests.rs`.
+  *Round three* (the UX pass's and the review's MUST of round two, same day). The heading was one line that
+  neither wrapped nor was cut: *Not solved · 2 failed · 1 of 3 checks fails* at the default 260 points, or even
+  *Solved · 0 DOF · 15 checks pass* at 200, made the panel's content wider than the panel, and every row under it
+  was laid out to that width and cut at its edge (sources *block.3dcra*, notes *1 fai*, reasons without their last
+  words). The heading is now measured against its room: the checks on a line of their own when both do not fit,
+  each line wrapped; the form's header is cut with *…*, whole on hover. On the page the form could say
+  *Regenerating…* with nothing left to wait for, proven by the review's two probes: (a) a value set while a
+  moment of the motion was shown left it so until the moment was let go of, the page keeping the verdict at rest
+  only from views without a moment, on the belief that the worker's document for a moment was the moment's own
+  state; it is not: the worker holds the state below the view (`state_bytes` of `view.base`) and shows the
+  moment beside it (`show_view`), so the facts of any view of a state say its verdict at rest, and the page now
+  keeps them from any view. The worker places the state at rest for it when it is not placed yet (once per state,
+  what the check would place; a moment is placed apart, `place_moment`, and leaves it), and so does the window,
+  which closes the native case the review found with the same probe (a source followed during a moment left the
+  form on *Regenerating…*). (b) After the worker stopped with the view's job the form stayed on *Regenerating…*
+  until the next edit: the page now tells a view whose facts came without the verdict (`view_failed_here`'s
+  error) from one whose facts have not come (`AssemblyAtRest::Unavailable`), and the form says *Not checked*,
+  neither valid nor failed (the info glyph, dim), why on hover (*the model is built elsewhere, and how it is
+  placed could not be had there: …*, as the web's *Not measured* says it), never *Valid*, judging a commit made
+  meanwhile once a verdict is known. Also: `short_cause` cuts on the instance's whole name (the mate's two sides,
+  a subassembly's own instances), as a name may hold "is not placed: " itself; `readable_problem` writes what
+  stands between backticks as it is (a name such as `1e3` is not a number); the line under the form's header
+  leads with the solve's problem when the solve failed, as its words do; `ui.get` › `features[].status` ends in ⚠
+  for a failed feature as since 0.2.0, the panel painting it for held only (`painted_status`; A-023's window test asserts the report as before, and the dot), and `ui.get` ›
+  `assembly.checks` says the checks beside the heading. Tests: in `assembly_verdict.rs` the rows' width under the
+  longest heading at 200 and 260 points, a source followed during a moment; in `beside_tests.rs` a value set
+  during a moment on the page (*Valid*, `Known`, the moment still shown) and the worker's death (*Not checked*
+  after the page settled and thirty frames, *Valid* again with the next state); in `shell::verdict_tests` the
+  hostile names, the hover's six and the view's *Nothing is placed.*
 - 2026-11-19 (assembly-check): an assembly's `document.check` answered `ok` with no problem while an instance was not
   placed: one plate given a corner radius of 40 mm where its part's range ends at 30, one fixed mate on it.
   `assembly.inspect` gave the instance `error` (*its configuration failed: nothing was changed: `corner`: its value

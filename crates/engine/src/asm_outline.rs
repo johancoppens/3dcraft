@@ -180,11 +180,15 @@ pub enum AssemblyAtRest {
     /// No document, or a part: there is no assembly to weigh.
     #[default]
     Part,
-    /// An assembly whose placement at rest is not known here yet: not
-    /// placed at this revision, or on the page while the facts of the
-    /// state shown have not come (or came without it). A form says it does
-    /// not know, never *Valid*.
+    /// An assembly whose placement at rest is not known yet: on the page
+    /// while the facts of the state shown have not come. A form says it
+    /// works, never *Valid*.
     Unknown,
+    /// An assembly whose placement at rest cannot be had, and why: on the
+    /// page, the facts of the state shown came without it (the worker
+    /// stopped with the view's job). A form says it is not checked, never
+    /// *Valid*, until a new state is answered.
+    Unavailable(String),
     /// What the check lists for it at rest, in its order and words; empty
     /// when nothing is wrong with how it is placed.
     Known(Vec<OutlineProblem>),
@@ -215,11 +219,12 @@ impl Session {
     /// What `document.check` lists for the active assembly at rest: the
     /// document's own placement, which the check reads, whatever the view
     /// shows (a moment of a motion, a joint held by hand), as a form of its
-    /// public parameters weighs it. It never places anything: unknown while
-    /// the placement at rest is not made at this revision. Placed elsewhere
-    /// (the page's worker), as the other side said it for this state at
-    /// rest, never for an older state, nor for a moment (whose stand-in has
-    /// its timeline set).
+    /// public parameters weighs it. Placed here when it is not yet (once
+    /// per state and files read: what the check would place; a moment of a
+    /// motion is placed apart and leaves it). Placed elsewhere (the page's
+    /// worker), as the other side said it for this state, never for an
+    /// older one: its worker holds the state below the view, the moment
+    /// shown beside it, so any view of the state says it.
     pub fn assembly_at_rest(&mut self) -> AssemblyAtRest {
         let Some(open) = self.documents.get_mut(self.active) else {
             return AssemblyAtRest::Part;
@@ -229,13 +234,10 @@ impl Session {
         }
         if open.remote_wanted() {
             return match open.remote_rest() {
-                Some(problems) => AssemblyAtRest::Known(problems),
+                Some(Ok(problems)) => AssemblyAtRest::Known(problems),
+                Some(Err(why)) => AssemblyAtRest::Unavailable(why),
                 None => AssemblyAtRest::Unknown,
             };
-        }
-        let revision = open.history.revision();
-        if !open.asm.is_placed(revision) {
-            return AssemblyAtRest::Unknown;
         }
         match open.placed() {
             Some(placed) => AssemblyAtRest::Known(problems_of(&placed)),
