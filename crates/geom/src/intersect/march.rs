@@ -541,9 +541,9 @@ impl Marcher {
     /// that all but holds a ruling of a lofted skin crosses it in a
     /// hairpin a few tolerances across, at a sine of a few 1e-5), no step
     /// however short landed where it was held to and the march stalled,
-    /// and where the band is wider than half the tolerance the fit's
-    /// middles could not be met (docs/design/booleans.md › *A spar's face
-    /// beside a rib's skin*).
+    /// or it went round by the luck of where its steps fell and gave a
+    /// curve a tolerance or two beside the crossing, on both surfaces
+    /// (docs/design/booleans.md › *A spar's face beside a rib's skin*).
     fn held(&self, e: &Eval) -> f64 {
         let Some(normal) = e.su.cross(e.sv).normalized() else {
             return self.on;
