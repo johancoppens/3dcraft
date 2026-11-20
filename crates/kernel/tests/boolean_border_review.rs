@@ -774,3 +774,116 @@ fn a_cylinder_tangent_to_a_border_that_curves_at_one() {
 fn a_cylinder_tangent_to_a_border_that_curves_at_a_million() {
     curved(SCALES[2]);
 }
+
+// ---------------------------------------------------------------------
+// Surfaces that only touch, along a line that leaves a border.
+
+/// The plate `[-10, 10] × [0, 10] × [-5, 0]` times `k` whose front has an
+/// arc of radius 4 about `x = 0`, 70° either way: a bump out of the plate,
+/// or a dent into it. With it, how far the arc's middle is from the front
+/// line.
+fn arc_fronted(k: f64, dent: bool, tol: &Tolerance) -> Result<(Body, f64), String> {
+    let rho = RADIUS * k;
+    let half = 70.0_f64.to_radians();
+    let (a, low) = (rho * half.psin(), rho * (1.0 - half.pcos()));
+    let mut curves = vec![
+        line(1, [a, 0.0], [10.0 * k, 0.0]),
+        line(2, [10.0 * k, 0.0], [10.0 * k, 10.0 * k]),
+        line(3, [10.0 * k, 10.0 * k], [-10.0 * k, 10.0 * k]),
+        line(4, [-10.0 * k, 10.0 * k], [-10.0 * k, 0.0]),
+        line(5, [-10.0 * k, 0.0], [-a, 0.0]),
+    ];
+    // Counter-clockwise about its centre: the bump from its left end
+    // round below, the dent from its right end round above.
+    curves.push(if dent {
+        arc(6, [0.0, low - rho], [a, 0.0], [-a, 0.0])
+    } else {
+        arc(6, [0.0, rho - low], [-a, 0.0], [a, 0.0])
+    });
+    let profiles =
+        detect_profiles(&curves, tol).map_err(|e| format!("the plate's outline: {e}"))?;
+    let plane = Frame::WORLD
+        .at(Vec3::new(0.0, 0.0, -5.0 * k))
+        .ok_or("the plate's plane")?;
+    extrude(&profiles, &plane, 0.0, 5.0 * k, tol)
+        .map(|made| (made.body, low))
+        .map_err(|e| format!("the plate: {e}"))
+}
+
+/// A wheel standing on the level of the plate's top: a cylinder of
+/// radius 1 whose axis runs along x at `y`, from `-reach` to `reach`. Its
+/// rims touch that level at its two ends; their vertices are there
+/// (`vertex_down`) or on top of the wheel.
+fn wheel(k: f64, y: f64, reach: f64, vertex_down: bool) -> Result<Body, String> {
+    let hint = if vertex_down { -Vec3::Z } else { Vec3::Z };
+    let frame = Frame::new(Vec3::new(-reach, y, k), Vec3::X, hint).ok_or("the wheel's frame")?;
+    primitives::cylinder(&frame, k, 2.0 * reach).map_err(|e| format!("the wheel: {e}"))
+}
+
+/// A wheel stands on the level of a plate's top along a line that is
+/// tangent to an arc in the top's front: beside a bump, which it touches
+/// in the one point where the line touches the arc, or over a dent, where
+/// the line runs on the top face from that point both ways. The wheel's
+/// wall and the top's plane only touch along the line, and the line leaves
+/// the top's border tangentially: its ends, where the wheel's rims touch
+/// the level, are 1.4 or 3 tolerances off the arc. (The repair first left
+/// such a stretch out by a branch of its own, and after its review reads
+/// it as any other, at the seven places: no test of either reached it.)
+/// Whatever the rims' vertices: the two touch, they share no volume, and
+/// their booleans are the two bodies and nothing. A refusal is allowed.
+#[test]
+fn a_wheel_on_a_line_that_leaves_a_border_touches() {
+    let mut tally = Tally::default();
+    for k in SCALES {
+        for coarse in [false, true] {
+            let tol = tolerance(k, coarse);
+            for dent in [false, true] {
+                for off in [1.4, 3.0] {
+                    for vertex_down in [false, true] {
+                        let what = format!(
+                            "scale {k} coarse {coarse} dent {dent} ends {off} off, vertices down {vertex_down}"
+                        );
+                        // Where the line is that far from the arc.
+                        let (rho, away) = (RADIUS * k, off * tol.linear);
+                        let reach = (2.0 * rho * away).sqrt();
+                        let made = arc_fronted(k, dent, &tol).and_then(|(plate, low)| {
+                            let y = if dent { low } else { -low };
+                            wheel(k, y, reach, vertex_down).map(|wheel| (plate, wheel))
+                        });
+                        let (plate, wheel) = match made {
+                            Ok(made) => made,
+                            Err(reason) => {
+                                tally.faults.push(format!("{what}: not made: {reason}"));
+                                continue;
+                            }
+                        };
+                        let said = match interference(&plate, &wheel, &tol) {
+                            Ok(Interference::Clear) => "clear".to_string(),
+                            Ok(Interference::Touch { kind, area, .. }) => {
+                                format!("touch, {kind:?}, area {area}")
+                            }
+                            Ok(Interference::Overlap(_)) => "overlap".to_string(),
+                            Err(error) => format!("refused: {}", why(&error)),
+                        };
+                        println!("{what}: {said}");
+                        let truth = Truth {
+                            apart: 0.0,
+                            thick: 0.0,
+                            common: 0.0,
+                        };
+                        judge(
+                            &plate,
+                            &wheel,
+                            truth,
+                            &tol,
+                            (false, true, false),
+                            &what,
+                            &mut tally,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    tally.hold("a wheel on a line that leaves a border");
+}
