@@ -36,4 +36,41 @@ Detail in [`file-formats.md`](../file-formats.md).
 - **Meshes** (`meshio` + `io`): STL, 3MF and OBJ export from `tess` output at a caller-chosen tolerance.
 - **Flat outlines** (`drawing` + `io`, 2026-10-13): DXF and SVG export of a sketch or of a flat face, as true curves at true size, for laser cutting.
 
+### glTF a primitive per look, on the wire (2026-11-20)
+
+*Finding.* The website's gallery job found the per-look glTF file (`primitives` looks) always smaller as a file than the named form, but usually larger once gzipped, as a web server sends it. Measured by reading four of its published files in both forms (the named ones of the site's commit `0737cfb`, the per-look ones of `4e4f247`, each pair at one quality with the same triangles), every part compressed on its own: kB raw / kB gzipped at level 6 (the site's measure), and the whole file with brotli at quality 11.
+
+| model, form | primitives | JSON | positions | normals | indices (all `u16`) | whole | brotli |
+|---|---|---|---|---|---|---|---|
+| moka pot, faces | 822 | 438 / 40 | 504 / 186 | 504 / 90 | 361 / 117 | 1806 / 436 | 307 |
+| moka pot, looks | 10 | 7 / 2 | 503 / 186 | 503 / 90 | 361 / 282 | 1374 / 562 | 374 |
+| welding table, faces | 1870 | 965 / 76 | 1014 / 304 | 1014 / 17 | 684 / 146 | 3677 / 547 | 296 |
+| welding table, looks | 13 | 8 / 2 | 1012 / 303 | 1012 / 17 | 684 / 545 | 2716 / 868 | 500 |
+| gear reducer, faces | 2119 | 1124 / 112 | 609 / 253 | 609 / 161 | 415 / 81 | 2758 / 609 | 424 |
+| gear reducer, looks | 15 | 10 / 2 | 609 / 253 | 609 / 161 | 415 / 315 | 1643 / 732 | 490 |
+| orrery (coarse), faces | 7194 | 3795 / 383 | 743 / 237 | 743 / 177 | 326 / 108 | 5607 / 907 | 616 |
+| orrery (coarse), looks | 74 | 45 / 8 | 743 / 237 | 743 / 177 | 326 / 150 | 1857 / 574 | 402 |
+
+*Cause.* Not the width of the indices: they are 16-bit in the four named files and in all 62 files the site now publishes (the largest look has 50,560 vertices, the welding table's), so the index bytes are the same raw. Not the weld: it merges 0 to 5 % of the points (the moka pot's 47 of 41,965). Not the order: a look's vertices are already in first-use order and its triangles in face order (each of the 112 look primitives of the four files is its face groups' triangles one after the other). It is the indices' values. A face group's indices start at 0, and 41 to 74 % of the named form's index bytes repeat an earlier face group's exactly (identical faces: holes, teeth, slats, the copies of a pattern), which gzip sends as references back; in a look each face's indices carry the number of its first vertex, so no two are alike, and the index stream gzips 1.4 to 3.9 times worse. The JSON a look saves (38, 74, 110 and 375 kB gzipped) is less than its indices lose (164, 399, 234 and 42 kB) on three of the four; the orrery's 7,194 face groups tip it the other way. Coded as differences from the index before (not glTF), the per-look indices gzip to 112, 132, 77 and 106 kB, the named form's level: the information is the same, only the offsets stand in the way. Within a face the tessellator's triangle order jumps about (2 to 17 % of consecutive triangles share an edge).
+
+*Cures, offline:* the per-look file re-encoded from its own data by a script whose writer gives back both published files byte for byte; the whole file gzipped at level 6, in kB.
+
+| cure | primitives | moka pot | welding table | gear reducer | orrery |
+|---|---|---|---|---|---|
+| none: per look, as published | 10 / 13 / 15 / 74 | 562 | 868 | 732 | 574 |
+| the named form, for comparison | 822 / 1870 / 2119 / 7194 | 436 | 547 | 609 | 907 |
+| 16-bit primitives of at most 65,535 vertices | the same | 562 | 868 | 732 | 574 |
+| each triangle's corners from its smallest index | the same | 559 | 867 | 732 | 578 |
+| triangles walked across edges within each face, vertices in first-use order | the same | 541 | 826 | 706 | 546 |
+| triangle strips (mode 5) of the walked order | the same | 473 | 673 | 626 | 516 |
+| primitives between faces of at most 512 vertices | 87 / 142 / 112 / 163 | 437 | 633 | 641 | 558 |
+| walked, and between faces at 512 | 87 / 142 / 112 / 163 | 403 | 582 | 597 | 529 |
+| walked, and between faces at 256 | 158 / 289 / 222 / 275 | 394 | 527 | 567 | 527 |
+
+The 65,535 split changes no file of the site; on a look past it (the solitaire ring at fine quality, 80,525 vertices in one look) it makes the file 23 % smaller (3,765 to 2,908 kB) but only 1.8 % smaller gzipped (2,119 to 2,080 kB), with a draw call more and 1,994 vertices written twice. The walk keeps the bytes and the draw calls and gains 4 to 5 % gzipped, 11 to 27 % with brotli (374 to 309, 500 to 366, 490 to 427, 402 to 359 kB), and should use a GPU's vertex cache better (not measured); the triangles are then no longer in the face groups' order. Strips of the walked order (2.5 to 2.8 indices a triangle, strips joined by degenerate triangles) gain 10 to 22 % in one primitive per look, but a reader must then handle strips, a mode neither the tests' own reader nor FreeCAD's has been checked with, and the joins are degenerate triangles. Primitives between faces (a new primitive before a face whose new vertices would take it past the budget, a face never cut, each primitive's vertices numbered from 0) bring local indices back: the file grows by 5 to 6 % (each primitive's JSON) and the draw calls by two to twenty-two times, and at 256 vertices, walked, all four come out below the named form on the wire, at 158 to 289 draw calls instead of 822 to 7,194 and with 20 to 65 % fewer bytes.
+
+*Quantisation* (`KHR_mesh_quantization`), offline: positions as 16-bit integers on one grid over the scene (steps of 2.5 to 18 µm on these four, so the points of touching bodies still meet) and normals in 8 bits (at most 0.36° off) make the per-look files 12, 6, 23 and 27 % smaller gzipped (493, 819, 564 and 419 kB), the named ones 16, 9, 28 and 17 %, and either file 37 to 40 % smaller raw. It is a required extension (a reader without it cannot open the file), and the grid is undone by a node's scale and translation, which this export keeps out of the file for readers that ignore node transforms. `EXT_meshopt_compression` codes indices as differences (the 112 to 132 kB above are that idea, not that codec) and the attributes through filters; it too is required unless a second, uncompressed copy is in the file, as Draco is. Not measured further.
+
+*Decision.* The exporter is unchanged: within glTF 2.0's core no cure gains clearly on the wire and keeps a primitive per look in triangle lists. Which way to go (a vertex budget for the per-look primitives, as an option or as what `looks` means; the walk; strips; an extension) is the developer's choice ([`../roadmap.md`](../roadmap.md), M10 › Open). The scripts were not kept: the measurement is repeated by reading the two forms' files part by part.
+
 ---
