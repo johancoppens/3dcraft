@@ -516,7 +516,7 @@ fn a_file_over_the_caps_is_refused_and_the_session_goes_on() {
         craft3d_zipstore::write_stored(&[(craft3d_format::MANIFEST_NAME, text.as_slice())]).unwrap()
     };
     let m = manifest(&bytes);
-    assert_eq!(m["format_version"], 77);
+    assert_eq!(m["format_version"], 78);
     let read = craft3d_format::from_bytes(&pack(&m)).unwrap();
     assert_eq!(read.notes.items[0].later.len(), 20);
     assert!(read.notes.items[0].done.is_none());

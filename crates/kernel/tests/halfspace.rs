@@ -470,7 +470,8 @@ fn seeded_points_are_kept_exactly_when_below_every_plane() {
         let cone = solids::spline_cone(&Frame::WORLD, 4.0 * k, 8.0 * k)
             .unwrap()
             .body;
-        let cases: [(Body, Vec<Frame>, [f64; 3], [f64; 3]); 3] = [
+        // The body, the planes in turn, and the box the points are seeded in.
+        let cases = [
             (
                 slab(k),
                 vec![
