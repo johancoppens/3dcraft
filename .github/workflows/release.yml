@@ -7,6 +7,11 @@ name: Release
 #   macOS    3DCraft-<version>-aarch64.dmg (3DCraft.app, ad-hoc signed, not notarised)
 #   Windows  3dcraft-<version>-x86_64-windows.zip, 3DCraft-<version>-x86_64.msi
 #   Web      3dcraft-web-<version>.zip (a static site, packaging/web/HOSTING.md)
+#   MCP      3dcraft-<version>.mcpb (the MCP bundle: craft3d-cli of the three
+#            package jobs, started headless with a work folder, for MCP
+#            clients that install a bundle with one click and for the
+#            official MCP registry; its entry there, server.json, is kept
+#            as the artifact `mcp-server-json`, not published)
 # and SHA256SUMS.txt over all of them (what an updater of the web build
 # checks before it unpacks it).
 # Started by hand (the packages are kept as run artifacts; nothing is
@@ -20,13 +25,13 @@ name: Release
 # public repository (`git push public v<version>`), which also makes a
 # draft GitHub release with the packages for the developer to publish,
 # its notes taken from CHANGELOG.md's section for that version. It runs
-# only in the public repository (`package`, `web`), on GitHub's
+# only in the public repository (`package`, `web`, `mcpb`), on GitHub's
 # standard hosted runners.
 on:
   workflow_dispatch:
     inputs:
       only:
-        description: "all: every package; web: only the web zip (one Linux runner); windows: only the Windows packages, their smoke test and install check"
+        description: "all: every package and the MCP bundle; web: only the web zip (one Linux runner); windows: only the Windows packages, their smoke test and install check"
         type: choice
         options: [all, web, windows]
         default: all
@@ -43,9 +48,9 @@ jobs:
   # Only in the public repository, johancoppens/3dcraft, to which the
   # hosted jobs belong. The same file is in the workshop,
   # johancoppens/3dcraft-dev, where they are skipped: there a tag or a
-  # dispatch skips this job and `web`, and `release`, which needs both, is
-  # skipped with them. A job-level `if` cannot read `env`, so the name is
-  # written in the `if` of each of the two jobs that need none.
+  # dispatch skips this job and `web`, and `mcpb` and `release`, which need
+  # them, are skipped with them. A job-level `if` cannot read `env`, so the
+  # name is written in the `if` of each job (`release` needs the others).
   package:
     name: package (${{ matrix.name }})
     if: >-
@@ -256,6 +261,25 @@ jobs:
             dist/*.dmg
             dist/*.zip
             dist/*.msi
+
+      # This platform's craft3d-cli, as packed above (the bytes the smoke
+      # test ran), for the MCP bundle the job `package (mcpb)` makes of the
+      # three. An artifact of its own, not named 3dcraft-*: no release
+      # carries it. The artifact keeps no Unix mode; the bundle sets it.
+      - name: program for the MCP bundle
+        run: |
+          mkdir -p target/mcpb-program
+          case "$RUNNER_OS" in
+            Linux) cp dist/stage/3dcraft-*-linux/bin/craft3d-cli target/mcpb-program/ ;;
+            macOS) cp dist/stage/dmg/3DCraft.app/Contents/MacOS/craft3d-cli target/mcpb-program/ ;;
+            Windows) cp dist/stage/3dcraft-*-windows/craft3d-cli.exe target/mcpb-program/ ;;
+          esac
+          ls -l target/mcpb-program
+      - uses: actions/upload-artifact@v4
+        with:
+          name: craft3d-cli-${{ matrix.name }}
+          if-no-files-found: error
+          path: target/mcpb-program/
 
       # The .msi installed as a person installs it, silently: first the
       # latest published release's, when it is older, then this one over
@@ -557,11 +581,123 @@ jobs:
             dist/3dcraft-web-*.zip
             dist/SHA256SUMS.txt
 
+  # The MCP bundle (docs/development.md, Packaging › The MCP bundle): one
+  # .mcpb holding the craft3d-cli of the three package jobs (the artifacts
+  # craft3d-cli-*), each checked to be its platform's program, the fonts
+  # and the manifest, made by `cargo xtask package --formats mcpb`, with
+  # server.json, the official MCP registry's entry for it (the version,
+  # the bundle's address in this release and its SHA-256). Publishing
+  # that entry is the developer's step: it is kept as the artifact
+  # `mcp-server-json` only. Needs every package job, so not for a
+  # rehearsal of Windows alone.
+  mcpb:
+    name: package (mcpb)
+    needs: [package]
+    if: >-
+      github.repository == 'johancoppens/3dcraft'
+      && (github.event_name != 'workflow_dispatch' || inputs.only == 'all')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match the workspace version $version" >&2
+            exit 1
+          fi
+
+      # Each in a folder of its artifact's name: programs/craft3d-cli-linux/
+      # craft3d-cli, and so on.
+      - uses: actions/download-artifact@v4
+        with:
+          path: programs
+          pattern: craft3d-cli-*
+
+      - name: package
+        run: |
+          cargo xtask package --formats mcpb --out dist \
+            --cli-linux programs/craft3d-cli-linux/craft3d-cli \
+            --cli-macos programs/craft3d-cli-macos/craft3d-cli \
+            --cli-windows programs/craft3d-cli-windows/craft3d-cli.exe
+          cat dist/server.json
+
+      # The bundle unpacked as an MCP client unpacks it, the three programs
+      # executable, and the Linux one started as the client starts it:
+      # `mcp` with the work folder, `initialize`, then a raised text in the
+      # built-in font, saved in the work folder. The fonts must come from
+      # the bundle (server/share/craft3d/fonts): the checkout's own, which
+      # a program built in this path would find as a last resort, are moved
+      # away first.
+      - name: smoke test
+        run: |
+          mv assets/fonts target/checkout-fonts
+          smoke="$PWD/target/smoke-mcpb"
+          mkdir -p "$smoke/bundle" "$smoke/work"
+          unzip -q dist/3dcraft-*.mcpb -d "$smoke/bundle"
+          for program in server/linux/craft3d-cli server/darwin/craft3d-cli server/win32/craft3d-cli.exe; do
+            test -x "$smoke/bundle/$program"
+          done
+          file "$smoke"/bundle/server/*/craft3d-cli*
+          cli="$smoke/bundle/server/linux/craft3d-cli"
+          "$cli" --version
+          work="$smoke/work"
+          steps='[{"id":"file.new","params":{"units":"mm"}},{"id":"feature.block","params":{"size":[60,20,3],"name":"Plate"}},{"id":"sketch.create","params":{"name":"Label","face":"F1:face(1)"}},{"id":"sketch.text","params":{"sketch":"Label","text":"3DCraft","font":"sans","size":"8 mm","at":[30,10],"align":"center","anchor":"middle"}},{"id":"feature.extrude","params":{"sketch":"Label","distance":"1 mm","join":"Plate","name":"Raised"}},{"id":"file.save","params":{"path":"'"$work"'/text.3dcraft"}}]'
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release","version":"0"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"command_batch","arguments":{"terse":true,"steps":'"$steps"'}}}' \
+            | (cd / && env -u CRAFT3D_FONTS "$cli" mcp --automation-read-root "$work" --automation-write-root "$work") \
+            > "$smoke/replies.txt"
+          cat "$smoke/replies.txt"
+          grep -q '"serverInfo"' "$smoke/replies.txt"
+          # The batch's report is the text of the tool's answer, a JSON
+          # string inside the reply: its quotes are escaped there.
+          grep -qF '\"completed\":6' "$smoke/replies.txt"
+          if grep -q '"isError":true' "$smoke/replies.txt"; then
+            echo "::error::the bundle's server refused a step (above)"; exit 1
+          fi
+          test -s "$work/text.3dcraft"
+          mv target/checkout-fonts assets/fonts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 3dcraft-mcpb
+          if-no-files-found: error
+          path: dist/*.mcpb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-server-json
+          if-no-files-found: error
+          path: dist/server.json
+
+      # MCPB's own tools (the CLI of the specification's repository,
+      # github.com/modelcontextprotocol/mcpb, from npm at a pinned version;
+      # its dependencies are resolved by npm): its unpacker, which restores
+      # the programs' modes as the clients' does, and its validator, which
+      # in 2.1.2 holds the manifest to the schema of its manifest_version
+      # (a strict one: an unknown field fails) and checks the icon. That
+      # the three programs unpack executable is checked here. After the
+      # uploads, so no code from npm runs before the bundle is kept; a
+      # failure still fails the job, and with it the draft.
+      - name: MCPB's validator
+        run: |
+          mcpb="npx --yes @anthropic-ai/mcpb@2.1.2"
+          $mcpb info dist/3dcraft-*.mcpb
+          $mcpb unpack dist/3dcraft-*.mcpb target/mcpb-unpacked
+          for program in server/linux/craft3d-cli server/darwin/craft3d-cli server/win32/craft3d-cli.exe; do
+            test -x "target/mcpb-unpacked/$program"
+          done
+          $mcpb validate target/mcpb-unpacked
+
   # Only for a tag: a draft release with every package; publishing it is
   # the developer's step.
   release:
     name: draft release
-    needs: [package, web]
+    needs: [package, web, mcpb]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -571,9 +707,11 @@ jobs:
         with:
           path: src
       # The packages only: the artifacts `3dcraft-linux`, `3dcraft-macos`,
-      # `3dcraft-windows` and `3dcraft-web`, not the Windows tour's trace
-      # (`tour-windows`, a folder with a trace, pictures and a state
-      # folder), which no release carries. Without a pattern every artifact
+      # `3dcraft-windows`, `3dcraft-web` and `3dcraft-mcpb`, not the Windows
+      # tour's trace (`tour-windows`, a folder with a trace, pictures and a
+      # state folder), the programs the MCP bundle was made of
+      # (`craft3d-cli-*`) or the registry's entry (`mcp-server-json`),
+      # which no release carries. Without a pattern every artifact
       # of the run is downloaded: at the tag v0.1.2 the tour's `state`
       # folder stopped the checksums and the draft was made by hand.
       - uses: actions/download-artifact@v4
@@ -599,7 +737,7 @@ jobs:
           printf '\nThe installers are not signed yet; [the install guide](https://github.com/%s/blob/%s/docs/guide/install.md) says what your system shows and how to open them anyway.\n' \
             "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" >> notes.md
           cat notes.md
-      # dist/ must hold the seven packages of this version as regular files
+      # dist/ must hold the eight packages of this version as regular files
       # and nothing else (the web job's own SHA256SUMS.txt, over its zip, is
       # replaced by the release's): a folder, a link, a file that is no
       # package or a package that is missing stops the draft here, with
@@ -617,6 +755,7 @@ jobs:
             "3dcraft-$version-x86_64-windows.zip"
             "3DCraft-$version-x86_64.msi"
             "3dcraft-web-$version.zip"
+            "3dcraft-$version.mcpb"
           )
           bad=0
           while IFS= read -r -d '' entry; do
@@ -650,6 +789,37 @@ jobs:
           sha256sum -- * > ../SHA256SUMS.txt
           mv ../SHA256SUMS.txt .
           cat SHA256SUMS.txt
+      # The official MCP registry's entry for the bundle (the job
+      # `package (mcpb)` made it; not a release asset, and not published
+      # here): it must name this release's bundle at its address, with the
+      # SHA-256 the release lists for it, before a draft is made that a
+      # person would publish it beside.
+      - uses: actions/download-artifact@v4
+        with:
+          name: mcp-server-json
+          path: registry
+      - name: the registry's entry
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          bundle="3dcraft-$version.mcpb"
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$bundle"
+          sum=$(awk -v f="$bundle" '$2 == f { print $1 }' dist/SHA256SUMS.txt)
+          jq . registry/server.json
+          if [ -z "$sum" ]; then
+            echo "::error::SHA256SUMS.txt lists no $bundle"; exit 1
+          fi
+          fail=0
+          same() {
+            if [ "$2" != "$3" ]; then
+              echo "::error::registry/server.json: $1 is $2, not $3"; fail=1
+            fi
+          }
+          same "the version" "$(jq -r '.version' registry/server.json)" "$version"
+          same "the number of packages" "$(jq -r '.packages | length' registry/server.json)" 1
+          same "the package's address" "$(jq -r '.packages[0].identifier' registry/server.json)" "$url"
+          same "the package's SHA-256" "$(jq -r '.packages[0].fileSha256' registry/server.json)" "$sum"
+          if [ "$fail" != 0 ]; then exit 1; fi
+          echo "registry/server.json names $url with the SHA-256 the release lists, $sum"
       - name: draft release
         env:
           GH_TOKEN: ${{ github.token }}

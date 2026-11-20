@@ -10,6 +10,11 @@
 //!
 //! - [`write_stored`] is deterministic: the same entries give the same bytes
 //!   (fixed timestamp, no host-dependent fields).
+//! - [`write`] is the same writer for archives other programs unpack (the
+//!   MCP bundle of the release, `cargo xtask package --formats mcpb`): each
+//!   entry may carry the Unix permission bits it is unpacked with, and the
+//!   caller may hand in a deflater (this crate compresses nothing itself),
+//!   whose raw deflate streams are written as method 8.
 //! - [`read_stored`] is written for hostile input: every offset, size and
 //!   count in the file is checked before it is used, and anything this crate
 //!   does not implement (compression, encryption, ZIP64, multi-disk
@@ -21,9 +26,10 @@
 //!   decompressed only when asked for, into at most the size the archive
 //!   records for it.
 //!
-//! Not supported, by design: compression when writing, ZIP64 (sizes and offsets must fit
-//! 32 bits), encryption, archives split over several disks, and data before
-//! the first entry (self-extracting archives).
+//! Not supported, by design: compressing when writing (a deflater is the
+//! caller's, [`write`]), ZIP64 (sizes and offsets must fit 32 bits),
+//! encryption, archives split over several disks, and data before the first
+//! entry (self-extracting archives).
 
 pub mod inflate;
 
@@ -195,6 +201,14 @@ const CENTRAL_LEN: usize = 46;
 const END_LEN: usize = 22;
 const ZIP64_LOCATOR_LEN: usize = 20;
 
+/// The host of "version made by" (its high byte) that says the external
+/// attributes hold a Unix mode in their high 16 bits (APPNOTE 4.4.2).
+const UNIX_HOST: u16 = 3;
+/// The file type a Unix mode gives a regular file (`S_IFREG`).
+const REGULAR_FILE: u32 = 0o100_000;
+/// The permission bits of a Unix mode (with setuid, setgid and sticky).
+const PERMISSIONS: u16 = 0o7777;
+
 /// General-purpose bit 0: the entry is encrypted. Bit 6: strong encryption.
 const FLAG_ENCRYPTED: u16 = 1 | (1 << 6);
 /// General-purpose bit 3: the local header has zeros for CRC and sizes, the
@@ -234,36 +248,97 @@ fn check_name(name: &str) -> Result<(), ZipError> {
 /// reads back), for more than [`MAX_ENTRIES`] entries, and for data that
 /// does not fit a ZIP without ZIP64.
 pub fn write_stored(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, ZipError> {
+    let entries: Vec<NewEntry<'_>> = entries
+        .iter()
+        .map(|(name, data)| NewEntry::new(name, data))
+        .collect();
+    write(&entries, None)
+}
+
+/// One entry for [`write`]: its name, its data, and the Unix permission
+/// bits it is to be unpacked with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NewEntry<'a> {
+    pub name: &'a str,
+    pub data: &'a [u8],
+    /// The permission bits of the file it unpacks to (0o755 for a program,
+    /// 0o644 for data), which an unpacker on Unix restores (Info-ZIP's
+    /// `unzip`, bsdtar, MCPB's): recorded as a regular file's mode in the
+    /// external attributes, with "version made by" naming Unix. `None`
+    /// records none, as [`write_stored`] writes every entry.
+    pub unix_mode: Option<u16>,
+}
+
+impl<'a> NewEntry<'a> {
+    /// An entry that records no Unix mode.
+    pub fn new(name: &'a str, data: &'a [u8]) -> Self {
+        Self {
+            name,
+            data,
+            unix_mode: None,
+        }
+    }
+}
+
+/// A deflater for [`write`]: the raw deflate stream (RFC 1951, no zlib or
+/// gzip wrapper) of an entry's data, or `None` to store the entry as it is
+/// (when compressing does not make it smaller, say).
+pub type Deflate<'f> = &'f dyn Fn(&[u8]) -> Option<Vec<u8>>;
+
+/// Writes the entries, in order, as a ZIP archive: [`write_stored`]'s
+/// layout and checks, with each entry's Unix mode when it has one, and each
+/// entry the deflater compresses written deflated (method 8), the rest
+/// stored. Without modes or a deflater the bytes are [`write_stored`]'s.
+/// [`read`] reads everything written here back, modes included.
+pub fn write(entries: &[NewEntry<'_>], deflate: Option<Deflate<'_>>) -> Result<Vec<u8>, ZipError> {
     if entries.len() > MAX_ENTRIES {
         return Err(ZipError::TooManyEntries {
             count: entries.len(),
         });
     }
     let mut names = BTreeSet::new();
-    for (name, _) in entries {
-        check_name(name)?;
-        if !names.insert(*name) {
-            return Err(ZipError::DuplicateName((*name).to_string()));
+    for entry in entries {
+        check_name(entry.name)?;
+        if !names.insert(entry.name) {
+            return Err(ZipError::DuplicateName(entry.name.to_string()));
         }
     }
     let count = u16::try_from(entries.len()).map_err(|_| ZipError::TooLarge)?;
     let mut out = Vec::new();
     let mut central = Vec::new();
-    for (name, data) in entries {
+    for entry in entries {
+        let (name, data) = (entry.name, entry.data);
         let offset = u32::try_from(out.len()).map_err(|_| ZipError::TooLarge)?;
         let size = u32::try_from(data.len()).map_err(|_| ZipError::TooLarge)?;
         let name_len = u16::try_from(name.len()).map_err(|_| ZipError::TooLarge)?;
         let crc = crc32(data);
+        let deflated = deflate.and_then(|deflate| deflate(data));
+        let (method, body): (u16, &[u8]) = match &deflated {
+            Some(stream) => (8, stream.as_slice()),
+            None => (0, data),
+        };
+        let body_size = u32::try_from(body.len()).map_err(|_| ZipError::TooLarge)?;
+        // All ones is the ZIP64 marker, which the reader refuses.
+        if size == u32::MAX || body_size == u32::MAX {
+            return Err(ZipError::TooLarge);
+        }
+        let (made_by, external) = match entry.unix_mode {
+            Some(mode) => (
+                (UNIX_HOST << 8) | VERSION,
+                (REGULAR_FILE | u32::from(mode & PERMISSIONS)) << 16,
+            ),
+            None => (VERSION, 0),
+        };
 
         // Fields shared by the local header and the central directory entry.
         let mut common = Vec::with_capacity(26);
         common.extend_from_slice(&VERSION.to_le_bytes());
         common.extend_from_slice(&FLAGS.to_le_bytes());
-        common.extend_from_slice(&0_u16.to_le_bytes()); // method: stored
+        common.extend_from_slice(&method.to_le_bytes());
         common.extend_from_slice(&DOS_TIME.to_le_bytes());
         common.extend_from_slice(&DOS_DATE.to_le_bytes());
         common.extend_from_slice(&crc.to_le_bytes());
-        common.extend_from_slice(&size.to_le_bytes()); // compressed size
+        common.extend_from_slice(&body_size.to_le_bytes()); // compressed size
         common.extend_from_slice(&size.to_le_bytes()); // uncompressed size
         common.extend_from_slice(&name_len.to_le_bytes());
         common.extend_from_slice(&0_u16.to_le_bytes()); // extra field length
@@ -271,15 +346,15 @@ pub fn write_stored(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, ZipError> {
         out.extend_from_slice(LOCAL_SIGNATURE);
         out.extend_from_slice(&common);
         out.extend_from_slice(name.as_bytes());
-        out.extend_from_slice(data);
+        out.extend_from_slice(body);
 
         central.extend_from_slice(CENTRAL_SIGNATURE);
-        central.extend_from_slice(&VERSION.to_le_bytes()); // version made by
+        central.extend_from_slice(&made_by.to_le_bytes()); // version made by
         central.extend_from_slice(&common);
         central.extend_from_slice(&0_u16.to_le_bytes()); // comment length
         central.extend_from_slice(&0_u16.to_le_bytes()); // disk number
         central.extend_from_slice(&0_u16.to_le_bytes()); // internal attributes
-        central.extend_from_slice(&0_u32.to_le_bytes()); // external attributes
+        central.extend_from_slice(&external.to_le_bytes()); // external attributes
         central.extend_from_slice(&offset.to_le_bytes());
         central.extend_from_slice(name.as_bytes());
     }
@@ -381,6 +456,10 @@ pub struct RawEntry<'a> {
     pub method: u16,
     /// The size of the data once decompressed, as the archive records it.
     pub size: usize,
+    /// The Unix permission bits the entry is unpacked with, when the
+    /// archive records a Unix mode for it ("version made by" naming Unix,
+    /// a mode in the external attributes); `None` when it records none.
+    pub unix_mode: Option<u16>,
     crc: u32,
     raw: &'a [u8],
 }
@@ -486,6 +565,7 @@ fn walk(bytes: &[u8], deflate: bool) -> Result<Vec<RawEntry<'_>>, ZipError> {
                 "a central directory entry has the wrong signature",
             ));
         }
+        let made_by = u16_at(header, 4).ok_or(ENTRY)?;
         let flags = u16_at(header, 8).ok_or(ENTRY)?;
         let method = u16_at(header, 10).ok_or(ENTRY)?;
         let crc = u32_at(header, 16).ok_or(ENTRY)?;
@@ -495,7 +575,12 @@ fn walk(bytes: &[u8], deflate: bool) -> Result<Vec<RawEntry<'_>>, ZipError> {
         let extra_len = usize::from(u16_at(header, 30).ok_or(ENTRY)?);
         let comment_len = usize::from(u16_at(header, 32).ok_or(ENTRY)?);
         let disk = u16_at(header, 34).ok_or(ENTRY)?;
+        let external = u32_at(header, 38).ok_or(ENTRY)?;
         let local_offset = u32_at(header, 42).ok_or(ENTRY)?;
+        let unix_mode = u16::try_from(external >> 16)
+            .ok()
+            .filter(|mode| made_by >> 8 == UNIX_HOST && *mode != 0)
+            .map(|mode| mode & PERMISSIONS);
 
         let name_at = at.checked_add(CENTRAL_LEN).ok_or(ENTRY)?;
         let name_bytes = slice(central, name_at, name_len).ok_or(ENTRY)?;
@@ -611,6 +696,7 @@ fn walk(bytes: &[u8], deflate: bool) -> Result<Vec<RawEntry<'_>>, ZipError> {
             name,
             method,
             size,
+            unix_mode,
             crc,
             raw: data,
         });

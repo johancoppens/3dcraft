@@ -1,0 +1,82 @@
+{
+  "manifest_version": "0.3",
+  "name": "3dcraft",
+  "display_name": "3DCraft",
+  "version": "@VERSION@",
+  "description": "Open-source parametric 3D CAD built with and for AI: every action a command, every result checked.",
+  "long_description": "3DCraft is an open-source parametric 3D CAD modeller built with and for AI: every action is a command, and every result is checked.\n\nWith this extension your AI assistant models real parts. It runs 3DCraft's commands, inspects the document and shows you pictures it renders. Variables with units and formulas drive the model; volumes, distances and design rules are checked from the exact geometry; what 3DCraft cannot do yet, it refuses, and says so. Models are saved as `.3dcraft` files in the work folder you choose, and exported as STEP, STL, 3MF, OBJ, DXF or SVG.\n\nThis extension works without a window. To watch the assistant build in a window, point at a face and play the history, install 3DCraft from https://3dcraft.dev and connect it as the guide describes.\n\n3DCraft is at version @SERIES@. It does not replace professional CAD today.",
+  "author": {
+    "name": "Johan Coppens",
+    "url": "https://3dcraft.dev"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/johancoppens/3dcraft"
+  },
+  "homepage": "https://3dcraft.dev",
+  "documentation": "https://3dcraft.dev/guide/",
+  "support": "https://github.com/johancoppens/3dcraft/issues",
+  "icon": "icon.png",
+  "server": {
+    "type": "binary",
+    "entry_point": "server/linux/craft3d-cli",
+    "mcp_config": {
+      "command": "${__dirname}/server/linux/craft3d-cli",
+      "args": [
+        "mcp",
+        "--automation-read-root",
+        "${user_config.work_folder}",
+        "--automation-write-root",
+        "${user_config.work_folder}"
+      ],
+      "env": {},
+      "platform_overrides": {
+        "darwin": {
+          "command": "${__dirname}/server/darwin/craft3d-cli"
+        },
+        "win32": {
+          "command": "${__dirname}/server/win32/craft3d-cli.exe"
+        }
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "command_list",
+      "description": "Lists 3DCraft's commands, with their parameters and a summary each."
+    },
+    {
+      "name": "command_run",
+      "description": "Runs one command."
+    },
+    {
+      "name": "command_batch",
+      "description": "Runs up to 256 commands in order."
+    },
+    {
+      "name": "doc_inspect",
+      "description": "The whole document: variables, features with their status, bodies with volume, area and faces."
+    },
+    {
+      "name": "doc_render_preview",
+      "description": "A picture of the model."
+    },
+    {
+      "name": "selection_get",
+      "description": "What is selected."
+    }
+  ],
+  "keywords": ["cad", "parametric", "3d", "3d-printing", "step", "rust"],
+  "license": "MIT",
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"]
+  },
+  "user_config": {
+    "work_folder": {
+      "type": "directory",
+      "title": "Work folder",
+      "description": "The folder 3DCraft may read and write. Your models are saved here; it reads and writes nowhere else.",
+      "required": true
+    }
+  }
+}

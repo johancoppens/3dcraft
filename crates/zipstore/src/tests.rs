@@ -742,3 +742,157 @@ fn damaged_huffman_streams_never_panic() {
         }
     }
 }
+
+// `write`: Unix modes and a deflater the caller hands in (the MCP bundle of
+// the release, xtask/src/mcpb.rs).
+
+#[test]
+fn write_without_modes_or_a_deflater_writes_what_write_stored_writes() {
+    let one: [(&str, &[u8]); 1] = [("a", b"hi")];
+    let none: [(&str, &[u8]); 0] = [];
+    for entries in [&SAMPLE[..], &one[..], &none[..]] {
+        let new: Vec<NewEntry<'_>> = entries
+            .iter()
+            .map(|(name, data)| NewEntry::new(name, data))
+            .collect();
+        assert_eq!(write(&new, None).unwrap(), write_stored(entries).unwrap());
+    }
+}
+
+/// The one entry of `the_output_is_exactly_this` with the mode 0o755: the
+/// central directory says the archive was made on Unix (host 3) and holds
+/// a regular file's mode (0o100755) in the high half of the external
+/// attributes, as Info-ZIP's zip writes them; nothing else changes.
+#[test]
+fn a_unix_mode_is_recorded_as_unix_tools_record_it() {
+    let entry = NewEntry {
+        unix_mode: Some(0o755),
+        ..NewEntry::new("a", b"hi")
+    };
+    let bytes = write(&[entry], None).unwrap();
+    let (_, central) = layout(&bytes);
+    let mut expected = write_stored(&[("a", b"hi")]).unwrap();
+    expected[central + 4..central + 6].copy_from_slice(&[20, 3]);
+    expected[central + 38..central + 42].copy_from_slice(&[0, 0, 0xED, 0x81]);
+    assert_eq!(bytes, expected);
+    assert_eq!(u32_at(&bytes, central + 38), Some(0o100_755 << 16));
+}
+
+#[test]
+fn modes_read_back_and_an_entry_without_one_has_none() {
+    let entries = [
+        NewEntry {
+            unix_mode: Some(0o755),
+            ..NewEntry::new("bin/program", b"\x7fELF")
+        },
+        NewEntry {
+            unix_mode: Some(0o644),
+            ..NewEntry::new("data.txt", b"text")
+        },
+        NewEntry::new("plain", b"x"),
+        // Only the permission bits are kept: a file type given in the mode
+        // is replaced by a regular file's.
+        NewEntry {
+            unix_mode: Some(0o170_640),
+            ..NewEntry::new("typed", b"y")
+        },
+    ];
+    let bytes = write(&entries, None).unwrap();
+    let back = read(&bytes).unwrap();
+    let modes: Vec<Option<u16>> = back.iter().map(|e| e.unix_mode).collect();
+    assert_eq!(modes, [Some(0o755), Some(0o644), None, Some(0o640)]);
+    for (entry, got) in entries.iter().zip(&back) {
+        assert_eq!(
+            (entry.name, entry.data),
+            (got.name, &got.data().unwrap()[..])
+        );
+        assert_eq!(got.method, 0);
+    }
+    // The stored-only reader reads them too: a mode changes no data.
+    assert_eq!(read_stored(&bytes).unwrap().len(), 4);
+    // Archives without modes read back without them; one another program
+    // wrote on Unix, with its modes (Python's zipfile records 0o600 for
+    // what `writestr` adds: testdata/deflated.zip).
+    assert!(
+        read(&sample())
+            .unwrap()
+            .iter()
+            .all(|e| e.unix_mode.is_none())
+    );
+    assert!(
+        read(DEFLATED)
+            .unwrap()
+            .iter()
+            .all(|e| e.unix_mode == Some(0o600))
+    );
+}
+
+/// The deflater decides: an entry it compresses is written deflated with
+/// its stream as it is, and reads back exactly; one it leaves alone is
+/// stored. `DYNAMIC` is zlib's raw deflate of `TEXT` (testdata/).
+#[test]
+fn a_deflater_writes_deflated_entries_that_read_back_exactly() {
+    let deflate = |data: &[u8]| (data == TEXT).then(|| DYNAMIC.to_vec());
+    let entries = [
+        NewEntry {
+            unix_mode: Some(0o644),
+            ..NewEntry::new("Document.xml", TEXT)
+        },
+        NewEntry::new("short.txt", b"left as it is"),
+        NewEntry::new("empty", b""),
+    ];
+    let bytes = write(&entries, Some(&deflate)).unwrap();
+    let back = read(&bytes).unwrap();
+    assert_eq!(back[0].method, 8);
+    assert_eq!(back[0].size, TEXT.len());
+    assert_eq!(back[0].unix_mode, Some(0o644));
+    assert_eq!(&back[0].data().unwrap()[..], TEXT);
+    assert_eq!(back[1].method, 0);
+    assert_eq!(&back[1].data().unwrap()[..], b"left as it is");
+    assert!(back[2].data().unwrap().is_empty());
+    // The deflated entry holds the deflater's stream, byte for byte, and
+    // the archive is that much smaller than its stored form.
+    assert!(bytes.windows(DYNAMIC.len()).any(|window| window == DYNAMIC));
+    let stored = write(&entries, None).unwrap();
+    assert_eq!(stored.len() - bytes.len(), TEXT.len() - DYNAMIC.len());
+    assert_eq!(
+        write(&entries, Some(&deflate)).unwrap(),
+        bytes,
+        "deterministic"
+    );
+    // The stored-only reader refuses it, saying it is compressed.
+    assert!(matches!(
+        read_stored(&bytes),
+        Err(ZipError::Compressed { method: 8, .. })
+    ));
+}
+
+/// A deflater that returns a stream which is not the data's: the archive
+/// is written (the CRC is the data's), and reading the entry says it is
+/// damaged rather than returning other data.
+#[test]
+fn a_wrong_deflate_stream_is_found_when_read() {
+    let wrong = |_: &[u8]| Some(DYNAMIC.to_vec());
+    let bytes = write(&[NewEntry::new("a.txt", b"not the text")], Some(&wrong)).unwrap();
+    let back = read(&bytes).unwrap();
+    assert!(back[0].data().is_err());
+}
+
+#[test]
+fn write_refuses_what_write_stored_refuses() {
+    for name in BAD_NAMES {
+        let entry = NewEntry {
+            unix_mode: Some(0o755),
+            ..NewEntry::new(name, b"x")
+        };
+        assert!(
+            matches!(write(&[entry], None), Err(ZipError::InvalidName { .. })),
+            "`{name}`"
+        );
+    }
+    let twice = [NewEntry::new("a", b"1"), NewEntry::new("a", b"2")];
+    assert_eq!(
+        write(&twice, None),
+        Err(ZipError::DuplicateName("a".into()))
+    );
+}
