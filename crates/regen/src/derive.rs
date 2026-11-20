@@ -123,7 +123,9 @@ fn went_into(doc: &Document, id: FeatureId, role: &str, taker: FeatureId) -> Str
     );
     text.push_str(&repair(role, &taker_name));
     let keep = match taker_feature.map(|f| &f.kind) {
-        Some(FeatureKind::Transform(_) | FeatureKind::Mirror(_)) => Some("keep"),
+        Some(FeatureKind::Transform(_) | FeatureKind::Mirror(_) | FeatureKind::PlaneCut(_)) => {
+            Some("keep")
+        }
         Some(FeatureKind::Boolean(b)) if b.tool == id => Some("keepTool"),
         _ => None,
     };

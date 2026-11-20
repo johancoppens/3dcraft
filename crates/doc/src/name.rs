@@ -918,10 +918,17 @@ pub enum NameRole {
     /// face is continued by one face of the tip. It is a face because the
     /// name after `/` is one.
     Tip,
+    /// The face a plane of a plane cut (`feature.planeCut`) leaves:
+    /// `F9:cut(3)`. Its one source is a plain number, the plane's id in
+    /// that feature, which is stored with the plane and never given to
+    /// another, so the name stays with its plane when planes are added,
+    /// deleted or put in another order. Where a plane cuts the body in
+    /// several places, the pieces share the name.
+    Cut,
 }
 
 impl NameRole {
-    pub const ALL: [NameRole; 22] = [
+    pub const ALL: [NameRole; 23] = [
         NameRole::StartCap,
         NameRole::EndCap,
         NameRole::Side,
@@ -944,6 +951,7 @@ impl NameRole {
         NameRole::Thread,
         NameRole::Rim,
         NameRole::Tip,
+        NameRole::Cut,
     ];
 
     pub fn name(self) -> &'static str {
@@ -970,6 +978,7 @@ impl NameRole {
             NameRole::Thread => "thread",
             NameRole::Rim => "rim",
             NameRole::Tip => "tip",
+            NameRole::Cut => "cut",
         }
     }
 
@@ -991,6 +1000,7 @@ impl NameRole {
                 | NameRole::Fillet
                 | NameRole::FilletCorner
                 | NameRole::Thread
+                | NameRole::Cut
         )
     }
 
@@ -1058,6 +1068,7 @@ impl NameRole {
                 | NameRole::Thread
                 | NameRole::Rim
                 | NameRole::Tip
+                | NameRole::Cut
         )
     }
 }

@@ -1630,7 +1630,11 @@ fn made_face(
             .then(|| names.faces.iter().position(|face| face.role == link.role))
             .flatten()
     };
-    let Some(index) = exact.or_else(same_plane) else {
+    // A face a plane cut merged with a face of its target that lies in the
+    // plane keeps the target's name and answers to the plane's (`F9:cut(3)`)
+    // as an alias: found by it too.
+    let alias = || (0..names.faces.len()).find(|&face| names.aliases_of(face).contains(link));
+    let Some(index) = exact.or_else(same_plane).or_else(alias) else {
         if let Some(why) = crate::pass::absent_name(doc, earlier, whole) {
             return Err(format!(
                 "plane: `{made_by}`, which makes the face {whole}, does not have it: {why}"
@@ -1641,6 +1645,20 @@ fn made_face(
     let Some(face) = body.faces.get(index) else {
         return Err(format!("plane: the face {link} is missing from its body"));
     };
+    // The face a plane of a plane cut leaves has the plane's own frame, by
+    // whichever of its names it is found. Where the boolean joined the
+    // piece the plane cut with a face of the target lying in the plane,
+    // the face has the target's surface, whose origin and axes are
+    // another's: what was placed on `F9:cut(3)` would jump when the plane
+    // moves off that face (the review of 2026-11-20).
+    if link.role == NameRole::Cut
+        && let Some(report) = outcome.cut.as_ref().and_then(|reports| {
+            let id = link.sources.first()?;
+            reports.iter().find(|report| u64::from(report.id) == *id)
+        })
+    {
+        return Ok(report.frame);
+    }
     let craft3d_geom::Surface::Plane(plane) = &face.surface else {
         return Err(format!(
             "plane: the face {link} is a {} face; a sketch needs a flat one",

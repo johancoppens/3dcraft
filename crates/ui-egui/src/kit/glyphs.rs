@@ -131,7 +131,8 @@ impl Glyph {
             "transform" => Glyph::Transform,
             "offsetFace" | "moveFace" => Glyph::OffsetFace,
             "thicken" => Glyph::Thicken,
-            "split" => Glyph::Split,
+            // A body cut by planes shows the cut, as a split does.
+            "split" | "planeCut" => Glyph::Split,
             "deleteFace" => Glyph::DeleteFace,
             "import" => Glyph::Import,
             "sheetMetal" | "fold" => Glyph::SheetMetal,

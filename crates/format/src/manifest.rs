@@ -1183,6 +1183,19 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fullness: Option<String>,
     },
+    /// The body of feature `target` cut by planes, one side of each kept
+    /// (format version 78; docs/design/plane-cut.md): what lies on the
+    /// kept side of every plane, the planes applied in the order of the
+    /// list. `next_plane` is the id the next new plane gets: above every
+    /// id a plane of the feature has or ever had. With `keep` (written
+    /// only when set) the target keeps its own body.
+    PlaneCut {
+        target: u64,
+        planes: Vec<CutPlane>,
+        next_plane: u32,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep: bool,
+    },
     /// The body of `source` made hollow, with walls of `thickness` behind
     /// every face except those of `open`, which are taken away.
     Shell {
@@ -1891,6 +1904,44 @@ pub enum PlaneRef {
     Datum { feature: u64 },
 }
 
+/// One plane of a plane cut (format version 78): its `id` in the feature
+/// (from 1, never given to another plane of it), how it is given, how far
+/// it is moved along its normal (an expression of a length) and the side
+/// of it that is kept. Every field is always written.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CutPlane {
+    pub id: u32,
+    pub by: CutPlaneBy,
+    pub offset: String,
+    pub side: CutSide,
+}
+
+/// How a plane of a plane cut is given: a base plane, a flat face or a
+/// datum plane (`plane`), or the plane through `point` (three expressions
+/// of lengths) square to `normal` (three expressions, plain numbers or
+/// lengths).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum CutPlaneBy {
+    Plane {
+        plane: PlaneRef,
+    },
+    PointNormal {
+        point: [String; 3],
+        normal: [String; 3],
+    },
+}
+
+/// The side of a plane a plane cut keeps: `below`, the side the normal
+/// points away from, or `above`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CutSide {
+    Below,
+    Above,
+}
+
 /// A straight line a datum is placed relative to: an axis of the world,
 /// the straight edge between two faces of one body, or a datum axis by
 /// the id of its feature.
@@ -2167,6 +2218,9 @@ pub enum NameRole {
     /// A face of a tip; `sources` is one plain number, 0, followed by the
     /// side face it continues (format version 73).
     Tip,
+    /// The face a plane of a plane cut leaves; `sources` is one plain
+    /// number, the plane's id in that feature (format version 78).
+    Cut,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

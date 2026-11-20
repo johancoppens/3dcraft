@@ -132,7 +132,7 @@ impl Through {
 /// The parameter a kind reads the body it changes as, in the reasons.
 fn role(kind: &FeatureKind) -> &'static str {
     match kind {
-        FeatureKind::Boolean(_) => "target",
+        FeatureKind::Boolean(_) | FeatureKind::PlaneCut(_) => "target",
         FeatureKind::Chamfer(_) | FeatureKind::Fillet(_) => "edges",
         FeatureKind::OffsetFace(_)
         | FeatureKind::MoveFace(_)
@@ -168,6 +168,7 @@ pub(crate) fn switched_off(
         // A copy beside its source, a layer beside its body: new bodies.
         FeatureKind::Transform(t) if t.keep => Some(Through::nothing(why.to_string())),
         FeatureKind::Mirror(m) if m.keep => Some(Through::nothing(why.to_string())),
+        FeatureKind::PlaneCut(c) if c.keep => Some(Through::nothing(why.to_string())),
         FeatureKind::Thicken(_) | FeatureKind::Plate(_) => Some(Through::nothing(why.to_string())),
         _ => Some(match nothing_left(doc, earlier, feature) {
             Some(absent) => pass_stand_in(doc, feature, earlier, absent),
@@ -234,7 +235,10 @@ pub(crate) fn operand_absent(
         FeatureKind::Thicken(_) | FeatureKind::Plate(_) => {
             nothing_left(doc, earlier, feature).map(Through::nothing)
         }
-        FeatureKind::Transform(_) | FeatureKind::Mirror(_) | FeatureKind::Pattern(_) => {
+        FeatureKind::Transform(_)
+        | FeatureKind::Mirror(_)
+        | FeatureKind::Pattern(_)
+        | FeatureKind::PlaneCut(_) => {
             let (source, _) = feature.kind.source()?;
             absent(earlier, source).map(Through::nothing)
         }

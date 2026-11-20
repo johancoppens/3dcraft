@@ -22,6 +22,7 @@ pub mod identity;
 pub mod name;
 pub mod note;
 pub mod output;
+pub mod plane_cut;
 pub mod public;
 pub mod repoint;
 pub mod sets;
@@ -59,6 +60,7 @@ pub use note::{
     clean_note_author, clean_note_text, full_reopen, full_replies, unseen,
 };
 pub use output::{MAX_OUTPUTS, Output, OutputDef};
+pub use plane_cut::{CutPlane, CutPlaneBy, CutSide, MAX_CUT_PLANE_ID, MAX_CUT_PLANES, PlaneCut};
 pub use public::{
     DocInfo, MAX_CHOICES, MAX_DESCRIPTION, MAX_INFO_TEXT, MAX_PARAM_TEXT, MAX_TAGS, ParamKind,
     PublicParam,
@@ -1707,6 +1709,7 @@ pub enum FeatureKind {
     DeleteFace(DeleteFace),
     Thread(Thread),
     Tip(Tip),
+    PlaneCut(PlaneCut),
     OffsetProfile(OffsetProfile),
     Fill(Fill),
     Split(Split),
@@ -1754,6 +1757,7 @@ impl FeatureKind {
             FeatureKind::DeleteFace(_) => "deleteFace",
             FeatureKind::Thread(_) => "thread",
             FeatureKind::Tip(_) => "tip",
+            FeatureKind::PlaneCut(_) => "planeCut",
             FeatureKind::OffsetProfile(_) => "offsetProfile",
             FeatureKind::Fill(_) => "fill",
             FeatureKind::Split(_) => "split",
@@ -1836,7 +1840,7 @@ impl FeatureKind {
 
     /// The parameters that name a body by its feature's id (a boolean's
     /// `target` and `tool`; the `source` of a transform, mirror, pattern,
-    /// shell or split), each with its name. A fillet, a chamfer and a face
+    /// shell or split; a plane cut's `target`), each with its name. A fillet, a chamfer and a face
     /// operation name faces instead, which are followed to newer bodies
     /// by regeneration.
     pub fn body_params(&self) -> Vec<(&'static str, FeatureId)> {
@@ -1847,6 +1851,7 @@ impl FeatureKind {
             FeatureKind::Pattern(p) => vec![("source", p.source)],
             FeatureKind::Shell(s) => vec![("source", s.source)],
             FeatureKind::Split(s) => vec![("source", s.source)],
+            FeatureKind::PlaneCut(c) => vec![("target", c.target)],
             _ => Vec::new(),
         }
     }
@@ -1860,6 +1865,7 @@ impl FeatureKind {
             FeatureKind::Pattern(p) => vec![("source", &mut p.source)],
             FeatureKind::Shell(s) => vec![("source", &mut s.source)],
             FeatureKind::Split(s) => vec![("source", &mut s.source)],
+            FeatureKind::PlaneCut(c) => vec![("target", &mut c.target)],
             _ => Vec::new(),
         }
     }
@@ -1886,6 +1892,7 @@ impl FeatureKind {
             FeatureKind::DeleteFace(d) => d.source().map(|id| (id, false)),
             FeatureKind::Thread(t) => Some((t.source(), false)),
             FeatureKind::Tip(t) => Some((t.source(), false)),
+            FeatureKind::PlaneCut(c) => Some((c.target, c.keep)),
             FeatureKind::Split(s) => Some((s.source, false)),
             // The faces' body stays: the pattern is a body of its own.
             FeatureKind::Unfold(u) => u.source().map(|id| (id, true)),
@@ -2003,6 +2010,7 @@ impl FeatureKind {
             }
             FeatureKind::Mirror(m) => std::iter::once(m.source).chain(m.plane).collect(),
             FeatureKind::Draft(d) => d.source().into_iter().chain(d.neutral.inputs()).collect(),
+            FeatureKind::PlaneCut(c) => c.inputs(),
             FeatureKind::Plate(p) => {
                 let mut out: Vec<FeatureId> = p.source().into_iter().collect();
                 for id in p.neighbours() {
@@ -2163,6 +2171,7 @@ impl FeatureKind {
                 }
             }
             FeatureKind::Draft(d) => out = vec![named("angle", &d.angle)],
+            FeatureKind::PlaneCut(c) => out = c.exprs(),
             FeatureKind::MoveFace(m) => {
                 out = triple("translate", &m.translate);
                 out.extend(triple("pivot", &m.pivot));
@@ -2353,6 +2362,7 @@ impl FeatureKind {
                 out
             }
             FeatureKind::Draft(d) => vec![&mut d.angle],
+            FeatureKind::PlaneCut(c) => c.exprs_mut(),
             FeatureKind::MoveFace(m) => m
                 .translate
                 .iter_mut()
@@ -3061,6 +3071,15 @@ impl Document {
                         )));
                     }
                     draft.faces.iter().chain(draft.neutral.names()).collect()
+                }
+                FeatureKind::PlaneCut(cut) => {
+                    if let Some(fault) = cut.fault() {
+                        return Err(DocError::Invalid(format!(
+                            "the plane cut `{}`: {fault}",
+                            feature.name
+                        )));
+                    }
+                    cut.planes.iter().flat_map(CutPlane::names).collect()
                 }
                 _ => Vec::new(),
             };

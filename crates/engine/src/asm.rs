@@ -1808,6 +1808,7 @@ fn build_shown(
                 developed: None,
                 offset: None,
                 fades: None,
+                cut: None,
                 consumed_by: None,
                 followed: None,
                 passed: None,

@@ -24,6 +24,7 @@ pub mod draft;
 pub mod extrude;
 pub mod extrude_to;
 pub mod fillet;
+pub mod halfspace;
 pub mod helix;
 pub mod loft;
 mod loose_op;

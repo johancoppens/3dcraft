@@ -1,0 +1,278 @@
+{
+  "format_version": 78,
+  "written_by": "ab2903592ceb6c72bad0a0013b38ef212367e7d9",
+  "how": "craft3d-cli of that commit (its title was reworded before the merge: 8c9dd74b8998a562e76c05ca1d907f9ee3e90731 in the history, the same tree; the Check's build on the workshop's build server, run by a test that printed the file to its log: apps/craft3d-cli/tests/write_fixture.rs of that commit): craft3d-cli run --new '{\"units\": \"mm\"}' --script v78.steps.json --out v78.3dcraft, then craft3d-cli run v78.3dcraft --cmd document.inspect for the features and bodies; format 78: a block 40 x 30 x 20 mm cut by planes in one feature (feature.planeCut), Roof: the datum plane South (through the eaves at the variable eaves = 12 mm, rising 8 mm over 15 mm; plane 6), a point and a normal with the id 5 (the other slope), and the plane of the block's own left face moved in by 2 mm (plane 7), 38 x (30 x 12 + 30 x 8 / 2) = 18240 mm3 in closed form; Upper: a kept copy of it cut by the base plane xy moved up 6 mm, the side above kept (keep, side above, one plane given alone), 18240 - 38 x 30 x 6 = 11400 mm3",
+  "rollback": null,
+  "features": [
+    {
+      "bodyUsedBy": "F3",
+      "id": "F1",
+      "name": "House",
+      "params": {
+        "orientation": {
+          "angle": "0 deg",
+          "axis": [
+            "0",
+            "0",
+            "1"
+          ]
+        },
+        "position": [
+          "0",
+          "0",
+          "0"
+        ],
+        "size": [
+          "40 mm",
+          "30 mm",
+          "20 mm"
+        ],
+        "type": "block"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "datum": {
+        "kind": "plane",
+        "normal": [
+          0.0,
+          -0.47058823529411764,
+          0.8823529411764706
+        ],
+        "origin": [
+          0.0,
+          0.0,
+          12.0
+        ],
+        "x": [
+          1.0,
+          0.0,
+          0.0
+        ]
+      },
+      "id": "F2",
+      "name": "South",
+      "params": {
+        "by": {
+          "points": [
+            {
+              "position": [
+                "0 mm",
+                "0 mm",
+                "eaves"
+              ],
+              "type": "at"
+            },
+            {
+              "position": [
+                "40 mm",
+                "0 mm",
+                "eaves"
+              ],
+              "type": "at"
+            },
+            {
+              "position": [
+                "0 mm",
+                "15 mm",
+                "eaves + 8 mm"
+              ],
+              "type": "at"
+            }
+          ],
+          "type": "threePoints"
+        },
+        "type": "datumPlane"
+      },
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F3",
+      "name": "Roof",
+      "params": {
+        "keep": false,
+        "next_plane": 8,
+        "planes": [
+          {
+            "by": {
+              "plane": {
+                "feature": 2,
+                "type": "datum"
+              },
+              "type": "plane"
+            },
+            "id": 6,
+            "offset": "0",
+            "side": "below"
+          },
+          {
+            "by": {
+              "normal": [
+                "0",
+                "8",
+                "15"
+              ],
+              "point": [
+                "40 mm",
+                "30 mm",
+                "eaves"
+              ],
+              "type": "pointNormal"
+            },
+            "id": 5,
+            "offset": "0",
+            "side": "below"
+          },
+          {
+            "by": {
+              "plane": {
+                "face": "F1:face(4)",
+                "type": "face"
+              },
+              "type": "plane"
+            },
+            "id": 7,
+            "offset": "-2 mm",
+            "side": "below"
+          }
+        ],
+        "target": 1,
+        "type": "planeCut"
+      },
+      "planes": [
+        {
+          "cuts": true,
+          "faces": 1,
+          "id": 6
+        },
+        {
+          "cuts": true,
+          "faces": 1,
+          "id": 5
+        },
+        {
+          "cuts": true,
+          "faces": 1,
+          "id": 7
+        }
+      ],
+      "status": "ok",
+      "suppressed": false
+    },
+    {
+      "id": "F4",
+      "name": "Upper",
+      "params": {
+        "keep": true,
+        "next_plane": 2,
+        "planes": [
+          {
+            "by": {
+              "plane": {
+                "plane": "xy",
+                "type": "world"
+              },
+              "type": "plane"
+            },
+            "id": 1,
+            "offset": "6 mm",
+            "side": "above"
+          }
+        ],
+        "target": 3,
+        "type": "planeCut"
+      },
+      "planes": [
+        {
+          "cuts": true,
+          "faces": 1,
+          "id": 1
+        }
+      ],
+      "status": "ok",
+      "suppressed": false
+    }
+  ],
+  "bodies": [
+    {
+      "area": 4304.000000000002,
+      "bbox": [
+        [
+          2.0,
+          0.0,
+          0.0
+        ],
+        [
+          40.0,
+          30.0,
+          20.0
+        ]
+      ],
+      "bboxTolerance": 0.08827230596285567,
+      "centroid": [
+        20.999999999999996,
+        14.999999999999996,
+        8.16666666666666
+      ],
+      "edges": 15,
+      "faceNames": [
+        "F3:copy(0)/F1:face(0)",
+        "F3:copy(0)/F1:face(2)",
+        "F3:copy(0)/F1:face(3)",
+        "F3:copy(0)/F1:face(5)",
+        "F3:cut(6)",
+        "F3:cut(5)",
+        "F3:cut(7)"
+      ],
+      "faces": 7,
+      "feature": "F3",
+      "kind": "solid",
+      "name": "Roof",
+      "shells": 1,
+      "valid": true,
+      "vertices": 10,
+      "volume": 18240.000000000007
+    },
+    {
+      "area": 3488.000000000002,
+      "bbox": [
+        [
+          2.0,
+          0.0,
+          6.0
+        ],
+        [
+          40.0,
+          30.0,
+          20.0
+        ]
+      ],
+      "bboxTolerance": 0.08827230596285567,
+      "centroid": [
+        21.0,
+        15.0,
+        11.266666666666667
+      ],
+      "edges": 15,
+      "faceNames": [
+        "F4:copy(0)/F1:face(2)",
+        "F4:copy(0)/F1:face(3)",
+        "F4:copy(0)/F1:face(5)",
+        "F4:copy(0)/F3:cut(6)",
+        "F4:copy(0)/F3:cut(5)",
+        "F4:copy(0)/F3:cut(7)",
+        "F4:cut(1)"
+      ],
+      "faces": 7,
+      "feature": "F4",
+      "kind": "solid",
+      "name": "Upper",
+      "shells": 1,
+      "valid": true,
+      "vertices": 10,
+      "volume": 11400.000000000004
+    }
+  ]
+}
