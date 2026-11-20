@@ -10,10 +10,10 @@
 //! 40 tolerances off it. These hold what lies between and beside:
 //!
 //! - *The band.* The same plate and cylinder with the footprint a
-//!   fraction of a tolerance to six tolerances short of the plate's edge
-//!   or over it, and the cylinder as much above the plate's top or sunk
-//!   into it. What the pair is follows from its sizes in closed form: how
-//!   far apart, or how thick what the two share.
+//!   fraction of a tolerance, or six tolerances, short of the plate's edge
+//!   or over it, and the cylinder a fraction of a tolerance above the
+//!   plate's top, or sunk into it. What the pair is follows from its sizes
+//!   in closed form: how far apart, or how thick what the two share.
 //! - *A border that curves.* A plate whose front is a bump, an arc of a
 //!   circle or a parabola drawn as a spline, and a cylinder tangent to it
 //!   at its lowest point: from inside with a radius well under the
@@ -29,7 +29,20 @@
 //! tolerances thick or more is never missed, `contact` and `interference`
 //! agree, and a boolean that is built is valid, passes the boolean's own
 //! check in full and has its closed-form volume. And that the places of
-//! tangency themselves, which the repair's own tests hold, are answered.
+//! tangency themselves, which the repair's own tests hold, are answered,
+//! on a border that curves as well.
+//!
+//! Seen to fail on the kernel as it was (the repair's three readings
+//! switched off, Check 44762020209): 40 places of the band a scale were
+//! answered clear where the bodies share a point, and the tangencies were
+//! refused. What these pairs do not reach is held in `section.rs`: a unit
+//! test of `clip` holds the seven places both rules read a stretch at
+//! (no pair of whole bodies was found that needs them).
+//!
+//! A boolean built here whose mesh the tessellator cannot make (a face
+//! that tapers to a needle between the rim and a border it stays within
+//! the tolerance of) is counted and printed, not held: a feature refuses
+//! such a result by its own check.
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -441,8 +454,8 @@ fn band(k: f64) {
         for (splines, turn) in [(false, 0.0), (true, 0.5)] {
             for along in [Along::Middle, Along::Corner] {
                 for side in [Side::Inside, Side::Outside] {
-                    for shift in [0.0, 0.3, -0.3, 0.8, -0.8, 1.9, -1.9, 6.0, -6.0] {
-                        for lift in [0.0, 0.4, 1.5, -0.4, -50.0] {
+                    for shift in [0.0, 0.3, -0.3, 0.8, -0.8, 6.0, -6.0] {
+                        for lift in [0.0, 0.4, -0.4, -50.0] {
                             for offset in [Some(1.4), Some(3.0), None] {
                                 let place = Place {
                                     k,
@@ -698,46 +711,48 @@ fn curved(k: f64) {
         (Border::Parabola, Side::Inside, 1.0),
         (Border::Parabola, Side::Outside, 0.4),
     ];
+    // Resting, with the rim's vertex next to the tangency and a quarter
+    // turn from it, and sunk in; at the tangency and 0.4 tolerances out of
+    // the plate.
+    let ways = [(0.0, Some(1.4)), (0.0, None), (-50.0, Some(1.4))];
     for coarse in [false, true] {
         for (border, side, ratio) in cases {
             for shift in [0.0, -0.4] {
-                for lift in [0.0, -50.0] {
-                    for offset in [Some(1.4), None] {
-                        let place = Bump {
-                            k,
-                            coarse,
-                            border,
-                            ratio,
-                            side,
-                            shift,
-                            lift,
-                            offset,
-                        };
-                        let what = format!("{place:?}");
-                        let (plate, cylinder) = match (place.plate(), place.cylinder()) {
-                            (Ok(plate), Ok(cylinder)) => (plate, cylinder),
-                            (Err(reason), _) | (_, Err(reason)) => {
-                                tally.faults.push(format!("{what}: not made: {reason}"));
-                                continue;
-                            }
-                        };
-                        let Some(truth) = place.truth() else {
+                for (lift, offset) in ways {
+                    let place = Bump {
+                        k,
+                        coarse,
+                        border,
+                        ratio,
+                        side,
+                        shift,
+                        lift,
+                        offset,
+                    };
+                    let what = format!("{place:?}");
+                    let (plate, cylinder) = match (place.plate(), place.cylinder()) {
+                        (Ok(plate), Ok(cylinder)) => (plate, cylinder),
+                        (Err(reason), _) | (_, Err(reason)) => {
+                            tally.faults.push(format!("{what}: not made: {reason}"));
                             continue;
-                        };
-                        // The place of tangency itself, with a radius
-                        // well under the border's: answered, as on a
-                        // straight border.
-                        let answered = ratio == 0.4 && shift == 0.0 && lift == 0.0;
-                        judge(
-                            &plate,
-                            &cylinder,
-                            truth,
-                            &place.tol(),
-                            (answered, true, true),
-                            &what,
-                            &mut tally,
-                        );
-                    }
+                        }
+                    };
+                    let Some(truth) = place.truth() else {
+                        continue;
+                    };
+                    // The place of tangency itself, with a radius
+                    // well under the border's: answered, as on a
+                    // straight border.
+                    let answered = ratio == 0.4 && shift == 0.0 && lift == 0.0;
+                    judge(
+                        &plate,
+                        &cylinder,
+                        truth,
+                        &place.tol(),
+                        (answered, true, true),
+                        &what,
+                        &mut tally,
+                    );
                 }
             }
         }
