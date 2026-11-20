@@ -1123,44 +1123,33 @@ fn a_plane_cut_is_held_to_the_volume_below_its_plane() {
 /// The plane cut kind (`plan::Kind::PlaneCut`) on every model of the
 /// repository the matrix runs (the bracket and the four bench models; the
 /// models under `target/work` are not in the repository), in this
-/// process, planned and sampled as `cargo xtask actions` plans them: the
-/// bracket and the rotor whole, the others the 40 faces the bottom-k
-/// sampling picks (the ratchet has no plane cut yet). The kind's own run,
-/// narrower than the whole matrix, which runs every kind in server
-/// processes. Not in the gate (minutes):
+/// process, planned as `cargo xtask actions` plans them but every cell
+/// tried, where the xtask samples 40 per kind on all but the bracket and
+/// the rotor. The kind's own run, narrower than the whole matrix, which
+/// runs every kind in server processes. Not in the gate (minutes):
 /// `cargo test -p craft3d-engine --test action_matrix -- --ignored --nocapture plane_cuts`.
 /// Prints every cell and the refusals by class with their cells; fails on
 /// a crash, a bug, a wrong result or an undo that did not restore.
 #[test]
 #[ignore = "minutes: the plane cut kind on every model of the repository, run on demand"]
 fn plane_cuts_on_the_models_of_the_repository() {
-    let models: [(&str, &str, bool); 5] = [
-        (
-            "bracket",
-            include_str!("action_matrix/bracket.steps.json"),
-            true,
-        ),
-        ("rotor", include_str!("bench_models/rotor.steps.json"), true),
+    let models: [(&str, &str); 5] = [
+        ("bracket", include_str!("action_matrix/bracket.steps.json")),
+        ("rotor", include_str!("bench_models/rotor.steps.json")),
         (
             "impeller-blades",
             include_str!("bench_models/impeller-blades.steps.json"),
-            false,
         ),
         (
             "engine-block",
             include_str!("bench_models/engine-block.steps.json"),
-            false,
         ),
-        (
-            "turbofan",
-            include_str!("bench_models/turbofan.steps.json"),
-            false,
-        ),
+        ("turbofan", include_str!("bench_models/turbofan.steps.json")),
     ];
     let mut failures = Vec::new();
     let mut totals: BTreeMap<&str, usize> = BTreeMap::new();
     let mut classes: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (model, text, every) in models {
+    for (model, text) in models {
         let mut session = built(text);
         let inspect = session.execute("document.inspect", &json!({})).unwrap();
         let unit = plan::length_unit(&inspect);
@@ -1173,8 +1162,7 @@ fn plane_cuts_on_the_models_of_the_repository() {
             actions.extend(plan::plan(&body, &edges, &unit, &[plan::Kind::PlaneCut]));
         }
         let planned = actions.len();
-        let k = if every { None } else { Some(40) };
-        let mut chosen = plan::choose(actions, k, &|_, _| false);
+        let mut chosen = plan::choose(actions, None, &|_, _| false);
         plan::bound_all(&mut call(&mut session), &mut chosen);
         println!("{model}: {} cells of {planned} planned", chosen.len());
         for action in &chosen {

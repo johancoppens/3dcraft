@@ -354,11 +354,12 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - A crossing is never left out on the word of a search that ended short: the nearest point of a spline face whose directions run at speeds millions apart, or whose weights differ a millionfold, is found ([`design/booleans.md`](design/booleans.md) › *A crossing left out*, [`design/geometry.md`](design/geometry.md) › *A foot that ends short*) (2026-11-14 and 2026-11-15)
 - Angles read from sine and cosine together where an `acos` could not tell them apart: a line along a narrow cone's ruling, a plate thickness and the `normal` and `axis` filters to rounding, the cones of normals of nearly flat freeform faces ([`design/booleans.md`](design/booleans.md) › *A line along a ruling of a narrow cone*) (2026-11-14)
 - A body cut by planes in one feature, one side of each kept (`feature.planeCut`, format 78): the plane a base plane, a datum plane, a flat face or a point and a normal; the boolean with a block made from the body's own box, so nothing is sized; the face a plane cuts named by the plane's id, which stays through added, deleted and reordered planes ([`design/plane-cut.md`](design/plane-cut.md)); asked from outside ([issue 3](https://github.com/johancoppens/3dcraft/issues/3)) (2026-11-20)
+- The plane cut exercised by the machines: a step of the random designs (planes in and around a body's box, by a base plane, by a flat face; held to no more volume than the target and, by one plane, to its two sides adding up) and a kind of the action matrix (each flat face's plane moved in, held to `measure.below`) ([`design/plane-cut.md`](design/plane-cut.md) › *As built: the machines*) (2026-11-20)
 
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.
 
-- [ ] A body cut by planes, what is not built yet ([`design/plane-cut.md`](design/plane-cut.md) › *Not built yet*): a sheet as the target, a condition per plane, one plane edited by its id, the fuzzer's step and the action matrix's kind; then, if measured, the planes before a changed one reused and one tool for many planes on a body of thousands of faces
+- [ ] A body cut by planes, what is not built yet ([`design/plane-cut.md`](design/plane-cut.md) › *Not built yet*): a sheet as the target, a condition per plane, one plane edited by its id; then, if measured, the planes before a changed one reused and one tool for many planes on a body of thousands of faces
 
 #### Acceptance
 Oracle 3 on generated inputs; the box-minus-cylinder family exact; the naming suite extended through booleans; no invalid body ever returned (proptest).
@@ -814,6 +815,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-20 | minor | M7: the plane cut exercised by the fuzzer's step and the action matrix's kind, a Done line; the Open line loses the two |
 | 2026-11-20 | minor | The boolean checklist, after the review of that repair: owed, results with a needle face that cannot be meshed, and a touch between one and two tolerances that follows the vertices; thinner lenses not measured at 1 either |
 | 2026-11-20 | minor | The boolean checklist: contact where a curve leaves a face's border next to a vertex repaired; owed behind it the seam of a closed meeting curve left as a vertex, the RC wing's marching stall, and a lens the measure does not take at every scale |
 | 2026-11-20 | minor | The boolean checklist's Owed: a plane that passes a vertex by about half a tolerance is refused as "imprint lost", without its place |

@@ -13,6 +13,14 @@
 //! seeds 3, 10, 12, 13 and 16 give other designs than before that date
 //! (12, 13 and 16 get a screw); all pass. A later failure of one of them
 //! is a regression of the new design, not of the old.
+//!
+//! Since 2026-11-20 a group can be a plane cut, drawn from a stream of its
+//! own: a seed without a cut gives the design it gave before, one with a
+//! cut gives the same up to the cut. Of these seeds 3, 5, 10, 12, 17, 18
+//! and 19 get one (11 cut groups, 6 built, the others leave nothing) and
+//! give other designs from it on; all pass (the build server's fuzz run
+//! 44822853676 of f377b7e4, seeds 0 to 4725). With them the twenty seeds
+//! run 130 groups, 105 accepted, 10 booleans, 8 with their identities.
 
 use craft3d_fuzz::{Deep, Design, Generator, Options, Setup, Steps, Tally, run_design, run_seed};
 use serde_json::json;
@@ -44,6 +52,8 @@ fn fixed_seeds_neither_crash_nor_go_wrong() {
     let mut accepted = 0;
     let mut booleans = 0;
     let mut identities = 0;
+    let mut cuts = Steps::default();
+    let mut sides = 0;
     for seed in SEEDS {
         let (design, runner) = run_seed(setup(seed), options(), &mut |_| {}).expect("runs");
         let report = &runner.report;
@@ -57,7 +67,18 @@ fn fixed_seeds_neither_crash_nor_go_wrong() {
         accepted += report.accepted;
         booleans += report.booleans;
         identities += report.identities_checked;
+        if let Some(n) = report.steps.get("planeCut") {
+            cuts.groups += n.groups;
+            cuts.accepted += n.accepted;
+        }
+        sides += report.cut_sides.checked;
     }
+    // The gate builds plane cuts too, and holds one by one plane to its
+    // two sides.
+    assert!(
+        cuts.groups >= 5 && cuts.accepted >= 3 && sides >= 1,
+        "{cuts:?}, {sides} cuts by one plane held to their sides"
+    );
     // The seeds really build something, and booleans among it.
     assert!(groups >= 100, "{groups} groups");
     assert!(accepted * 2 >= groups, "{accepted} of {groups} accepted");
