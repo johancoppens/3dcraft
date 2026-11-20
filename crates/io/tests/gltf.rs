@@ -157,10 +157,22 @@ fn fixtures() -> Vec<(&'static str, Vec<Part>, Scene)> {
 
 /// The SHA-256 of each pinned file.
 const PINNED: [(&str, &str); 4] = [
-    ("block.glb", "unknown"),
-    ("cylinder.glb", "unknown"),
-    ("two-bodies.glb", "unknown"),
-    ("quarter-round.glb", "unknown"),
+    (
+        "block.glb",
+        "50523d5bf4200c6404e6c9c5124fcf78e73b8ead11e724cd814e4776d02eb97c",
+    ),
+    (
+        "cylinder.glb",
+        "77d755078b6b44fc0b4754a4649cead3c3be99137bbef671045419bd247d5a83",
+    ),
+    (
+        "two-bodies.glb",
+        "7dcd155541b935e73b0bb619a0d425c00f88409fa9c490aa05225d1ca7e5509d",
+    ),
+    (
+        "quarter-round.glb",
+        "0f99db763e0cff8d179759e0810fc687bdef154337b8d11f8f1d212182fc06d4",
+    ),
 ];
 
 /// The string member `key` of an object of `extras`.

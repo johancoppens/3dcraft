@@ -442,8 +442,11 @@ fn freecad_reads_a_needle_cut_along_its_axis_as_a_solid() {
 /// it and at its size, in millimetres and in inches, and a cylinder
 /// tessellated by the kernel with the volume of our own mesh. The proof,
 /// by a reader that is not ours, that the export turns and scales the
-/// model as it says (docs/file-formats.md › glTF). A triangle is a face to
-/// FreeCAD; the volume is summed over them by the divergence theorem.
+/// model as it says (docs/file-formats.md › glTF). FreeCAD 1.1 makes a
+/// node of several primitives an App::Part with a shape per primitive,
+/// named after the node, and joins the triangles that lie in one plane
+/// into a face; the volume is summed over the faces by the divergence
+/// theorem (`tests/gltf_report.py`).
 #[test]
 #[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
 fn freecad_reads_gltf_in_place_and_to_scale() {
@@ -484,7 +487,9 @@ fn freecad_reads_gltf_in_place_and_to_scale() {
         let file = format!("box-{}.glb", unit.as_3mf());
         let report = freecad_reads_gltf(&file, &glb("box", &mesh, unit));
         println!("{file}: {report:?}");
-        assert_eq!(report.faces, 12, "{file}");
+        // A shape per primitive (face group), the two triangles of each
+        // side one plane face.
+        assert_eq!((report.labels.len(), report.faces), (6, 6), "{file}");
         assert!(
             report.labels.iter().any(|l| l == "box"),
             "{file}: {report:?}"
@@ -513,7 +518,9 @@ fn freecad_reads_gltf_in_place_and_to_scale() {
     let welded = mesh.weld().unwrap();
     let report = freecad_reads_gltf("cylinder.glb", &glb("cylinder", &mesh, Unit::Millimeter));
     println!("cylinder.glb: {report:?} against {}", welded.volume());
-    assert_eq!(report.faces, welded.triangles.len());
+    // The wall and the two caps.
+    assert_eq!(report.labels.len(), 3, "{report:?}");
+    assert!(report.faces <= welded.triangles.len());
     assert!(
         close(report.volume, welded.volume()),
         "{} vs {}",

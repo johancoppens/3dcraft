@@ -2,10 +2,14 @@
 # the glTF file named in CRAFT3D_FC_IN with FreeCAD's own glTF reader
 # (Import.insert, Open CASCADE's), which turns glTF's metres and +Y up into
 # FreeCAD's millimetres and +Z up, and writes what it made of it to
-# CRAFT3D_FC_OUT, one key=value per line: the objects' labels, how many faces
-# (one per triangle), their area, the volume they enclose (by the divergence
-# theorem over the faces, each with its outward normal, so that it does not
-# matter how FreeCAD groups them into shells) and their bounding box.
+# CRAFT3D_FC_OUT, one key=value per line: the labels of the shapes it made
+# (FreeCAD 1.1 makes a node with several primitives an App::Part of one
+# Part::Feature per primitive, named after the node), how many faces they
+# have (FreeCAD joins triangles that lie in one plane), their area, the
+# volume they enclose (by the divergence theorem over the faces, each with
+# its outward normal, so that it does not matter how FreeCAD groups them)
+# and their bounding box. The App::Part containers (whose shape repeats
+# their children's) and the planes of their origins are left out.
 import json
 import os
 
@@ -17,8 +21,10 @@ Import.insert(os.environ["CRAFT3D_FC_IN"], doc.Name)
 labels = []
 faces = []
 for obj in doc.Objects:
-    shape = getattr(obj, "Shape", None)
-    if shape is None or shape.isNull() or not shape.Faces:
+    if obj.TypeId != "Part::Feature":
+        continue
+    shape = obj.Shape
+    if shape.isNull() or not shape.Faces:
         continue
     labels.append(obj.Label)
     faces.extend(shape.Faces)

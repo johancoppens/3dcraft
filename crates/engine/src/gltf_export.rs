@@ -169,7 +169,10 @@ pub(crate) fn export(session: &mut Session, p: &Params, path: &str) -> Run {
         if solid {
             closed += 1;
         }
-        let own = looks.index(&body.appearance.unwrap_or(plain), !solid, name);
+        // The body's own look, for the faces without one of their own (when
+        // every face has one, it is in no primitive and not in the file).
+        let own = (body.faces.is_empty() || body.faces.iter().any(Option::is_none))
+            .then(|| looks.index(&body.appearance.unwrap_or(plain), !solid, name));
         let faces: Vec<Option<u32>> = body
             .faces
             .iter()
@@ -185,7 +188,7 @@ pub(crate) fn export(session: &mut Session, p: &Params, path: &str) -> Run {
             mesh: &body.mesh,
             face_names: &face_names,
             face_materials: &faces,
-            material: Some(own),
+            material: own,
             extras: vec![("feature".to_string(), Extra::Text(body.id.to_string()))],
         })
         .map_err(|e| CommandError::new(format!("{ID}: {name}: {e}")))?;
