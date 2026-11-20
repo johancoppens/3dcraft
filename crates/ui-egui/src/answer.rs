@@ -99,8 +99,9 @@ fn verb(label: &str) -> Option<&'static str> {
 /// What went wrong in an answer that is not an error (a feature stored
 /// that fails, a check that found problems): its `status` when that is
 /// not `ok`, its `error`, `ok: false`, and how many `failed`, `errors`,
-/// `problems` and `warnings` it has (a list or a count); nothing when all
-/// is well.
+/// `problems` and `warnings` it has (a list or a count); what an export
+/// left out (bodies; what of their appearance a glTF file cannot show);
+/// nothing when all is well.
 fn trouble(result: &Value) -> String {
     let mut out = String::new();
     let status = result
@@ -158,7 +159,40 @@ fn trouble(result: &Value) -> String {
             out.push_str(&format!(" · {n} {said} {bodies} left out"));
         }
     }
+    // What of the bodies' appearance a glTF file cannot hold: its
+    // `leftOut`, a list of `{layer, bodies}`, in an answer that is glTF's
+    // by its own field `primitives` (`faces` or `looks`, which only
+    // `file.export` to `.glb` answers); a feature's `leftOut` names faces
+    // and edges instead, and another answer's is not said here.
+    let gltf = result.get("primitives").and_then(Value::as_str).is_some();
+    let layers: Vec<&str> = result
+        .get("leftOut")
+        .and_then(Value::as_array)
+        .filter(|_| gltf)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("layer").and_then(Value::as_str))
+                .map(look_layer)
+                .collect()
+        })
+        .unwrap_or_default();
+    if !layers.is_empty() {
+        out.push_str(&format!(" · glTF cannot show: {}", layers.join(", ")));
+    }
     out
+}
+
+/// A layer of a body's appearance a glTF file cannot show, in a person's
+/// words (the guide's): `anisotropy` is the brushing direction.
+fn look_layer(layer: &str) -> &str {
+    match layer {
+        "anisotropy" => "brushing direction",
+        "subsurface" => "subsurface scattering",
+        "pattern" => "solid texture",
+        "volume" => "refraction through thick glass",
+        other => other,
+    }
 }
 
 /// What an answer is about: its `name`, the file of its `path`, or the
@@ -228,6 +262,39 @@ mod tests {
             summary("file.export", &result),
             "Exported part · 2 hidden bodies left out · 1 switched off body left out"
         );
+    }
+
+    /// A glTF export (2026-11-20) says what an STL export says, and what
+    /// of the bodies' appearance the file cannot show, in a person's words;
+    /// its points that fall together in 32 bits are its warnings, counted
+    /// as for STL. Only glTF's answer (its own field `primitives`) is read
+    /// so: another answer's `leftOut`, with layers or with faces and edges,
+    /// is not said.
+    #[test]
+    fn what_a_gltf_file_cannot_show_is_said() {
+        let plain = json!({"path": "/m/bracket.glb", "bodies": 1, "primitives": "faces",
+            "leftOut": []});
+        assert_eq!(summary("file.export", &plain), "Exported bracket");
+        let left_out = json!([{"layer": "anisotropy", "bodies": ["Shade"]},
+                              {"layer": "volume", "bodies": ["Bulb"]},
+                              {"layer": "sheen", "bodies": ["Cord"]}]);
+        let result = json!({"path": "/m/lamp.glb", "bodies": 3, "primitives": "looks",
+            "leftOut": left_out,
+            "mergedPoints": 4, "foldedTriangles": 4,
+            "warnings": ["Base: in the file's 32-bit floats, in metres, 4 of its points fall on others"],
+            "hiddenLeftOut": {"count": 1, "bodies": ["Gauge"]}});
+        assert_eq!(
+            summary("file.export", &result),
+            "Exported lamp · 1 warning · 1 hidden body left out · glTF cannot show: brushing direction, refraction through thick glass, sheen"
+        );
+        // Layers in an answer that is not glTF's (no `primitives`): not
+        // said, whatever the command.
+        let other = json!({"path": "/m/lamp.3mf", "bodies": 3, "leftOut": left_out});
+        assert_eq!(summary("file.export", &other), "Exported lamp");
+        assert_eq!(summary("x.y", &other), "lamp");
+        let feature =
+            json!({"name": "Fillet", "leftOut": [{"name": "F1:edge(3)", "why": "F2 is off"}]});
+        assert_eq!(summary("feature.fillet", &feature), "Fillet");
     }
 
     #[test]

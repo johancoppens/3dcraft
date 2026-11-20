@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated:** 2026-11-20 · **Stage:** R1: 0.1.0 released from the code frozen since 2026-11-05 (tagged on 2026-11-11, published on 2026-11-12), 0.1.1 (2026-11-12), 0.1.2 and 0.1.3 (2026-11-16), its fixes; the freeze ended on 2026-11-13; **0.2.0**, the first version after R1 (notes on the model, measuring and a section you drag in the window, fillets that fade, rounded tips and sheets through grids of points), tagged and published on 2026-11-19 from the workshop's `main`, and 0.2.1, its first fixes, on 2026-11-20 from `release/0.2`; 0.2.x comes from `release/0.2`, the 0.1 line has ended, the public `main` is the latest release; M7 (booleans), M8.5 and M9 in progress, M4 nearly done, M10 and V1 started; M0–M3, M5, M6 and M8 done · **Change:** minor (a body cut by planes in one feature, `feature.planeCut`: M7's Done line, what is left under Open, the current focus; M10: glTF for viewers, a Done line)
+> **Last updated:** 2026-11-20 · **Stage:** R1: 0.1.0 released from the code frozen since 2026-11-05 (tagged on 2026-11-11, published on 2026-11-12), 0.1.1 (2026-11-12), 0.1.2 and 0.1.3 (2026-11-16), its fixes; the freeze ended on 2026-11-13; **0.2.0**, the first version after R1 (notes on the model, measuring and a section you drag in the window, fillets that fade, rounded tips and sheets through grids of points), tagged and published on 2026-11-19 from the workshop's `main`, and 0.2.1, its first fixes, on 2026-11-20 from `release/0.2`; 0.2.x comes from `release/0.2`, the 0.1 line has ended, the public `main` is the latest release; M7 (booleans), M8.5 and M9 in progress, M4 nearly done, M10 and V1 started; M0–M3, M5, M6 and M8 done · **Change:** minor (a body cut by planes in one feature, `feature.planeCut`: M7's Done line, what is left under Open, the current focus; M10: glTF for viewers, a Done line; M10: glTF in the window's export dialog, a Done line)
 
 This is the plan 3DCraft was built by, kept as it was used while it was built: the agents picked their work from *Current focus*, and each milestone's **Done** lines are dated history (what landed on that day, with the workshop's run and commit ids as evidence), its **Open** lists what is still owed. "The developer" is the project's maintainer.
 
@@ -744,9 +744,9 @@ STEP files read into the document as bodies (an `Import` feature), a pinned publ
 - Faces drawn at a very uneven pace (weights a thousandfold apart) meshed on a grid graded to their shape, so such STEP parts are drawn, exported and cut ([`design/tessellator.md`](design/tessellator.md) › *A grid graded to the shape*) (2026-11-16)
 - glTF 2.0 binary (`.glb`) export from `file.export`: the mesh exports' triangles with the surfaces' normals in metres with +Y up, a node per body, a primitive per name of its faces with the name in `extras`, a material per look with the clear coat, transmission and index of refraction in their KHR extensions, what glTF cannot hold listed; checked by Khronos's glTF-Validator, an independent reader against STL and FreeCAD; asked from outside ([issue 3](https://github.com/johancoppens/3dcraft/issues/3); [`file-formats.md`](file-formats.md) › *glTF*) (2026-11-20)
 - glTF for viewers: a primitive per look of each body (`primitives` looks: the published moka pot in 10 draw calls instead of 822, its JSON 7 KB instead of 438), the document's unit and the turn back in `asset.extras`, points that fall together in 32 bits counted, no material nothing uses (2026-11-20)
+- glTF in the window's export dialog, on the desktop and in the browser: the format with the mesh's quality and its *Grouping*, *By face* or *By colour*; the status line names what glTF cannot show; its words after the review's UX pass ([`file-formats.md`](file-formats.md) › *glTF* › *Where*) (2026-11-20)
 
 #### Open
-- [ ] glTF in the window's export dialog (it has `file.export` and `craft3d-cli convert` only), with the UX pass a window feature gets
 - [ ] Share large blobs between undo snapshots instead of copying them: done for imported files (2026-10-21, an `Arc` per file); open for anything else large a document may hold
 - [ ] The tessellator on what such booleans leave (a closed spline face that is everything outside its loops, a ball's face cut along its seam: 77 of 594 results declined, listed by that test)
 - [ ] The measure of a boundary through both poles of a spline surface that also crosses its seam (declined by `topo`)
@@ -814,6 +814,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-20 | minor | M10: glTF in the window's export dialog, a Done line; its Open item taken out |
 | 2026-11-20 | minor | The boolean checklist, after the review of that repair: owed, results with a needle face that cannot be meshed, and a touch between one and two tolerances that follows the vertices; thinner lenses not measured at 1 either |
 | 2026-11-20 | minor | The boolean checklist: contact where a curve leaves a face's border next to a vertex repaired; owed behind it the seam of a closed meeting curve left as a vertex, the RC wing's marching stall, and a lens the measure does not take at every scale |
 | 2026-11-20 | minor | The boolean checklist's Owed: a plane that passes a vertex by about half a tolerance is refused as "imprint lost", without its place |

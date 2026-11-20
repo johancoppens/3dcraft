@@ -10,7 +10,7 @@ other CAD programs and drawings.*
 | STEP (`.step`, `.stp`) | **Import…** (`file.import`) | **Export…** (`file.export`) | Exact solids, units, names, colours; no history. For other CAD programs |
 | FreeCAD (`.FCStd`), BRep (`.brep`) | **Import…** (`file.import`) | no | The finished objects as exact solids, with their names, places and colours; no history |
 | STL, 3MF, OBJ | no | **Export…** | Triangle meshes, for 3D printing and rendering |
-| glTF (`.glb`) | no | `file.export` (not yet in the export dialog) | Triangles with colours, materials and the names of bodies and faces, in metres: for showing a model in a web page, a game engine or a renderer |
+| glTF (`.glb`) | no | **Export…** (`file.export`) | Triangles with colours, materials and the names of bodies and faces, in metres: for showing a model in a web page, a game engine or a renderer |
 | DXF, SVG | no | **Export…** | Flat outlines at true size, for laser cutting; or a drawing of the model as seen |
 
 In the window, the **File** menu does all of this with your system's file dialogs. An agent uses the
@@ -45,9 +45,9 @@ and saving saves your result as a new `.3dcraft`, never over the Jig ([Using a J
 
 | What | Formats | What you get |
 |---|---|---|
-| **All bodies** | STEP, STL, 3MF, OBJ | Every body that is not hidden (the dialog names the hidden ones it leaves out, and so does the status line after the export) |
+| **All bodies** | STEP, STL, 3MF, OBJ, glTF | Every body that is not hidden (the dialog names the hidden ones it leaves out, and so does the status line after the export) |
 | | DXF, SVG | A drawing of the model as seen |
-| **Selection** | STEP, STL, 3MF, OBJ | The selected bodies, hidden or not |
+| **Selection** | STEP, STL, 3MF, OBJ, glTF | The selected bodies, hidden or not |
 | | DXF, SVG | The outlines of the selected flat faces, or of one selected sketch, or the flat pattern of one selected sheet-metal part |
 | **Sheet of set: …** | DXF, SVG | Every flat face of a named set on one sheet (below) |
 | **Flat pattern of …** | DXF, SVG | A sheet-metal part, unfolded ([Sheet metal](sheet-metal.md)) |
@@ -99,8 +99,19 @@ million triangles, all bodies together, is refused: choose a coarser quality.
 the triangles with their colours and finishes (metallic, roughness, a clear coat, glass), each body as a
 node named after its feature and each face's name, in metres with +Y up as glTF wants (3DCraft's +Z
 becomes glTF's +Y, whatever the document's unit). It is for showing a model, not for making it: STEP
-is the exact model, 3MF the one to print. The export dialog does not offer it yet; an agent, a script or
-`craft3d-cli convert part.3dcraft part.glb` writes it:
+is the exact model, 3MF the one to print.
+
+In the export dialog, choose the format **glTF**. It asks for the **Quality**, as the other meshes do,
+and the **Grouping** of the triangles:
+
+| Grouping | For |
+|---|---|
+| **By face** | Each face apart, with its name: for a program that needs to know which triangles are which face; the default |
+| **By colour** | The faces of each body merged by colour, without their names: quicker on a web page, a phone or in a game engine, and usually a smaller file |
+
+The triangles are the same either way. The last choice is offered next time. The status line after the
+export names what of the bodies' appearance glTF cannot show (*glTF cannot show: brushing direction*,
+below). An agent, a script or `craft3d-cli convert part.3dcraft part.glb` writes the same:
 
 ```json
 [
@@ -113,9 +124,10 @@ is the exact model, 3MF the one to print. The export dialog does not offer it ye
 `quality`, `tolerance`, `angle` and `bodies` work as for the other meshes. Each primitive of a body's
 mesh holds the triangles of one face (or of the pieces of one face a cut made) and says the face's name
 in its `extras`, so a program can tell which triangles are which face. For a page shown on phones, take
-`"primitives": "looks"` (`--primitives looks` on the command line): a primitive per colour of each body
-instead of one per face, so a viewer draws a body of a thousand faces in a few calls and the file is
-usually smaller; the triangles are the same, but the faces' names are not in it. What glTF cannot show
+`"primitives": "looks"` (**By colour** in the dialog, `--primitives looks` on the command
+line): a primitive per colour of each body instead of one per face, so a viewer draws a body of a
+thousand faces in a few calls and the file is usually smaller; the triangles are the same, but the
+faces' names are not in it. What glTF cannot show
 (brushing direction, subsurface scattering, solid textures, the refraction through thick glass) is
 left out and listed in the result's `leftOut`; the colour stays. The file says the document's unit and
 how its axes turn (`asset.extras`), and the result counts the points a model far from the origin loses

@@ -18,7 +18,7 @@ use craft3d_engine::{
     SceneQuality, Session, Workspace, measure_checks, scene_begin, scene_bytes, scene_next,
 };
 use craft3d_ui_egui::FileAction;
-use craft3d_ui_egui::files::{ExportFormat, ExportWhat};
+use craft3d_ui_egui::files::{ExportFormat, ExportWhat, GltfPrimitives};
 use craft3d_ui_egui::shell::Shell;
 use serde_json::{Value, json};
 use std::cell::RefCell;
@@ -273,20 +273,22 @@ fn wanted(host: &mut WebHost, what: &ExportWhat, format: ExportFormat) -> Vec<Do
 /// *What* (the model, the selection, a set's sheet, a flat pattern), is
 /// made in the worker: the dialog's choices read there, the file written
 /// there, the same bytes as a page that regenerates itself, the OBJ with
-/// its library; and the page's session never regenerates or meshes.
+/// its library, glTF in either grouping; and the page's session never
+/// regenerates or meshes.
 #[test]
 fn every_export_from_the_menu_is_made_where_the_bodies_are() {
     let bytes = model();
-    let cases = [
-        (ExportWhat::Model, ExportFormat::Step),
-        (ExportWhat::Model, ExportFormat::Stl),
-        (ExportWhat::Model, ExportFormat::ThreeMf),
-        (ExportWhat::Model, ExportFormat::Obj),
-        (ExportWhat::Model, ExportFormat::Dxf),
-        (ExportWhat::Model, ExportFormat::Svg),
-        (ExportWhat::Set("Tops".into()), ExportFormat::Svg),
-        (ExportWhat::SheetMetal("Part".into()), ExportFormat::Dxf),
-    ];
+    // The model in every format the dialog offers (glTF since 2026-11-20:
+    // the list is the dialog's own, so a format added there is made here
+    // too), then a sheet and a pattern.
+    let cases: Vec<(ExportWhat, ExportFormat)> = ExportFormat::ALL
+        .into_iter()
+        .map(|format| (ExportWhat::Model, format))
+        .chain([
+            (ExportWhat::Set("Tops".into()), ExportFormat::Svg),
+            (ExportWhat::SheetMetal("Part".into()), ExportFormat::Dxf),
+        ])
+        .collect();
     for (what, format) in &cases {
         let want = wanted(&mut in_process(&bytes), what, *format);
         assert!(!want.is_empty(), "{what:?} {format:?}");
@@ -298,6 +300,26 @@ fn every_export_from_the_menu_is_made_where_the_bodies_are() {
         assert!(page.host.session.file_names().is_empty());
         assert_eq!(page.host.session.work_here(), work, "{what:?} {format:?}");
     }
+    // glTF grouped by colour (2026-11-20): the choice crosses to the
+    // worker with the rest of the plan, so the page writes what a page
+    // that regenerates itself writes, and not the file grouped by face.
+    let by_face = wanted(
+        &mut in_process(&bytes),
+        &ExportWhat::Model,
+        ExportFormat::Glb,
+    );
+    let mut lighter = in_process(&bytes);
+    lighter.shell.state.export.primitives = GltfPrimitives::Looks;
+    let want = wanted(&mut lighter, &ExportWhat::Model, ExportFormat::Glb);
+    assert_eq!(want.len(), 1);
+    assert_ne!(files(&want), files(&by_face), "grouped otherwise");
+    let mut page = opened(&bytes, false);
+    page.host.shell.state.export.primitives = GltfPrimitives::Looks;
+    let work = page.host.session.work_here();
+    let got = page.export(&ExportWhat::Model, ExportFormat::Glb);
+    assert_eq!(files(&got.downloads), files(&want));
+    assert!(page.host.shell.error_dialog().is_none());
+    assert_eq!(page.host.session.work_here(), work);
     // The selection, chosen by a click (answered by the worker): one body
     // to a mesh holds that body only; a flat face to DXF its outline.
     let face = {

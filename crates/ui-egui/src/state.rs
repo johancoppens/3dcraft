@@ -1511,8 +1511,12 @@ pub struct ExportState {
     pub open: bool,
     pub what: crate::files::ExportWhat,
     pub format: crate::files::ExportFormat,
-    /// A mesh's quality (STL, 3MF, OBJ).
+    /// A mesh's quality (STL, 3MF, OBJ, glTF).
     pub quality: crate::files::ExportQuality,
+    /// How a glTF file groups the triangles: `faces` (the default, not
+    /// written) or `looks` (added 2026-11-20).
+    #[serde(skip_serializing_if = "crate::files::GltfPrimitives::is_default")]
+    pub primitives: crate::files::GltfPrimitives,
     /// A drawing of the model as seen (the model to DXF or SVG).
     pub drawing: crate::files::DrawingPlan,
     /// A sheet's width and the gap between its outlines, as typed (a
@@ -1532,6 +1536,7 @@ impl ExportState {
         crate::files::ExportPlan {
             what: self.what.clone(),
             quality: self.quality,
+            primitives: self.primitives,
             drawing: self.drawing,
             width: self.width.clone(),
             gap: self.gap.clone(),
@@ -2103,6 +2108,10 @@ mod tests {
                 what: crate::files::ExportWhat::SheetMetal("Lid".to_string()),
                 format: crate::files::ExportFormat::Dxf,
                 quality: crate::files::ExportQuality::Fine,
+                // Added with glTF in the dialog (2026-11-20): the default
+                // is not written, so this state's JSON is the one from
+                // before (`gltfs_grouping_is_written_only_when_it_is_not_the_default`).
+                primitives: crate::files::GltfPrimitives::Faces,
                 drawing: crate::files::DrawingPlan {
                     view: crate::files::DrawingView::Top,
                     perspective: false,
@@ -2241,6 +2250,47 @@ mod tests {
         let text = serde_json::to_string(&default).unwrap();
         assert_eq!(serde_json::from_str::<UiState>(&text).unwrap(), default);
         assert_eq!(serde_json::from_str::<UiState>("{}").unwrap(), default);
+    }
+
+    /// How a glTF export groups its triangles (2026-11-20): the default,
+    /// a group per face, is not written, so a state reads as before;
+    /// `looks` is written, read back and set by a patch beside the other
+    /// fields of the export; anything else is refused with nothing
+    /// changed.
+    #[test]
+    fn gltfs_grouping_is_written_only_when_it_is_not_the_default() {
+        use crate::files::GltfPrimitives;
+        let default = serde_json::to_value(UiState::default()).unwrap();
+        assert!(default["export"].get("primitives").is_none(), "{default}");
+        let mut state = UiState::default();
+        state
+            .apply_patch(&json!({"export": {"primitives": "looks", "quality": "fine"}}))
+            .unwrap();
+        assert_eq!(state.export.primitives, GltfPrimitives::Looks);
+        assert_eq!(state.export.quality, crate::files::ExportQuality::Fine);
+        assert_eq!(state.export.plan().primitives, GltfPrimitives::Looks);
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["export"]["primitives"], "looks");
+        assert_eq!(serde_json::from_value::<UiState>(json).unwrap(), state);
+        // Another field set: the grouping stays.
+        state
+            .apply_patch(&json!({"export": {"quality": "coarse"}}))
+            .unwrap();
+        assert_eq!(state.export.primitives, GltfPrimitives::Looks);
+        let before = state.clone();
+        for bad in [json!("bogus"), json!(1), json!(["looks"]), json!(null)] {
+            let error = state
+                .apply_patch(&json!({"export": {"primitives": bad}}))
+                .unwrap_err();
+            assert!(!error.is_empty(), "{bad}");
+            assert_eq!(state, before, "{bad}");
+        }
+        state
+            .apply_patch(&json!({"export": {"primitives": "faces"}}))
+            .unwrap();
+        assert_eq!(state.export.primitives, GltfPrimitives::Faces);
+        let json = serde_json::to_value(&state).unwrap();
+        assert!(json["export"].get("primitives").is_none(), "{json}");
     }
 
     /// What's new (2026-11-14): closed is the default and is not written,
