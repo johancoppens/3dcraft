@@ -819,6 +819,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-21 | minor | The boolean checklist: owed after the review of the marching repair, a surface far larger than the pair's box (eight overlaps no longer told, one told clear); the wing Jig's points confirmed on a build |
 | 2026-11-20 | minor | The boolean checklist: the marching stall where a flat face all but holds a ruling of a lofted skin repaired (a point held to the curve at a shallow crossing); owed behind it, a march onto the curve beside, the RC wing's eighth point, a curved surface along a trough |
 | 2026-11-20 | minor | M10: an Open item, glTF a primitive per look on the wire (measured, the cure the developer's choice) |
 | 2026-11-20 | minor | M10: glTF in the window's export dialog, a Done line; its Open item taken out |

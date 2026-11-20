@@ -3797,8 +3797,10 @@ mod tests {
     }
 
     /// The most evaluations the cylinder's side and the far ball may take
-    /// before the march says it stalled.
-    const EVALUATIONS_OF_THE_STALL: usize = 40_000_000;
+    /// in either box before the march says it stalled: it takes 2 632 and
+    /// 2 428, and took 210 938 in the smaller box while the step's last
+    /// resort took steps that ended off the curve.
+    const EVALUATIONS_OF_THE_STALL: usize = 10_000;
 
     /// A marcher on a trough along y against the plane z = 0: a patch of
     /// degree two by one over x within 1 of `shift` and y in 0..1,
@@ -3893,15 +3895,15 @@ mod tests {
 
     /// A step that ends off the curve is not taken by the step's last
     /// resort either. A cylinder's side and a ball 25 000 times its
-    /// radius sunk 3 tolerances into it, in the room of the cylinder's
-    /// face: the ball's distance is rounded in steps coarser than the
-    /// nearest a point is held to there, so the march ends in its stall
-    /// (owed: docs/design/booleans.md › *A spar's face beside a rib's
-    /// skin* › *Still refused*). It must end there for what the stall
-    /// costs, and not creep on from places off the curve a least step at
-    /// a time, as it did while the last resort took such steps (measured
-    /// on the build server, the evaluations of this one question: with
-    /// the rule and without it).
+    /// radius sunk 3 tolerances into it, asked as a boolean asks them:
+    /// the ball's distance is rounded in steps coarser than the nearest a
+    /// point is held to in the smaller box, so the march ends in its
+    /// stall there (owed: docs/design/booleans.md › *A spar's face beside
+    /// a rib's skin* › *A surface far larger than the box*; in the larger
+    /// box `on` is the floor itself and the march stalls as it did
+    /// before). It must end there for what a stall costs, and not creep
+    /// on from places off the curve a least step at a time, thousands of
+    /// them, to the same stall.
     #[test]
     fn a_step_that_ends_off_the_curve_is_not_taken_by_its_last_resort() {
         let side = Surface::Cylinder(Cylinder::new(Frame::WORLD, 4.0).unwrap());
@@ -3926,7 +3928,7 @@ mod tests {
             let mut m = Marcher::new(chart, field, &within, &tol).unwrap();
             let met = m.solve(&within);
             eprintln!(
-                "COUNT room {room}: {} evaluations, on {:e}, floor {:e}: {:?}",
+                "room {room}: {} evaluations, on {:e}, floor {:e}: {:?}",
                 m.evals,
                 m.on,
                 m.floor,
