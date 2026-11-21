@@ -2483,6 +2483,59 @@ mod tests {
         }
     }
 
+    /// Past [`SPLINE_PIECES`] the nearest point is not found, and is not
+    /// guessed. Turns of a circle as one spline, asked from the centre,
+    /// are the dearest search there is, all of the curve at one distance:
+    /// 16 380 pieces a turn (measured by the review of 2026-11-21, Check
+    /// 44948558534). Four turns are answered; twenty are not, and the
+    /// answer is `None`, not the nearest sample so far. On the curve and
+    /// beside it the twenty turns are answered like any other. Until this
+    /// test nothing held the cap or what is said past it (with the cap
+    /// taken away, or with a sample answered past it, every test passed).
+    #[test]
+    fn a_search_that_runs_out_of_pieces_says_so() {
+        let frame = tilted();
+        let coil = |turns: usize| {
+            let s = std::f64::consts::FRAC_1_SQRT_2;
+            let square = [
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (0.0, 1.0),
+                (-1.0, 1.0),
+                (-1.0, 0.0),
+                (-1.0, -1.0),
+                (0.0, -1.0),
+                (1.0, -1.0),
+            ];
+            let (mut ctrl, mut weights) = (Vec::new(), Vec::new());
+            let mut knots = vec![0.0, 0.0, 0.0];
+            for turn in 0..turns {
+                for (k, &(x, y)) in square.iter().enumerate() {
+                    ctrl.push(frame.point(2.0 * x, 2.0 * y, 0.0));
+                    weights.push(if k % 2 == 0 { 1.0 } else { s });
+                    if k % 2 == 1 {
+                        let at = turn as f64 + (k as f64 + 1.0) / 8.0;
+                        knots.extend([at, at]);
+                    }
+                }
+            }
+            ctrl.push(frame.point(2.0, 0.0, 0.0));
+            weights.push(1.0);
+            knots.push(turns as f64);
+            Curve3::Nurbs(NurbsCurve::new(2, knots, ctrl, weights).unwrap())
+        };
+        let (t, d) = nearest(&coil(4), (0.0, 4.0), frame.origin()).unwrap();
+        assert!((0.0..=4.0).contains(&t), "{t}");
+        assert!((d - 2.0).abs() <= 1e-9, "{d}");
+        let long = coil(20);
+        assert_eq!(nearest(&long, (0.0, 20.0), frame.origin()), None);
+        let (_, d) = nearest(&long, (0.0, 20.0), long.eval(18.3)).unwrap();
+        assert!(d <= 1e-9, "{d}");
+        let (t, d) = nearest(&long, (0.0, 20.0), frame.point(2.2, 0.3, 0.1)).unwrap();
+        assert!((0.0..=20.0).contains(&t), "{t}");
+        assert!((d - 0.2419889987792672).abs() <= 1e-9, "{d}");
+    }
+
     /// Owed (found by the review of 2026-11-21): the search by pieces
     /// stops halving a piece whose box is no wider than `shortest`, which
     /// `nearest_on_spline` hands it as 1e-9 of the curve's length *by its
