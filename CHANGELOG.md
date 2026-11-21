@@ -4,6 +4,12 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Results that changed
+
+What 3DCraft answered before can differ now: a measure, a proof, a check, a body that was built wrong while it looked right, or a body that was built and is now refused. If you relied on one of these, check it again.
+
+- **A plane that lies in a face a part stores turned over is measured, not refused.** `measure.below`, `measure.section`, `measure.levelFor` and `measure.floating`, and the checks `volumeBelow`, `centroidBelow`, `sectionArea`, `sectionCentroid`, `sectionInertia`, `sectionTorsion`, `sectionShearCentre` and `levelFor`, refused a plane lying exactly in the floor of a pocket or a notch, in an inner wall, floor or ceiling of a shelled part, in a flat face of a mirrored part, or in such a face of an imported STEP part, with *"the section of body 0: a face in the plane whose loops enclose no area"*: the volume under a pocket's floor, the fill level of a tank at its inner floor, a body floating with its waterline on such a face. They answer now, by the same rule as for a step on the outside of a part: the volume on that side, and a section that takes in the face lying in the plane together with the cut through the walls around it. Every answer given before is given the same. Where `measure.floating` listed a search under `unfinished` with these words, that search now reaches its equilibrium.
+
 ### Added
 
 - **An MCP bundle in every release.** The release carries one more file, `3dcraft-<version>.mcpb`: an MCP bundle with the command-line program for Linux, macOS (Apple Silicon) and Windows, made for the MCP clients that install such bundles, such as Claude Desktop. It starts 3DCraft without a window, `craft3d-cli mcp`, reading and writing only the work folder you choose when you install it (a folder of its own, such as `3DCraft` in your documents; it is made when it does not exist yet); your AI assistant then models there, and shows you pictures it renders. To watch it build in the window instead, install 3DCraft and connect it as the guide says. `SHA256SUMS.txt` lists the bundle with the other files. It was installed and used in a Linux build of Claude Desktop on 2026-11-20; in Claude Desktop on Windows and macOS it has not been tried. On a Mac with an Intel processor its server does not start: 3DCraft for macOS is built for Apple Silicon only.
