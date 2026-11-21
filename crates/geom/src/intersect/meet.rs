@@ -6,12 +6,13 @@
 
 use super::clip;
 use super::exact::{self, Closed};
-use super::field::{Chart, Field};
+use super::field::{Chart, Field, far_ball};
 use super::march::Marcher;
 use crate::{Curve3, GeomError, Surface};
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// One curve along which two surfaces meet.
@@ -213,6 +214,70 @@ pub(super) fn bounded_marches() -> u64 {
     BOUNDED.with(std::cell::Cell::get)
 }
 
+std::thread_local! {
+    /// The evaluations of the walked surface the marches of this thread
+    /// took, all of them ([`numeric`]).
+    static MARCHED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The evaluations counted for the questions this thread asked
+    /// ([`count_march`]).
+    static ASKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// This thread meets pairs ahead of the thread that will ask them
+    /// ([`ahead_of_the_asker`]), so many times nested.
+    static AHEAD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// The evaluations counted for every numeric intersection asked in this
+/// process ([`march_work`]).
+static MARCH_EVALUATIONS: AtomicU64 = AtomicU64::new(0);
+
+/// What the numeric intersections asked for so far took, in evaluations of
+/// the walked surface (one per place the marcher looks at: a cell, a
+/// corner, a try of a correction, a ring's sample), process-wide: the
+/// count a performance test holds (docs/testing.md › *Performance tests*).
+///
+/// **Counted per question, not per march.** An intersection is marched
+/// once and kept on the shelf with the evaluations it took; every question
+/// counts them, whether it is marched now or found there. So the count is
+/// a function of the questions asked alone: the same whatever was kept
+/// before, and whoever marched it. A thread that meets pairs ahead of the
+/// one that will ask them ([`ahead_of_the_asker`]) counts nothing: how
+/// many pairs it gets to before the asker stops depends on the clock, and
+/// the asker's own question counts each pair it reaches. Pairs with a
+/// closed form are not marched and count nothing.
+pub(super) fn march_work() -> u64 {
+    MARCH_EVALUATIONS.load(AtomicOrdering::Relaxed)
+}
+
+/// [`march_work`] of the questions this thread asked.
+#[cfg(test)]
+fn asked_here() -> u64 {
+    ASKED.try_with(std::cell::Cell::get).unwrap_or(0)
+}
+
+/// Runs `work` as a thread that meets pairs ahead of the thread that will
+/// ask them: the intersections it makes are kept as any other, and are not
+/// counted in [`march_work`] (see there).
+pub(super) fn ahead_of_the_asker<R>(work: impl FnOnce() -> R) -> R {
+    struct Back;
+    impl Drop for Back {
+        fn drop(&mut self) {
+            let _ = AHEAD.try_with(|n| n.set(n.get().saturating_sub(1)));
+        }
+    }
+    let _ = AHEAD.try_with(|n| n.set(n.get().saturating_add(1)));
+    let _back = Back;
+    work()
+}
+
+/// Counts a question answered by a march of `evaluations` evaluations.
+fn count_march(evaluations: u64) {
+    if AHEAD.try_with(std::cell::Cell::get).unwrap_or(0) > 0 {
+        return;
+    }
+    MARCH_EVALUATIONS.fetch_add(evaluations, AtomicOrdering::Relaxed);
+    let _ = ASKED.try_with(|n| n.set(n.get().saturating_add(evaluations)));
+}
+
 fn numeric(
     a: &Surface,
     b: &Surface,
@@ -223,6 +288,27 @@ fn numeric(
         (b, a)
     } else {
         (a, b)
+    };
+    // A ball far larger than the box is not walked where the other
+    // surface is a cone: its points come back rounded at the size of its
+    // centre and radius (a chart of radius 2e4 places a point to 4e-12,
+    // which at a sine of 2e-5 is a fifth of a tolerance of 1e-6 along the
+    // curve), while measured against it is exact to the place
+    // (`field.rs` › `ball_distance`), and the cone's points are computed
+    // from numbers of the box's own size.
+    let (walked, other) = match (walked, other) {
+        (Surface::Sphere(ball), Surface::Cone(_))
+            if within.corners().is_some_and(|(lo, hi)| {
+                far_ball(
+                    ball.frame().origin(),
+                    ball.radius(),
+                    lo.length().max(hi.length()),
+                )
+            }) =>
+        {
+            (other, walked)
+        }
+        pair => pair,
     };
     let field = Field::new(other)?;
     let back = Field::new(walked)?;
@@ -249,7 +335,9 @@ fn numeric(
         {
             marcher = marcher.with_field_chart(edges);
         }
-        marcher.solve(within).map(Some)
+        let solved = marcher.solve(within).map(Some);
+        let _ = MARCHED.try_with(|n| n.set(n.get().saturating_add(marcher.evaluations())));
+        solved
     };
     // Where the cells ran out, once more with the bound that leaves out
     // the cells of surfaces side by side (`Marcher::bounded`).
@@ -325,6 +413,8 @@ struct Kept {
     result: Result<SurfaceMeeting, GeomError>,
     weight: usize,
     units: u64,
+    /// The evaluations marching it took ([`march_work`]).
+    evaluations: u64,
     used: u64,
 }
 
@@ -405,12 +495,15 @@ fn remembered(
     // time, its count kept with it, and a hit charges that count.
     let thing = crate::allowance::number_of(&key);
     let first = crate::allowance::first_time(thing);
-    if let Some((result, units)) = shelf_find(&key) {
+    if let Some((result, units, evaluations)) = shelf_find(&key) {
         if first {
             crate::allowance::charge(units);
         }
+        count_march(evaluations);
         return result;
     }
+    let marched = || MARCHED.try_with(std::cell::Cell::get).unwrap_or(0);
+    let before = marched();
     let (result, units) = if first {
         crate::allowance::measured(|| numeric(a, b, within, tol))
     } else {
@@ -420,21 +513,23 @@ fn remembered(
             0,
         )
     };
+    let evaluations = marched().saturating_sub(before);
+    count_march(evaluations);
     if first && crate::allowance::counting() {
-        shelf_put(key, &result, units);
+        shelf_put(key, &result, units, evaluations);
     }
     result
 }
 
-/// The intersection asked for by `key`, with the work it took, from the
-/// shelf.
-fn shelf_find(key: &str) -> Option<(Result<SurfaceMeeting, GeomError>, u64)> {
+/// The intersection asked for by `key`, with the work and the evaluations
+/// it took, from the shelf.
+fn shelf_find(key: &str) -> Option<(Result<SurfaceMeeting, GeomError>, u64, u64)> {
     let mut guard = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
     let shelf = &mut *guard;
     shelf.clock = shelf.clock.wrapping_add(1);
     let clock = shelf.clock;
     let kept = shelf.by_key.get_mut(key)?;
-    let found = (kept.result.clone(), kept.units);
+    let found = (kept.result.clone(), kept.units, kept.evaluations);
     let before = kept.used;
     kept.used = clock;
     if let Some(name) = shelf.by_use.remove(&before) {
@@ -443,9 +538,14 @@ fn shelf_find(key: &str) -> Option<(Result<SurfaceMeeting, GeomError>, u64)> {
     Some(found)
 }
 
-/// Puts `result` on the shelf with the work it took, letting go of those
-/// asked for longest ago while there is not room.
-fn shelf_put(key: String, result: &Result<SurfaceMeeting, GeomError>, units: u64) {
+/// Puts `result` on the shelf with the work and the evaluations it took,
+/// letting go of those asked for longest ago while there is not room.
+fn shelf_put(
+    key: String,
+    result: &Result<SurfaceMeeting, GeomError>,
+    units: u64,
+    evaluations: u64,
+) {
     let weight = weight(result);
     let bytes = key.len();
     if weight > SHELF_POINTS || bytes > SHELF_BYTES {
@@ -481,6 +581,7 @@ fn shelf_put(key: String, result: &Result<SurfaceMeeting, GeomError>, units: u64
             result: result.clone(),
             weight,
             units,
+            evaluations,
             used,
         },
     );
@@ -538,16 +639,16 @@ mod tests {
         // A boolean of a few hundred faces a side asks tens of thousands
         // of questions; the shelf held 64.
         for n in 0..20_000 {
-            shelf_put(key(n), &none, n as u64);
+            shelf_put(key(n), &none, n as u64, 7);
         }
         for n in (0..20_000).step_by(997) {
-            let (found, units) = shelf_find(&key(n)).unwrap();
+            let (found, units, evaluations) = shelf_find(&key(n)).unwrap();
             assert!(matches!(found, Ok(SurfaceMeeting::None)));
-            assert_eq!(units, n as u64);
+            assert_eq!((units, evaluations), (n as u64, 7));
         }
         // Full: the ones asked for longest ago go first.
         for n in 20_000..20_000 + SHELF_SIZE {
-            shelf_put(key(n), &none, 0);
+            shelf_put(key(n), &none, 0, 0);
         }
         assert!(shelf_find(&key(1)).is_none());
         assert!(shelf_find(&key(20_000 + SHELF_SIZE - 1)).is_some());
@@ -586,5 +687,50 @@ mod tests {
             format!("{:?}", meet_surfaces_numeric(&roof, &ball, &smaller, &tol))
         );
         assert_ne!(format!("{other:?}"), format!("{made:?}"));
+    }
+
+    /// The count of the marcher's work is per question: an intersection
+    /// asked again counts the evaluations its march took again, although
+    /// it is found on the shelf; one met ahead of the asker counts
+    /// nothing, and the asker's question for it counts it whole.
+    #[test]
+    fn a_question_counts_its_march_whether_marched_or_kept_and_not_when_met_ahead() {
+        let roof = |lift: f64| {
+            let mut ctrl = Vec::new();
+            for i in 0..4 {
+                for j in 0..4 {
+                    let (x, y) = (f64::from(i), f64::from(j));
+                    ctrl.push(Vec3::new(x, y, lift + 0.4 * (1.1 * x - 0.9 * y).psin()));
+                }
+            }
+            Surface::Bezier(BezierPatch::new(3, 3, ctrl).unwrap())
+        };
+        let ball = Surface::Sphere(
+            Sphere::new(Frame::WORLD.at(Vec3::new(1.4, 1.6, 0.3)).unwrap(), 0.9).unwrap(),
+        );
+        let within = Bbox3::from_points([Vec3::new(-1.0, -1.0, -2.0), Vec3::new(4.0, 4.0, 2.0)]);
+        let tol = Tolerance::default();
+        // (Surfaces of this test alone: nothing else puts them on the shelf.)
+        let (first, second) = (roof(0.0137), roof(0.0291));
+        let start = asked_here();
+        let made = meet_surfaces(&first, &ball, &within, &tol);
+        assert!(matches!(&made, Ok(SurfaceMeeting::Meets(m)) if !m.curves.is_empty()));
+        let marched = asked_here() - start;
+        assert!(marched > 100, "{marched}");
+        // Asked again, either way round: found on the shelf, counted again.
+        let _ = meet_surfaces(&ball, &first, &within, &tol);
+        assert_eq!(asked_here() - start, 2 * marched);
+        // Met ahead: kept, not counted; the asker's question counts it.
+        let before = asked_here();
+        let ahead = ahead_of_the_asker(|| meet_surfaces(&second, &ball, &within, &tol));
+        assert_eq!(asked_here(), before);
+        let asked = meet_surfaces(&second, &ball, &within, &tol);
+        assert_eq!(format!("{asked:?}"), format!("{ahead:?}"));
+        assert!(asked_here() - before > 100);
+        // A pair with a closed form is not marched.
+        let plane = Surface::Plane(crate::Plane::new(Frame::WORLD));
+        let before = asked_here();
+        let _ = meet_surfaces(&plane, &ball, &within, &tol);
+        assert_eq!(asked_here(), before);
     }
 }

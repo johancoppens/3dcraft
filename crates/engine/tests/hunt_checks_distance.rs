@@ -39,20 +39,18 @@
 //! (`HUNT_CASES` cases per kind, default 120) and prints every case that is
 //! not right. Cases found wrong are pinned in [`KNOWN`] with what is wrong
 //! (none at present: the ten a cone's face that holds its apex gave were
-//! repaired on 2026-11-14). Known wrong and pinned in tests of their own,
-//! which fail when it is mended: the distance of faces that cross at a
+//! repaired on 2026-11-14). Known wrong and pinned in a test of its own,
+//! which fails when it is mended: the distance of faces that cross at a
 //! shallow angle is not 0
-//! (`a_big_ball_sunk_into_a_block_is_given_a_distance_known`), and a ball
-//! of radius 20 000 sunk 5 tolerances into a cone's side is answered clear
-//! (`a_ball_of_twenty_thousand_sunk_five_tolerances_into_a_cone_is_answered_clear_known`).
+//! (`a_big_ball_sunk_into_a_block_is_given_a_distance_known`).
 //! A ball of radius 10 000 sunk a few tolerances into a cone's or a
 //! cylinder's side was answered clear until 2026-11-20 and is held to the
 //! overlap (`a_huge_ball_sunk_a_few_tolerances_into_a_side_overlaps`),
 //! and to what it is on both sides of zero
 //! (`a_huge_ball_by_a_side_is_clear_touching_or_overlapping_as_it_lies`);
-//! eight larger balls that are not told since then are owed
-//! (`a_ball_tens_of_thousands_of_times_the_body_sunk_into_a_side_overlaps`,
-//! ignored).
+//! nine larger balls, one answered clear and eight not told between
+//! 2026-11-20 and 2026-11-21, are held to the overlap
+//! (`a_ball_tens_of_thousands_of_times_the_body_sunk_into_a_side_overlaps`).
 
 #![allow(
     clippy::unwrap_used,
@@ -2340,56 +2338,33 @@ fn by_the_side(cone: bool, rb: f64, depth: f64) -> (Step, V) {
 }
 
 /// Found by the review of the repair of the shallow crossing (2026-11-20),
-/// known wrong: **a ball of radius 20 000 sunk 5 tolerances into the
-/// cone's side is answered clear** (5.56e-7, `atLeast` 0), where it was an
-/// overlap before the repair (which answered clear at 4.5 and at 6
-/// tolerances: the answer is unsteady there on both). Nothing false is
-/// proven, but the status is false. The ball of 10 000 is held to the
-/// truth above; from 20 000 up the nearest a marched point is asked to the
-/// other surface (`Marcher::held`, down to `64 ε` of the pair's box) is
-/// finer than the rounding of a distance to a centre that far away
-/// (docs/design/verification.md › *Answered clear though sharing volume*).
-/// When it is mended this test fails: make it the right answer, an
-/// overlap.
+/// right since 2026-11-21: **a ball tens of thousands of times the body,
+/// sunk a few tolerances into its side, overlaps.** Nine pairs: a ball of
+/// 20 000 sunk 5 tolerances into the cone's side, which that repair
+/// answered *clear* (5.56e-7, `atLeast` 0) where it was an overlap before
+/// (this test held that wrong answer, and failed when it changed, as it
+/// was written to); and eight, balls of 30 000 to 200 000 sunk 3 to 50
+/// tolerances into the cone's side or the cylinder's wall, that were
+/// told to overlap before that repair and could not be told since
+/// ("marching an intersection curve stalled"). Each shares volume with
+/// the body by its closed form (the placement), so an overlap is the
+/// truth.
+///
+/// The wrong answer was a march that passed its own start and went round
+/// the thin loop a second time before it closed: one closed curve twice
+/// round, which divides nothing. The stalls were points held nearer the
+/// ball than its distance, the difference of two numbers of 1e5, could be
+/// told. A far ball's distance is now taken without that loss, a point is
+/// held as near as rounding leaves at its own place, and a cone is walked
+/// rather than a far ball (docs/design/booleans.md › *A surface far larger
+/// than the box*; the sweep itself, both sides of zero, is
+/// `crates/geom/tests/meet_far.rs`).
 #[test]
-fn a_ball_of_twenty_thousand_sunk_five_tolerances_into_a_cone_is_answered_clear_known() {
-    let tol = 1e-6;
-    let rb = 20_000.0;
-    let (body, centre) = by_the_side(true, rb, 5.0 * tol);
-    let mut s = document(1.0);
-    build(&mut s, &[body, sphere("B", rb, centre)]).unwrap();
-    let Ran::Ok(clear) = run(
-        &mut s,
-        "measure.clearance",
-        &json!({"from": "A", "to": "B"}),
-    ) else {
-        panic!("no clearance");
-    };
-    // Never a proof above the truth, known or not.
-    let at_least = clear["atLeast"].as_f64().unwrap_or(0.0);
-    assert!(at_least <= 0.0, "proven {at_least:e} apart: {clear}");
-    assert!(
-        clear["pairs"][0]["status"] == "clear",
-        "answered otherwise now: {clear}: if an overlap, it is mended; make this the right answer"
-    );
-}
-
-/// Owed, found by the same review: eight pairs that were told to overlap
-/// before the repair of the shallow crossing and are not told since
-/// (`measure.clearance` cannot tell, `document.interference` answers
-/// *unknown*: "marching an intersection curve stalled"): balls of 30 000
-/// to 200 000 sunk 3 to 50 tolerances into the cone's side or the
-/// cylinder's wall. A step of the march must end as near the other
-/// surface as `Marcher::held` asks, which there is nearer than the
-/// distance to a centre so far away can be told; no step does, however
-/// short. Each shares volume with the body by its closed form (the
-/// placement), so an overlap is the truth.
-#[test]
-#[ignore = "owed: a ball thousands of times the body, a few tolerances in, is not told since the shallow crossing's repair"]
 fn a_ball_tens_of_thousands_of_times_the_body_sunk_into_a_side_overlaps() {
     let tol = 1e-6;
     let mut failed = Vec::new();
-    for (cone, rb, sunk) in [
+    let pairs = [
+        (true, 2e4, 5.0),
         (true, 3e4, 3.0),
         (true, 5e4, 3.0),
         (true, 7e4, 20.0),
@@ -2398,7 +2373,8 @@ fn a_ball_tens_of_thousands_of_times_the_body_sunk_into_a_side_overlaps() {
         (true, 1e5, 50.0),
         (true, 2e5, 50.0),
         (false, 1e5, 20.0),
-    ] {
+    ];
+    for (cone, rb, sunk) in pairs {
         let (body, centre) = by_the_side(cone, rb, sunk * tol);
         let mut s = document(1.0);
         build(&mut s, &[body, sphere("B", rb, centre)]).unwrap();
@@ -2407,7 +2383,12 @@ fn a_ball_tens_of_thousands_of_times_the_body_sunk_into_a_side_overlaps() {
             "measure.clearance",
             &json!({"from": "A", "to": "B"}),
         ) {
-            Ran::Ok(clear) => clear["pairs"][0]["status"].to_string(),
+            Ran::Ok(clear) => {
+                // Never a proof above the truth.
+                let at_least = clear["atLeast"].as_f64().unwrap_or(0.0);
+                assert!(at_least <= 0.0, "proven {at_least:e} apart: {clear}");
+                clear["pairs"][0]["status"].to_string()
+            }
             Ran::Err(e) => e,
             Ran::Panic(e) => panic!("{e}"),
         };
@@ -2420,8 +2401,284 @@ fn a_ball_tens_of_thousands_of_times_the_body_sunk_into_a_side_overlaps() {
     }
     assert!(
         failed.is_empty(),
-        "{} of 8 not told to overlap:\n{}",
+        "{} of {} not told to overlap:\n{}",
+        failed.len(),
+        pairs.len(),
+        failed.join("\n")
+    );
+}
+
+// ----- far from the origin, and by a cylinder far larger than the part ---------
+
+/// One outline of the lofted body: a rectangle 100 by 10 whose lower side
+/// is a spline that dips 3, scaled by `k` about its middle, in a sketch
+/// `offset` up.
+fn outline(name: &str, offset: f64, k: f64) -> Vec<Step> {
+    let at = |x: f64, y: f64| json!([50.0 + (x - 50.0) * k, y * k]);
+    vec![
+        (
+            "sketch.create",
+            json!({"name": name, "plane": "xy", "offset": offset}),
+        ),
+        (
+            "sketch.polyline",
+            json!({"sketch": name, "points": [at(0.0, 0.0), at(0.0, 10.0), at(100.0, 10.0), at(100.0, 0.0)]}),
+        ),
+        (
+            "sketch.spline",
+            json!({"sketch": name, "through": ["e4", at(75.0, -2.2), at(60.0, -2.9), at(50.0, -3.0), at(40.0, -2.9), at(25.0, -2.2), "e1"]}),
+        ),
+    ]
+}
+
+/// What two bodies `A` and `B` are told to be by `measure.clearance` and
+/// by `document.interference`, and the volume of `A` less `B`: each the
+/// answer, or the refusal.
+fn told(s: &mut craft3d_engine::Session) -> (String, String, Result<f64, String>) {
+    let status = |ran: Ran| match ran {
+        Ran::Ok(out) => {
+            let pair = &out["pairs"][0];
+            match pair["reason"].as_str() {
+                Some(reason) => format!(
+                    "{} ({})",
+                    pair["status"].as_str().unwrap_or("?"),
+                    reason.chars().take(150).collect::<String>()
+                ),
+                None => pair["status"].as_str().unwrap_or("?").to_string(),
+            }
+        }
+        Ran::Err(e) => format!("refused: {}", e.chars().take(150).collect::<String>()),
+        Ran::Panic(e) => panic!("{e}"),
+    };
+    let clearance = status(run(
+        s,
+        "measure.clearance",
+        &json!({"from": "A", "to": "B"}),
+    ));
+    let interference = status(run(
+        s,
+        "document.interference",
+        &json!({"pairs": [["A", "B"]]}),
+    ));
+    let cut = run(
+        s,
+        "feature.boolean",
+        &json!({"op": "subtract", "target": "A", "tool": "B", "name": "Cut"}),
+    );
+    let volume = match run(
+        s,
+        "document.measure",
+        &json!({"feature": "Cut", "inertia": false}),
+    ) {
+        Ran::Ok(out) => out["volume"]
+            .as_f64()
+            .ok_or_else(|| format!("no volume: {out}")),
+        Ran::Err(e) => Err(format!(
+            "{}; the subtract: {}",
+            e.chars().take(100).collect::<String>(),
+            match cut {
+                Ran::Ok(out) => out.to_string().chars().take(200).collect::<String>(),
+                Ran::Err(e) => e.chars().take(200).collect(),
+                Ran::Panic(e) => panic!("{e}"),
+            }
+        )),
+        Ran::Panic(e) => panic!("{e}"),
+    };
+    (clearance, interference, volume)
+}
+
+/// Found by the review of the floor's round (2026-11-21): **ordinary
+/// bodies far from the origin are answered as at the origin.** Eight
+/// pairs of bodies of tens of millimetres that overlap (flat, round and
+/// lofted faces; three of them a ball sunk 0.0001 to 0.01 into a
+/// cylinder's side, crossing it at a sine of 0.005 to 0.05), built at the
+/// origin and moved 1 m to 1.3 km from it along (0.6, 0.64, 0.48), at the
+/// default tolerance of a millionth of a millimetre: at every distance
+/// `measure.clearance` and `document.interference` say overlap and the
+/// subtract has the volume it has at the origin.
+///
+/// That round judged every place by 64 units of rounding at the place's
+/// size and the surfaces' together: a million out the pairs were refused
+/// outright ("the box has no size, or the tolerance is finer than
+/// rounding allows at its size"; the sum of two surfaces' numbers read as
+/// twice the box's), and from 100 m out the balls sunk 0.0001 and 0.001
+/// were refused as not placed, where rounding leaves a hundredth of a
+/// tolerance along the curve. A part far from the origin is under the
+/// box's own rule alone, as it always was
+/// (docs/design/booleans.md › *A surface far larger than the box*).
+#[test]
+fn ordinary_bodies_far_from_the_origin_are_answered_as_at_the_origin() {
+    let z = V::new(0.0, 0.0, 1.0);
+    let post = || cylinder("A0", 10.0, 60.0, V::new(0.0, 0.0, -30.0), z);
+    let slab = || block("A0", V::new(40.0, 30.0, 20.0), V::new(-20.0, -15.0, -10.0));
+    let mut lofted = outline("Root", 0.0, 1.0);
+    lofted.extend(outline("Tip", 200.0, 0.7));
+    lofted.push((
+        "feature.loft",
+        json!({"sections": ["Root", "Tip"], "name": "A0"}),
+    ));
+    lofted.push(block(
+        "B0",
+        V::new(30.0, 30.0, 40.0),
+        V::new(35.0, -12.0, 80.0),
+    ));
+    let pairs: Vec<(&str, Vec<Step>)> = vec![
+        (
+            "a cylinder through a block",
+            vec![
+                slab(),
+                cylinder("B0", 6.0, 60.0, V::new(3.0, 2.0, -30.0), z),
+            ],
+        ),
+        (
+            "a sphere in a block",
+            vec![slab(), sphere("B0", 12.0, V::new(14.0, 3.0, 4.0))],
+        ),
+        ("a lofted body against a block", lofted),
+        (
+            "a cylinder across a cylinder",
+            vec![
+                post(),
+                cylinder(
+                    "B0",
+                    6.0,
+                    60.0,
+                    V::new(-30.0, 3.0, 2.0),
+                    V::new(1.0, 0.2, 0.1),
+                ),
+            ],
+        ),
+        (
+            "a sphere in a cylinder's side",
+            vec![post(), sphere("B0", 7.0, V::new(11.0, 2.0, 3.0))],
+        ),
+        (
+            "a sphere sunk 1e-4 into a cylinder's side",
+            vec![post(), sphere("B0", 7.0, V::new(17.0 - 1e-4, 0.0, 3.0))],
+        ),
+        (
+            "a sphere sunk 1e-3 into a cylinder's side",
+            vec![post(), sphere("B0", 7.0, V::new(17.0 - 1e-3, 0.0, 3.0))],
+        ),
+        (
+            "a sphere sunk 1e-2 into a cylinder's side",
+            vec![post(), sphere("B0", 7.0, V::new(17.0 - 1e-2, 0.0, 3.0))],
+        ),
+    ];
+    let mut failed = Vec::new();
+    for (what, steps) in &pairs {
+        let mut at_the_origin: Option<f64> = None;
+        for d in [0.0, 1e3, 1e4, 1e5, 3e5, 5e5, 6.5e5, 7e5, 1e6, 1.3e6] {
+            let shift = V::new(0.6 * d, 0.64 * d, 0.48 * d);
+            let moved = |source: &str, name: &str| -> Step {
+                (
+                    "feature.transform",
+                    json!({"source": source, "name": name, "angle": "0 deg", "axis": [0, 0, 1], "translate": mm3(shift)}),
+                )
+            };
+            let mut s = document(1.0);
+            let mut all = steps.clone();
+            all.push(moved("A0", "A"));
+            all.push(moved("B0", "B"));
+            if let Err(e) = build(&mut s, &all) {
+                failed.push(format!("{what} at {d:e}: not built: {e:?}"));
+                continue;
+            }
+            let (clearance, interference, volume) = told(&mut s);
+            println!("FAR {what} | {d:e} | {clearance} | {interference} | {volume:?}");
+            let same = match (&volume, at_the_origin) {
+                (Ok(v), None) => {
+                    at_the_origin = Some(*v);
+                    true
+                }
+                (Ok(v), Some(v0)) => (v - v0).abs() <= 1e-7 * v0,
+                (Err(_), _) => false,
+            };
+            if !(clearance == "overlap" && interference == "overlap" && same) {
+                failed.push(format!(
+                    "{what} at {d:e}: clearance {clearance}; interference {interference}; the subtract's volume {volume:?}, at the origin {at_the_origin:?}"
+                ));
+            }
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "{} rows not as at the origin:\n{}",
         failed.len(),
         failed.join("\n")
     );
+}
+
+/// Found by the same review: **a small part in the wall of a cylinder of
+/// a million or two is answered.** A ball of 5 half in the wall of a
+/// cylinder of radius 1e6 and of 2e6, and a cylinder of 5 through the wall
+/// of one of 1e6 askew (the wall through the origin, the tolerance a
+/// millionth): `measure.clearance` says overlap and the subtract builds,
+/// with the big cylinder's volume (what the part takes out is a
+/// trillionth of it and less: the volume tells that a body of the right
+/// size was built, not the lens; the curve itself is held in closed form
+/// by `crates/geom/tests/meet_far.rs`). That round refused all three
+/// outright, "the box has no size, or the tolerance is finer than
+/// rounding allows at its size", for the cylinder's own numbers; the box
+/// was fine. And a ball sunk 1e-5 to 0.01 into the same wall from outside
+/// is told to overlap or not told, never clear or touching.
+#[test]
+fn a_small_part_in_the_wall_of_a_cylinder_of_a_million_is_answered() {
+    let z = V::new(0.0, 0.0, 1.0);
+    let wall = |r: f64| cylinder("A", r, 60.0, V::new(-r, 0.0, -30.0), z);
+    let mut failed = Vec::new();
+    let steep: [(&str, f64, Step); 3] = [
+        (
+            "a ball half in the wall",
+            1e6,
+            sphere("B", 5.0, V::new(0.0, 1.0, 2.0)),
+        ),
+        (
+            "a ball half in the wall",
+            2e6,
+            sphere("B", 5.0, V::new(0.0, 1.0, 2.0)),
+        ),
+        (
+            "a cylinder through the wall",
+            1e6,
+            cylinder(
+                "B",
+                5.0,
+                40.0,
+                V::new(-20.0, 1.0, 2.0),
+                V::new(1.0, 0.1, 0.2),
+            ),
+        ),
+    ];
+    for (what, r, part) in steep {
+        let mut s = document(1.0);
+        build(&mut s, &[wall(r), part]).unwrap();
+        let (clearance, interference, volume) = told(&mut s);
+        println!("WALL {what} of {r:e} | {clearance} | {interference} | {volume:?}");
+        let whole = PI * r * r * 60.0;
+        let built = volume
+            .as_ref()
+            .is_ok_and(|v| (v - whole).abs() <= 1e-9 * whole);
+        if !(clearance == "overlap" && built) {
+            failed.push(format!(
+                "{what} of {r:e}: clearance {clearance}; the subtract's volume {volume:?}, the cylinder's {whole}"
+            ));
+        }
+    }
+    for sunk in [1e-2, 1e-3, 1e-4, 1e-5] {
+        let mut s = document(1.0);
+        build(
+            &mut s,
+            &[wall(1e6), sphere("B", 5.0, V::new(5.0 - sunk, 1.0, 2.0))],
+        )
+        .unwrap();
+        let (clearance, interference, _) = told(&mut s);
+        println!("WALL a ball sunk {sunk:e} | {clearance} | {interference}");
+        for said in [&clearance, &interference] {
+            if said == "clear" || said == "touch" {
+                failed.push(format!("a ball sunk {sunk:e} into the wall: {said}"));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
 }

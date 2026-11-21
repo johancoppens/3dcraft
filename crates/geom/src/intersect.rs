@@ -45,6 +45,25 @@ pub fn bounded_marches() -> u64 {
     meet::bounded_marches()
 }
 
+/// What the numeric intersections asked for so far took, process-wide, in
+/// evaluations of the walked surface: counted per question, whether it
+/// was marched or found among those kept, so the count is a function of
+/// the questions alone (a performance test holds it: docs/testing.md ›
+/// *Performance tests*). Pairs with a closed form count nothing.
+pub fn march_work() -> u64 {
+    meet::march_work()
+}
+
+/// Runs `work` as a thread that meets pairs ahead of the thread that will
+/// ask them (`craft3d_kernel`'s section does, for its freeform pairs): the
+/// intersections it makes are kept as any other and are not counted in
+/// [`march_work`], where the asker's own question counts each pair it
+/// reaches. How many pairs such a thread gets to before the asker stops
+/// depends on the clock; the count must not.
+pub fn ahead_of_the_asker<R>(work: impl FnOnce() -> R) -> R {
+    meet::ahead_of_the_asker(work)
+}
+
 /// How many intersections, projectors and pieces of surfaces are kept.
 pub fn kept() -> usize {
     meet::shelf_len().saturating_add(field::shelves_len())

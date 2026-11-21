@@ -108,6 +108,7 @@ fn snapshot() -> Counts {
         ("boolean_edge_candidates", kernel.edge_candidates),
         ("patch_trees", kernel.patch_trees),
         ("blend_sections", kernel.blend_sections),
+        ("march_evaluations", craft3d_geom::intersect::march_work()),
         ("mass_faces", faces_integrated),
         ("mass_evaluations", mass_evaluations),
         ("meshes", meshes),
