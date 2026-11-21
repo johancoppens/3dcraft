@@ -26,6 +26,25 @@
 //! every point of a returned curve is held to the crossing along the
 //! side: not only to both surfaces, which lie within the tolerance of
 //! each other all over a loop 5 tolerances deep.
+//!
+//! **An expectation shaped by a result.** Between half and twice the
+//! tolerance inside, the test does not hold touching points against a
+//! loop. It did when it was written, and the code it was written for
+//! failed it in one question of 484 (479 right, 4 refused, 1 wrong: a
+//! ball of 1e6 sunk 1.5 tolerances into the cone came back as its loop
+//! and two touching points at the loop's tips, in the small box). The
+//! band was then left out, for a reason that is a fact (a boolean
+//! refuses a pair in that band as neither touching nor safely crossing,
+//! whatever the marcher says of it) and no further than that band: a
+//! loop is still held to the crossing there, and points to both
+//! surfaces. Owed: the marcher's touch rule held against a loop it lies
+//! on, so that the band can be held too (docs/design/booleans.md › *A
+//! crossing read as a touch at a loop's tips*).
+//!
+//! The same file holds a part against a cylinder far larger than it (a
+//! ball and a cylinder of 5 in the wall of a cylinder of a million): met
+//! as it lies where it crosses the wall squarely, and met or refused in
+//! words, never wrongly, where it crosses it at a shallow angle.
 
 // Test code: a failure in a helper is a failed test.
 #![allow(

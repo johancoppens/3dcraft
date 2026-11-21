@@ -4122,6 +4122,35 @@ mod tests {
         assert!(out.on > 1e-8 && out.on < 0.02e-6, "{:e}", out.on);
     }
 
+    /// Two ordinary surfaces a million from the origin are not a far
+    /// surface. A cylinder of 40 and one of 6 across its wall, in a box of
+    /// 2 at that place: each has numbers of a million, as the box has, and
+    /// a place where they cross at a sine of 1e-3 stands, under the box's
+    /// own rule. (Their numbers summed are two million, twice the box's:
+    /// read so, the pair was a far surface, and the place was refused.)
+    #[test]
+    fn two_ordinary_surfaces_a_million_from_the_origin_are_not_a_far_surface() {
+        let at = Vec3::new(6e5, 6.4e5, 4.8e5);
+        let towards = Vec3::new(-0.6, -0.64, 0.0).normalized().unwrap();
+        let on_the_wall = at + towards * 40.0;
+        let side = Surface::Cylinder(Cylinder::new(Frame::WORLD.at(at).unwrap(), 40.0).unwrap());
+        let across = Frame::new(on_the_wall, Vec3::X, Vec3::Y).unwrap();
+        let other = Surface::Cylinder(Cylinder::new(across, 6.0).unwrap());
+        let tol = Tolerance::new(1e-6, 1e-9).unwrap();
+        let pad = Vec3::new(1.0, 1.0, 1.0);
+        let within = Bbox3::from_points([on_the_wall - pad, on_the_wall + pad]);
+        let field = Field::new(&other).unwrap();
+        let chart = Chart::new(&side, &within, &tol, &field).unwrap().unwrap();
+        let m = Marcher::new(chart, field, &within, &tol).unwrap();
+        assert!(m.reach > 1e6 && m.reach < 1.001e6, "{:e}", m.reach);
+        assert!(!m.far);
+        let e = Eval {
+            p: on_the_wall,
+            ..crossing_at(4.0, 1e-3)
+        };
+        assert!(m.placed(&e));
+    }
+
     /// A march closes on its start within the room its points have: each
     /// may be half a tolerance from the curve. A start 0.9 of a tolerance
     /// beside a step of two tolerances is the start come back to (it was
