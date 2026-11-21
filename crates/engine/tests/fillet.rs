@@ -600,6 +600,63 @@ fn a_radius_too_large_names_the_edge_the_face_and_what_fits() {
     }
 }
 
+/// The rim of a pocket that ends in a ramp (`ramp_pocket`: 10 long, the
+/// wall below it 3 high), filleted with radii from 0.25 to 30. Below 3
+/// the fillet is built, and it is the closed form: across the rim the
+/// corner's spandrel R (u along the top, w down the wall, outside the
+/// ball's circle about (r, r)) is taken from the square end at y = 5 to
+/// the ramp's plane, which it meets at y = 15 − u − w, so
+/// `10 · area(R) − 2 ∫∫_R u = 10 r² (1 − π/4) − 2 r³ (5/6 − π/4)` goes.
+/// From 3 on it is too large, with 3 as the largest that fits, at every
+/// radius tried: also from 10 / (2 − √2) = 17.0711 on, from which the
+/// ramp's plane leaves nothing of the tool's fillet face (the middle of
+/// its arc, u + w = (2 − √2) r, is the nearest the rim). There the fillet
+/// failed with a bug's words, "the fillet lost track of an entity", until
+/// 2026-11-21 (the chamfer's random designs, on `main`).
+#[test]
+fn a_fillet_that_ends_in_a_slanted_plane_is_built_or_too_large_at_every_radius() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        let rim = ramp_pocket(&mut s, k);
+        let (top, wall) = (rim[0].as_str().unwrap(), rim[1].as_str().unwrap());
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [rim], "radius": 0.25 * k, "name": "Round"}),
+        );
+        let gone = |r: f64| 10.0 * r * r * SPANDREL - 2.0 * r * r * r * (5.0 / 6.0 - PI / 4.0);
+        assert_solid(&mut s, "Round", 5595.0 - gone(0.25), None, k);
+        for r in [1.0, 2.0, 2.999, 3.0, 3.001, 10.0, 17.07, 17.08, 20.0, 30.0] {
+            let params = json!({"feature": "Round", "radius": r * k});
+            if r < 3.0 {
+                built(&mut s, "feature.edit", params);
+                assert_solid(&mut s, "Round", 5595.0 - gone(r), None, k);
+                continue;
+            }
+            let reason = failed(&mut s, "feature.edit", params);
+            assert!(!reason.contains(craft3d_engine::BUG), "{k} {r}: {reason}");
+            assert!(
+                reason.starts_with(&format!(
+                    "radius: too large for edges.0 (between {top} and {wall}): with a radius of "
+                )),
+                "{k} {r}: {reason}"
+            );
+            assert!(
+                reason.contains(&format!("touches the face {wall} leaves that face")),
+                "{k} {r}: {reason}"
+            );
+            assert!(
+                reason.ends_with(&format!(
+                    "the largest radius that fits there is below {} mm",
+                    3.0 * k
+                )),
+                "{k} {r}: {reason}"
+            );
+        }
+    }
+}
+
 #[test]
 fn bad_parameters_are_errors_and_what_is_not_built_says_its_kind() {
     let mut s = session();
