@@ -5,7 +5,10 @@
 //! its own check refused it, so nothing invalid was handed on, but a cut
 //! that should build was refused as an internal failure. Here each seed's
 //! own commands, and each reduced to the least that showed it, through the
-//! commands at three scales and held to closed forms. The kernel's side is
+//! commands at three scales and held to closed forms; and, after the
+//! review of 2026-11-21, the second seed's cut where its touch is exact
+//! only to rounding (decimal coordinates, the body turned out of the
+//! axes, two holes that touch one another). The kernel's side is
 //! `crates/kernel/tests/halfspace.rs` and the unit tests of
 //! `boolean/outline.rs`.
 
@@ -18,9 +21,10 @@
 
 mod common;
 
-use common::checked::{assert_solid, body, built, deep, failed, new_document, session};
-use craft3d_math::Portable;
-use serde_json::json;
+use common::checked::{assert_solid, body, built, deep, failed, new_document, run, session};
+use craft3d_engine::Session;
+use craft3d_math::{Portable, Vec3};
+use serde_json::{Value, json};
 use std::f64::consts::PI;
 
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
@@ -241,4 +245,251 @@ fn a_hole_tangent_to_a_side_is_cut_across() {
             }
         }
     }
+}
+
+/// More scales than [`SCALES`] for the cuts below: the review of
+/// 2026-11-21 found one of them refused at a thousandth only.
+const WIDER: [f64; 4] = [1e-3, 1.0, 1e3, 1e6];
+
+/// A plate of 1 × 10 × 10 less round holes of these radii, right through
+/// it: volume and area, for scale 1.
+fn plate_less(radii: &[f64]) -> (f64, f64) {
+    let discs: f64 = radii.iter().map(|r| PI * r * r).sum();
+    let walls: f64 = radii.iter().map(|r| 2.0 * PI * r).sum();
+    (100.0 - discs, 2.0 * (100.0 - discs) + 40.0 + walls)
+}
+
+/// Both sides of a plane across the body `target`, each kept as a body of
+/// its own: what is wrong, if anything (a side refused, a body that is
+/// not valid or not to the closed form given for scale 1, a deep check
+/// that fails).
+fn sides_wrong(
+    s: &mut Session,
+    target: &str,
+    point: Vec3,
+    normal: Vec3,
+    (volume, area): (f64, f64),
+    k: f64,
+) -> Vec<String> {
+    let close = |value: &Value, expected: f64| {
+        value
+            .as_f64()
+            .is_some_and(|found| (found - expected).abs() <= 1e-9 * expected)
+    };
+    let mut wrong = Vec::new();
+    for (name, side) in [("Below", "below"), ("Above", "above")] {
+        let result = run(
+            s,
+            CUT,
+            json!({"target": target, "keep": true, "name": name, "planes": [
+                {"point": [point.x, point.y, point.z], "normal": [normal.x, normal.y, normal.z],
+                 "side": side},
+            ]}),
+        );
+        if result["status"] != "ok" {
+            let reason: String = result["error"]
+                .as_str()
+                .unwrap_or("no reason")
+                .chars()
+                .take(140)
+                .collect();
+            wrong.push(format!("{side}: {reason}"));
+            continue;
+        }
+        let found = body(s, name);
+        if found["valid"] != true
+            || !close(&found["volume"], volume * k * k * k)
+            || !close(&found["area"], area * k * k)
+        {
+            wrong.push(format!(
+                "{side}: valid {}, volume {}, area {}",
+                found["valid"], found["volume"], found["area"]
+            ));
+        }
+    }
+    if wrong.is_empty() {
+        let check = run(s, "document.check", json!({"deep": true}));
+        if check["ok"] != true || check["problems"] != json!([]) {
+            wrong.push(format!("the deep check: {check}"));
+        }
+    }
+    wrong
+}
+
+/// The reduction of seed 115098 with its block at `y0` along y: a block
+/// of 2 × 10 × 10 less a hole of radius `r` along x whose wall is tangent
+/// to the block's side at `y0`, the hole's centre given as the sum a
+/// designer writes, `y0 + r`. The circles about the hole's axis start
+/// away from that side, so their middle is where they touch it.
+fn tangent_hole(s: &mut Session, k: f64, y0: f64, r: f64) {
+    built(
+        s,
+        "feature.block",
+        json!({"position": [0.0, y0 * k, 0.0], "size": [2.0 * k, 10.0 * k, 10.0 * k],
+               "name": "Block"}),
+    );
+    built(
+        s,
+        "feature.cylinder",
+        json!({"axis": [1.0, 0.0, 0.0], "position": [-2.0 * k, (y0 + r) * k, 5.0 * k],
+               "radius": r * k, "height": 6.0 * k, "name": "Drill"}),
+    );
+    built(
+        s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Block", "tool": "Drill", "name": "Holed"}),
+    );
+}
+
+/// The hole tangent to a side where the touch is exact only to rounding:
+/// at coordinates that are no binary fractions, the circle the plane cuts
+/// from the hole passes the outline by a unit in the last place, or stops
+/// as far short of it. After the repair of seed 115098 the cut was still
+/// refused as *"boolean produced an invalid body"* where it passes it
+/// (the review of 2026-11-21, through these commands: the block at 1.1
+/// with a hole of radius 1.7, one of 24 placements at scale 1 and 8 of 96
+/// sides over four scales), the touch being told at steps a fifth of a
+/// tolerance long to a billionth of their length. Both sides of every
+/// cut, to the closed form, at four scales.
+#[test]
+fn a_hole_tangent_to_a_side_at_decimal_places_is_cut_across() {
+    let mut wrong = Vec::new();
+    let mut cuts = 0;
+    for k in WIDER {
+        for (y0, r) in [
+            (1.1, 1.7),
+            (1.1, 2.5),
+            (0.1, 2.5),
+            (0.3, 2.5),
+            (0.7, 0.3),
+            (2.3, 1.7),
+            (17.9, 2.5),
+            (123.456, 0.3),
+        ] {
+            let mut s = session();
+            new_document(&mut s, k);
+            tangent_hole(&mut s, k, y0, r);
+            cuts += 1;
+            let across = Vec3::new(k, 0.0, 0.0);
+            for fault in sides_wrong(&mut s, "Holed", across, -Vec3::X, plate_less(&[r]), k) {
+                wrong.push(format!(
+                    "scale {k}, the block at y {y0}, radius {r}, {fault}"
+                ));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} sides of {cuts} cuts:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+/// `v` turned by `degrees` about the direction `axis`, as
+/// `feature.transform` turns a body (Rodrigues' formula).
+fn turned(v: Vec3, axis: Vec3, degrees: f64) -> Vec3 {
+    let axis = axis.normalized().unwrap();
+    let (sin, cos) = degrees.to_radians().psin_cos();
+    v * cos + axis.cross(v) * sin + axis * (axis.dot(v) * (1.0 - cos))
+}
+
+/// The reduction of seed 115098 turned out of the axes by
+/// `feature.transform`, the plane with it: the touch of the circle and
+/// the outline is then exact only to rounding, and after the repair of
+/// the seed three of twelve turns were still refused as *"boolean
+/// produced an invalid body"* (the review of 2026-11-21, at scale 1: the
+/// first three below). Both sides of every cut, to the closed form, at
+/// four scales.
+#[test]
+fn a_hole_tangent_to_a_side_turned_out_of_the_axes_is_cut_across() {
+    let mut wrong = Vec::new();
+    let mut cuts = 0;
+    for k in WIDER {
+        for (axis, degrees, pivot) in [
+            ([0.3, -0.4, 1.0], 33.0, [1.0, -2.0, 0.5]),
+            ([2.0, -1.0, 0.5], 143.0, [-3.0, 0.7, 11.0]),
+            ([1.0, 0.0, 1.0], 60.0, [0.1, 0.2, 0.3]),
+            ([0.0, 0.0, 1.0], 30.0, [0.0, 0.0, 0.0]),
+            ([1.0, 2.0, 3.0], 71.0, [5.0, 5.0, 5.0]),
+            ([0.0, 1.0, 0.0], 45.0, [0.0, 0.0, 0.0]),
+        ] {
+            let mut s = session();
+            new_document(&mut s, k);
+            tangent_hole(&mut s, k, 0.0, 2.5);
+            let pivot = Vec3::new(pivot[0], pivot[1], pivot[2]) * k;
+            built(
+                &mut s,
+                "feature.transform",
+                json!({"source": "Holed", "angle": format!("{degrees} deg"), "axis": axis,
+                       "pivot": [pivot.x, pivot.y, pivot.z], "name": "Turned"}),
+            );
+            cuts += 1;
+            let axis = Vec3::new(axis[0], axis[1], axis[2]);
+            let across = pivot + turned(Vec3::new(k, 0.0, 0.0) - pivot, axis, degrees);
+            let normal = turned(-Vec3::X, axis, degrees);
+            for fault in sides_wrong(&mut s, "Turned", across, normal, plate_less(&[2.5]), k) {
+                wrong.push(format!(
+                    "scale {k}, turned {degrees} degrees about {axis:?}, {fault}"
+                ));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} sides of {cuts} cuts:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+/// Two holes side by side through a block, their walls touching along a
+/// line, cut across: the two circles the plane cuts touch one another in
+/// a point that is a vertex of neither, each circle's middle there (the
+/// first hole's circles start away from the second, the second's away
+/// from the first). At scales where the radii and centres are no binary
+/// fractions the touch is exact only to rounding: after the repair of
+/// seed 115098 the cut was built at scales 1, 1e3 and 1e6 and still
+/// refused as *"boolean produced an invalid body"* at 1e-3 (the review
+/// of 2026-11-21). Both sides, to the closed form, at four scales.
+#[test]
+fn two_holes_that_touch_are_cut_across() {
+    let mut wrong = Vec::new();
+    for k in WIDER {
+        let mut s = session();
+        new_document(&mut s, k);
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": [2.0 * k, 10.0 * k, 10.0 * k], "name": "Block"}),
+        );
+        let holes = [
+            ("One", "Block", "First", 3.0, 1.5, "180 deg"),
+            ("Two", "First", "Holed", 3.0 + 1.5 + 1.0, 1.0, "0 deg"),
+        ];
+        for (drill, from, name, y, r, angle) in holes {
+            built(
+                &mut s,
+                "feature.cylinder",
+                json!({"angle": angle, "axis": [1.0, 0.0, 0.0], "height": 6.0 * k, "name": drill,
+                       "position": [-2.0 * k, y * k, 5.0 * k], "radius": r * k}),
+            );
+            built(
+                &mut s,
+                "feature.boolean",
+                json!({"op": "subtract", "target": from, "tool": drill, "name": name}),
+            );
+        }
+        let across = Vec3::new(k, 0.0, 0.0);
+        let plate = plate_less(&[1.5, 1.0]);
+        for fault in sides_wrong(&mut s, "Holed", across, -Vec3::X, plate, k) {
+            wrong.push(format!("scale {k}, {fault}"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} sides of 4 cuts:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
 }

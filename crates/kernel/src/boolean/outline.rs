@@ -190,8 +190,16 @@ const SPLINE_STRETCHES: usize = 20_000;
 /// near the point (the pieces whose boxes come nearer than the nearest
 /// sample, down to a thousandth of that distance), not by how its
 /// parameter runs: an arc all at one distance from the point, the dearest
-/// there is, takes some twelve thousand a turn.
+/// there is, takes 16 380 a turn (a spline circle asked from its centre,
+/// counted on 2026-11-21): four turns in one curve are answered, twenty
+/// are not.
 const SPLINE_PIECES: usize = 200_000;
+
+/// The part of the size of a curve below which [`nearest_by_pieces`]
+/// halves a piece no further: the size is the diagonal of the box of the
+/// control points of the range searched, so the floor is the curve's own,
+/// a length. Newton's method finishes from a sample that near.
+const SPLINE_FLOOR: f64 = 1e-9;
 
 /// A control point of a rational Bézier piece in homogeneous form: the
 /// point times its weight, and the weight.
@@ -212,7 +220,12 @@ struct SplinePiece {
 
 impl SplinePiece {
     /// `None` when a weight is not positive and finite: no box of control
-    /// points is known to hold the piece.
+    /// points is known to hold the piece. A curve's own weights are
+    /// positive (`NurbsCurve::new` refuses others) and cutting a piece in
+    /// two keeps them so; the one way to a weight that is not is a range
+    /// that goes on past the curve's domain, where the first or the last
+    /// piece is continued and a rational piece's weight can fall to
+    /// nothing and below, as its curve then runs off to infinity.
     fn new(lo: f64, hi: f64, net: Vec<Weighted>, p: Vec3) -> Option<SplinePiece> {
         let mut bbox = Bbox3::EMPTY;
         for &(point, weight) in &net {
@@ -289,10 +302,19 @@ fn split_net(net: &[Weighted], s: f64) -> (Vec<Weighted>, Vec<Weighted>) {
 /// and the last cut (or continued) to the range. The piece whose box of
 /// control points is nearest to `p` is looked at first: sampled at its
 /// middle, and halved unless its box is no wider than the search resolves
-/// (a thousandth of the best distance, or `shortest`); a piece whose box
-/// is no nearer than the best sample holds nothing nearer and is left.
-/// When the nearest box left is no nearer than the best sample, the best
-/// sample is the nearest to within that resolution.
+/// (a thousandth of the best distance, or [`SPLINE_FLOOR`] of the size of
+/// the range's control points); a piece whose box is no nearer than the
+/// best sample holds nothing nearer and is left. When the nearest box
+/// left is no nearer than the best sample, the best sample is the nearest
+/// to within that resolution.
+///
+/// The floor is a length of the curve itself. Until the review of
+/// 2026-11-21 it was the caller's, 1e-9 of the curve's length *by its
+/// speed bound*: where that bound is far above the curve's true speed (a
+/// rational spline whose weights lie decades apart) the floor was wider
+/// than any tolerance, the search stopped at the middle of a box that
+/// wide, and Newton's method did not always finish from there: a point
+/// of a curve was answered as 2.3 away from it.
 ///
 /// `None` when the pieces cannot be had (a weight that is not positive, a
 /// range the curve's pieces do not reach) or more than [`SPLINE_PIECES`]
@@ -303,7 +325,6 @@ fn nearest_by_pieces(
     p: Vec3,
     distance: &dyn Fn(f64) -> f64,
     mut best: (f64, f64),
-    shortest: f64,
 ) -> Option<(f64, f64)> {
     // (Each piece with its points in homogeneous form from here on.)
     let mut spans: Vec<CurvePiece> = curve
@@ -330,9 +351,17 @@ fn nearest_by_pieces(
         return None;
     }
     let mut heap = std::collections::BinaryHeap::with_capacity(spans.len());
+    let mut extent = Bbox3::EMPTY;
     for ((lo, hi), net) in spans {
-        heap.push(SplinePiece::new(lo, hi, net, p)?);
+        let piece = SplinePiece::new(lo, hi, net, p)?;
+        // (Its weights are positive: the piece was made.)
+        for &(point, weight) in &piece.net {
+            extent.add(point * (1.0 / weight));
+        }
+        heap.push(piece);
     }
+    let (low, high) = extent.corners()?;
+    let shortest = SPLINE_FLOOR * low.distance(high);
     let mut looked = 0_usize;
     while let Some(piece) = heap.pop() {
         if piece.bound >= best.0 {
@@ -361,6 +390,8 @@ fn nearest_by_pieces(
             }
         }
     }
+    #[cfg(test)]
+    tests::LOOKED.with(|most| most.set(most.get().max(looked)));
     Some(best)
 }
 
@@ -423,7 +454,7 @@ fn nearest_on_spline(curve: &Curve3, range: (f64, f64), p: Vec3) -> Option<(f64,
     if ran_out && let Curve3::Nurbs(spline) = curve {
         #[cfg(test)]
         tests::RAN_OUT.with(|n| n.set(n.get() + 1));
-        best = nearest_by_pieces(spline, range, p, &distance, best, shortest)?;
+        best = nearest_by_pieces(spline, range, p, &distance, best)?;
     }
     // Newton on (C - p) · C', its slope by a central difference of C'.
     let h = (t1 - t0) * 1e-6;
@@ -740,6 +771,11 @@ fn passes(margin: f64) -> [(f64, usize, f64); 3] {
     ]
 }
 
+/// How much further than its own piece another may be from a candidate
+/// and still count as touching that piece there ([`touched_at`]): the
+/// rounding of two distances, as a part of the step.
+const AS_NEAR: f64 = 1e-9;
+
 /// True when a piece of `all` that is not the curve piece `own` (nor
 /// another use of it: an arc with the face on both sides is in two loops,
 /// one each way) is as near to `candidate` as `own` is, `reach`, at the
@@ -764,8 +800,18 @@ fn touched_at(
         // looked), and nearest at the same place. A piece that touches
         // the ball about the candidate elsewhere (the far side of a strip
         // twice the step wide) is not between the two.
+        //
+        // "As near" is the caller's own slack the other way: it lets
+        // nothing be nearer than `reach * (1 - 1e-9)`, so what is left of
+        // "as near" is the band up to `reach * (1 + 1e-9)`. It may not be
+        // much wider. A piece that is nearest at the same place is no
+        // further than `reach * (1 + 1e-3)` as it is, so from a thousandth
+        // up the number would say nothing, and a piece that runs beside
+        // `own` behind it without touching it (the wall of a pin in its
+        // hole, tolerances away) would be a touch all along `own`.
+        // (`Boxes::near` leaves the same room for its boxes, no more.)
         nearest(&other.curve, other.range, candidate).is_some_and(|(t, d)| {
-            d <= reach * (1.0 + 1e-9) && other.curve.eval(t).distance(foot) <= 1e-3 * reach
+            d <= reach * (1.0 + AS_NEAR) && other.curve.eval(t).distance(foot) <= 1e-3 * reach
         })
     })
 }
@@ -774,6 +820,29 @@ fn touched_at(
 /// `station` of its range. `touched` is set when a candidate was left out
 /// because another piece touches its own where it stepped in
 /// ([`touched_at`]).
+///
+/// A piece found touched is not stepped in from again at this place. The
+/// touch is told by two distances being the same to [`AS_NEAR`] of the
+/// step, and the steps shrink: a piece that passes its own by a unit in
+/// the last place of a coordinate (which is what a touch a designer gives
+/// exactly comes to anywhere but on binary fractions in the axes) is as
+/// near at the first steps, which are as long as the piece is wide, and
+/// measurably further at the last, a fifth of a tolerance long, where the
+/// candidate beyond it was taken after all (until the review of
+/// 2026-11-21: a hole tangent to a side at decimal coordinates, or turned
+/// out of the axes, cut across, was still built wrong and refused). So
+/// the longest step that gets this far is the one that tells, to a
+/// billionth of its length, and what it tells holds for the shorter ones:
+/// two pieces that touch at a place do so however near to it one looks.
+///
+/// What this gives up is a later candidate from the same place of the
+/// same piece. There is one only where the place nearest the candidate
+/// moves along the piece as the step shrinks (a piece that is not
+/// straight, on a surface that is not flat) or where two loops run within
+/// a hair of one another without touching; the loop is then answered
+/// from another piece or another station, and where none is left it is
+/// refused as a sliver. A candidate is only ever left out by this, never
+/// taken: it cannot give a loop to a region it is not in.
 #[allow(clippy::too_many_arguments)]
 fn left_at(
     sheet: Sheet,
@@ -785,8 +854,12 @@ fn left_at(
     station: f64,
     touched: &mut bool,
 ) -> Option<Vec3> {
+    let mut touched_pieces: Vec<usize> = Vec::new();
     for (shrink, most, margin) in passes(margin).into_iter().chain(passes(margin / 16.0)) {
-        for seg in of {
+        for (index, seg) in of.iter().enumerate() {
+            if touched_pieces.contains(&index) {
+                continue;
+            }
             let (point, travel) = seg.travel_at(station);
             let Some(outward) = outward_normal(sheet, reversed, point) else {
                 continue;
@@ -823,10 +896,14 @@ fn left_at(
                 if left.is_some_and(|left| left.dot(candidate - foot) > 0.0) {
                     // Nothing is nearer than its piece; but a piece that
                     // touches its piece at that very place is as near, and
-                    // lies between the two.
+                    // lies between the two: no shorter step from here is
+                    // on the near side of it. (Asked only of a candidate
+                    // that would otherwise be taken: once per answer, and
+                    // once more per piece found touched.)
                     if touched_at(all, all_boxes, seg, candidate, foot, reach) {
                         *touched = true;
-                        continue;
+                        touched_pieces.push(index);
+                        break;
                     }
                     return Some(candidate);
                 }
@@ -871,12 +948,17 @@ pub(super) fn left_of(
     // tangent to: a wall that thins to nothing, cut across), every step in
     // from there lands beyond the other piece, as near to it as to its
     // own: such a candidate is left out, and the pieces are tried again
-    // from their other stations. Until 2026-11-21 it was taken (nothing
-    // was nearer than its own piece), the loop of the hole was given to
-    // the region outside the body's outline, and the boolean built a cut
-    // face without its hole, which its own check refused (fuzz seed
-    // 115098). Only where a piece was found touched: every other loop is
-    // answered from the middle or not at all, as before.
+    // from their other stations, 0.2764 and then 0.7236 of a piece (the
+    // places `interior_points` steps in from: a loop touched at its
+    // middle and at the first of them is answered from the second).
+    // Until 2026-11-21 it was taken (nothing was nearer than its own
+    // piece), the loop of the hole was given to the region outside the
+    // body's outline, and the boolean built a cut face without its hole,
+    // which its own check refused (fuzz seed 115098). Only where a piece
+    // was found touched: every other loop is answered from the middle or
+    // not at all, as before. A loop touched at all three places of every
+    // piece it has is refused as a sliver, which it need not be: no case
+    // of it is known.
     let mut touched = false;
     let middle = left_at(
         sheet,
@@ -1690,6 +1772,8 @@ mod tests {
         /// thread ran out of stretches and was done again by the curve's
         /// pieces ([`nearest_by_pieces`]).
         pub(super) static RAN_OUT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        /// The most pieces one search by pieces on this thread looked at.
+        pub(super) static LOOKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
     fn line(a: Vec3, b: Vec3, reversed: bool) -> Seg {
@@ -2224,10 +2308,22 @@ mod tests {
         }
     }
 
+    /// What the search by pieces resolves over `range` where the distance
+    /// is next to nothing: [`SPLINE_FLOOR`] of the size of the control
+    /// points of that part of the curve.
+    fn floor_of(spline: &NurbsCurve, range: (f64, f64)) -> f64 {
+        let (low, high) = Bbox3::from_points(spline_hull(spline, range))
+            .corners()
+            .unwrap();
+        SPLINE_FLOOR * low.distance(high)
+    }
+
     /// The search by pieces alone, on parts of a curve that begin and end
     /// inside its spans: its sample is as near as any of 20 001 to within
-    /// what it resolves (a thousandth of the distance), also on a circle,
-    /// whose every point is as far from its centre.
+    /// what it resolves (a thousandth of the distance, and twice its
+    /// floor: until the review of 2026-11-21 the floor was this test's
+    /// own to give, 1e-9, and is now the curve's, [`floor_of`]), also on a
+    /// circle, whose every point is as far from its centre.
     #[test]
     fn the_search_by_pieces_finds_the_nearest_sample_of_any_part() {
         let (hyperbola, _) = hyperbola(1e-3);
@@ -2259,12 +2355,12 @@ mod tests {
                 } else {
                     (ends.1, range.1)
                 };
-                let (d, t) = nearest_by_pieces(spline, range, p, &distance, first, 1e-9).unwrap();
+                let (d, t) = nearest_by_pieces(spline, range, p, &distance, first).unwrap();
                 assert!(t >= range.0 && t <= range.1, "{t} outside {range:?}");
                 assert_eq!(d, distance(t));
                 let least = brute(curve, range, p);
                 assert!(
-                    d <= least * 1.0011 + 2e-9,
+                    d <= least * 1.0011 + 2.0 * floor_of(spline, range),
                     "round {round}: {d} against {least} over {range:?}"
                 );
             }
@@ -2392,9 +2488,10 @@ mod tests {
     /// range over up to eight decades, some with control points bunched
     /// so that the parameter crawls, cut unevenly as the first and last
     /// piece of a range are. And the nearest point they give is as near
-    /// as any of 20 001 samples to within what the search resolves: by
-    /// the pieces alone on every one, by `nearest` on those with weights
-    /// over up to four decades.
+    /// as any of 20 001 samples to within what the search resolves, by
+    /// the pieces alone and by `nearest` (on those with weights over
+    /// eight decades too, since the floor of the search by pieces is the
+    /// curve's own: 2026-11-21).
     #[test]
     fn a_piece_of_any_rational_spline_is_no_nearer_than_its_box() {
         let mut seed = 2026_u64;
@@ -2455,18 +2552,12 @@ mod tests {
                 } else {
                     (ends.1, t1)
                 };
-                let shortest = 1e-9 * speed_bound(&curve) * (t1 - t0);
-                let (d, t) =
-                    nearest_by_pieces(&spline, range, p, &distance, first, shortest).unwrap();
+                let (d, t) = nearest_by_pieces(&spline, range, p, &distance, first).unwrap();
                 assert!(t >= t0 && t <= t1, "{what}: {t} outside {range:?}");
                 assert!(
-                    d <= least * 1.0011 + 2.0 * shortest + 1e-12,
+                    d <= least * 1.0011 + 2.0 * floor_of(&spline, range) + 1e-12,
                     "{what}, query {query}: the pieces give {d}, a sample {least}"
                 );
-                // (Weights over eight decades: owed, the test below.)
-                if decades > 4.0 {
-                    continue;
-                }
                 let (t, d) = nearest(&curve, range, p).unwrap();
                 assert!(t >= t0 && t <= t1, "{what}: {t} outside {range:?}");
                 assert!(
@@ -2536,30 +2627,31 @@ mod tests {
         assert!((d - 0.2419889987792672).abs() <= 1e-9, "{d}");
     }
 
-    /// Owed (found by the review of 2026-11-21): the search by pieces
-    /// stops halving a piece whose box is no wider than `shortest`, which
-    /// `nearest_on_spline` hands it as 1e-9 of the curve's length *by its
+    /// Found by the review of 2026-11-21: the search by pieces stopped
+    /// halving a piece whose box was no wider than a floor that
+    /// `nearest_on_spline` handed it as 1e-9 of the curve's length *by its
     /// speed bound*. Where that bound is far above the curve's true speed
     /// (a rational spline whose weights lie far apart: the bound grows
-    /// with their ratio), that floor is far wider than any tolerance, the
-    /// search answers with the middle of a box that wide, and Newton's
-    /// method does not always finish from there: a point of a curve was
+    /// with their ratio), that floor was far wider than any tolerance, the
+    /// search answered with the middle of a box that wide, and Newton's
+    /// method did not always finish from there: a point of a curve was
     /// answered as 2.3 away from it. Measured on the build server (Check
     /// 44949983905), points of drawn splines not found on their curve to
     /// 1e-9: 83 of 600 with weights over eight decades, 23 of 600 over
     /// six, none of 1800 over four, two and none (and before the search
     /// by pieces 287, 277, 236, 158 and 13 of 600: what the repair of
     /// 2026-11-21 mended). `section::edge_cuts` refuses such a place in a
-    /// bug's words; the other askers of `nearest` take the answer. With
-    /// the floor taken from the curve itself (1e-9 of the box of the
-    /// range's control points) none of the 3000 is missed and no search
-    /// looks at more than 58 pieces (tried there, not built here). Held
-    /// here: every point of such a curve is found on it.
+    /// bug's words; the other askers of `nearest` take the answer. The
+    /// floor is now the curve's own ([`SPLINE_FLOOR`] of the box of the
+    /// range's control points): every point of such a curve is found on
+    /// it. And a floor there is: without one the same points are found
+    /// too, by searches of up to 11 203 pieces where none here looks at
+    /// more than 58 (measured there).
     #[test]
-    #[ignore = "owed: the floor of the search by pieces is the speed bound's, not the curve's"]
     fn the_nearest_point_of_a_spline_with_weights_far_apart_is_the_nearest() {
         let mut seed = 77_u64;
         let mut wrong = Vec::new();
+        LOOKED.with(|most| most.set(0));
         for round in 0..100_usize {
             let curve = Curve3::Nurbs(drawn_spline(&mut seed, 8.0, round % 3 == 0));
             for _ in 0..6 {
@@ -2576,60 +2668,281 @@ mod tests {
             wrong.len(),
             wrong.join("\n")
         );
+        let most = LOOKED.with(std::cell::Cell::get);
+        assert!(most > 0 && most <= 120, "a search looked at {most} pieces");
     }
 
-    /// Owed (found by the review of 2026-11-21): the rule that keeps a
-    /// point left of a loop from landing beyond a loop that touches it
-    /// (`touched_at`) tells a touch by the two pieces being as near to
-    /// within 1e-9 of the step, and the steps run down to 3/64 of the
-    /// margin (1.9e-7 at a tolerance of 1e-6). A loop that passes the one
-    /// it touches by more than 1.9e-16 (one unit in the last place of a
-    /// coordinate above 1, which is what a touch a designer gives exactly
-    /// comes to anywhere but on binary fractions in the axes) is seen as
-    /// touching at the first steps and not at the last, where the point
-    /// beyond it is taken as before the repair of fuzz seed 115098. The
-    /// plate of the test above with its hole moved towards the side by a
-    /// few units in the last place, and by parts of the tolerance, in
-    /// frames in and out of the axes: the point is in the plate.
+    /// The search by pieces asks every piece for positive weights
+    /// (`SplinePiece::new`), and a curve's own are. The one way to a
+    /// weight that is not is a range that goes on past the curve's domain:
+    /// the arc below, with a middle weight of 3, has the weight
+    /// `1 + 4 s (1 - s)` at the share `s` of its span, which is nothing at
+    /// `s = -0.207` and negative beyond. Continued to -0.1 the search
+    /// answers, as near as any sample; continued to -0.5 no box of control
+    /// points holds the piece, and it says so and does not guess. (With
+    /// the check taken away it answered there too.)
     #[test]
-    #[ignore = "owed: a touch that is off by rounding, or by less than the tolerance, is not told at the last steps"]
-    fn a_point_left_of_a_loop_is_not_beyond_a_loop_that_touches_it_to_rounding() {
+    fn a_range_continued_to_where_a_weight_is_not_positive_is_not_searched_by_pieces() {
+        let frame = tilted();
+        let spline = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![
+                frame.point(1.0, 0.0, 0.0),
+                frame.point(1.0, 1.0, 0.0),
+                frame.point(0.0, 1.0, 0.0),
+            ],
+            vec![1.0, 3.0, 1.0],
+        )
+        .unwrap();
+        let curve = Curve3::Nurbs(spline.clone());
+        for p in [frame.point(0.3, 0.2, 0.4), frame.point(2.0, -0.5, 0.0)] {
+            let distance = |t: f64| curve.eval(t).distance(p);
+            let first = (distance(1.0), 1.0);
+            let within = (-0.1, 1.0);
+            let (d, t) = nearest_by_pieces(&spline, within, p, &distance, first).unwrap();
+            assert!(t >= within.0 && t <= within.1, "{t}");
+            assert!(d <= brute(&curve, within, p) * 1.0011 + 1e-8, "{d}");
+            assert_eq!(
+                nearest_by_pieces(&spline, (-0.5, 1.0), p, &distance, first),
+                None
+            );
+        }
+        // The check itself: a piece with a weight that is not positive.
+        let net = |weight: f64| vec![(Vec3::X, 1.0), (Vec3::Y * weight, weight), (Vec3::Z, 1.0)];
+        assert!(SplinePiece::new(0.0, 1.0, net(0.5), Vec3::ZERO).is_some());
+        for weight in [0.0, -0.5, f64::NAN, f64::INFINITY] {
+            assert!(SplinePiece::new(0.0, 1.0, net(weight), Vec3::ZERO).is_none());
+        }
+    }
+
+    /// The plate of *a point left of a loop is not beyond a loop that
+    /// touches it* in `frame`, its hole's circle passing the lower side by
+    /// `over` (or stopping that far short of it, when negative), the
+    /// circle's middle at the touch: the point left of the hole's loop,
+    /// as its height over that side.
+    fn beside_a_hole_by_a_side(frame: Frame, over: f64) -> Result<f64, Reason> {
+        let p = |x: f64, y: f64| frame.point(x, y, 0.0);
+        let about = Frame::new(p(1.5, 0.5 - over), frame.z(), frame.y()).unwrap();
+        let outer = vec![
+            line(p(0.0, 0.0), p(4.0, 0.0), false),
+            line(p(4.0, 0.0), p(4.0, 2.0), false),
+            line(p(4.0, 2.0), p(0.0, 2.0), false),
+            line(p(0.0, 2.0), p(0.0, 0.0), false),
+        ];
+        let loops = vec![outer, vec![arc(about, 0.5, (0.0, TAU), true)]];
+        let plane = Surface::Plane(Plane::new(frame));
+        let all = boxes(&loops);
+        left_of(Sheet::bare(&plane), false, &loops, &all, &loops[1], 4e-6)
+            .map(|beside| frame.local(beside).1)
+    }
+
+    /// Frames in the axes, out of them, and out of them far from the
+    /// origin.
+    fn frames_for_a_touch() -> [(&'static str, Frame); 3] {
         let far = Frame::new(
             Vec3::new(1234.5, -987.6, 55.5),
             Vec3::new(0.2, -0.5, 1.0),
             Vec3::new(1.0, 0.3, 0.0),
         )
         .unwrap();
+        [("world", Frame::WORLD), ("tilted", tilted()), ("far", far)]
+    }
+
+    /// Found by the review of 2026-11-21: the rule that keeps a point left
+    /// of a loop from landing beyond a loop that touches it (`touched_at`)
+    /// tells a touch by the two pieces being as near to within 1e-9 of the
+    /// step, and the steps run down to 3/64 of the margin (1.9e-7 at a
+    /// tolerance of 1e-6). A loop that passes the one it touches by more
+    /// than 1.9e-16 (one unit in the last place of a coordinate above 1,
+    /// which is what a touch a designer gives exactly comes to anywhere
+    /// but on binary fractions in the axes) was seen as touching at the
+    /// first steps and not at the last, where the point beyond it was
+    /// taken as before the repair of fuzz seed 115098 (measured there,
+    /// Check 44949983905: outside the plate from 2.3e-16 on in the axes
+    /// and from 1.2e-16 on out of them). A piece found touched is no
+    /// longer stepped in from again at that place (`left_at`), so the
+    /// first step tells: the plate of the test above with its hole moved
+    /// towards the side, or away from it, by a few units in the last
+    /// place and up to a fiftieth of what the first step tells (1e-9 of
+    /// half the hole's width: 5e-10), in frames in and out of the axes.
+    /// The point is in the plate.
+    #[test]
+    fn a_point_left_of_a_loop_is_not_beyond_a_loop_that_touches_it_to_rounding() {
         let mut wrong = Vec::new();
-        for (name, frame) in [("world", Frame::WORLD), ("tilted", tilted()), ("far", far)] {
+        let mut asked = 0;
+        for (name, frame) in frames_for_a_touch() {
             for over in [
-                0.0, 2.3e-16, 4.5e-16, 1e-15, 1e-13, 1e-11, 1e-9, 1e-8, 1e-7, 4e-7,
+                0.0, 1.2e-16, 2.3e-16, 4.5e-16, 1e-15, 1e-13, 1e-11, -1.2e-16, -1e-15, -1e-11,
             ] {
-                let p = |x: f64, y: f64| frame.point(x, y, 0.0);
-                // The circle's middle is where it touches the side.
-                let about = Frame::new(p(1.5, 0.5 - over), frame.z(), frame.y()).unwrap();
-                let outer = vec![
-                    line(p(0.0, 0.0), p(4.0, 0.0), false),
-                    line(p(4.0, 0.0), p(4.0, 2.0), false),
-                    line(p(4.0, 2.0), p(0.0, 2.0), false),
-                    line(p(0.0, 2.0), p(0.0, 0.0), false),
-                ];
-                let loops = vec![outer, vec![arc(about, 0.5, (0.0, TAU), true)]];
-                let plane = Surface::Plane(Plane::new(frame));
-                let all = boxes(&loops);
-                match left_of(Sheet::bare(&plane), false, &loops, &all, &loops[1], 4e-6) {
-                    Ok(beside) if frame.local(beside).1 > 0.0 => {}
-                    Ok(_) => wrong.push(format!("{name}, past the side by {over:e}: outside")),
+                asked += 1;
+                match beside_a_hole_by_a_side(frame, over) {
+                    Ok(height) if height > 0.0 => {}
+                    Ok(height) => {
+                        wrong.push(format!("{name}, past the side by {over:e}: {height}"))
+                    }
                     Err(reason) => wrong.push(format!("{name}, by {over:e}: {reason}")),
                 }
             }
         }
         assert!(
             wrong.is_empty(),
-            "{} of 30:\n{}",
+            "{} of {asked}:\n{}",
             wrong.len(),
             wrong.join("\n")
         );
+    }
+
+    /// Owed (found by the review of 2026-11-21, and left by the round
+    /// after it): a loop that passes the one it touches by less than the
+    /// tolerance but by more than rounding. The boolean that made the two
+    /// took them for touching (they are within the tolerance), and the
+    /// point left of the hole's loop is told by distances alone: past the
+    /// side by 1e-9 and more of a hole half a unit wide, the side is
+    /// further from every candidate than the circle is by more than
+    /// rounding, no touch is told, and the point beyond the side is taken
+    /// (measured, Check 44949983905, with a touched piece left at once as
+    /// it is now: outside the plate at 1e-9, 1e-8, 1e-7 and 4e-7 in every
+    /// frame). What tells such a touch is a rule about the tolerance, not
+    /// about rounding (the review tried a quarter of the margin added to
+    /// both distances: all of these in the plate, the disc's own loop
+    /// then refused as a sliver at three of them); it is not designed
+    /// here. Held when it is: the point is in the plate.
+    #[test]
+    #[ignore = "owed: a touch within the tolerance but beyond rounding is not told, and the point beyond the touched loop is taken"]
+    fn a_point_left_of_a_loop_is_not_beyond_a_loop_that_touches_it_within_the_tolerance() {
+        let mut wrong = Vec::new();
+        let mut asked = 0;
+        for (name, frame) in frames_for_a_touch() {
+            for over in [1e-9, 1e-8, 1e-7, 4e-7] {
+                asked += 1;
+                match beside_a_hole_by_a_side(frame, over) {
+                    Ok(height) if height > 0.0 => {}
+                    Ok(height) => {
+                        wrong.push(format!("{name}, past the side by {over:e}: {height}"))
+                    }
+                    Err(reason) => wrong.push(format!("{name}, by {over:e}: {reason}")),
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} of {asked}:\n{}",
+            wrong.len(),
+            wrong.join("\n")
+        );
+    }
+
+    /// A hole of radius a half in `frame` with its centre at (1.5, 0.5)
+    /// of it, its circle starting at the angle `start` from the frame's x.
+    fn hole_from(frame: Frame, start: f64) -> (Frame, Seg) {
+        let (sin, cos) = start.psin_cos();
+        let about = Frame::new(
+            frame.point(1.5, 0.5, 0.0),
+            frame.z(),
+            frame.x() * cos + frame.y() * sin,
+        )
+        .unwrap();
+        (about, arc(about, 0.5, (0.0, TAU), true))
+    }
+
+    /// After a touch at the middle of a piece the other two places are
+    /// tried, 0.2764 of the piece and then 0.7236 (until the review of
+    /// 2026-11-21 no test said which, or that there are two: with either
+    /// left out, or the two in the other order, every test passed).
+    ///
+    /// A plate whose lower side the hole touches at its circle's middle:
+    /// both other places are free, and the point is the one stepped in
+    /// from the first of them, by a quarter of the hole's width (half of
+    /// it lands nearer to the side than to the circle). The same plate
+    /// with its right side leaning over to touch the circle's middle, and
+    /// its lower side touching the first of the other places: the point
+    /// is stepped in from the second.
+    #[test]
+    fn after_a_touch_the_other_places_of_a_piece_are_tried_in_their_order() {
+        for (name, frame) in frames_for_a_touch() {
+            let p = |x: f64, y: f64| frame.point(x, y, 0.0);
+            let plane = Surface::Plane(Plane::new(frame));
+            let sheet = Sheet::bare(&plane);
+            // The circle's middle on the lower side: answered from 0.2764.
+            let (about, hole) = hole_from(frame, 0.5 * PI);
+            let loops = vec![
+                vec![
+                    line(p(0.0, 0.0), p(4.0, 0.0), false),
+                    line(p(4.0, 0.0), p(4.0, 2.0), false),
+                    line(p(4.0, 2.0), p(0.0, 2.0), false),
+                    line(p(0.0, 2.0), p(0.0, 0.0), false),
+                ],
+                vec![hole],
+            ];
+            let all = boxes(&loops);
+            let beside = left_of(sheet, false, &loops, &all, &loops[1], 4e-6).unwrap();
+            let (sin, cos) = (0.2764 * TAU).psin_cos();
+            let first = about.point(0.75 * cos, 0.75 * sin, 0.0);
+            assert!(
+                beside.distance(first) <= 1e-9,
+                "{name}: {beside:?}, from the first of the other places {first:?}"
+            );
+            // The first of the other places on the lower side, the middle
+            // on a right side that leans over to touch it there: answered
+            // from 0.7236.
+            let start = 1.5 * PI - 0.2764 * TAU;
+            let (about, hole) = hole_from(frame, start);
+            let (sin, cos) = (start + PI).psin_cos();
+            // Where the tangent to the circle at its middle crosses the
+            // lines y = 0 and y = 2: (x - 1.5) cos + (y - 0.5) sin = 0.5.
+            let leaning = |y: f64| p(1.5 + (0.5 - (y - 0.5) * sin) / cos, y);
+            let loops = vec![
+                vec![
+                    line(p(0.0, 0.0), leaning(0.0), false),
+                    line(leaning(0.0), leaning(2.0), false),
+                    line(leaning(2.0), p(0.0, 2.0), false),
+                    line(p(0.0, 2.0), p(0.0, 0.0), false),
+                ],
+                vec![hole],
+            ];
+            let all = boxes(&loops);
+            let beside = left_of(sheet, false, &loops, &all, &loops[1], 4e-6).unwrap();
+            let (sin, cos) = (0.7236 * TAU).psin_cos();
+            let second = about.point(0.75 * cos, 0.75 * sin, 0.0);
+            assert!(
+                beside.distance(second) <= 1e-9,
+                "{name}: {beside:?}, from the second of the other places {second:?}"
+            );
+        }
+    }
+
+    /// A touch is two pieces as near to a candidate *to rounding*
+    /// ([`AS_NEAR`]), not to a thousandth of the step, which every test
+    /// passed with until the review of 2026-11-21. A hole with a second
+    /// circle inside it, about the same centre and a few tolerances to a
+    /// few hundred smaller (the wall of a pin in its hole): the second
+    /// circle is nearest to every candidate at the very place the hole's
+    /// is, behind it, and touches it nowhere. The point left of the
+    /// hole's loop is the first one stepped in from its middle, as it is
+    /// without the pin. (With a thousandth for the billionth the pin was
+    /// a touch at all three places, and the loop was refused as a
+    /// sliver.)
+    #[test]
+    fn a_piece_that_runs_beside_a_loop_behind_it_does_not_touch_it() {
+        for (name, frame) in frames_for_a_touch() {
+            let plane = Surface::Plane(Plane::new(frame));
+            let (about, hole) = hole_from(frame, 0.3);
+            for gap in [4e-6, 1e-5, 1e-4, 4e-4] {
+                let loops = vec![
+                    vec![hole.clone()],
+                    vec![arc(about, 0.5 - gap, (0.0, TAU), false)],
+                ];
+                let all = boxes(&loops);
+                let beside =
+                    left_of(Sheet::bare(&plane), false, &loops, &all, &loops[0], 4e-6).unwrap();
+                let first = about.point(-1.0, 0.0, 0.0);
+                assert!(
+                    beside.distance(first) <= 1e-9,
+                    "{name}, a pin {gap} smaller: {beside:?}, not {first:?}"
+                );
+            }
+        }
     }
 
     #[test]

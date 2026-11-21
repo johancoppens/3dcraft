@@ -914,29 +914,28 @@ fn hole_by_a_side_cut_across(frame: &Frame, k: f64, r: f64, over: f64) -> Vec<St
     wrong
 }
 
-/// Owed (found by the review, 2026-11-21, of the repair of fuzz seed
-/// 115098). The hole tangent to a side, cut across, is built where the
-/// touch is exact in the numbers: on binary fractions, in the axes
-/// (*a hole tangent to a side is cut across*, above). Where it is exact
-/// only to rounding (the block at 1.1 with a hole of radius 1.7, or the
-/// whole turned out of the axes) the circle passes the outline by a unit
-/// in the last place or stops as far short of it, and where it passes it
-/// the cut is refused as before the repair, *"boolean produced an invalid
+/// Found by the review, 2026-11-21, of the repair of fuzz seed 115098.
+/// The hole tangent to a side, cut across, was built where the touch is
+/// exact in the numbers: on binary fractions, in the axes (*a hole
+/// tangent to a side is cut across*, above). Where it is exact only to
+/// rounding (the block at 1.1 with a hole of radius 1.7, or the whole
+/// turned out of the axes) the circle passes the outline by a unit in the
+/// last place or stops as far short of it, and where it passed it the cut
+/// was refused as before the repair, *"boolean produced an invalid
 /// body"*: `outline::touched_at` tells a touch to 1e-9 of a step that
 /// runs down to a fifth of the tolerance. Measured on the build server
 /// (Check 44948558534): 2 of 42 cuts at decimal places and 15 of the 18
-/// cuts of bodies turned out of the axes. With a piece that is found
-/// touched not stepped in from again at that place, all of them build
-/// (tried there, not built here).
+/// cuts of bodies turned out of the axes. A piece that is found touched
+/// is no longer stepped in from again at that place (`outline::left_at`),
+/// so the first step, as long as the hole is wide, is the one that tells.
 ///
-/// So is a hole that passes the side by less than half the tolerance,
-/// which the boolean that makes the hole takes for a touch: by 1e-9,
-/// 1e-6, 1e-3 and 0.4 tolerances (by 0.01 and 0.1 it is refused in the
-/// words of a face too thin to find a point inside it). Held for those:
-/// built, or refused in words, never handed to the boolean's own check
-/// as a body it refuses.
+/// Held: every cut at decimal places and out of the axes is built, to
+/// its closed form, at three scales; and so is a hole that passes the
+/// side, or stops short of it, by a billionth and a millionth of the
+/// tolerance, which is rounding still (the first step tells a touch to a
+/// four-hundredth of the tolerance on this hole). Further than that is
+/// owed: the test below.
 #[test]
-#[ignore = "owed: a hole tangent to a side to rounding, or within the tolerance, cut across, is still refused as an invalid body"]
 fn a_hole_tangent_to_a_side_to_rounding_is_cut_across() {
     let turned_out = [
         Frame::new(
@@ -980,7 +979,45 @@ fn a_hole_tangent_to_a_side_to_rounding_is_cut_across() {
                 wrong.push(format!("scale {k}, frame {index}, {fault}"));
             }
         }
-        for part in [1e-9, 1e-6, 1e-3, 0.1, 0.4] {
+        for part in [1e-9, 1e-6, -1e-9, -1e-6] {
+            cuts += 1;
+            for fault in hole_by_a_side_cut_across(&Frame::WORLD, k, 2.5, part * 1e-6 * k) {
+                wrong.push(format!(
+                    "scale {k}, past the side by {part} tolerances, {fault}"
+                ));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} sides of {cuts} cuts:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+/// Owed (found by the review of 2026-11-21, and left by the round after
+/// it): a hole that passes the side by less than half the tolerance but
+/// by more than rounding, which the boolean that makes the hole takes
+/// for a touch, cut across. Measured on the build server (Check
+/// 44949983905) with a touched piece left at once, as it is now, at
+/// three scales: past the side by a thousandth of the tolerance the cut
+/// is built; by a hundredth and a tenth it is refused in the words of a
+/// face too thin to find a point inside it; by 0.4 it is refused as
+/// *"boolean produced an invalid body"*, both sides at every scale (the
+/// circle's loop given to the region beyond the side, as before the
+/// repair). What tells such a touch is a rule about the tolerance, not
+/// about rounding, and is not designed here (`boolean/outline.rs` › *a
+/// point left of a loop is not beyond a loop that touches it within the
+/// tolerance*). Held when it is: built, or refused in words, never
+/// handed to the boolean's own check as a body it refuses.
+#[test]
+#[ignore = "owed: a hole within the tolerance of a side but beyond rounding, cut across, is still refused as an invalid body"]
+fn a_hole_within_the_tolerance_of_a_side_is_cut_across_or_refused_in_words() {
+    let mut wrong = Vec::new();
+    let mut cuts = 0;
+    for k in SCALES {
+        for part in [1e-3, 0.01, 0.1, 0.4] {
             cuts += 1;
             for fault in hole_by_a_side_cut_across(&Frame::WORLD, k, 2.5, part * 1e-6 * k) {
                 if fault.contains("invalid body") {
