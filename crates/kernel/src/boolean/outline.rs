@@ -417,6 +417,9 @@ fn nearest_on_spline(curve: &Curve3, range: (f64, f64), p: Vec3) -> Option<(f64,
         stack.push((ta, da, tm, dm));
         stack.push((tm, dm, tb, db));
     }
+    // (A test can have the answer as it was before 2026-11-21.)
+    #[cfg(test)]
+    let ran_out = ran_out && !super::section::tests::NO_PIECES.with(std::cell::Cell::get);
     if ran_out && let Curve3::Nurbs(spline) = curve {
         #[cfg(test)]
         tests::RAN_OUT.with(|n| n.set(n.get() + 1));
@@ -2315,9 +2318,17 @@ mod tests {
                 // Left of the disc's: inside it.
                 let within = left_of(sheet, false, &loops, &all, &loops[2], 4e-6).unwrap();
                 assert!(from_centre(within).0 < 0.5 - 4e-6, "start {start}");
-                // Left of the plate's outline: in the plate.
+                // Left of the plate's outline: in the plate, at the first
+                // step in from the middle of its lower side that nothing
+                // is nearer to than that side. The circle is as near
+                // there, 0.125, at another place of its own, (1.9, 0.2):
+                // not between the two, and the point is taken as before.
                 let inside = left_of(sheet, false, &loops, &all, &loops[0], 4e-6).unwrap();
                 let (x, y, _) = frame.local(inside);
+                assert!(
+                    (x - 2.0).abs() < 1e-9 && (y - 0.125).abs() < 1e-9,
+                    "start {start}: ({x}, {y})"
+                );
                 assert!(x > 0.0 && x < 4.0 && y > 0.0 && y < 2.0, "start {start}");
             }
         }

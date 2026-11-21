@@ -2738,6 +2738,12 @@ pub(super) mod tests {
         /// thread.
         pub(in crate::boolean) static WARMED: std::cell::Cell<usize> =
             const { std::cell::Cell::new(0) };
+        /// A search for the nearest point of a spline on this thread
+        /// that runs out of stretches answers with the nearest sample it
+        /// has, as all did before 2026-11-21, and is not done again by
+        /// the curve's pieces (`outline::nearest_on_spline`).
+        pub(in crate::boolean) static NO_PIECES: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
     }
 
     use super::*;
@@ -3619,5 +3625,46 @@ pub(super) mod tests {
                 assert!(ends.0 == 0 || ends.1 == 0, "{what}: {ends:?}");
             }
         }
+    }
+
+    /// Where a spline edge meets the other body's surface is looked for
+    /// on the edge alone, so every place found is a place of the edge.
+    /// Should one not be found on it again (as when the search for the
+    /// edge's nearest point answered with a sample far from it: fuzz seed
+    /// 118385, the half of a cone cut level, made to happen here by
+    /// switching the search by pieces off), the boolean is refused in the
+    /// words of a bug with the two faces; until 2026-11-21 the place was
+    /// left out, the curves it cuts were dropped as dividing nothing, and
+    /// a body of two faces went to the boolean's check. With the search
+    /// as it is, the same cut is built.
+    #[test]
+    fn a_place_of_a_spline_edge_not_found_on_it_again_is_refused() {
+        use crate::boolean::BooleanOptions;
+        use crate::halfspace::{Kept, keep_below};
+        use craft3d_math::Frame;
+        let tolerance = Tolerance::new(1e-6, 1e-9).unwrap();
+        let options = BooleanOptions::default();
+        let cone = crate::primitives::cone(&Frame::WORLD, 7.5, 7.5).unwrap();
+        let beside = Frame::from_z(Vec3::new(0.01, 0.0, 3.75), Vec3::new(-1.0, -1.0, 0.0)).unwrap();
+        let Ok(Kept::Cut(half)) = keep_below(&cone, &beside, &tolerance, &options) else {
+            panic!("the plane beside the axis cuts the cone");
+        };
+        let level = Frame::from_z(Vec3::new(0.0, 0.0, 5.0), Vec3::Z).unwrap();
+        NO_PIECES.with(|off| off.set(true));
+        let without = keep_below(&half.body, &level, &tolerance, &options);
+        NO_PIECES.with(|off| off.set(false));
+        match without {
+            Err(KernelError::Unsupported { reason, faces, .. }) => {
+                assert_eq!(reason, HIT_LOST);
+                assert_eq!(faces.len(), 2, "{faces:?}");
+            }
+            other => panic!("expected the refusal of a lost place, got {other:?}"),
+        }
+        let Ok(Kept::Cut(cut)) = keep_below(&half.body, &level, &tolerance, &options) else {
+            panic!("the level plane cuts the half");
+        };
+        assert_eq!(cut.body.faces.len(), 4);
+        assert_eq!(cut.body.edges.len(), 7);
+        assert_eq!(cut.body.vertices.len(), 5);
     }
 }

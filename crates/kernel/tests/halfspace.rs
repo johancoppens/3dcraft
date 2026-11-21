@@ -771,6 +771,55 @@ fn half_a_cone_cut_beside_its_apex_is_cut_level() {
     }
 }
 
+/// The same half with the plane nearer the axis, and levels up to just
+/// under the hyperbola's tip: each side of each level is built, to the
+/// closed forms, or refused as a state that cannot be told, never handed
+/// to the boolean's own check as a body it refuses (before the repair of
+/// seed 118385 every level from half the height up was, and the levels
+/// closest under the tip were refused as *"not the boolean of its
+/// operands"*). What is refused today is owed: the winding sum about a
+/// point (`chart::turn`) runs out of steps on the spline's one speed
+/// bound, as the search for its nearest point did, and says *"a point too
+/// close to a face boundary"* of a point that is not. Per distance of the
+/// plane from the axis, the highest level that is built at every scale: a
+/// level up to it must build, one above it may.
+#[test]
+fn a_level_cut_near_the_tip_is_built_or_refused_in_words() {
+    for k in SCALES {
+        let cone = spike(k, [0.0, 0.0, 0.0], 7.5, 7.5);
+        for (c, built_to) in [(1e-3, 7.3), (3e-4, 5.0), (1e-4, 1.0)] {
+            let shape = HalfCone { d: c / 2f64.sqrt() };
+            let beside = plane(k, [c, 0.0, 3.75], [-1.0, -1.0, 0.0]);
+            let half = below(&cone, &beside, k);
+            for h in [1.0, 3.0, 5.0, 6.5, 7.3, 7.4, 7.48] {
+                let level = plane(k, [0.0, 0.0, h], [0.0, 0.0, 1.0]);
+                let sides = [
+                    (level, "under", shape.between(7.5 - h, 7.5)),
+                    (turned(&level), "over", shape.between(shape.d, 7.5 - h)),
+                ];
+                for (side, which, (volume, area)) in sides {
+                    let what = format!("scale {k}, c {c}, level {h}, {which}");
+                    match cut(&half, &side, k) {
+                        Ok(_) => {
+                            let kept = below(&half, &side, k);
+                            assert_measures(&kept, volume, area, k, &what);
+                        }
+                        Err(KernelError::Unsupported { reason, faces, .. }) => {
+                            assert!(h > built_to, "{what} was built: {reason}");
+                            assert!(
+                                reason.starts_with("a point too close to a face boundary"),
+                                "{what}: {reason}"
+                            );
+                            assert!(!faces.is_empty(), "{what}: no face named");
+                        }
+                        Err(other) => panic!("{what}: {other}"),
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Fuzz seed 115098 (2026-11-20), reduced. A block with a hole whose wall
 /// is tangent to one of its sides (a wall that thins to nothing along a
 /// line, which a boolean accepts: `boolean_contact.rs` › *a hole that
@@ -813,47 +862,7 @@ fn a_hole_tangent_to_a_side_is_cut_across() {
                 let kept = below(&holed, &side, k);
                 assert_measures(&kept, 100.0 - 6.25 * PI, 240.0 - 7.5 * PI, k, &what);
                 assert_eq!(kept.shells.len(), 1, "scale {k}, {what}");
-                eprintln!("PROBE hole scale {k} {what}: {:?}", counts_of(&kept));
-                assert_eq!(kept.faces.len(), 7, "scale {k}, {what}");
-            }
-        }
-    }
-}
-
-/// TEMPORARY (investigation): what each cut of the half cone comes to.
-#[test]
-fn tmp_probe_half_cone() {
-    for k in SCALES {
-        let cone = spike(k, [0.0, 0.0, 0.0], 7.5, 7.5);
-        for c in [2e-2, 10.003936261680792e-3, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5] {
-            let beside = plane(k, [c, 0.0, 3.75], [-1.0, -1.0, 0.0]);
-            let half = match cut(&cone, &beside, k) {
-                Ok(Kept::Cut(result)) => result.body,
-                Ok(Kept::Whole) => {
-                    eprintln!("PROBE cone scale {k} c {c}: whole");
-                    continue;
-                }
-                Err(e) => {
-                    eprintln!("PROBE cone scale {k} c {c}: the half: ERR {e}");
-                    continue;
-                }
-            };
-            for h in [
-                1.0, 3.0, 3.5, 3.75, 4.0, 5.0, 6.5, 7.0, 7.3, 7.4, 7.45, 7.48, 7.49,
-            ] {
-                let level = plane(k, [0.0, 0.0, h], [0.0, 0.0, 1.0]);
-                for (side, which) in [(level, "under"), (turned(&level), "over")] {
-                    let said = match cut(&half, &side, k) {
-                        Ok(Kept::Whole) => "whole".to_string(),
-                        Ok(Kept::Cut(result)) => format!(
-                            "cut {:?} valid {}",
-                            counts_of(&result.body),
-                            check(&result.body, &tolerance(k)).is_empty()
-                        ),
-                        Err(e) => format!("ERR {e}"),
-                    };
-                    eprintln!("PROBE cone scale {k} c {c} level {h} {which}: {said}");
-                }
+                assert_eq!(counts_of(&kept), (10, 15, 7), "scale {k}, {what}");
             }
         }
     }

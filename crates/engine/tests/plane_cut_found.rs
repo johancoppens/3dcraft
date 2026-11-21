@@ -18,7 +18,7 @@
 
 mod common;
 
-use common::checked::{assert_solid, body, built, new_document, run, session};
+use common::checked::{assert_solid, body, built, deep, failed, new_document, session};
 use craft3d_math::Portable;
 use serde_json::json;
 use std::f64::consts::PI;
@@ -49,7 +49,9 @@ fn half_cone(c: f64, top: f64, bottom: f64) -> (f64, f64) {
 
 /// Seed 118385 as the fuzzer made it (scale 1e3, tolerance 1e-3), group 1:
 /// a cone along x cut by four planes in one feature. The second, level
-/// across the half the first leaves, was refused as an invalid body.
+/// across the half the first leaves, was refused as an invalid body. The
+/// first three each leave a face; the fourth, beside what they leave,
+/// changes nothing.
 #[test]
 fn seed_118385_as_found() {
     let mut s = session();
@@ -60,7 +62,7 @@ fn seed_118385_as_found() {
         json!({"angle": "0 deg", "axis": [1.0, 0.0, 0.0], "height": 7500.0, "name": "N0",
                "position": [-10000.0, 0.0, 0.0], "radius": 7500.0}),
     );
-    let result = run(
+    let result = built(
         &mut s,
         CUT,
         json!({"name": "N1", "target": "N0", "planes": [
@@ -70,9 +72,17 @@ fn seed_118385_as_found() {
             {"offset": -7479.992127476638, "plane": "zx", "side": "above"},
         ]}),
     );
-    eprintln!("PROBE seed 118385: {result}");
-    let check = run(&mut s, "document.check", json!({"deep": true}));
-    eprintln!("PROBE seed 118385 check: {check}");
+    let cuts: Vec<bool> = result["planes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|plane| plane["cuts"].as_bool().unwrap())
+        .collect();
+    assert_eq!(cuts, [true, true, true, false], "{result}");
+    let found = body(&mut s, "N1");
+    assert_eq!(found["valid"], true, "{found}");
+    assert_eq!(found["shells"], 1, "{found}");
+    deep(&mut s);
 }
 
 /// Seed 115098 as the fuzzer made it (scale 1), group 5: a block less a
@@ -106,16 +116,21 @@ fn seed_115098_as_found() {
         "feature.boolean",
         json!({"keepTool": true, "name": "N4", "op": "subtract", "target": "N3", "tool": "N2"}),
     );
-    let result = run(
+    built(
         &mut s,
         CUT,
         json!({"name": "N5", "target": "N4", "planes": [
             {"normal": [-1.0, 0.0, 0.0], "point": [-10.625, 12.5, 12.50367379315737]},
         ]}),
     );
-    eprintln!("PROBE seed 115098: {result}");
-    let check = run(&mut s, "document.check", json!({"deep": true}));
-    eprintln!("PROBE seed 115098 check: {check}");
+    let found = assert_solid(
+        &mut s,
+        "N5",
+        0.625 * (350.0 - 6.25 * PI),
+        Some(746.875 - 9.375 * PI),
+        1.0,
+    );
+    assert_eq!(found["faces"], 7, "{found}");
 }
 
 /// Seed 118385 reduced: a cone halved by a plane that passes its axis by
@@ -169,10 +184,20 @@ fn half_a_cone_cut_beside_its_apex_is_cut_level() {
 
 /// Seed 115098 reduced: a block of 2 × 10 × 10 with a hole of radius 2.5
 /// along x whose wall is tangent to the side y = 0, cut across the hole at
-/// x = 1, both sides kept. The cylinder is turned about its axis so that
-/// the circle the plane cuts from its wall starts away from the side (its
-/// middle then is where it touches the side: the case that was refused),
-/// elsewhere, and at the side.
+/// x = 1, both sides kept: plates of 1 × 10 × 10 less the hole. The
+/// cylinder is turned about its axis: at 0 degrees the circle the plane
+/// cuts from its wall starts away from the side, and its middle is where
+/// it touches the outline the plane cuts from the block (the case the
+/// boolean built wrong and refused); at 37 neither is.
+///
+/// At 180 the circle starts at the touch, so the cut body has a vertex
+/// there, on an edge of the outline it is no end of, and regeneration's
+/// own check refuses the body as touching itself, naming the place. The
+/// same body with the vertex elsewhere is accepted as a wall that thins to
+/// nothing: which of the two it is to be is the developer's open question
+/// (docs/design/booleans.md › *A tangency line on which another wall
+/// ends*), and what is held here is what happens today, in words, at that
+/// place.
 #[test]
 fn a_hole_tangent_to_a_side_is_cut_across() {
     for k in SCALES {
@@ -196,30 +221,24 @@ fn a_hole_tangent_to_a_side_is_cut_across() {
                 json!({"op": "subtract", "target": "Block", "tool": "Drill", "name": "Holed"}),
             );
             for (name, side) in [("Right", "below"), ("Left", "above")] {
-                let result = run(
-                    &mut s,
-                    CUT,
-                    json!({"target": "Holed", "keep": true, "name": name, "planes": [
-                        {"point": [k, 0.0, 0.0], "normal": [-1.0, 0.0, 0.0], "side": side},
-                    ]}),
-                );
-                eprintln!("PROBE hole scale {k} angle {angle} {name}: {result}");
-                if result["status"] == "ok" {
-                    let found = body(&mut s, name);
-                    eprintln!(
-                        "PROBE hole scale {k} angle {angle} {name}: volume {} (want {}) area {} (want {}) faces {} edges {} vertices {}",
-                        found["volume"],
-                        (100.0 - 6.25 * PI) * k * k * k,
-                        found["area"],
-                        (240.0 - 7.5 * PI) * k * k,
-                        found["faces"],
-                        found["edges"],
-                        found["vertices"]
+                let params = json!({"target": "Holed", "keep": true, "name": name, "planes": [
+                    {"point": [k, 0.0, 0.0], "normal": [-1.0, 0.0, 0.0], "side": side},
+                ]});
+                if angle == "180 deg" {
+                    let reason = failed(&mut s, CUT, params);
+                    assert!(
+                        reason.contains("the cut body touches itself at (")
+                            && reason.contains("move what meets there apart"),
+                        "scale {k}, {name}: {reason}"
                     );
+                    continue;
                 }
+                built(&mut s, CUT, params);
+                let found =
+                    assert_solid(&mut s, name, 100.0 - 6.25 * PI, Some(240.0 - 7.5 * PI), k);
+                assert_eq!(found["faces"], 7, "scale {k}, angle {angle}: {found}");
+                assert_eq!(found["shells"], 1, "scale {k}, angle {angle}: {found}");
             }
-            let check = run(&mut s, "document.check", json!({"deep": true}));
-            eprintln!("PROBE hole scale {k} angle {angle} check: {check}");
         }
     }
 }
