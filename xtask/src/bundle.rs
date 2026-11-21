@@ -2307,6 +2307,11 @@ mod tests {
         let sub_bare = assembly_of(&[&bare(&pin), &bare(&washer)]);
         let expected = assembly_of(&[&bare(&jaw), &bare(&lever), &bare(&sub_bare)]);
         assert_eq!(entries_of(&copy), entries_of(&bare(&expected)));
+        assert_eq!(
+            copy,
+            bare(&expected),
+            "the archive 3DCraft writes, its entries in its order"
+        );
         assert_eq!(craft3d_format::from_bytes(&copy).unwrap(), expected);
         // The part without a picture kept its name.
         let washer_name = format!("blobs/{}.3dcraft", hex(&craft3d_doc::sha256(&washer_bytes)));
