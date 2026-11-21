@@ -1,11 +1,14 @@
 # Licence of the bundled examples, Jigs and assemblies
 
 The files in this folder are built into 3DCraft and opened from its start screen (docs/decisions.md,
-2026-11-10). They are copied unchanged from three repositories, which are their source; they are not edited
-here. `bundle.json` lists each with its repository, folder, commit and licence, and
-`cargo xtask bundle-examples` copies them again (docs/development.md, Bundled examples). The pictures in
-`thumbs/` are the `preview.png` of each file's folder, made smaller, under the same licence as the file.
-This file is written by that task: do not edit it by hand.
+2026-11-10). They are copied from three repositories, which are their source, with one change: the
+picture `thumb.png` a file holds for a gallery is left out, its own and that of each part packed in an
+assembly (which then takes the SHA-256 of its new bytes as its name in the file). Nothing else is changed,
+and they are not edited here. `bundle.json` lists each with its repository, folder, commit and licence,
+the size and SHA-256 of the file there and of the copy here, and `cargo xtask bundle-examples` copies them
+again (docs/development.md, Bundled examples). The pictures in `thumbs/` are the `preview.png` of each
+file's folder, made smaller, under the same licence as the file. This file is written by that task: do
+not edit it by hand.
 
 ## From the 3DCraft examples (MIT)
 
@@ -82,7 +85,8 @@ made. The repository asks to be credited with the file's title, as in:
 
 > "Laser-cut box" by Johan Coppens, from the 3DCraft Jigs (CC BY 4.0), https://github.com/johancoppens/3dcraft-jigs
 
-No changes were made to these copies.
+The one change made to these copies: the picture `thumb.png` is left out of each file and of each
+part packed in it (above).
 
 Data and designs from elsewhere that these files use are credited in that repository's `ATTRIBUTION.md` at
 that commit: <https://github.com/johancoppens/3dcraft-jigs/blob/99f60803d35fc724a0fb18f116bf1a6c36f0b4cc/ATTRIBUTION.md>.
@@ -113,7 +117,8 @@ made. The repository asks to be credited with the file's title, as in:
 
 > "Horizontal toggle clamp" by Johan Coppens, from the 3DCraft assemblies (CC BY 4.0), https://github.com/johancoppens/3dcraft-assemblies-examples
 
-No changes were made to these copies.
+The one change made to these copies: the picture `thumb.png` is left out of each file and of each
+part packed in it (above).
 
 Data and designs from elsewhere that these files use are credited in that repository's `ATTRIBUTION.md` at
 that commit: <https://github.com/johancoppens/3dcraft-assemblies-examples/blob/f847879623573613af36eeb06fcea0818c8467d2/ATTRIBUTION.md>.
