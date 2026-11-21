@@ -6,6 +6,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 46386,
       "commit": "972be4092e7d12917b817c82f7fbf08caf7a8f30",
+      "copy": {
+        "bytes": 33494,
+        "sha256": "20daa6d825907af4fa9a6dd010278bfc823a521e2f0afbbbdca256c3abdad549",
+        "thumbnailBytes": 12798,
+        "thumbnails": 1
+      },
       "file": "steel-bookend.3dcraft",
       "folder": "examples/06-steel-bookend",
       "formatVersion": 69,
@@ -35,6 +41,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 68996,
       "commit": "972be4092e7d12917b817c82f7fbf08caf7a8f30",
+      "copy": {
+        "bytes": 44486,
+        "sha256": "33d821f8d315dfda2cbc1a7b9a5f1e8ab3ec8149d1678ddb09c484940125266e",
+        "thumbnailBytes": 24416,
+        "thumbnails": 1
+      },
       "file": "t-slot-profile.3dcraft",
       "folder": "examples/02-t-slot-profile",
       "formatVersion": 69,
@@ -64,6 +76,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 248515,
       "commit": "972be4092e7d12917b817c82f7fbf08caf7a8f30",
+      "copy": {
+        "bytes": 231169,
+        "sha256": "99d060c171edaea4905ebd2a4ed77f14712bf8148ac0f4f5ba7422a2a0c6dce7",
+        "thumbnailBytes": 17252,
+        "thumbnails": 1
+      },
       "file": "moka-pot.3dcraft",
       "folder": "examples/20-moka-pot",
       "formatVersion": 69,
@@ -93,6 +111,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 258227,
       "commit": "972be4092e7d12917b817c82f7fbf08caf7a8f30",
+      "copy": {
+        "bytes": 241216,
+        "sha256": "7f320861af02ebb8f55e63805020a897797b31f7a7f0da0f4b9befbe08bae2f4",
+        "thumbnailBytes": 16917,
+        "thumbnails": 1
+      },
       "file": "ship-propeller.3dcraft",
       "folder": "examples/17-ship-propeller",
       "formatVersion": 69,
@@ -122,6 +146,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 206520,
       "commit": "972be4092e7d12917b817c82f7fbf08caf7a8f30",
+      "copy": {
+        "bytes": 182494,
+        "sha256": "fdbb5f4e2434d20fb6f898f64b7c3fb2d663566a381bdb7a3ae1b2eeeae877ae",
+        "thumbnailBytes": 23932,
+        "thumbnails": 1
+      },
       "file": "snap-fit-enclosure.3dcraft",
       "folder": "examples/23-snap-fit-enclosure",
       "formatVersion": 69,
@@ -151,6 +181,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 255075,
       "commit": "972be4092e7d12917b817c82f7fbf08caf7a8f30",
+      "copy": {
+        "bytes": 228490,
+        "sha256": "b5fe472840e76058fc2c580c7cb30989e09104176d23bf70b47b47950ffb33da",
+        "thumbnailBytes": 26491,
+        "thumbnails": 1
+      },
       "file": "hydraulic-cylinder.3dcraft",
       "folder": "examples/15-hydraulic-cylinder",
       "formatVersion": 69,
@@ -180,6 +216,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 184932,
       "commit": "972be4092e7d12917b817c82f7fbf08caf7a8f30",
+      "copy": {
+        "bytes": 146140,
+        "sha256": "b5bb258243753477ebe3b83deaef5efd949a4c2e16df66b73df565f6f943278e",
+        "thumbnailBytes": 38698,
+        "thumbnails": 1
+      },
       "file": "spiral-staircase.3dcraft",
       "folder": "examples/16-spiral-staircase",
       "formatVersion": 69,
@@ -209,6 +251,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 87211,
       "commit": "972be4092e7d12917b817c82f7fbf08caf7a8f30",
+      "copy": {
+        "bytes": 62171,
+        "sha256": "20572e9523c2f51204ce05a86474300f4fba505661edfb8d1793d5b3ae248872",
+        "thumbnailBytes": 24946,
+        "thumbnails": 1
+      },
       "file": "solitaire-ring.3dcraft",
       "folder": "examples/14-solitaire-ring",
       "formatVersion": 69,
@@ -238,6 +286,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 238478,
       "commit": "972be4092e7d12917b817c82f7fbf08caf7a8f30",
+      "copy": {
+        "bytes": 216019,
+        "sha256": "2e4dcdbfe9d257f39ccd13196146847b34fa0dca85261c1197f6037166bb1c97",
+        "thumbnailBytes": 22365,
+        "thumbnails": 1
+      },
       "file": "flat-pack-bookcase.3dcraft",
       "folder": "examples/22-flat-pack-bookcase",
       "formatVersion": 69,
@@ -267,6 +321,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 139604,
       "commit": "972be4092e7d12917b817c82f7fbf08caf7a8f30",
+      "copy": {
+        "bytes": 120561,
+        "sha256": "f84533c297333204d8bb47bccf7322673ed9965d8c741b039df5eb80b628a9cf",
+        "thumbnailBytes": 18949,
+        "thumbnails": 1
+      },
       "file": "mailer-box.3dcraft",
       "folder": "examples/09-mailer-box",
       "formatVersion": 69,
@@ -296,6 +356,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 219979,
       "commit": "99f60803d35fc724a0fb18f116bf1a6c36f0b4cc",
+      "copy": {
+        "bytes": 197708,
+        "sha256": "35bd03d07c041d0092a659f5fa026f46611383470aa2f598e368772a4e858b4a",
+        "thumbnailBytes": 22177,
+        "thumbnails": 1
+      },
       "file": "laser-box.3dcraftjig",
       "folder": "jigs/05-laser-box",
       "formatVersion": 69,
@@ -329,6 +395,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 259411,
       "commit": "99f60803d35fc724a0fb18f116bf1a6c36f0b4cc",
+      "copy": {
+        "bytes": 234783,
+        "sha256": "cf8e65fd462605c3aedee646325f4cbc429b64ba61e373022ede9bccff2b6bf7",
+        "thumbnailBytes": 24534,
+        "thumbnails": 1
+      },
       "file": "gridfinity-bin.3dcraftjig",
       "folder": "jigs/07-gridfinity-bin",
       "formatVersion": 69,
@@ -362,6 +434,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 167165,
       "commit": "99f60803d35fc724a0fb18f116bf1a6c36f0b4cc",
+      "copy": {
+        "bytes": 149265,
+        "sha256": "ac1778a2ed09a91e26d35201e130baa3353e670b48f92ceea1b482fc9fbe38b3",
+        "thumbnailBytes": 17806,
+        "thumbnails": 1
+      },
       "file": "joint-drawer.3dcraftjig",
       "folder": "jigs/02-joint-drawer",
       "formatVersion": 69,
@@ -395,6 +473,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 132696,
       "commit": "99f60803d35fc724a0fb18f116bf1a6c36f0b4cc",
+      "copy": {
+        "bytes": 96945,
+        "sha256": "714e858b56380ac16202c6f2618c345403ffe3ca215e362c4bda92736250830e",
+        "thumbnailBytes": 35657,
+        "thumbnails": 1
+      },
       "file": "sheet-metal-enclosure.3dcraftjig",
       "folder": "jigs/13-sheet-metal-enclosure",
       "formatVersion": 69,
@@ -428,6 +512,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 331357,
       "commit": "99f60803d35fc724a0fb18f116bf1a6c36f0b4cc",
+      "copy": {
+        "bytes": 305760,
+        "sha256": "6ab2104a3589f93d7727aa736fb850e1d19fc95d28c62b7756cb501f06f2ac91",
+        "thumbnailBytes": 25503,
+        "thumbnails": 1
+      },
       "file": "planetary-gearbox.3dcraftjig",
       "folder": "jigs/30-planetary-gearbox",
       "formatVersion": 69,
@@ -461,6 +551,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 879215,
       "commit": "99f60803d35fc724a0fb18f116bf1a6c36f0b4cc",
+      "copy": {
+        "bytes": 853730,
+        "sha256": "494b3efe0779534c6554d8d85b8023ac8e0b360643dbdccfbd267ad424225847",
+        "thumbnailBytes": 25391,
+        "thumbnails": 1
+      },
       "file": "sundial.3dcraftjig",
       "folder": "jigs/26-sundial",
       "formatVersion": 69,
@@ -494,6 +590,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 393336,
       "commit": "f847879623573613af36eeb06fcea0818c8467d2",
+      "copy": {
+        "bytes": 259611,
+        "sha256": "4b93b472b1334901393f1afbe54ecea8794552eda8982be48bd25e16775d6972",
+        "thumbnailBytes": 133067,
+        "thumbnails": 7
+      },
       "file": "toggle-clamp.3dcraftasm",
       "folder": "assemblies/01-toggle-clamp",
       "formatVersion": 69,
@@ -531,6 +633,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 512511,
       "commit": "f847879623573613af36eeb06fcea0818c8467d2",
+      "copy": {
+        "bytes": 336545,
+        "sha256": "1e9db566e04531ad31c6f761c994729c31c271223d7aa578c731836bcd2a87b6",
+        "thumbnailBytes": 174932,
+        "thumbnails": 11
+      },
       "file": "jansen-walker.3dcraftasm",
       "folder": "assemblies/02-jansen-walker",
       "formatVersion": 69,
@@ -568,6 +676,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 576361,
       "commit": "f847879623573613af36eeb06fcea0818c8467d2",
+      "copy": {
+        "bytes": 386730,
+        "sha256": "48dfac431f14b14765d4ebc512a2c02c851c3c699bf25b37a72edd74fdd19a34",
+        "thumbnailBytes": 188691,
+        "thumbnails": 10
+      },
       "file": "scissor-jack.3dcraftasm",
       "folder": "assemblies/03-scissor-jack",
       "formatVersion": 69,
@@ -605,6 +719,12 @@
       "builtWith": "b99d70cfe19e",
       "bytes": 988454,
       "commit": "f847879623573613af36eeb06fcea0818c8467d2",
+      "copy": {
+        "bytes": 770863,
+        "sha256": "a307e85c379ad6646dfb77b97f81fa2871ad871248d0958a2f1be07a2bf3f3c1",
+        "thumbnailBytes": 216651,
+        "thumbnails": 10
+      },
       "file": "radial-engine.3dcraftasm",
       "folder": "assemblies/06-radial-engine",
       "formatVersion": 69,

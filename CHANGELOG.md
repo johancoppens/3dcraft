@@ -21,6 +21,7 @@ What 3DCraft answered before can differ now: a measure, a proof, a check, a body
 
 ### Changed
 
+- **Smaller programs and a smaller web download: the examples built in no longer carry pictures nobody sees.** Each example, Jig and assembly on the start screen held a 400 × 300 picture for a gallery, and so did 34 of the parts packed in the four assemblies (54 pictures in all), which 3DCraft never showed: the start screen has its own. They are left out of the copies built into 3DCraft, which open to the same designs as before. The twenty examples take 5.1 MB instead of 6.2 MB in the desktop program and in the web version, and the web version's download is 751 kB smaller compressed (9.77 instead of 10.52 MB).
 - **`craft3d-cli serve` and `mcp` make a write folder that does not exist yet.** When the folder given with `--automation-write-root` is missing and its parent folder exists, the server makes that one folder as it starts, then works as before; until now it refused to start. A folder given with `--automation-read-root` must still exist (the same folder given for both, as the MCP bundle gives it, is made and then found). A folder that starts with a variable no one filled in, such as `${DOCUMENTS}/3DCraft`, is refused with a message that says to choose a folder. What the commands answer does not change.
 
 ### Fixed
