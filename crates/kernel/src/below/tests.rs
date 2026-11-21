@@ -1651,7 +1651,9 @@ fn a_section_of_a_turned_over_face_beside_a_cut_alone_sums_both() {
         let notch = block(&up_at(-k, -k, 10.0 * k), 11.0 * k, 12.0 * k, 11.0 * k).unwrap();
         let slot = block(&up_at(12.0 * k, -k, 5.0 * k), 2.0 * k, 12.0 * k, 16.0 * k).unwrap();
         let notched = boolean(&big, &notch, BooleanOp::Subtract, &t).unwrap().body;
-        let body = boolean(&notched, &slot, BooleanOp::Subtract, &t).unwrap().body;
+        let body = boolean(&notched, &slot, BooleanOp::Subtract, &t)
+            .unwrap()
+            .body;
         // What the case is: a reversed face and one that is not, both in
         // the section.
         let up = facing(Vec3::Z);
@@ -1669,8 +1671,18 @@ fn a_section_of_a_turned_over_face_beside_a_cut_alone_sums_both() {
         let centre = near.section.centroid.unwrap();
         close(centre.x, 106.0 / 7.0 * k, k, &what);
         close(centre.y, 5.0 * k, k, &what);
-        close(near.section.i_x, 280.0 * 100.0 / 12.0 * k.ppowi(4), k.ppowi(4), &what);
-        close(near.section.i_y, 470560.0 / 21.0 * k.ppowi(4), k.ppowi(4), &what);
+        close(
+            near.section.i_x,
+            280.0 * 100.0 / 12.0 * k.ppowi(4),
+            k.ppowi(4),
+            &what,
+        );
+        close(
+            near.section.i_y,
+            470560.0 / 21.0 * k.ppowi(4),
+            k.ppowi(4),
+            &what,
+        );
         close(far.volume, 1800.0 * k.ppowi(3), k.ppowi(3), &what);
         close(far.section.area, 180.0 * k * k, k * k, &what);
         close(
