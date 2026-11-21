@@ -922,18 +922,17 @@ fn hole_by_a_side_cut_across(frame: &Frame, k: f64, r: f64, over: f64) -> Vec<St
 /// turned out of the axes) the circle passes the outline by a unit in the
 /// last place or stops as far short of it, and where it passed it the cut
 /// was refused as before the repair, *"boolean produced an invalid
-/// body"*: `outline::touched_at` tells a touch to 1e-9 of a step that
+/// body"*: `outline::touched_at` told a touch to 1e-9 of a step that
 /// runs down to a fifth of the tolerance. Measured on the build server
 /// (Check 44948558534): 2 of 42 cuts at decimal places and 15 of the 18
-/// cuts of bodies turned out of the axes. A piece that is found touched
-/// is no longer stepped in from again at that place (`outline::left_at`),
-/// so the first step, as long as the hole is wide, is the one that tells.
+/// cuts of bodies turned out of the axes. A touch is now told to 1e-9 of
+/// the width of the piece as well, at every step.
 ///
 /// Held: every cut at decimal places and out of the axes is built, to
 /// its closed form, at three scales; and so is a hole that passes the
 /// side, or stops short of it, by a billionth and a millionth of the
-/// tolerance, which is rounding still (the first step tells a touch to a
-/// four-hundredth of the tolerance on this hole). Further than that is
+/// tolerance, which is rounding still (a touch is told to a
+/// two-hundredth of the tolerance on this hole). Further than that is
 /// owed: the test below.
 #[test]
 fn a_hole_tangent_to_a_side_to_rounding_is_cut_across() {
@@ -1000,7 +999,7 @@ fn a_hole_tangent_to_a_side_to_rounding_is_cut_across() {
 /// it): a hole that passes the side by less than half the tolerance but
 /// by more than rounding, which the boolean that makes the hole takes
 /// for a touch, cut across. Measured on the build server (Check
-/// 44949983905) with a touched piece left at once, as it is now, at
+/// 44960341198, through the commands, with the touch told as it is now) at
 /// three scales: past the side by a thousandth of the tolerance the cut
 /// is built; by a hundredth and a tenth it is refused in the words of a
 /// face too thin to find a point inside it; by 0.4 it is refused as
