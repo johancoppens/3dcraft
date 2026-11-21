@@ -40,6 +40,7 @@ packaging/** text eol=lf
 # Binary files last, so no text rule above (packaging/**) claims them:
 # a later line wins in .gitattributes.
 *.png binary
+*.webp binary
 *.hdr binary
 *.ico binary
 *.icns binary
