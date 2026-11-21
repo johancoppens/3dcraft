@@ -1628,3 +1628,56 @@ fn a_plane_a_hair_off_a_face_is_continuous_with_the_plane_in_it() {
         }
     }
 }
+
+/// A section of two faces at once: a reversed face of the body merged
+/// with the cut beside it (a notch's floor and the cut through the wall
+/// next to it) and, beyond a slot that splits the section, the cut alone.
+/// A block 30 × 10 × 20 less a notch 10 deep over x < 10 and a slot 2 wide
+/// at x = 12..14 from z = 5 up, at z = 10: facing up 3000 − 100 below, the
+/// section 12 · 10 + 16 · 10 = 280 (its centroid at x = 4240/280 = 106/7,
+/// ix = 280 · 10²/12, iy = 470560/21 by the parallel-axis rule over the
+/// two rectangles); facing down the rest, 1800, the section the cut alone,
+/// 2 · 10 + 16 · 10. Before 2026-11-21 the face with the floor was refused
+/// on its own (the sums are refused per face, before they are added up),
+/// so the floor's area was never taken off the cut's (160 − 120 = 40)
+/// into a positive total: refused by 0.2.1 and by the kernel of that day
+/// alike, by commands.
+#[test]
+fn a_section_of_a_turned_over_face_beside_a_cut_alone_sums_both() {
+    for k in SCALES {
+        let t = tol(k);
+        let what = format!("scale {k}");
+        let big = block(&up_at(0.0, 0.0, 0.0), 30.0 * k, 10.0 * k, 20.0 * k).unwrap();
+        let notch = block(&up_at(-k, -k, 10.0 * k), 11.0 * k, 12.0 * k, 11.0 * k).unwrap();
+        let slot = block(&up_at(12.0 * k, -k, 5.0 * k), 2.0 * k, 12.0 * k, 16.0 * k).unwrap();
+        let notched = boolean(&big, &notch, BooleanOp::Subtract, &t).unwrap().body;
+        let body = boolean(&notched, &slot, BooleanOp::Subtract, &t).unwrap().body;
+        // What the case is: a reversed face and one that is not, both in
+        // the section.
+        let up = facing(Vec3::Z);
+        let prepared = prepare(&[&body], up.normal).unwrap();
+        let part = part_one(&prepared[0], &up, 10.0 * k, &t).unwrap();
+        let (cut, caps) = part.cut.as_ref().unwrap();
+        let turned: Vec<bool> = caps.iter().map(|&f| cut.faces[f].reversed).collect();
+        assert!(
+            turned.contains(&true) && turned.contains(&false),
+            "{what}: a reversed face and a face that is not in the section: {turned:?}"
+        );
+        let (near, far) = sides(&body, Vec3::Z, 10.0 * k, k);
+        close(near.volume, 2900.0 * k.ppowi(3), k.ppowi(3), &what);
+        close(near.section.area, 280.0 * k * k, k * k, &what);
+        let centre = near.section.centroid.unwrap();
+        close(centre.x, 106.0 / 7.0 * k, k, &what);
+        close(centre.y, 5.0 * k, k, &what);
+        close(near.section.i_x, 280.0 * 100.0 / 12.0 * k.ppowi(4), k.ppowi(4), &what);
+        close(near.section.i_y, 470560.0 / 21.0 * k.ppowi(4), k.ppowi(4), &what);
+        close(far.volume, 1800.0 * k.ppowi(3), k.ppowi(3), &what);
+        close(far.section.area, 180.0 * k * k, k * k, &what);
+        close(
+            near.section.area - far.section.area,
+            face_in(&body, Vec3::Z, 10.0 * k, k),
+            k * k,
+            &format!("{what}: the sections differ by the floor"),
+        );
+    }
+}
