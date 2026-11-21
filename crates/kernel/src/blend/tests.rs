@@ -169,6 +169,133 @@ fn a_boss_root_in_place_is_the_tools_result_at_every_seam_angle() {
     }
 }
 
+/// A block 20 × 30 × 10 with a pocket 3 deep in its top that ends in a
+/// ramp (as `crates/engine/tests/blend_common` › `ramp_pocket` makes it
+/// with a plane cut; here by booleans), at scale `k`: the pocket is the
+/// part of x + z ≥ y ≥ 5 with 5 ≤ x ≤ 15 and 7 ≤ z ≤ 10 (405), so the
+/// body is 6000 − 405 = 5595. Its rim along the wall x = 5, 10 long, ends
+/// square against the wall y = 5 at (5, 5, 10) and at a slant in the
+/// ramp, the plane x − y + z = 0, at (5, 15, 10). The body, the rim and
+/// the wall below it.
+fn ramp_pocket(k: f64, tol: &Tolerance) -> (Body, EdgeId, FaceId) {
+    let at = |x: f64, y: f64, z: f64| Vec3::new(x * k, y * k, z * k);
+    let base = primitives::block(&Frame::WORLD, 20.0 * k, 30.0 * k, 10.0 * k).unwrap();
+    let pocket_frame = Frame::WORLD.at(at(5.0, 5.0, 7.0)).unwrap();
+    let pocket = primitives::block(&pocket_frame, 10.0 * k, 25.0 * k, 5.0 * k).unwrap();
+    // What lies on the side of the ramp's plane its normal (1, −1, 1)
+    // points away from goes.
+    let away = Frame::from_z(at(5.0, 15.0, 10.0), Vec3::new(-1.0, 1.0, -1.0)).unwrap();
+    let big = 100.0 * k;
+    let away = away.at(away.point(-big, -big, 0.0)).unwrap();
+    let behind = primitives::block(&away, 2.0 * big, 2.0 * big, big).unwrap();
+    let pocket = boolean(&pocket, &behind, BooleanOp::Subtract, tol)
+        .unwrap()
+        .body;
+    let body = boolean(&base, &pocket, BooleanOp::Subtract, tol)
+        .unwrap()
+        .body;
+    let middle = at(5.0, 10.0, 10.0);
+    let rim = edge_at(&body, middle);
+    let wall = faces_of(&edge_uses(&body), rim)
+        .unwrap()
+        .into_iter()
+        .find(|f| outward(&body, *f, middle).unwrap().dot(Vec3::X) > 0.5)
+        .unwrap();
+    (body, rim, wall)
+}
+
+/// The rim of a pocket that ends in a ramp (`ramp_pocket`) chamfered and
+/// rounded with sizes from 0.25 to three times its length. Below the
+/// wall's height, 3, the blend is built and is the closed form: across
+/// the rim the corner's section (the triangle u + w ≤ d for a chamfer of
+/// d, u along the top and w down the wall; for a fillet of r the spandrel
+/// outside the ball's circle about (r, r)) runs from the square end at
+/// y = 5 to the ramp's plane, which it meets at y = 15 − u − w, so what
+/// goes is 10 times the section's area less the integral of u + w over
+/// it: 5 d² − d³/3, and 10 r² (1 − π/4) − 2 r³ (5/6 − π/4). From 3 on it
+/// is too large for the wall, with 3 as the largest that fits; also from
+/// the size on which the ramp's plane, cutting the tool where the rim
+/// ends in it ([`trim`]), leaves nothing of its blend face: a chamfer of
+/// 10 (both cut lines 10 past the plane at the corner, which slants back
+/// 10 to the square end), a fillet of 10 / (2 − √2) = 17.0711 (the
+/// middle of the arc the nearest). There the blend was a bug's words,
+/// "lost track of an entity", until 2026-11-21 (the random designs'
+/// seeds 109228 and 117254).
+#[test]
+fn a_blend_that_ends_in_a_slanted_plane_is_built_or_too_large_at_every_size() {
+    let sizes = [
+        (false, 0.25),
+        (false, 1.0),
+        (false, 2.999),
+        (false, 3.0),
+        (false, 3.001),
+        (false, 9.999),
+        (false, 10.0),
+        (false, 10.001),
+        (false, 20.0),
+        (false, 30.0),
+        (true, 0.25),
+        (true, 2.999),
+        (true, 3.001),
+        (true, 17.07),
+        (true, 17.08),
+        (true, 30.0),
+    ];
+    for k in [1e-3, 1.0, 1e6] {
+        let tol = tolerance(k);
+        let (body, rim, wall) = ramp_pocket(k, &tol);
+        for (round, s) in sizes {
+            let size = if round {
+                Size::Radius(s * k)
+            } else {
+                Size::Chamfer(ChamferSize::Distances {
+                    first: s * k,
+                    second: s * k,
+                })
+            };
+            let what = format!("scale {k}, {size:?}");
+            let request = Request {
+                edge: rim,
+                first: None,
+                size,
+            };
+            let made = blend(&body, &[request], &tol);
+            if s < 3.0 {
+                let made = made.unwrap_or_else(|e| panic!("{what}: {e:?}"));
+                assert_eq!(check(&made.body, &tol), [], "{what}");
+                let gone = if round {
+                    10.0 * s * s * (1.0 - PI / 4.0) - 2.0 * s * s * s * (5.0 / 6.0 - PI / 4.0)
+                } else {
+                    5.0 * s * s - s * s * s / 3.0
+                };
+                let expected = (5595.0 - gone) * k * k * k;
+                let volume = mass_properties(&made.body).unwrap().volume;
+                assert!(
+                    (volume - expected).abs() <= 1e-9 * expected,
+                    "{what}: volume {volume} against {expected}"
+                );
+                continue;
+            }
+            match made {
+                Err(BlendError::TooLarge {
+                    edge,
+                    face,
+                    largest,
+                    ..
+                }) => {
+                    assert_eq!((edge, face), (rim, wall), "{what}");
+                    assert!(
+                        (largest - 3.0 * k).abs() <= tol.linear,
+                        "{what}: the largest that fits is {largest}"
+                    );
+                }
+                Err(other) => panic!("{what}: {other:?}"),
+                Ok(_) => panic!("{what}: built"),
+            }
+        }
+    }
+}
+
 /// What a blend in place took whole is gone from the body it leaves, and
 /// the edges and faces after it are numbered anew: requests built on that
 /// body are renamed through where its entities came from, a request of an

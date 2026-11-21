@@ -1186,16 +1186,22 @@ fn cap_sums(
     let Surface::Plane(plane) = &face.surface else {
         return Err("a face in the plane that is not flat");
     };
-    // The loops run counter-clockwise about the surface's normal; the
-    // face's outward normal is that normal, or the other way round when
-    // the face is reversed. The cap of what is below faces along the normal.
+    // The face's outward normal is its surface's normal, or the other way
+    // round when the face is reversed; the cap of what is below faces
+    // along the plane's normal. Its loops run counter-clockwise about its
+    // outward normal seen from outside (`craft3d_topo`'s convention, which
+    // already takes `reversed` into account), so about the plane's normal,
+    // and Green's theorem in (a, b), whose a × b is that normal, sums them
+    // as they run: no sign from the surface's own normal. (That sign was
+    // taken until 2026-11-21, which turned the sums of a reversed face in
+    // the plane negative: a pocket's floor, a notch's, a shell's inner
+    // wall, a mirrored face, all refused as enclosing no area.)
     let normal = plane.frame().z();
     let facing = normal.dot(side.normal);
     let outward = if face.reversed { -facing } else { facing };
     if outward.is_nan() || outward <= 0.5 {
         return Err("a face in the plane that does not face away from what is below");
     }
-    let orientation = if facing > 0.0 { 1.0 } else { -1.0 };
     let mut sums = [0.0; 6];
     for &loop_id in &face.loops {
         let lp = body
@@ -1208,7 +1214,7 @@ fn cap_sums(
             let along = edge_sums(&edge.curve, edge.range, side, (o, size), rule, budget)?;
             let sign = if coedge.reversed { -1.0 } else { 1.0 };
             for (sum, part) in sums.iter_mut().zip(along) {
-                *sum += sign * orientation * part;
+                *sum += sign * part;
             }
         }
     }

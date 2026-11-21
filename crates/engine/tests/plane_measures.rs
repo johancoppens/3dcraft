@@ -17,6 +17,7 @@
 use craft3d_engine::{Session, Workspace};
 use craft3d_math::Portable;
 use serde_json::{Value, json};
+use std::f64::consts::PI;
 
 fn run(session: &mut Session, id: &str, params: Value) -> Value {
     session
@@ -540,10 +541,12 @@ fn what_cannot_be_twisted_is_refused() {
     assert_eq!(twisted["status"], "passed", "{twisted}");
 }
 
-/// Owed (2026-11-21): `measure.below` refuses a plane that lies in a face
-/// of the body, "the section of body 0: a face in the plane whose loops
-/// enclose no area" (`kernel::below`, `cap_sums`), where `feature.planeCut`
-/// by the same plane builds. Found by the fuzzer's plane cut check
+/// `measure.below` refused a plane that lies in a face of the body, "the
+/// section of body 0: a face in the plane whose loops enclose no area"
+/// (`kernel::below`, `cap_sums`), where `feature.planeCut` by the same plane
+/// builds, until 2026-11-21: the face's sums took a sign from its surface's
+/// normal, which is wrong for a reversed face (a shell's inside, a mirror's
+/// image, a subtraction's floor). Found by the fuzzer's plane cut check
 /// `cut-below` (the build server's Heavy run 44837145527 on 553a0749): 47
 /// times, every time a plane through a face at offset 0, 17 of them in a
 /// shelled body; 36 on the side the cut keeps. The fuzzer's shrunk
@@ -558,7 +561,6 @@ fn what_cannot_be_twisted_is_refused() {
 /// Each cut is built; `measure.below` must answer, and what it gives must
 /// be what the cut keeps (on the side below) or the rest (above).
 #[test]
-#[ignore = "owed: measure.below refuses a plane that lies in a face of the body (fuzz seeds 118253, 119815, 113245; 2026-11-21)"]
 fn a_plane_in_a_face_of_the_body_is_measured() {
     let cases = [
         (
@@ -648,4 +650,266 @@ fn a_plane_in_a_face_of_the_body_is_measured() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The smallest designs that showed that refusal, by commands, each beside
+/// a control that already worked (2026-11-21). A block 20 × 10 × 10 with a
+/// tower 10 × 10 × 10 on its low-x half, made by a union (the control: its
+/// shoulder is the base's own top face), by a notch cut from a block
+/// 20 × 10 × 20 (the notch's floor is the notch's bottom face, turned over
+/// by the subtraction) and by mirroring the union; a block 10 × 10 × 10
+/// shelled 1 thick, open at its top (an inner wall, the floor) and closed
+/// (the cavity's ceiling and floor). In the plane of the face, on the side
+/// it faces away from: the slab under it, the section the block's whole
+/// side, the face in the plane and the cut through the walls (as at the
+/// union's shoulder); on the other side the rest, the section the cut
+/// alone (the controls that worked); the two sides the whole
+/// (`document.measure`); and `feature.planeCut` by the same plane keeps
+/// what `measure.below` measures, within the fuzzer's `cut-below` band
+/// 4 t (S + A) + 2e-9 V. Then every command on the notched block at its
+/// floor: `measure.section` (the 20 × 10 rectangle, its torsion by the
+/// series), `measure.levelFor` (Newton's step lands on the floor),
+/// `measure.floating` (upright, GM = I / V − (KG − KB)), and the assertion
+/// measures.
+#[test]
+fn a_plane_in_a_turned_over_face_is_measured_through_the_commands() {
+    let t = 1e-6;
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm", "tolerance": t}));
+    for (command, params) in [
+        (
+            "feature.block",
+            json!({"size": [20, 10, 10], "name": "Base"}),
+        ),
+        (
+            "feature.block",
+            json!({"size": [10, 10, 10], "position": [0, 0, 10], "name": "Tower"}),
+        ),
+        (
+            "feature.boolean",
+            json!({"op": "union", "target": "Base", "tool": "Tower", "name": "Step"}),
+        ),
+        (
+            "feature.mirror",
+            json!({"source": "Step", "normal": [1, 0, 0], "keep": true, "name": "Mirrored"}),
+        ),
+        (
+            "feature.block",
+            json!({"size": [20, 10, 20], "name": "Big"}),
+        ),
+        (
+            "feature.block",
+            json!({"size": [11, 12, 11], "position": [10, -1, 10], "name": "Notch"}),
+        ),
+        (
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Big", "tool": "Notch", "name": "Notched"}),
+        ),
+        (
+            "feature.block",
+            json!({"size": [10, 10, 10], "name": "Open"}),
+        ),
+        (
+            "feature.shell",
+            json!({"source": "Open", "thickness": 1, "open": ["F8:face(1)"], "name": "Box"}),
+        ),
+        (
+            "feature.block",
+            json!({"size": [10, 10, 10], "name": "Shut"}),
+        ),
+        (
+            "feature.shell",
+            json!({"source": "Shut", "thickness": 1, "name": "Closed"}),
+        ),
+    ] {
+        let made = run(&mut s, command, params.clone());
+        assert_eq!(made["status"], "ok", "{command} {params}: {made}");
+    }
+    let plane = |point: [f64; 3], normal: [f64; 3]| json!({"point": point, "normal": normal});
+    // (body, the face's point and its normal away from the face's side,
+    // the volume and section on that side, the section on the other).
+    let cases = [
+        (
+            "Step",
+            [0.0, 0.0, 10.0],
+            [0.0, 0.0, 1.0],
+            2000.0,
+            200.0,
+            100.0,
+        ),
+        (
+            "Notched",
+            [0.0, 0.0, 10.0],
+            [0.0, 0.0, 1.0],
+            2000.0,
+            200.0,
+            100.0,
+        ),
+        (
+            "Mirrored",
+            [0.0, 0.0, 10.0],
+            [0.0, 0.0, 1.0],
+            2000.0,
+            200.0,
+            100.0,
+        ),
+        ("Box", [1.0, 0.0, 0.0], [1.0, 0.0, 0.0], 100.0, 100.0, 28.0),
+        ("Box", [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], 100.0, 100.0, 36.0),
+        (
+            "Closed",
+            [0.0, 0.0, 9.0],
+            [0.0, 0.0, -1.0],
+            100.0,
+            100.0,
+            36.0,
+        ),
+        (
+            "Closed",
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+            100.0,
+            100.0,
+            36.0,
+        ),
+    ];
+    for (n, (target, point, normal, volume, section, rest)) in cases.into_iter().enumerate() {
+        let what = format!("{target} in the plane through {point:?} along {normal:?}");
+        let whole = run(&mut s, "document.measure", json!({"feature": target}));
+        let (v, area) = (
+            whole["volume"].as_f64().unwrap(),
+            whole["area"].as_f64().unwrap(),
+        );
+        let near = run(
+            &mut s,
+            "measure.below",
+            json!({"of": target, "plane": plane(point, normal)}),
+        );
+        close(&near["volume"], volume, &format!("{what}: below"));
+        close(
+            &near["section"]["area"],
+            section,
+            &format!("{what}: section"),
+        );
+        let back = normal.map(|x| -x);
+        let far = run(
+            &mut s,
+            "measure.below",
+            json!({"of": target, "plane": plane(point, back)}),
+        );
+        close(&far["volume"], v - volume, &format!("{what}: above"));
+        close(
+            &far["section"]["area"],
+            rest,
+            &format!("{what}: section above"),
+        );
+        let name = format!("Cut{n}");
+        let mut by = plane(point, normal);
+        by["side"] = json!("below");
+        let cut = run(
+            &mut s,
+            "feature.planeCut",
+            json!({"target": target, "planes": [by], "keep": true, "name": name}),
+        );
+        assert_eq!(cut["status"], "ok", "{what}: the cut is built: {cut}");
+        let kept = run(&mut s, "document.measure", json!({"feature": name}))["volume"]
+            .as_f64()
+            .unwrap();
+        let below = near["volume"].as_f64().unwrap();
+        let band = 4.0 * t * (area + section) + 2e-9 * v;
+        assert!(
+            (kept - below).abs() <= band,
+            "{what}: the cut keeps {kept}, measure.below says {below} (band {band})"
+        );
+    }
+
+    // The notched block at its floor, by every command.
+    let floor = plane([0.0, 0.0, 10.0], [0.0, 0.0, 1.0]);
+    let section = run(
+        &mut s,
+        "measure.section",
+        json!({"of": "Notched", "plane": floor}),
+    );
+    close(&section["area"], 200.0, "the section at the floor");
+    close(&section["ix"], 20.0 * 1000.0 / 12.0, "ix = 20 · 10³/12");
+    close(&section["iy"], 10.0 * 8000.0 / 12.0, "iy = 10 · 20³/12");
+    // St Venant's series for a rectangle a × b (a ≥ b), as the kernel's
+    // torsion oracles hold it (to 3e-4).
+    let (a, b) = (20.0_f64, 10.0_f64);
+    let mut sum = 0.0;
+    let mut odd = 1.0_f64;
+    while odd < 200.0 {
+        sum += (odd * PI * a / (2.0 * b)).ptanh() / odd.ppowi(5);
+        odd += 2.0;
+    }
+    let series = a * b.ppowi(3) / 3.0 * (1.0 - 192.0 * b / (PI.ppowi(5) * a) * sum);
+    let j = section["torsion"].as_f64().unwrap();
+    assert!(
+        (j - series).abs() <= 3e-4 * series,
+        "J {j}, the series {series}"
+    );
+    assert_eq!(section["torsionSolve"]["converged"], true, "{section}");
+    let level = run(
+        &mut s,
+        "measure.levelFor",
+        json!({"of": "Notched", "volume": 2000}),
+    );
+    close(&level["offset"], 10.0, "the level for 2000 is the floor");
+    close(&level["section"]["area"], 200.0, "the section there");
+    let floor_slab = run(
+        &mut s,
+        "measure.levelFor",
+        json!({"of": "Closed", "volume": 100}),
+    );
+    close(
+        &floor_slab["offset"],
+        1.0,
+        "the level for 100 is the cavity's floor",
+    );
+    // Floating with the centre of gravity 1 under the centre of buoyancy
+    // (KB 5, KG 4): upright at the floor, the waterplane the section there,
+    // GM = I / V + 1 about each axis.
+    let floated = run(
+        &mut s,
+        "measure.floating",
+        json!({"of": "Notched", "volume": 2000, "centerOfGravity": [10, 5, 4]}),
+    );
+    let e = &floated["equilibria"][0];
+    close(&e["offset"], 10.0, "floats at the floor");
+    close(&e["heel"], 0.0, "upright");
+    close(&e["trim"], 0.0, "upright");
+    assert_eq!(e["stable"], true, "{floated}");
+    let mut gms: Vec<f64> = e["principal"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["gm"].as_f64().unwrap())
+        .collect();
+    gms.sort_by(f64::total_cmp);
+    close(
+        &json!(gms[0]),
+        20.0 * 1000.0 / 12.0 / 2000.0 + 1.0,
+        "GM across",
+    );
+    close(
+        &json!(gms[1]),
+        10.0 * 8000.0 / 12.0 / 2000.0 + 1.0,
+        "GM along",
+    );
+    for (name, measure, expect) in [
+        ("v", json!({"measure": "volumeBelow", "offset": 10}), 2000),
+        ("a", json!({"measure": "sectionArea", "offset": 10}), 200),
+        (
+            "c",
+            json!({"measure": "centroidBelow", "offset": 10, "axis": "z"}),
+            5,
+        ),
+        ("l", json!({"measure": "levelFor", "volume": 2000}), 10),
+    ] {
+        let mut params = measure;
+        params["name"] = json!(name);
+        params["of"] = json!("Notched");
+        params["eq"] = json!(expect);
+        let asserted = run(&mut s, "assert.add", params);
+        assert_eq!(asserted["status"], "passed", "{asserted}");
+    }
 }

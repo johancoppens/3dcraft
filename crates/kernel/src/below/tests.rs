@@ -1236,3 +1236,460 @@ fn a_plane_near_z_by_the_lowest_edge_of_a_far_prism_cuts_what_lies_below_it() {
         assert_eq!(none.section.area, 0.0, "no section");
     }
 }
+
+// ------------------------------------------ a plane in a face of the body
+//
+// A face of the body that lies in the plane and faces away from what is
+// below is part of the section where the plane's cut runs on from it (the
+// boolean merges it with the box's top face): the stepped block's
+// shoulder above, 2k² at the shoulder. Each body here has such a face
+// whose loops run the other way round its surface's normal (a reversed
+// face): a notch's floor or a pocket's, which a subtraction turns over;
+// a shell's inner wall, floor and ceiling; a mirrored face. Their sums
+// were read with the wrong sign, and every one was refused as "a face in
+// the plane whose loops enclose no area" until 2026-11-21.
+
+/// A frame at `(x, y, z)`, its z axis up and its x axis along x.
+fn up_at(x: f64, y: f64, z: f64) -> Frame {
+    Frame::new(Vec3::new(x, y, z), Vec3::Z, Vec3::X).unwrap()
+}
+
+/// The plane square to `normal`, an axis' direction.
+fn facing(normal: Vec3) -> CutPlane {
+    let x = if normal.x.abs() > 0.5 {
+        Vec3::Y
+    } else {
+        Vec3::X
+    };
+    CutPlane::new(normal, x).unwrap()
+}
+
+/// What lies on each side of the plane `p · normal = offset`: below it,
+/// and below the same plane facing the other way, which together are
+/// the whole body (its volume by the topology's integrator).
+fn sides(body: &Body, normal: Vec3, offset: f64, k: f64) -> (BelowPlane, BelowPlane) {
+    let t = tol(k);
+    let near = below(&[body], &facing(normal), offset, &t).unwrap();
+    let far = below(&[body], &facing(-normal), -offset, &t).unwrap();
+    let whole = mass_properties(body).unwrap().volume;
+    close(
+        near.volume + far.volume,
+        whole,
+        k.ppowi(3),
+        "below + above = whole",
+    );
+    (near, far)
+}
+
+/// The area, by the topology's own integrator (not the section's sums),
+/// of the one flat face of `body` that lies in the plane `p · normal =
+/// offset` and faces along `normal` (its outward normal, `reversed` read).
+fn face_in(body: &Body, normal: Vec3, offset: f64, k: f64) -> f64 {
+    let areas = craft3d_topo::face_areas(body);
+    let mut found = Vec::new();
+    for (face, area) in body.faces.iter().zip(&areas) {
+        let Surface::Plane(plane) = &face.surface else {
+            continue;
+        };
+        let frame = plane.frame();
+        let outward = if face.reversed { -frame.z() } else { frame.z() };
+        if outward.dot(normal) > 1.0 - 1e-12
+            && (frame.origin().dot(normal) - offset).abs() <= 1e-9 * k
+        {
+            found.push(*area.as_ref().unwrap());
+        }
+    }
+    assert_eq!(found.len(), 1, "one face in the plane: {found:?}");
+    found[0]
+}
+
+/// A block 2 × 1 × 1 with a 1 × 1 × 1 tower on its low-x half, made three
+/// ways: the union of two blocks (its shoulder the base's own top face),
+/// a block 2 × 1 × 2 less a notch (its floor the notch's bottom face
+/// turned over), and the union mirrored in x = 0 (its shoulder mirrored).
+/// At the shoulder each has 2 below with its centroid at the base's middle,
+/// the section the whole 2 × 1 (the face in the plane and the cut through
+/// the tower: ix = 2·1³/12, iy = 1·2³/12) and the surface below 8; above it
+/// the tower, 1 with the section 1 × 1; the face in the plane is what the
+/// two sections differ by; and the level for 2 is the shoulder, where
+/// Newton's step lands.
+#[test]
+fn a_plane_in_a_turned_over_face_is_measured_as_in_a_shoulder() {
+    for k in SCALES {
+        let t = tol(k);
+        let union = {
+            let base = block(&up_at(0.0, 0.0, 0.0), 2.0 * k, k, k).unwrap();
+            let top = block(&up_at(0.0, 0.0, k), k, k, k).unwrap();
+            boolean(&base, &top, BooleanOp::Union, &t).unwrap().body
+        };
+        let notched = {
+            let big = block(&up_at(0.0, 0.0, 0.0), 2.0 * k, k, 2.0 * k).unwrap();
+            let notch = block(&up_at(k, -0.5 * k, k), 1.5 * k, 2.0 * k, 1.5 * k).unwrap();
+            boolean(&big, &notch, BooleanOp::Subtract, &t).unwrap().body
+        };
+        let mirror = Transform::mirror(Vec3::ZERO, Vec3::X).unwrap();
+        let mirrored = union.transformed(&mirror).unwrap();
+        for (what, body, x) in [
+            ("union", &union, k),
+            ("notched", &notched, k),
+            ("mirrored", &mirrored, -k),
+        ] {
+            let what = format!("{what} at scale {k}");
+            let (near, far) = sides(body, Vec3::Z, k, k);
+            close(near.volume, 2.0 * k.ppowi(3), k.ppowi(3), &what);
+            let at = near.centroid.unwrap();
+            close(at.x, x, k, &what);
+            close(at.y, 0.5 * k, k, &what);
+            close(at.z, 0.5 * k, k, &what);
+            close(near.section.area, 2.0 * k * k, k * k, &what);
+            close(near.section.i_x, k.ppowi(4) / 6.0, k.ppowi(4), &what);
+            close(near.section.i_y, 2.0 * k.ppowi(4) / 3.0, k.ppowi(4), &what);
+            close(near.section.product, 0.0, k.ppowi(4), &what);
+            let centre = near.section.centroid.unwrap();
+            close(centre.x, x, k, &what);
+            close(centre.z, k, k, &what);
+            close(near.surface, 8.0 * k * k, k * k, &what);
+            close(far.volume, k.ppowi(3), k.ppowi(3), &what);
+            close(far.section.area, k * k, k * k, &what);
+            close(far.surface, 5.0 * k * k, k * k, &what);
+            close(
+                near.section.area - far.section.area,
+                face_in(body, Vec3::Z, k, k),
+                k * k,
+                &format!("{what}: the sections differ by the face in the plane"),
+            );
+            let found = level_for(&[body], &facing(Vec3::Z), 2.0 * k.ppowi(3), &t).unwrap();
+            close(found.below.offset, k, k, &what);
+            close(found.below.section.area, 2.0 * k * k, k * k, &what);
+        }
+    }
+}
+
+/// A plate 4 × 4 × 2 with a pocket from its top down to a flat floor at
+/// 1: drilled by a cylinder of radius 1 (a cylindrical wall) and cut by a
+/// spline cone, apex up, whose base is a disc of radius 1 at 1 (a freeform
+/// wall). At the floor there is 4 · 4 · 1 below, its section the whole
+/// 4 × 4 (ix = iy = 4⁴/12) and its surface 16 + 16; above it the plate
+/// less the pocket, (16 − π) · 1 for the bore and 16 − 7π/12 for the
+/// cone's frustum (radii 1 and ½, height 1), the section 16 − π; the two
+/// sections differ by the floor's own area, π.
+#[test]
+fn a_plane_in_a_pocket_floor_takes_the_floor_into_the_section() {
+    for k in SCALES {
+        let t = tol(k);
+        let (l, d, h, r) = (4.0 * k, 2.0 * k, k, k);
+        let plate = block(&up_at(-0.5 * l, -0.5 * l, 0.0), l, l, d).unwrap();
+        let drill = cylinder(&up_at(0.0, 0.0, h), r, 2.0 * k).unwrap();
+        let drilled = boolean(&plate, &drill, BooleanOp::Subtract, &t)
+            .unwrap()
+            .body;
+        let apex_up = Frame::new(Vec3::new(0.0, 0.0, h + 2.0 * k), -Vec3::X, Vec3::Y).unwrap();
+        let cone = craft3d_testkit::solids::spline_cone(&apex_up, r, 2.0 * k)
+            .unwrap()
+            .body;
+        let coned = boolean(&plate, &cone, BooleanOp::Subtract, &t)
+            .unwrap()
+            .body;
+        let frustum = 7.0 * PI * k.ppowi(3) / 12.0;
+        for (what, body, above, slack) in [
+            ("drilled", &drilled, (l * l - PI * r * r) * (d - h), 0.0),
+            ("coned", &coned, l * l * (d - h) - frustum, 20.0 * t.linear),
+        ] {
+            let what = format!("{what} at scale {k}");
+            // A spline's wall is within the tolerance of the cone's.
+            let within = |got: f64, want: f64, power: i32, part: &str| {
+                let allowed = 1e-9 * want.abs().max(k.ppowi(power)) + slack * k.ppowi(power - 1);
+                assert!(
+                    (got - want).abs() <= allowed,
+                    "{what}: {part}: got {got}, want {want} (allowed {allowed})"
+                );
+            };
+            let (near, far) = sides(body, Vec3::Z, h, k);
+            within(near.volume, l * l * h, 3, "volume below");
+            within(near.centroid.unwrap().z, 0.5 * h, 1, "centroid below");
+            within(near.section.area, l * l, 2, "section");
+            within(near.section.i_x, l.ppowi(4) / 12.0, 4, "ix");
+            within(near.section.i_y, l.ppowi(4) / 12.0, 4, "iy");
+            within(near.surface, l * l + 4.0 * l * h, 2, "surface below");
+            within(far.volume, above, 3, "volume above");
+            within(far.section.area, l * l - PI * r * r, 2, "section above");
+            within(
+                near.section.area - far.section.area,
+                face_in(body, Vec3::Z, h, k),
+                2,
+                "the sections differ by the floor",
+            );
+        }
+    }
+}
+
+/// A block 4 × 3 × 2 shelled ½ thick, open at its top and closed: in the
+/// plane of an inner wall, of the floor and of the closed cavity's
+/// ceiling (each facing into the hollow), what lies on the wall's side is
+/// a slab of the wall's thickness, the section the block's whole side;
+/// on the other side the rest, the section the walls' ring; the two
+/// sections differ by the face in the plane.
+#[test]
+fn a_plane_in_a_wall_of_a_hollow_is_measured() {
+    for k in SCALES {
+        let t = tol(k);
+        let (l, b, d, w) = (4.0 * k, 3.0 * k, 2.0 * k, 0.5 * k);
+        let solid = block(&up_at(0.0, 0.0, 0.0), l, b, d).unwrap();
+        let open = crate::shell::shell(&solid, w, &[FaceId(1)], &t)
+            .unwrap()
+            .body;
+        let closed = crate::shell::shell(&solid, w, &[], &t).unwrap().body;
+        // (body, the face's normal into the hollow, its offset along it,
+        // the volume and section on the wall's side, the section of the
+        // other side).
+        let cases = [
+            (
+                "open, its -x wall",
+                &open,
+                Vec3::X,
+                w,
+                w * b * d,
+                b * d,
+                (b - 2.0 * w) * (d - w),
+            ),
+            (
+                "open, its floor",
+                &open,
+                Vec3::Z,
+                w,
+                l * b * w,
+                l * b,
+                (l - 2.0 * w) * (b - 2.0 * w),
+            ),
+            (
+                "closed, its -y wall",
+                &closed,
+                Vec3::Y,
+                w,
+                w * l * d,
+                l * d,
+                (l - 2.0 * w) * (d - 2.0 * w),
+            ),
+            (
+                "closed, its floor",
+                &closed,
+                Vec3::Z,
+                w,
+                l * b * w,
+                l * b,
+                (l - 2.0 * w) * (b - 2.0 * w),
+            ),
+            (
+                "closed, its ceiling",
+                &closed,
+                -Vec3::Z,
+                w - d,
+                l * b * w,
+                l * b,
+                (l - 2.0 * w) * (b - 2.0 * w),
+            ),
+        ];
+        for (what, body, normal, offset, slab, side, face) in cases {
+            let what = format!("{what} at scale {k}");
+            let whole = mass_properties(body).unwrap().volume;
+            let (near, far) = sides(body, normal, offset, k);
+            close(near.volume, slab, k.ppowi(3), &what);
+            close(near.section.area, side, k * k, &what);
+            close(far.volume, whole - slab, k.ppowi(3), &what);
+            close(far.section.area, side - face, k * k, &what);
+            close(face_in(body, normal, offset, k), face, k * k, &what);
+        }
+        // The level for the floor's slab is the floor, where Newton's step
+        // lands (from 1/3 of the extent: 7 below, the section 6).
+        let found = level_for(&[&closed], &facing(Vec3::Z), l * b * w, &t).unwrap();
+        close(found.below.offset, w, k, "the level at the floor");
+        close(
+            found.below.section.area,
+            l * b,
+            k * k,
+            "the level at the floor",
+        );
+    }
+}
+
+/// What the boolean does with a plane a hair off a face of the body.
+#[derive(Clone, Copy, PartialEq)]
+enum Off {
+    /// Cuts there (or the plane is in the face): the closed form exactly.
+    Cut,
+    /// Within half the tolerance: takes the plane for the face's.
+    Within,
+    /// Between half and twice the tolerance: that, or refuses.
+    Edge,
+}
+
+/// The notched block and the drilled plate (above) measured a hair off the
+/// face in the plane: 0.3, 1 and 3 tolerances under it and over it, the
+/// plane facing up and down. 3 tolerances off it the boolean cuts there,
+/// and the volume is the one in the face moved by the section's area on
+/// that side, exactly. Within half the tolerance the boolean takes the
+/// plane for the face's, so the answer is the one in the face, its volume
+/// within the cut's band (4 t (S + A) + 2e-9 V, the fuzzer's `cut-below`);
+/// between half and twice the tolerance it may refuse (neither one surface
+/// nor safely two). Never the section's refusal, and nowhere a jump of
+/// more than the band: the section alone changes by the face's area, which
+/// lies in the plane at one offset and not at the next.
+#[test]
+fn a_plane_a_hair_off_a_face_is_continuous_with_the_plane_in_it() {
+    for k in SCALES {
+        let t = tol(k);
+        let notched = {
+            let big = block(&up_at(0.0, 0.0, 0.0), 2.0 * k, k, 2.0 * k).unwrap();
+            let notch = block(&up_at(k, -0.5 * k, k), 1.5 * k, 2.0 * k, 1.5 * k).unwrap();
+            boolean(&big, &notch, BooleanOp::Subtract, &t).unwrap().body
+        };
+        let (l, d, h, r) = (4.0 * k, 2.0 * k, k, k);
+        let drilled = {
+            let plate = block(&up_at(-0.5 * l, -0.5 * l, 0.0), l, l, d).unwrap();
+            let drill = cylinder(&up_at(0.0, 0.0, h), r, 2.0 * k).unwrap();
+            boolean(&plate, &drill, BooleanOp::Subtract, &t)
+                .unwrap()
+                .body
+        };
+        // (body, the face's height, the volume under it, the section under
+        // it and over it).
+        for (what, body, z, under, (a_under, a_over)) in [
+            (
+                "notched",
+                &notched,
+                k,
+                2.0 * k.ppowi(3),
+                (2.0 * k * k, k * k),
+            ),
+            (
+                "drilled",
+                &drilled,
+                h,
+                l * l * h,
+                (l * l, l * l - PI * r * r),
+            ),
+        ] {
+            let props = mass_properties(body).unwrap();
+            // How far off, in tolerances, and what the boolean does there:
+            // cut there exactly, take the plane for the face's, or either
+            // that or refuse.
+            for (share, how) in [
+                (-3.0, Off::Cut),
+                (-1.0, Off::Edge),
+                (-0.3, Off::Within),
+                (0.0, Off::Cut),
+                (0.3, Off::Within),
+                (1.0, Off::Edge),
+                (3.0, Off::Cut),
+            ] {
+                let delta = share * t.linear;
+                let what = format!("{what} at scale {k}, {share} tolerances off");
+                // Exactly, up: under the face the section under it; over
+                // it the one over it; in it, the face counts (it faces up,
+                // away from what is below).
+                let (v_up, a_up) = if delta <= 0.0 {
+                    (under + a_under * delta, a_under)
+                } else {
+                    (under + a_over * delta, a_over)
+                };
+                // Down: the rest, and the face does not count in it.
+                let v_down = props.volume - v_up;
+                let a_down = if delta < 0.0 { a_under } else { a_over };
+                let in_face = (a_under, a_over);
+                for (side, normal, offset, v, a, a_in_face) in [
+                    ("up", Vec3::Z, z + delta, v_up, a_up, in_face.0),
+                    ("down", -Vec3::Z, -(z + delta), v_down, a_down, in_face.1),
+                ] {
+                    let what = format!("{what}, facing {side}");
+                    let found = match below(&[body], &facing(normal), offset, &t) {
+                        Ok(found) => found,
+                        Err(CutError::Kernel { .. }) if how == Off::Edge => continue,
+                        Err(e) => panic!("{what}: {e}"),
+                    };
+                    if how == Off::Cut {
+                        close(found.volume, v, k.ppowi(3), &what);
+                        close(found.section.area, a, k * k, &what);
+                        continue;
+                    }
+                    let band =
+                        4.0 * t.linear * (props.area + found.section.area) + 2e-9 * props.volume;
+                    assert!(
+                        (found.volume - v).abs() <= band,
+                        "{what}: volume {}, want {v} within {band}",
+                        found.volume
+                    );
+                    let s = found.section.area;
+                    assert!(
+                        (s - a).abs() <= 1e-9 * k * k || (s - a_in_face).abs() <= 1e-9 * k * k,
+                        "{what}: the section {s} is neither {a} nor {a_in_face}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A section of two faces at once: a reversed face of the body merged
+/// with the cut beside it (a notch's floor and the cut through the wall
+/// next to it) and, beyond a slot that splits the section, the cut alone.
+/// A block 30 × 10 × 20 less a notch 10 deep over x < 10 and a slot 2 wide
+/// at x = 12..14 from z = 5 up, at z = 10: facing up 3000 − 100 below, the
+/// section 12 · 10 + 16 · 10 = 280 (its centroid at x = 4240/280 = 106/7,
+/// ix = 280 · 10²/12, iy = 470560/21 by the parallel-axis rule over the
+/// two rectangles); facing down the rest, 1800, the section the cut alone,
+/// 2 · 10 + 16 · 10. Before 2026-11-21 the face with the floor was refused
+/// on its own (the sums are refused per face, before they are added up),
+/// so the floor's area was never taken off the cut's (160 − 120 = 40)
+/// into a positive total: refused by 0.2.1 and by the kernel of that day
+/// alike, by commands.
+#[test]
+fn a_section_of_a_turned_over_face_beside_a_cut_alone_sums_both() {
+    for k in SCALES {
+        let t = tol(k);
+        let what = format!("scale {k}");
+        let big = block(&up_at(0.0, 0.0, 0.0), 30.0 * k, 10.0 * k, 20.0 * k).unwrap();
+        let notch = block(&up_at(-k, -k, 10.0 * k), 11.0 * k, 12.0 * k, 11.0 * k).unwrap();
+        let slot = block(&up_at(12.0 * k, -k, 5.0 * k), 2.0 * k, 12.0 * k, 16.0 * k).unwrap();
+        let notched = boolean(&big, &notch, BooleanOp::Subtract, &t).unwrap().body;
+        let body = boolean(&notched, &slot, BooleanOp::Subtract, &t)
+            .unwrap()
+            .body;
+        // What the case is: a reversed face and one that is not, both in
+        // the section.
+        let up = facing(Vec3::Z);
+        let prepared = prepare(&[&body], up.normal).unwrap();
+        let part = part_one(&prepared[0], &up, 10.0 * k, &t).unwrap();
+        let (cut, caps) = part.cut.as_ref().unwrap();
+        let turned: Vec<bool> = caps.iter().map(|&f| cut.faces[f].reversed).collect();
+        assert!(
+            turned.contains(&true) && turned.contains(&false),
+            "{what}: a reversed face and a face that is not in the section: {turned:?}"
+        );
+        let (near, far) = sides(&body, Vec3::Z, 10.0 * k, k);
+        close(near.volume, 2900.0 * k.ppowi(3), k.ppowi(3), &what);
+        close(near.section.area, 280.0 * k * k, k * k, &what);
+        let centre = near.section.centroid.unwrap();
+        close(centre.x, 106.0 / 7.0 * k, k, &what);
+        close(centre.y, 5.0 * k, k, &what);
+        close(
+            near.section.i_x,
+            280.0 * 100.0 / 12.0 * k.ppowi(4),
+            k.ppowi(4),
+            &what,
+        );
+        close(
+            near.section.i_y,
+            470560.0 / 21.0 * k.ppowi(4),
+            k.ppowi(4),
+            &what,
+        );
+        close(far.volume, 1800.0 * k.ppowi(3), k.ppowi(3), &what);
+        close(far.section.area, 180.0 * k * k, k * k, &what);
+        close(
+            near.section.area - far.section.area,
+            face_in(&body, Vec3::Z, 10.0 * k, k),
+            k * k,
+            &format!("{what}: the sections differ by the floor"),
+        );
+    }
+}
