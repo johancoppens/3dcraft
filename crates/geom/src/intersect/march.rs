@@ -558,14 +558,16 @@ impl Marcher {
 
     /// Newton back onto `f = 0`, moving the shortest way in space: to the
     /// first place as near `f = 0` as it is held there ([`Marcher::held`]),
-    /// and where none is reached (`f` has no slope to follow, or the tries
-    /// run out: the surfaces tangent there, or a hair apart), the first
-    /// place within `on`, which is what was returned before points were
-    /// held to the curve.
+    /// and where none is reached (`f` has no slope to follow, the tries run
+    /// out, or a later place cannot be evaluated: the surfaces tangent
+    /// there, or a hair apart), the first place within `on`, which is what
+    /// was returned before points were held to the curve.
     fn correct(&mut self, mut u: f64, mut v: f64) -> Option<(Eval, f64, f64)> {
         let mut within: Option<(Eval, f64, f64)> = None;
         for _ in 0..16 {
-            let e = self.eval(u, v)?;
+            let Some(e) = self.eval(u, v) else {
+                break;
+            };
             if e.f.abs() <= self.on {
                 if e.f.abs() <= self.held(&e) {
                     return Some((e, u, v));
@@ -587,7 +589,7 @@ impl Marcher {
             u -= e.f * wu / slope;
             v -= e.f * wv / slope;
             if !(u.is_finite() && v.is_finite()) {
-                return None;
+                break;
             }
         }
         within
