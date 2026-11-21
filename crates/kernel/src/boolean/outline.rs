@@ -2359,6 +2359,13 @@ mod tests {
                 assert!(t >= range.0 && t <= range.1, "{t} outside {range:?}");
                 assert_eq!(d, distance(t));
                 let least = brute(curve, range, p);
+                // (Twice the floor where it read 2e-9: a piece no wider
+                // than the floor is not halved, so its sample is within
+                // one floor of any point of it, and the floor is no
+                // longer a number this test hands the search, 1e-9, but
+                // the search's own: a billionth of the size of this part
+                // of the curve, some 2e-8 for the whole hyperbola. The
+                // samples are what the answer is held to, as before.)
                 assert!(
                     d <= least * 1.0011 + 2.0 * floor_of(spline, range),
                     "round {round}: {d} against {least} over {range:?}"
