@@ -5,10 +5,13 @@
 //! the common case, not the rare one.
 //!
 //! Every length is a multiple of a quarter of the base size (`q`), or a
-//! coordinate of a vertex of a body; directions are mostly the axes.
+//! coordinate of a vertex of a body; directions are mostly the axes. A
+//! plane cut's planes lie on the quarters of a body's box or anywhere in
+//! and around it, and are drawn from a stream of their own (the field
+//! `cuts`), so the step changed no design without a cut.
 //! Nothing here knows how the kernel builds anything: it reads the
 //! document through `document.inspect` and `document.edges`, as an agent
-//! would.
+//! would (and, for which faces are flat, puts a datum plane on a copy).
 
 use crate::rng::Rng;
 use crate::runner::{Applied, Options, Runner};
@@ -127,8 +130,33 @@ const AXES: [[f64; 3]; 6] = [
     [0.0, -1.0, 0.0],
 ];
 
+/// Of the groups that find a body in the document, about one in so many
+/// hundred is a plane cut.
+const CUT_PERCENT: u64 = 8;
+
+/// Normals of a cutting plane besides the axes: diagonals of a box and a
+/// slant.
+const SLANTS: [[f64; 3]; 6] = [
+    [1.0, 1.0, 0.0],
+    [1.0, 0.0, 1.0],
+    [0.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0],
+    [1.0, -1.0, 0.0],
+    [-1.0, 1.0, 2.0],
+];
+
 pub struct Generator {
     rng: Rng,
+    /// The plane cut's own stream (2026-11-20): whether a group is a plane
+    /// cut, and every number of a cut, are drawn from it and never from
+    /// `rng`, so a seed whose design has no plane cut makes the design it
+    /// made before the step was added, and one that has a cut makes it up
+    /// to the cut.
+    cuts: Rng,
+    /// Whether a group drawn as a cut is one (the default); off, the step
+    /// is never taken, though `cuts` is drawn from as always, so a design
+    /// is the same as with it up to its first cut (`seeds.rs` holds that).
+    plane_cuts: bool,
     /// A quarter of the base size: the grid step.
     q: f64,
 }
@@ -144,8 +172,16 @@ impl Generator {
     pub fn new(setup: Setup) -> Generator {
         Generator {
             rng: Rng::new(setup.seed),
+            cuts: Rng::new(setup.seed ^ 0x0c07_c075),
+            plane_cuts: true,
             q: setup.base() / 4.0,
         }
+    }
+
+    /// The same generator with the plane cut step off.
+    pub fn without_plane_cuts(mut self) -> Generator {
+        self.plane_cuts = false;
+        self
     }
 
     /// The scale a seed is built at: mostly 1, a quarter each at 1e-3 and
@@ -239,27 +275,40 @@ impl Generator {
     pub fn group(&mut self, runner: &mut Runner, k: usize) -> Group {
         let bodies = bodies(runner);
         let n = bodies.len();
-        let weights: [u64; 12] = if n == 0 {
-            [70, 20, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        } else {
-            let two = if n >= 2 { 30 } else { 0 };
-            [18, 14, 5, two, 14, 4, 6, 2, 5, 5, 6, 8]
-        };
         let name = format!("N{k}");
-        let sketch = format!("S{k}");
-        let (step, commands) = match self.rng.weighted(&weights) {
-            0 => ("primitive", self.primitive(runner, &bodies, &name)),
-            1 => ("extrude", self.extrude(&bodies, &name, &sketch)),
-            2 => ("revolve", self.revolve(&bodies, &name, &sketch)),
-            3 => ("boolean", self.boolean(&bodies, &name)),
-            4 => ("blend", self.blend(runner, &bodies, &name)),
-            5 => ("shell", self.shell(&bodies, &name)),
-            6 => ("offsetFace", self.offset(&bodies, &name)),
-            7 => ("deleteFace", self.delete_face(&bodies, &name)),
-            8 => ("pattern", self.pattern(runner, &bodies, &name)),
-            9 => ("mirror", self.mirror(runner, &bodies, &name)),
-            10 => ("transform", self.transform(runner, &bodies, &name)),
-            _ => ("edit", self.edit(runner, &bodies, &name)),
+        // Drawn for every group, with a body in the document or not, from
+        // the cuts' own stream: up to the first cut, which groups can be
+        // cuts is the seed's alone, and every other group draws from `rng`
+        // what it drew before the step was added. A cut draws nothing from
+        // `rng`, so the groups after it draw what the group it took the
+        // place of would have drawn; and how many numbers it takes from
+        // `cuts` hangs on the document (its bodies, faces, vertices and
+        // flat faces), so which later groups are cuts does too.
+        let drawn = self.cuts.chance(CUT_PERCENT);
+        let (step, commands) = if drawn && n > 0 && self.plane_cuts {
+            ("planeCut", self.plane_cut(runner, &bodies, &name))
+        } else {
+            let weights: [u64; 12] = if n == 0 {
+                [70, 20, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            } else {
+                let two = if n >= 2 { 30 } else { 0 };
+                [18, 14, 5, two, 14, 4, 6, 2, 5, 5, 6, 8]
+            };
+            let sketch = format!("S{k}");
+            match self.rng.weighted(&weights) {
+                0 => ("primitive", self.primitive(runner, &bodies, &name)),
+                1 => ("extrude", self.extrude(&bodies, &name, &sketch)),
+                2 => ("revolve", self.revolve(&bodies, &name, &sketch)),
+                3 => ("boolean", self.boolean(&bodies, &name)),
+                4 => ("blend", self.blend(runner, &bodies, &name)),
+                5 => ("shell", self.shell(&bodies, &name)),
+                6 => ("offsetFace", self.offset(&bodies, &name)),
+                7 => ("deleteFace", self.delete_face(&bodies, &name)),
+                8 => ("pattern", self.pattern(runner, &bodies, &name)),
+                9 => ("mirror", self.mirror(runner, &bodies, &name)),
+                10 => ("transform", self.transform(runner, &bodies, &name)),
+                _ => ("edit", self.edit(runner, &bodies, &name)),
+            }
         };
         let names = runner.names().clone();
         let commands = commands
@@ -880,6 +929,202 @@ impl Generator {
     }
 }
 
+/// The plane cut step (`feature.planeCut`, docs/design/plane-cut.md). Every
+/// number is drawn from the field `cuts`, never from `rng` (see that
+/// field).
+impl Generator {
+    /// A cut of a body by one to four planes, each keeping one side or the
+    /// other: a plane through a point inside or around the body's box (on
+    /// its quarters, its faces among them, at a vertex, at its centre, or
+    /// anywhere in thousandths) square to an axis, a diagonal or a small
+    /// whole-number direction; a base plane moved to a coordinate of the
+    /// box; or a flat face of the body moved in, out or not at all. Now and
+    /// then the target keeps its body (the cut is a copy), and a single
+    /// plane is given alone instead of in a list.
+    fn plane_cut(&mut self, runner: &mut Runner, bodies: &[Body], name: &str) -> Vec<Cmd> {
+        let Some(body) = self.cuts.pick(bodies).cloned() else {
+            return Vec::new();
+        };
+        let count = 1 + self.cuts.weighted(&[50, 25, 15, 10]);
+        // 0: by point and normal, 1: by a base plane, 2: by a flat face.
+        let forms: Vec<usize> = (0..count)
+            .map(|_| self.cuts.weighted(&[50, 25, 25]))
+            .collect();
+        // Which faces are flat is asked only when a plane wants one: a
+        // datum plane on each of a few, on a copy of the document.
+        let flat = if forms.contains(&2) {
+            let mut candidates: Vec<String> = Vec::new();
+            for _ in 0..4 {
+                if let Some(face) = self.cuts.pick(&body.faces).cloned()
+                    && !candidates.contains(&face)
+                {
+                    candidates.push(face);
+                }
+            }
+            runner.flat_faces(&candidates)
+        } else {
+            Vec::new()
+        };
+        let vertices = edges(runner, &body.name).vertices;
+        let mut planes: Vec<Value> = Vec::with_capacity(count);
+        for form in forms {
+            let plane = match form {
+                2 if !flat.is_empty() => self.face_plane(&flat),
+                1 => self.base_plane(&body),
+                _ => self.point_plane(&body, &vertices),
+            };
+            planes.push(plane);
+        }
+        let planes = if planes.len() == 1 && self.cuts.chance(20) {
+            planes.pop().unwrap_or(Value::Null)
+        } else {
+            Value::Array(planes)
+        };
+        let mut params = json!({"target": body.name, "planes": planes, "name": name});
+        if self.cuts.chance(25)
+            && let Some(map) = params.as_object_mut()
+        {
+            map.insert("keep".into(), true.into());
+        }
+        vec![cmd("feature.planeCut", params)]
+    }
+
+    /// The side a plane keeps: `below`, `above`, or left out (below).
+    fn cut_side(&mut self) -> Option<&'static str> {
+        match self.cuts.weighted(&[40, 15, 45]) {
+            0 => Some("below"),
+            1 => None,
+            _ => Some("above"),
+        }
+    }
+
+    /// A small length, as [`Generator::small`] but from the cuts' stream.
+    fn cut_small(&mut self) -> f64 {
+        let k = [0.25, 0.5, 1.0, 2.0];
+        let i = self.cuts.below(k.len());
+        k.get(i).copied().unwrap_or(1.0) * self.q
+    }
+
+    /// A coordinate along `axis` inside or around the body's box: mostly
+    /// on its quarters (its two faces exactly, its middle), now and then a
+    /// quarter outside it, or anywhere from a quarter before it to a
+    /// quarter past it in thousandths of its width.
+    fn along(&mut self, body: &Body, axis: usize) -> f64 {
+        let (Some(&lo), Some(&hi)) = (body.lo.get(axis), body.hi.get(axis)) else {
+            return 0.0;
+        };
+        let width = hi - lo;
+        if self.cuts.chance(70) {
+            let k = if self.cuts.chance(85) {
+                self.cuts.range(0, 4)
+            } else if self.cuts.chance(50) {
+                -1
+            } else {
+                5
+            };
+            match k {
+                0 => lo,
+                4 => hi,
+                k => lo + width * k as f64 / 4.0,
+            }
+        } else {
+            lo + width * self.cuts.range(-250, 1250) as f64 / 1000.0
+        }
+    }
+
+    /// A normal: an axis either way, a diagonal, or three whole numbers
+    /// from -3 to 3 (all three 0 now and then: a normal of no length, which
+    /// the command refuses).
+    fn cut_normal(&mut self) -> [f64; 3] {
+        match self.cuts.weighted(&[45, 25, 30]) {
+            0 => AXES
+                .get(self.cuts.below(AXES.len()))
+                .copied()
+                .unwrap_or([0.0, 0.0, 1.0]),
+            1 => SLANTS
+                .get(self.cuts.below(SLANTS.len()))
+                .copied()
+                .unwrap_or([1.0, 1.0, 0.0]),
+            _ => [0.0; 3].map(|_| self.cuts.range(-3, 3) as f64),
+        }
+    }
+
+    /// A plane by a point and a normal, moved by a small offset now and
+    /// then.
+    fn point_plane(&mut self, body: &Body, vertices: &[[f64; 3]]) -> Value {
+        let point = match self.cuts.weighted(&[60, 25, 15]) {
+            0 => [
+                self.along(body, 0),
+                self.along(body, 1),
+                self.along(body, 2),
+            ],
+            1 => self
+                .cuts
+                .pick(vertices)
+                .copied()
+                .unwrap_or_else(|| body.mid()),
+            _ => body.mid(),
+        };
+        let normal = self.cut_normal();
+        let mut plane = json!({"point": point, "normal": normal});
+        if let Some(map) = plane.as_object_mut() {
+            if self.cuts.chance(15) {
+                let mut offset = self.cut_small();
+                if self.cuts.chance(50) {
+                    offset = -offset;
+                }
+                map.insert("offset".into(), offset.into());
+            }
+            if let Some(side) = self.cut_side() {
+                map.insert("side".into(), side.into());
+            }
+        }
+        plane
+    }
+
+    /// A base plane moved along its normal (xy: z, yz: x, zx: y) to a
+    /// coordinate of the body's box; now and then the bare name (through
+    /// the origin, below kept).
+    fn base_plane(&mut self, body: &Body) -> Value {
+        let (plane, axis) = [("xy", 2), ("yz", 0), ("zx", 1)]
+            .get(self.cuts.below(3))
+            .copied()
+            .unwrap_or(("xy", 2));
+        if self.cuts.chance(10) {
+            return json!(plane);
+        }
+        let offset = self.along(body, axis);
+        let mut value = json!({"plane": plane, "offset": offset});
+        if let (Some(side), Some(map)) = (self.cut_side(), value.as_object_mut()) {
+            map.insert("side".into(), side.into());
+        }
+        value
+    }
+
+    /// The plane of one of the body's flat faces (its normal points out of
+    /// the body), as it is (the body behind it, or nothing in front of it),
+    /// moved in by a small length or by one to four grid steps, or out by a
+    /// small length; now and then the bare name.
+    fn face_plane(&mut self, flat: &[String]) -> Value {
+        let face = self.cuts.pick(flat).cloned().unwrap_or_default();
+        if self.cuts.chance(10) {
+            return json!(face);
+        }
+        let small = self.cut_small();
+        let offset = match self.cuts.weighted(&[20, 40, 30, 10]) {
+            0 => 0.0,
+            1 => -small,
+            2 => -(self.cuts.range(1, 4) as f64) * self.q,
+            _ => small,
+        };
+        let mut value = json!({"plane": face, "offset": offset});
+        if let (Some(side), Some(map)) = (self.cut_side(), value.as_object_mut()) {
+            map.insert("side".into(), side.into());
+        }
+        value
+    }
+}
+
 /// Generates and runs the design of a seed, group by group; `before` is
 /// told every group before it runs (the runner outside keeps them, so that
 /// a process that dies still leaves the design that killed it).
@@ -888,8 +1133,18 @@ pub fn run_seed(
     options: Options,
     before: &mut dyn FnMut(&Design),
 ) -> Result<(Design, Runner), String> {
+    run_generated(Generator::new(setup), setup, options, before)
+}
+
+/// [`run_seed`] with the generator given (made for `setup`'s seed; with
+/// the plane cut step off, say).
+pub fn run_generated(
+    mut generator: Generator,
+    setup: Setup,
+    options: Options,
+    before: &mut dyn FnMut(&Design),
+) -> Result<(Design, Runner), String> {
     let mut runner = Runner::new(setup, options)?;
-    let mut generator = Generator::new(setup);
     let mut design = Design {
         setup,
         groups: Vec::new(),

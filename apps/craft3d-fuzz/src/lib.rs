@@ -18,7 +18,7 @@ pub mod rng;
 pub mod runner;
 pub mod steps;
 
-pub use generate::{Generator, run_seed};
+pub use generate::{Generator, run_generated, run_seed};
 pub use model::{ModelOptions, run_model};
-pub use runner::{Deep, Options, Report, Runner, run_design};
+pub use runner::{Deep, Options, Report, Runner, Steps, Tally, run_design};
 pub use steps::{Design, Group, Setup};

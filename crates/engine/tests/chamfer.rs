@@ -1081,3 +1081,85 @@ fn saved_and_reopened_the_bodies_are_the_same() {
     let check = run(&mut s, "document.check", json!({"deep": true}));
     assert_eq!(check["ok"], true, "{check}");
 }
+
+// ------------------------------------------------------------------ owed
+
+/// Owed (2026-11-20): two designs of the random-design fuzzer whose last
+/// step, a chamfer, is refused with a bug the code caught itself, "the
+/// chamfer lost track of an entity" (`kernel::blend`, `Reason::Lost`),
+/// where it must be built or refused with a reason. Seed 109228 (scale
+/// 1e-3, tolerance 1e-9): a cone's rim chamfered, cut by four planes to a
+/// slab (`feature.planeCut`, the fuzzer's new step), the slab taken out of
+/// a slanted cylinder, and the edge between the cylinder's end and the
+/// slab's cut face chamfered by 0.005, more than the slab is thick. Seed
+/// 117254 (scale 1): a block's chamfered edges patterned five times round
+/// an axis, cut by an extrusion, filleted, and three edges chamfered by 5.
+/// The second has no plane cut, so the fault is the chamfer's. The steps
+/// are the fuzzer's shrunk designs (the build server's fuzz run
+/// 44825476736), with ids as they ran; the last step names its features,
+/// `{N5}`, and those are filled in here.
+#[test]
+#[ignore = "owed: the chamfer loses track of an entity (fuzz seeds 109228 and 117254, 2026-11-20)"]
+fn a_chamfer_never_loses_track_of_an_entity() {
+    let cases = [
+        (
+            "109228",
+            1e-9,
+            json!([
+                {"command": "feature.cone", "params": {"angle": "0 deg", "axis": [0.01, 0.01, 1.0], "height": 0.01, "name": "N0", "position": [0.005, -0.0075, -0.005], "radius": 0.0075}},
+                {"command": "feature.chamfer", "params": {"chain": false, "distance": 0.005, "edges": [["F1:face(0)", "F1:face(1)"]], "name": "N1"}},
+                {"command": "feature.planeCut", "params": {"name": "N2", "planes": [{"normal": [0.01, 0.0, 0.0], "point": [0.0, -0.005, 0.01], "side": "above"}, {"normal": [0.01, 0.0, 0.0], "offset": -0.00125, "point": [0.005, -0.01, 0.01], "side": "above"}, {"offset": -0.00125, "plane": "F2:copy(0)/F1:face(1)", "side": "above"}, {"offset": 0.0, "plane": "F2:copy(0)/F1:face(1)", "side": "below"}], "target": "N1"}},
+                {"command": "feature.cylinder", "params": {"angle": "0 deg", "axis": [1.0, 1.0, 1.0], "height": 0.005, "name": "N3", "position": [0.005930193622728132, -0.0075, -0.0043749999999999995], "radius": 0.01}},
+                {"command": "feature.boolean", "params": {"keepTool": false, "name": "N5", "op": "subtract", "target": "N3", "tool": "N2"}},
+                {"command": "feature.chamfer", "params": {"chain": false, "distance": 0.005, "edges": [["{N5}:copy(0)/{N3}:face(1)", "{N5}:copy(1)/{N2}:cut(2)"]], "name": "N7"}}
+            ]),
+        ),
+        (
+            "117254",
+            1e-6,
+            json!([
+                {"command": "feature.block", "params": {"angle": "45 deg", "axis": [0.0, 0.0, 10.0], "name": "N0", "position": [-3.75, -3.75, -5.0], "size": [15.0, 20.0, 20.0]}},
+                {"command": "feature.chamfer", "params": {"chain": false, "distance": 0.625, "edges": [["F1:face(3)", "F1:face(4)"], ["F1:face(1)", "F1:face(2)"], ["F1:face(2)", "F1:face(5)"]], "name": "N1"}},
+                {"command": "feature.pattern", "params": {"angle": "360 deg / 5", "axis": [0.0, 0.0, 10.0], "count": 5, "name": "N2", "point": [5.0, 5.0, -5.0], "source": "N1"}},
+                {"command": "sketch.create", "params": {"face": "F3:copy(0)/F2:chamfer(0)", "name": "S3"}},
+                {"command": "sketch.circle", "params": {"center": [10.0, -5.0], "radius": 10.0, "sketch": "S3"}},
+                {"command": "feature.extrude", "params": {"cut": "N2", "distance": 10.0, "name": "N3", "sketch": "S3"}},
+                {"command": "feature.fillet", "params": {"chain": false, "edges": [["F6:copy(0)/F1:face(0)", "F6:copy(0)/F1:face(5)"], ["F6:copy(0)/F3:copy(2)/F1:face(3)", "F6:copy(0)/F3:copy(2)/F1:face(5)"]], "name": "N4", "radius": 1.25}},
+                {"command": "feature.chamfer", "params": {"chain": false, "distance": 5.0, "edges": [["{N4}:copy(0)/{N0}:face(1)", "{N4}:copy(0)/{N2}:copy(4)/{N1}:chamfer(1)"], ["{N4}:copy(0)/{N0}:face(1)", "{N4}:copy(0)/{N2}:copy(3)/{N0}:face(5)"], ["{N4}:copy(0)/{N0}:face(1)", "{N4}:copy(0)/{N2}:copy(3)/{N0}:face(3)"]], "name": "N5"}}
+            ]),
+        ),
+    ];
+    let mut lost = Vec::new();
+    for (seed, tolerance, steps) in cases {
+        let mut s = Session::new(Workspace::unrestricted());
+        s.execute("file.new", &json!({"units": "mm", "tolerance": tolerance}))
+            .unwrap();
+        let steps = steps.as_array().unwrap();
+        let (last, before) = steps.split_last().unwrap();
+        for step in before {
+            let id = step["command"].as_str().unwrap();
+            let result = s.execute(id, &step["params"]).unwrap();
+            if result.get("status").is_some() {
+                assert_eq!(result["status"], "ok", "{seed}: {step}: {result}");
+            }
+        }
+        // The last step's features by name, as the fuzzer's runner fills
+        // them in.
+        let mut text = last["params"].to_string();
+        for f in inspect(&mut s)["features"].as_array().unwrap() {
+            let (name, id) = (f["name"].as_str().unwrap(), f["id"].as_str().unwrap());
+            text = text.replace(&format!("{{{name}}}"), id);
+        }
+        let params: Value = serde_json::from_str(&text).unwrap();
+        let reason = match s.execute(last["command"].as_str().unwrap(), &params) {
+            Ok(r) if r["status"] == "ok" => continue,
+            Ok(r) => r["error"].as_str().unwrap_or_default().to_string(),
+            Err(e) => e.message().to_string(),
+        };
+        println!("{seed}: {reason}");
+        if reason.contains(craft3d_engine::BUG) {
+            lost.push(format!("{seed}: {reason}"));
+        }
+    }
+    assert!(lost.is_empty(), "{}", lost.join("\n"));
+}

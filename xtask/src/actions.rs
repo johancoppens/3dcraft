@@ -1,7 +1,7 @@
 //! `cargo xtask actions`: the action matrix (docs/testing.md, oracle 12).
 //!
 //! Every local operation (fillet, chamfer, offset, delete face, shell,
-//! thicken, draft, move face, mirror, pattern) is tried on the faces and
+//! thicken, draft, move face, mirror, pattern, plane cut) is tried on the faces and
 //! edges of the finished bodies of the showcase models, each on the
 //! finished document and undone again, in `craft3d-cli serve` processes
 //! (at most three, each under a memory cap) with a time limit per call. A

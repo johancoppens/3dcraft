@@ -131,6 +131,7 @@ No tessellation is integrated anywhere. The error bound is that of the B-rep: th
 - The floating equilibrium reports those it reaches from its start; a search of every equilibrium (over the sphere of normals, by continuation along the heel) is not built.
 
 - (Nothing owed from the sea kayak's cut at 30.28 mm: below, 2026-10-27, r1-kayakgaps2.)
+- **Owed (2026-11-21): a plane that lies in a face of the body is refused**, "the section of body 0: a face in the plane whose loops enclose no area" (`kernel::below`, `cap_sums`), where `feature.planeCut` by the same plane builds. Found by the fuzzer's plane cut check `cut-below` ([`plane-cut.md`](plane-cut.md) › *As built: the machines*): in its 30-minute run on the build server (Heavy 44837145527), 47 times, every one a plane through a face at offset 0, 17 in a shelled body (a shell's inner wall, a closed cavity's ceiling), others a face of a mirrored body; 36 on the part the cut keeps. Held by the ignored test `crates/engine/tests/plane_measures.rs` › *a plane in a face of the body is measured* (seeds 118253, 119815, 113245); not chased. Every face in those designs that the plane lies in faces away from what is below, so whether the sum's sign is read wrongly for a face whose loops run the other way (a reversed face: a shell's inside, a mirror's image) is the first thing to look at.
 
 ## Findings and history
 

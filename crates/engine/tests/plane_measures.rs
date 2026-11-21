@@ -539,3 +539,113 @@ fn what_cannot_be_twisted_is_refused() {
     );
     assert_eq!(twisted["status"], "passed", "{twisted}");
 }
+
+/// Owed (2026-11-21): `measure.below` refuses a plane that lies in a face
+/// of the body, "the section of body 0: a face in the plane whose loops
+/// enclose no area" (`kernel::below`, `cap_sums`), where `feature.planeCut`
+/// by the same plane builds. Found by the fuzzer's plane cut check
+/// `cut-below` (the build server's Heavy run 44837145527 on 553a0749): 47
+/// times, every time a plane through a face at offset 0, 17 of them in a
+/// shelled body; 36 on the side the cut keeps. The fuzzer's shrunk
+/// designs, as their scripts: seed 118253 (scale 1e-3, tolerance 1e-9), a
+/// block 0.01 on a side shelled 0.000625 thick and open at one face, cut
+/// by the plane of one inner wall, the wall kept; seed 119815 (scale 1), a
+/// torus united with a cylinder and mirrored, cut by the plane of one of
+/// its own flat faces, the body behind it kept (nothing taken away); seed
+/// 113245 (scale 1), a block from z = −2.5 to 5 shelled 2.5 thick and
+/// closed, cut at the plane of its cavity's ceiling, z = 2.5, the part
+/// under it kept (here `measure.below` is asked for the part over it).
+/// Each cut is built; `measure.below` must answer, and what it gives must
+/// be what the cut keeps (on the side below) or the rest (above).
+#[test]
+#[ignore = "owed: measure.below refuses a plane that lies in a face of the body (fuzz seeds 118253, 119815, 113245; 2026-11-21)"]
+fn a_plane_in_a_face_of_the_body_is_measured() {
+    let cases = [
+        (
+            "118253",
+            1e-9,
+            json!([
+                {"command": "feature.block", "params": {"angle": "0 deg", "axis": [0.0, 0.01, 0.0], "name": "N0", "position": [-0.005, 0.0, -0.01], "size": [0.01, 0.01, 0.01]}},
+                {"command": "feature.shell", "params": {"name": "N1", "open": ["F1:face(5)"], "source": "N0", "thickness": 0.000625}}
+            ]),
+            "N1",
+            json!({"normal": [0.01, 0.0, 0.0], "point": [-0.004375, -0.005, -0.01]}),
+            false,
+        ),
+        (
+            "119815",
+            1e-6,
+            json!([
+                {"command": "feature.torus", "params": {"angle": "0 deg", "axis": [10.0, 10.0, 10.0], "major": 15.0, "minor": 5.0, "name": "N0", "position": [5.0, -5.0, 0.0]}},
+                {"command": "feature.cylinder", "params": {"angle": "90 deg", "axis": [10.0, 0.0, 10.0], "height": 10.0, "name": "N1", "position": [0.0, -15.0, 5.0], "radius": 10.0}},
+                {"command": "feature.boolean", "params": {"keepTool": false, "name": "N2", "op": "union", "target": "N1", "tool": "N0"}},
+                {"command": "feature.mirror", "params": {"keep": false, "name": "N3", "normal": [10.0, 10.0, 10.0], "point": [10.0, -15.0, 15.0], "source": "N2"}}
+            ]),
+            "N3",
+            json!("F4:copy(0)/F2:face(2)"),
+            false,
+        ),
+        (
+            "113245",
+            1e-6,
+            json!([
+                {"command": "feature.block", "params": {"angle": "0 deg", "axis": [0.0, 0.0, 10.0], "name": "N0", "position": [0.0, 0.0, -2.5], "size": [15.0, 10.0, 7.5]}},
+                {"command": "feature.shell", "params": {"name": "N1", "open": [], "source": "N0", "thickness": 2.5}}
+            ]),
+            "N1",
+            json!({"normal": [0.0, 0.0, -1.0], "point": [0.0, 15.0, 2.5]}),
+            true,
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (seed, tolerance, steps, target, plane, above) in cases {
+        let mut s = Session::new(Workspace::unrestricted());
+        run(
+            &mut s,
+            "file.new",
+            json!({"units": "mm", "tolerance": tolerance}),
+        );
+        for step in steps.as_array().unwrap() {
+            let made = run(
+                &mut s,
+                step["command"].as_str().unwrap(),
+                step["params"].clone(),
+            );
+            assert_eq!(made["status"], "ok", "{seed}: {step}: {made}");
+        }
+        let side = if above { "above" } else { "below" };
+        let by = match plane.as_object() {
+            Some(map) => {
+                let mut map = map.clone();
+                map.insert("side".into(), side.into());
+                Value::Object(map)
+            }
+            None => json!({"plane": plane, "side": side}),
+        };
+        let cut = run(
+            &mut s,
+            "feature.planeCut",
+            json!({"target": target, "planes": [by], "keep": true, "name": "Cut"}),
+        );
+        assert_eq!(cut["status"], "ok", "{seed}: the cut is built: {cut}");
+        let kept = run(&mut s, "document.measure", json!({"feature": "Cut"}))["volume"]
+            .as_f64()
+            .unwrap();
+        let whole = run(&mut s, "document.measure", json!({"feature": target}))["volume"]
+            .as_f64()
+            .unwrap();
+        match s.execute("measure.below", &json!({"of": target, "plane": plane})) {
+            Err(e) => wrong.push(format!("{seed}: {e}")),
+            Ok(below) => {
+                let below = below["volume"].as_f64().unwrap();
+                let want = if above { whole - below } else { below };
+                if (kept - want).abs() > 1e-9 * whole {
+                    wrong.push(format!(
+                        "{seed}: the cut keeps {kept}, measure.below says {want}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

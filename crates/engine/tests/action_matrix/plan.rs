@@ -26,6 +26,7 @@ pub const KINDS: &[Kind] = &[
     Kind::MoveFace,
     Kind::Mirror,
     Kind::Pattern,
+    Kind::PlaneCut,
 ];
 
 /// One kind of local operation.
@@ -56,6 +57,9 @@ pub enum Kind {
     Mirror,
     /// Pattern the body twice, apart (once per body).
     Pattern,
+    /// Cut the body by the plane of one flat face moved in by a tenth of
+    /// its shortest edge, the side behind it kept (`feature.planeCut`).
+    PlaneCut,
 }
 
 impl Kind {
@@ -73,6 +77,7 @@ impl Kind {
             Kind::MoveFace => "moveFace",
             Kind::Mirror => "mirror",
             Kind::Pattern => "pattern",
+            Kind::PlaneCut => "planeCut",
         }
     }
 }
@@ -88,6 +93,9 @@ pub struct Body {
     pub centroid: [f64; 3],
     pub bbox: [[f64; 3]; 2],
     pub solid: bool,
+    /// The document's tolerance (`document.inspect`, `tolerance.linear`;
+    /// 0 when it is not there, which only makes a check stricter).
+    pub tolerance: f64,
 }
 
 /// One edge of a body, from `document.edges`.
@@ -169,6 +177,17 @@ pub enum Expect {
     /// Two instances `step` apart along x: twice the volume and the area,
     /// the centroid half a step along.
     Double(f64),
+    /// The body cut by the plane of a flat face moved in by `d` along the
+    /// face's outward normal, the side behind the plane kept: the volume
+    /// falls, and it is the volume `measure.below` gives below that plane
+    /// (asked before the cut, [`Measured::below`]), within what each of
+    /// the two may differ from the exact part below by, `2 t (S + A)`
+    /// (`craft3d_kernel::boolean::verify`, rule 1: both are the boolean
+    /// intersection of the body with a block whose only face that meets it
+    /// is the plane), for `t` the document's `tolerance`, `S` the body's
+    /// area and `A` the plane's section of it, and the integrator's `1e-9`
+    /// of the volume each.
+    Below { d: f64, tolerance: f64 },
 }
 
 /// The blend of one straight edge between two flat faces, worked out from
@@ -354,6 +373,12 @@ pub fn bodies(inspect: &Value) -> Vec<Body> {
     let Some(list) = inspect.get("bodies").and_then(Value::as_array) else {
         return Vec::new();
     };
+    let tolerance = inspect
+        .get("tolerance")
+        .and_then(|t| t.get("linear"))
+        .and_then(num)
+        .filter(|t| *t > 0.0)
+        .unwrap_or(0.0);
     list.iter()
         .filter_map(|b| {
             let feature = b.get("feature")?.as_str()?.to_string();
@@ -375,6 +400,7 @@ pub fn bodies(inspect: &Value) -> Vec<Body> {
                 centroid: point(b.get("centroid"))?,
                 bbox: [point(Some(lo))?, point(Some(hi))?],
                 solid: b.get("kind").and_then(Value::as_str) == Some("solid"),
+                tolerance,
             })
         })
         .collect()
@@ -1129,9 +1155,80 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
                     );
                 }
             }
+            Kind::PlaneCut => {
+                // The flat faces, as for a move: each face's own plane moved
+                // in by a tenth of its shortest edge, below (behind the
+                // face) kept.
+                for face in planes.keys() {
+                    let d = 0.1 * shortest_of(face).unwrap_or(fallback);
+                    push(
+                        kind,
+                        face,
+                        "feature.planeCut",
+                        json!({"target": source, "planes": [{"plane": face, "offset": expr(-d, unit)}]}),
+                        Expect::Below {
+                            d: rounded(d),
+                            tolerance: body.tolerance,
+                        },
+                    );
+                }
+            }
         }
     }
     out
+}
+
+/// The `measure.below` that holds a plane cut ([`Expect::Below`]): the
+/// target, the plane and the offset of its one plane, as the action gives
+/// them.
+fn below_params(action: &Action) -> Option<Value> {
+    let first = action.params.get("planes")?.as_array()?.first()?;
+    let target = action.params.get("target")?;
+    let plane = first.get("plane")?;
+    let offset = first.get("offset")?;
+    Some(json!({"of": target, "plane": plane, "offset": offset}))
+}
+
+/// What `measure.below` said of a plane cut's plane: the volume below it
+/// and the area of its section of the body, or why there are none.
+type Below = Result<(f64, f64), String>;
+
+/// What `measure.below` gives for a plane cut's plane, asked before the
+/// cut is made (it changes nothing, so nothing is undone): `Ok(None)` for
+/// any other action; `Err` with the outcome when the call found a bug, a
+/// crash or ran out of time.
+fn below_before<F>(call: &mut F, action: &Action) -> Result<Option<Below>, Outcome>
+where
+    F: FnMut(&str, &Value) -> Result<Value, CallError>,
+{
+    if !matches!(action.expect, Expect::Below { .. }) {
+        return Ok(None);
+    }
+    let Some(params) = below_params(action) else {
+        return Ok(Some(Err(format!(
+            "no plane to ask measure.below about in {}",
+            action.params
+        ))));
+    };
+    match call("measure.below", &params) {
+        Ok(answer) => {
+            let volume = answer.get("volume").and_then(num);
+            let section = answer
+                .get("section")
+                .and_then(|s| s.get("area"))
+                .and_then(num);
+            Ok(Some(match (volume, section) {
+                (Some(v), Some(a)) => Ok((v, a)),
+                _ => Err(format!(
+                    "measure.below gave no volume and section area: {answer}"
+                )),
+            }))
+        }
+        Err(CallError::Command(message)) if bug_verdict(&message).is_none() => {
+            Ok(Some(Err(format!("measure.below: {message}"))))
+        }
+        Err(e) => Err(failed_call(e, "measure.below")),
+    }
 }
 
 /// FNV-1a of `text`: the stable order in which entities are sampled.
@@ -1220,6 +1317,10 @@ pub struct Measured {
     /// own faces are there and the edges between the pair are gone,
     /// [`blend_applied`]); `None` when not looked at.
     pub applied: Option<bool>,
+    /// For a plane cut: the volume `measure.below` gives below its plane
+    /// and the area of the plane's section of the body, asked before the
+    /// cut ([`Expect::Below`]); `None` when not asked.
+    pub below: Option<(f64, f64)>,
 }
 
 /// What a change of volume after `action` must exceed to be one:
@@ -1405,6 +1506,7 @@ pub fn identity(action: &Action, after: &Measured) -> Result<(), String> {
         area,
         centroid,
         applied,
+        below,
         ..
     } = *after;
     if !(volume.is_finite() && volume > 0.0) {
@@ -1621,6 +1723,27 @@ pub fn identity(action: &Action, after: &Measured) -> Result<(), String> {
                 Ok(())
             }
         }
+        Expect::Below { d, tolerance } => {
+            if -change <= noise {
+                return Err(format!(
+                    "a cut by a face's plane moved in by {d} took nothing away: {v0} to {volume}"
+                ));
+            }
+            let Some((expected, section)) = below else {
+                return Err(
+                    "a plane cut without the volume measure.below gives below its plane".into(),
+                );
+            };
+            let allowed = 4.0 * tolerance * (a0 + section) + 2e-9 * v0.abs();
+            let gap = volume - expected;
+            if gap.is_finite() && gap.abs() <= allowed {
+                Ok(())
+            } else {
+                Err(format!(
+                    "a plane cut kept volume {volume}, but measure.below gives {expected} below its plane: off by {gap}, allowed {allowed}"
+                ))
+            }
+        }
     }
 }
 
@@ -1672,12 +1795,16 @@ where
     F: FnMut(&str, &Value) -> Result<Value, CallError>,
 {
     let before = shape(call);
+    let below = match below_before(call, action) {
+        Ok(below) => below,
+        Err(outcome) => return outcome,
+    };
     let result = match call(&action.command, &action.params) {
         Ok(result) => result,
         // A command that fails changes nothing: there is nothing to undo.
         Err(e) => return failed_call(e, &action.command),
     };
-    let mut verdict = judge(call, action, &result);
+    let mut verdict = judge(call, action, &result, below);
     let undone = call("edit.undo", &json!({}));
     // The undo must have taken the feature out again: asked about, it is
     // not there.
@@ -1707,7 +1834,7 @@ where
     verdict
 }
 
-fn judge<F>(call: &mut F, action: &Action, result: &Value) -> Outcome
+fn judge<F>(call: &mut F, action: &Action, result: &Value, below: Option<Below>) -> Outcome
 where
     F: FnMut(&str, &Value) -> Result<Value, CallError>,
 {
@@ -1764,6 +1891,22 @@ where
             false,
         );
     };
+    // A plane cut that was built where measure.below refused its plane: the
+    // two cuts of one body by one plane disagree, which is looked at, never
+    // let through.
+    let below = match below {
+        Some(Err(why)) => {
+            let mut verdict = outcome(
+                Verdict::Wrong,
+                format!("the cut was built, but the volume below its plane cannot be had: {why}"),
+                false,
+            );
+            verdict.after = Some((volume, area));
+            return verdict;
+        }
+        Some(Ok(below)) => Some(below),
+        None => None,
+    };
     let mut measured = Measured {
         volume,
         area,
@@ -1771,6 +1914,7 @@ where
         volume_bound: None,
         area_bound: None,
         applied: None,
+        below,
     };
     // The noise is never more than 1e-9 of the body; only a change below
     // that needs the integrator's bounds, which cost an integration more.
