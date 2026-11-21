@@ -2205,7 +2205,7 @@ mod tests {
                     .into_iter()
                     .enumerate()
                     {
-                        if (k as usize + i) % 8 != 0 {
+                        if !(k as usize + i).is_multiple_of(8) {
                             continue;
                         }
                         let p = on + off;
