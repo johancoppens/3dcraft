@@ -511,6 +511,65 @@ fn a_distance_too_large_names_the_edge_the_face_and_what_fits() {
     }
 }
 
+/// The rim of a pocket that ends in a ramp (`ramp_pocket`: 10 long, the
+/// wall below it 3 high), chamfered by distances from 0.25 to three times
+/// the rim's length. Below 3 the chamfer is built, and it is the closed
+/// form: across the rim the triangle `u + w ≤ d` (u along the top, w down
+/// the wall) is taken from the square end at y = 5 to the ramp's plane,
+/// which it meets at y = 15 − u − w, so `10 d²/2 − d³/3` goes (10 times
+/// the triangle's area less the integral of u + w over it). From 3 on it
+/// is too large, with 3 as the largest that fits, at every distance
+/// tried: also from 10 on, the rim's length, from which the ramp's plane
+/// leaves nothing of the tool's chamfer face. There the chamfer failed
+/// with a bug's words, "the chamfer lost track of an entity", until
+/// 2026-11-21 (the random designs' seeds 109228 and 117254:
+/// `a_chamfer_never_loses_track_of_an_entity`).
+#[test]
+fn a_chamfer_that_ends_in_a_slanted_plane_is_built_or_too_large_at_every_distance() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        let rim = ramp_pocket(&mut s, k);
+        let (top, wall) = (rim[0].as_str().unwrap(), rim[1].as_str().unwrap());
+        built(
+            &mut s,
+            "feature.chamfer",
+            json!({"edges": [rim], "distance": 0.25 * k, "name": "Bevel"}),
+        );
+        let gone = |d: f64| 5.0 * d * d - d * d * d / 3.0;
+        assert_solid(&mut s, "Bevel", 5595.0 - gone(0.25), None, k);
+        for d in [
+            1.0, 2.0, 2.999, 3.0, 3.001, 5.0, 9.999, 10.0, 10.001, 12.0, 20.0, 30.0,
+        ] {
+            let params = json!({"feature": "Bevel", "distance": d * k});
+            if d < 3.0 {
+                built(&mut s, "feature.edit", params);
+                assert_solid(&mut s, "Bevel", 5595.0 - gone(d), None, k);
+                continue;
+            }
+            let reason = failed(&mut s, "feature.edit", params);
+            assert!(!reason.contains(craft3d_engine::BUG), "{k} {d}: {reason}");
+            assert!(
+                reason.starts_with(&format!(
+                    "size.distance: too large for edges.0 (between {top} and {wall}): the cut line, "
+                )),
+                "{k} {d}: {reason}"
+            );
+            assert!(
+                reason.contains(&format!("along the face {wall}, leaves that face")),
+                "{k} {d}: {reason}"
+            );
+            assert!(
+                reason.ends_with(&format!(
+                    "the largest distance that fits there is below {} mm",
+                    3.0 * k
+                )),
+                "{k} {d}: {reason}"
+            );
+        }
+    }
+}
+
 #[test]
 fn bad_parameters_are_errors_and_what_is_not_built_says_its_kind() {
     let mut s = session();
@@ -1082,24 +1141,32 @@ fn saved_and_reopened_the_bodies_are_the_same() {
     assert_eq!(check["ok"], true, "{check}");
 }
 
-// ------------------------------------------------------------------ owed
+// ------------------------------------------------- found by random designs
 
-/// Owed (2026-11-20): two designs of the random-design fuzzer whose last
-/// step, a chamfer, is refused with a bug the code caught itself, "the
-/// chamfer lost track of an entity" (`kernel::blend`, `Reason::Lost`),
-/// where it must be built or refused with a reason. Seed 109228 (scale
-/// 1e-3, tolerance 1e-9): a cone's rim chamfered, cut by four planes to a
-/// slab (`feature.planeCut`, the fuzzer's new step), the slab taken out of
-/// a slanted cylinder, and the edge between the cylinder's end and the
-/// slab's cut face chamfered by 0.005, more than the slab is thick. Seed
-/// 117254 (scale 1): a block's chamfered edges patterned five times round
-/// an axis, cut by an extrusion, filleted, and three edges chamfered by 5.
-/// The second has no plane cut, so the fault is the chamfer's. The steps
-/// are the fuzzer's shrunk designs (the build server's fuzz run
-/// 44825476736), with ids as they ran; the last step names its features,
-/// `{N5}`, and those are filled in here.
+/// Two designs of the random-design fuzzer whose last step, a chamfer,
+/// failed with a bug the code caught itself, "the chamfer lost track of an
+/// entity" (`kernel::blend`, `Reason::Lost`; found 2026-11-20, owed until
+/// 2026-11-21). Seed 109228 (scale 1e-3, tolerance 1e-9): a cone's rim
+/// chamfered, cut by four planes to a slab (`feature.planeCut`; the first
+/// and the last change nothing), the slab taken out of a slanted cylinder,
+/// and the edge between the cylinder's end and the slab's cut face, 0.0012
+/// long, chamfered by 0.005. Seed 117254 (scale 1): a block's chamfered
+/// edges patterned five times round an axis, so that five chamfer faces
+/// make a pit shaped like an upside-down pyramid in the top, cut by an
+/// extrusion, filleted, and three edges chamfered by 5, one of them a rim
+/// of the pit, 0.908 long. In both the chamfered edge ends in the plane of
+/// a face at a slant to it (the slab's other cut face; the pit's walls on
+/// either side), which takes the whole chamfer face off the tool from a
+/// distance of 0.00207 and 1.3976 on: there is no chamfer face, and the
+/// distance is too large (`ramp_pocket` is the family, reduced). Now:
+/// 109228 is refused as too large for what is near the edge (no smaller
+/// distance builds either: the edge's other end, against the cone, is
+/// refused at every distance as not ending cleanly); 117254 as too large,
+/// with the largest that fits, which builds. The steps are the fuzzer's
+/// shrunk designs (the build server's fuzz run 44825476736), with ids as
+/// they ran; the last step names its features, `{N5}`, and those are
+/// filled in here, also in what is said.
 #[test]
-#[ignore = "owed: the chamfer loses track of an entity (fuzz seeds 109228 and 117254, 2026-11-20)"]
 fn a_chamfer_never_loses_track_of_an_entity() {
     let cases = [
         (
@@ -1113,6 +1180,9 @@ fn a_chamfer_never_loses_track_of_an_entity() {
                 {"command": "feature.boolean", "params": {"keepTool": false, "name": "N5", "op": "subtract", "target": "N3", "tool": "N2"}},
                 {"command": "feature.chamfer", "params": {"chain": false, "distance": 0.005, "edges": [["{N5}:copy(0)/{N3}:face(1)", "{N5}:copy(1)/{N2}:cut(2)"]], "name": "N7"}}
             ]),
+            "edges.0 (between {N5}:copy(0)/{N3}:face(1) and {N5}:copy(1)/{N2}:cut(2)): the chamfer face came out in pieces or not at all: the distance is too large for what is near the edge",
+            // Smaller, it is refused for its other end.
+            (0.001, Some("the chamfer does not end cleanly")),
         ),
         (
             "117254",
@@ -1127,10 +1197,12 @@ fn a_chamfer_never_loses_track_of_an_entity() {
                 {"command": "feature.fillet", "params": {"chain": false, "edges": [["F6:copy(0)/F1:face(0)", "F6:copy(0)/F1:face(5)"], ["F6:copy(0)/F3:copy(2)/F1:face(3)", "F6:copy(0)/F3:copy(2)/F1:face(5)"]], "name": "N4", "radius": 1.25}},
                 {"command": "feature.chamfer", "params": {"chain": false, "distance": 5.0, "edges": [["{N4}:copy(0)/{N0}:face(1)", "{N4}:copy(0)/{N2}:copy(4)/{N1}:chamfer(1)"], ["{N4}:copy(0)/{N0}:face(1)", "{N4}:copy(0)/{N2}:copy(3)/{N0}:face(5)"], ["{N4}:copy(0)/{N0}:face(1)", "{N4}:copy(0)/{N2}:copy(3)/{N0}:face(3)"]], "name": "N5"}}
             ]),
+            "size.distance: too large for edges.2 (between {N4}:copy(0)/{N0}:face(1) and {N4}:copy(0)/{N2}:copy(3)/{N0}:face(3)): the cut line, 5 mm from the edge along the face {N4}:copy(0)/{N0}:face(1), leaves that face; the largest distance that fits there is below 0.625 mm",
+            // What it says fits is built.
+            (0.624, None),
         ),
     ];
-    let mut lost = Vec::new();
-    for (seed, tolerance, steps) in cases {
+    for (seed, tolerance, steps, said, (smaller, then)) in cases {
         let mut s = Session::new(Workspace::unrestricted());
         s.execute("file.new", &json!({"units": "mm", "tolerance": tolerance}))
             .unwrap();
@@ -1145,21 +1217,42 @@ fn a_chamfer_never_loses_track_of_an_entity() {
         }
         // The last step's features by name, as the fuzzer's runner fills
         // them in.
-        let mut text = last["params"].to_string();
-        for f in inspect(&mut s)["features"].as_array().unwrap() {
-            let (name, id) = (f["name"].as_str().unwrap(), f["id"].as_str().unwrap());
-            text = text.replace(&format!("{{{name}}}"), id);
-        }
-        let params: Value = serde_json::from_str(&text).unwrap();
-        let reason = match s.execute(last["command"].as_str().unwrap(), &params) {
-            Ok(r) if r["status"] == "ok" => continue,
-            Ok(r) => r["error"].as_str().unwrap_or_default().to_string(),
-            Err(e) => e.message().to_string(),
+        let features = inspect(&mut s)["features"].clone();
+        let fill = |text: &str| {
+            let mut text = text.to_string();
+            for f in features.as_array().unwrap() {
+                let (name, id) = (f["name"].as_str().unwrap(), f["id"].as_str().unwrap());
+                text = text.replace(&format!("{{{name}}}"), id);
+            }
+            text
         };
-        println!("{seed}: {reason}");
-        if reason.contains(craft3d_engine::BUG) {
-            lost.push(format!("{seed}: {reason}"));
+        let params: Value = serde_json::from_str(&fill(&last["params"].to_string())).unwrap();
+        let result = s
+            .execute(last["command"].as_str().unwrap(), &params)
+            .unwrap();
+        assert_eq!(result["status"], "failed", "{seed}: {result}");
+        let reason = result["error"].as_str().unwrap();
+        assert!(!reason.contains(craft3d_engine::BUG), "{seed}: {reason}");
+        assert_eq!(reason, fill(said), "{seed}");
+        let name = last["params"]["name"].as_str().unwrap();
+        let result = s
+            .execute(
+                "feature.edit",
+                &json!({"feature": name, "distance": smaller}),
+            )
+            .unwrap();
+        match then {
+            None => {
+                assert_eq!(result["status"], "ok", "{seed}: {result}");
+                let check = s.execute("document.check", &json!({"deep": true})).unwrap();
+                assert_eq!(check["ok"], true, "{seed}: {check}");
+            }
+            Some(words) => {
+                assert_eq!(result["status"], "failed", "{seed}: {result}");
+                let reason = result["error"].as_str().unwrap();
+                assert!(!reason.contains(craft3d_engine::BUG), "{seed}: {reason}");
+                assert!(reason.contains(words), "{seed}: {reason}");
+            }
         }
     }
-    assert!(lost.is_empty(), "{}", lost.join("\n"));
 }
