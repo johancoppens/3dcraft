@@ -24,6 +24,8 @@ use craft3d_geom::{Plane, Surface};
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{BooleanOp, BooleanOptions, Operand, contains_points};
 use craft3d_kernel::halfspace::{CAP, Kept, Tool, keep_below, tool};
+use craft3d_kernel::primitives;
+use craft3d_math::Portable;
 use craft3d_math::{Frame, Vec3};
 use craft3d_testkit::solids;
 use craft3d_topo::{Body, check};
@@ -677,6 +679,182 @@ fn seeded_points_are_kept_exactly_when_below_every_plane() {
             }
             assert!(told > 500, "case {index} at scale {k}: {told} points told");
             assert!(inside > 20, "case {index} at scale {k}: {inside} inside");
+        }
+    }
+}
+
+/// What the plane x + y = c leaves of a cone of radius and height 7.5 on
+/// the origin, on the side away from the axis, in closed form. A level
+/// section at the height where the cone's radius is `r` is the segment of
+/// a disc beyond a chord `d = c / √2` from its centre: its area is
+/// `A(r) = r² acos(d / r) − d √(r² − d²)` and its chord `2 √(r² − d²)`,
+/// and the cone's slope is one, so `r` falls as the height rises. With
+/// `s = √(r² − d²)`: `∫ A dr = r³ acos(d / r) / 3 − 2 d r s / 3 + d³ ln(r
+/// + s) / 3` and `∫ 2 s dr = r s − d² ln(r + s)`. The cut ends in the
+/// hyperbola's tip, where `r = d`.
+struct HalfCone {
+    d: f64,
+}
+
+impl HalfCone {
+    fn section(&self, r: f64) -> f64 {
+        let s = (r * r - self.d * self.d).max(0.0).sqrt();
+        r * r * (self.d / r).min(1.0).pacos() - self.d * s
+    }
+
+    fn sections_to(&self, r: f64) -> f64 {
+        let (d, s) = (self.d, (r * r - self.d * self.d).max(0.0).sqrt());
+        r * r * r * (d / r).min(1.0).pacos() / 3.0 - 2.0 * d * r * s / 3.0
+            + d * d * d * (r + s).pln() / 3.0
+    }
+
+    fn chords_to(&self, r: f64) -> f64 {
+        let (d, s) = (self.d, (r * r - self.d * self.d).max(0.0).sqrt());
+        r * s - d * d * (r + s).pln()
+    }
+
+    /// The volume and the area of the part between the levels where the
+    /// cone's radius is `top` and `bottom`: its two level faces, the
+    /// cone's piece (√2 times what it covers of the base) and the flat
+    /// piece in the plane.
+    fn between(&self, top: f64, bottom: f64) -> (f64, f64) {
+        let (over, under) = (self.section(top), self.section(bottom));
+        (
+            self.sections_to(bottom) - self.sections_to(top),
+            under + over + 2f64.sqrt() * (under - over) + self.chords_to(bottom)
+                - self.chords_to(top),
+        )
+    }
+}
+
+fn counts_of(body: &Body) -> (usize, usize, usize) {
+    (body.vertices.len(), body.edges.len(), body.faces.len())
+}
+
+/// Fuzz seed 118385 (2026-11-20), reduced. A cone halved by a plane that
+/// passes its axis by a thousandth of its size and less: the section is a
+/// hyperbola whose tip is that far from the apex, and the boolean makes
+/// its edge a rational spline whose parameter crawls about the tip. A
+/// level plane across what is left crosses that edge twice. From half the
+/// cone's height up, the crossing on the way up the first arm was found
+/// and then not found again on the edge (the nearest point of the edge
+/// to it was answered as the tip, 3.5 away: `outline::nearest_on_spline`
+/// ran out of stretches), so the circle and the line the level plane cuts
+/// were never imprinted and the boolean built a body of two faces, which
+/// its own check refused as invalid. Both sides of the level plane, held
+/// to the closed forms above, at three scales.
+#[test]
+fn half_a_cone_cut_beside_its_apex_is_cut_level() {
+    for k in SCALES {
+        let cone = spike(k, [0.0, 0.0, 0.0], 7.5, 7.5);
+        for c in [10.003936261680792e-3, 3e-3, 1e-3] {
+            let shape = HalfCone { d: c / 2f64.sqrt() };
+            // Its normal towards the axis: what is kept is x + y > c.
+            let beside = plane(k, [c, 0.0, 3.75], [-1.0, -1.0, 0.0]);
+            let half = below(&cone, &beside, k);
+            let (volume, area) = shape.between(shape.d, 7.5);
+            assert_measures(&half, volume, area, k, &format!("c {c}: the half"));
+            assert_eq!(counts_of(&half), (3, 4, 3), "scale {k}, c {c}");
+            for h in [3.0, 3.75, 4.0, 5.0, 7.0] {
+                let level = plane(k, [0.0, 0.0, h], [0.0, 0.0, 1.0]);
+                let what = format!("c {c}, level {h}");
+                let low = below(&half, &level, k);
+                let (volume, area) = shape.between(7.5 - h, 7.5);
+                assert_measures(&low, volume, area, k, &format!("{what}: under"));
+                assert_eq!(counts_of(&low), (5, 7, 4), "scale {k}, {what}");
+                let high = below(&half, &turned(&level), k);
+                let (volume, area) = shape.between(shape.d, 7.5 - h);
+                assert_measures(&high, volume, area, k, &format!("{what}: over"));
+                assert_eq!(counts_of(&high), (2, 3, 3), "scale {k}, {what}");
+            }
+        }
+    }
+}
+
+/// Fuzz seed 115098 (2026-11-20), reduced. A block with a hole whose wall
+/// is tangent to one of its sides (a wall that thins to nothing along a
+/// line, which a boolean accepts: `boolean_contact.rs` › *a hole that
+/// touches the side*), cut across the hole. The circle the plane cuts
+/// from the hole touches the outline it cuts from the block, in a point
+/// that is a vertex of neither. Where the circle's middle (half a turn
+/// from where it starts) was that point, the hole's loop in the cut face
+/// was given to the wrong region (`outline::left_of` stepped across the
+/// outline there), the cut face was built without its hole, and the
+/// boolean's own check refused the body as invalid. Both sides of the
+/// plane, wherever the circle starts, at three scales: a plate of
+/// 1 × 10 × 10 less a hole of radius 2.5.
+#[test]
+fn a_hole_tangent_to_a_side_is_cut_across() {
+    for k in SCALES {
+        let block = boxed(k, [0.0, 0.0, 0.0], [2.0, 10.0, 10.0]);
+        // Where the circles about the hole's axis start, as an angle from
+        // the direction away from the side the hole touches: at 0 the
+        // middle of a circle is where it touches the side, at half a turn
+        // its start is, and at the third its second station.
+        for turn in [
+            0.0,
+            PI,
+            PI - 0.2764 * 2.0 * PI,
+            0.5 * PI,
+            0.6457718232379019,
+        ] {
+            let (sin, cos) = turn.psin_cos();
+            let frame = Frame::new(
+                Vec3::new(-2.0, 2.5, 5.0) * k,
+                Vec3::X,
+                Vec3::new(0.0, cos, sin),
+            )
+            .unwrap();
+            let drill = primitives::cylinder(&frame, 2.5 * k, 6.0 * k).unwrap();
+            let holed = solve(&block, &drill, BooleanOp::Subtract, k).body;
+            let across = plane(k, [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]);
+            for (side, which) in [(across, "x > 1"), (turned(&across), "x < 1")] {
+                let what = format!("turn {turn}, {which}");
+                let kept = below(&holed, &side, k);
+                assert_measures(&kept, 100.0 - 6.25 * PI, 240.0 - 7.5 * PI, k, &what);
+                assert_eq!(kept.shells.len(), 1, "scale {k}, {what}");
+                eprintln!("PROBE hole scale {k} {what}: {:?}", counts_of(&kept));
+                assert_eq!(kept.faces.len(), 7, "scale {k}, {what}");
+            }
+        }
+    }
+}
+
+/// TEMPORARY (investigation): what each cut of the half cone comes to.
+#[test]
+fn tmp_probe_half_cone() {
+    for k in SCALES {
+        let cone = spike(k, [0.0, 0.0, 0.0], 7.5, 7.5);
+        for c in [2e-2, 10.003936261680792e-3, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5] {
+            let beside = plane(k, [c, 0.0, 3.75], [-1.0, -1.0, 0.0]);
+            let half = match cut(&cone, &beside, k) {
+                Ok(Kept::Cut(result)) => result.body,
+                Ok(Kept::Whole) => {
+                    eprintln!("PROBE cone scale {k} c {c}: whole");
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("PROBE cone scale {k} c {c}: the half: ERR {e}");
+                    continue;
+                }
+            };
+            for h in [
+                1.0, 3.0, 3.5, 3.75, 4.0, 5.0, 6.5, 7.0, 7.3, 7.4, 7.45, 7.48, 7.49,
+            ] {
+                let level = plane(k, [0.0, 0.0, h], [0.0, 0.0, 1.0]);
+                for (side, which) in [(level, "under"), (turned(&level), "over")] {
+                    let said = match cut(&half, &side, k) {
+                        Ok(Kept::Whole) => "whole".to_string(),
+                        Ok(Kept::Cut(result)) => format!(
+                            "cut {:?} valid {}",
+                            counts_of(&result.body),
+                            check(&result.body, &tolerance(k)).is_empty()
+                        ),
+                        Err(e) => format!("ERR {e}"),
+                    };
+                    eprintln!("PROBE cone scale {k} c {c} level {h} {which}: {said}");
+                }
+            }
         }
     }
 }
