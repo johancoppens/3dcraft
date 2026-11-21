@@ -869,6 +869,136 @@ fn a_hole_tangent_to_a_side_is_cut_across() {
     }
 }
 
+/// A block of 2 × 10 × 10 in `frame` (times `k`) with a hole of radius
+/// `r` along its x whose wall passes its side y = 0 by `over` (0: tangent
+/// to it), the circles about the hole's axis starting away from that side
+/// so that their middle is at the touch, cut across at x = 1: for each
+/// side of the cut, what is wrong with it, if anything (a body not to its
+/// closed form, or the refusal's first words).
+fn hole_by_a_side_cut_across(frame: &Frame, k: f64, r: f64, over: f64) -> Vec<String> {
+    let tol = tolerance(k);
+    let block = primitives::block(frame, 2.0 * k, 10.0 * k, 10.0 * k).unwrap();
+    let axis = Frame::new(
+        frame.point(-2.0 * k, r * k - over, 5.0 * k),
+        frame.x(),
+        frame.y(),
+    )
+    .unwrap();
+    let drill = primitives::cylinder(&axis, r * k, 6.0 * k).unwrap();
+    let holed = match craft3d_kernel::boolean::boolean(&block, &drill, BooleanOp::Subtract, &tol) {
+        Ok(result) => result.body,
+        Err(e) => return vec![format!("the hole: {e}")],
+    };
+    let across = Frame::from_z(frame.point(k, 0.0, 0.0), -frame.x()).unwrap();
+    let volume = (100.0 - PI * r * r) * k * k * k;
+    let area = (2.0 * (100.0 - PI * r * r) + 40.0 + 2.0 * PI * r) * k * k;
+    let mut wrong = Vec::new();
+    for (side, which) in [(across, "x > 1"), (turned(&across), "x < 1")] {
+        match cut(&holed, &side, k) {
+            Ok(Kept::Cut(result)) => {
+                let m = mass(&result.body);
+                if !check(&result.body, &tol).is_empty()
+                    || (m.volume - volume).abs() > 1e-7 * volume
+                    || (m.area - area).abs() > 1e-7 * area
+                {
+                    wrong.push(format!("{which}: volume {}, area {}", m.volume, m.area));
+                }
+            }
+            Ok(Kept::Whole) => wrong.push(format!("{which}: left whole")),
+            Err(e) => wrong.push(format!(
+                "{which}: {}",
+                e.to_string().chars().take(100).collect::<String>()
+            )),
+        }
+    }
+    wrong
+}
+
+/// Owed (found by the review, 2026-11-21, of the repair of fuzz seed
+/// 115098). The hole tangent to a side, cut across, is built where the
+/// touch is exact in the numbers: on binary fractions, in the axes
+/// (*a hole tangent to a side is cut across*, above). Where it is exact
+/// only to rounding (the block at 1.1 with a hole of radius 1.7, or the
+/// whole turned out of the axes) the circle passes the outline by a unit
+/// in the last place or stops as far short of it, and where it passes it
+/// the cut is refused as before the repair, *"boolean produced an invalid
+/// body"*: `outline::touched_at` tells a touch to 1e-9 of a step that
+/// runs down to a fifth of the tolerance. Measured on the build server
+/// (Check 44948558534): 2 of 42 cuts at decimal places and 15 of the 18
+/// cuts of bodies turned out of the axes. With a piece that is found
+/// touched not stepped in from again at that place, all of them build
+/// (tried there, not built here).
+///
+/// So is a hole that passes the side by less than half the tolerance,
+/// which the boolean that makes the hole takes for a touch: by 1e-9,
+/// 1e-6, 1e-3 and 0.4 tolerances (by 0.01 and 0.1 it is refused in the
+/// words of a face too thin to find a point inside it). Held for those:
+/// built, or refused in words, never handed to the boolean's own check
+/// as a body it refuses.
+#[test]
+#[ignore = "owed: a hole tangent to a side to rounding, or within the tolerance, cut across, is still refused as an invalid body"]
+fn a_hole_tangent_to_a_side_to_rounding_is_cut_across() {
+    let turned_out = [
+        Frame::new(
+            Vec3::new(3.0, -1.0, 2.0),
+            Vec3::new(0.2, -0.5, 1.0),
+            Vec3::new(1.0, 0.3, 0.0),
+        )
+        .unwrap(),
+        Frame::new(
+            Vec3::new(-7.3, 11.1, 0.7),
+            Vec3::new(1.0, 2.0, 3.0),
+            Vec3::new(0.3, -0.1, 0.9),
+        )
+        .unwrap(),
+        Frame::new(Vec3::ZERO, Vec3::Z, Vec3::new(1.0, 1.0, 0.0)).unwrap(),
+        Frame::new(
+            Vec3::new(100.0, 200.0, -300.0),
+            Vec3::new(-0.3, 0.4, 1.0),
+            Vec3::new(0.7, 0.7, 0.1),
+        )
+        .unwrap(),
+    ];
+    let mut wrong = Vec::new();
+    let mut cuts = 0;
+    for k in SCALES {
+        for y0 in [0.1, 0.3, 0.7, 1.1, 2.3, 17.9] {
+            for r in [2.5, 1.7] {
+                let frame = Frame::WORLD.at(Vec3::new(0.0, y0 * k, 0.0)).unwrap();
+                cuts += 1;
+                for fault in hole_by_a_side_cut_across(&frame, k, r, 0.0) {
+                    wrong.push(format!(
+                        "scale {k}, the block at y {y0}, radius {r}, {fault}"
+                    ));
+                }
+            }
+        }
+        for (index, frame) in turned_out.iter().enumerate() {
+            let frame = frame.at(frame.origin() * k).unwrap();
+            cuts += 1;
+            for fault in hole_by_a_side_cut_across(&frame, k, 2.5, 0.0) {
+                wrong.push(format!("scale {k}, frame {index}, {fault}"));
+            }
+        }
+        for part in [1e-9, 1e-6, 1e-3, 0.1, 0.4] {
+            cuts += 1;
+            for fault in hole_by_a_side_cut_across(&Frame::WORLD, k, 2.5, part * 1e-6 * k) {
+                if fault.contains("invalid body") {
+                    wrong.push(format!(
+                        "scale {k}, past the side by {part} tolerances, {fault}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} sides of {cuts} cuts:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
 /// A sheet has no inside: refused, by name.
 #[test]
 fn a_sheet_is_refused() {
