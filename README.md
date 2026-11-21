@@ -8,7 +8,11 @@
 **[Try it in your browser](https://3dcraft.dev/app/)** ·
 **[Download](https://github.com/johancoppens/3dcraft/releases/latest)**
 
-![The 3DCraft window with the spiral staircase example: its 93 features and 16 checks, all passing, in the side panel, the history player under them, the view cube and the display bar](docs/img/window.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/readme-radial-engine-dark.webp">
+  <source media="(prefers-color-scheme: light)" srcset="docs/img/readme-radial-engine-light.webp">
+  <img src="docs/img/readme-radial-engine-light.webp" alt="The words “Built by an AI agent, command by command.” and, under them, “Seven-cylinder radial engine with its valve train. What you see is one engine cycle, drawn by 3DCraft.” Beside them the engine runs through that cycle, pistons, rods and pushrods moving, its crankcase cut away at the front and two of its finned cylinders opened: the published radial-engine assembly, one of 3DCraft's examples, drawn by 3DCraft 0.2.1">
+</picture>
 
 ## Three ways to use it
 
@@ -27,6 +31,16 @@
 3DCraft has no toolbar of modelling buttons. You model through commands: an agent sends them, a Jig's form
 sends them, or you write them yourself. The window is there to watch, to point and to check. Whoever wants a
 classic interface with buttons can build one on top: it would send the same commands.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/readme-window-staircase-dark.webp">
+  <source media="(prefers-color-scheme: light)" srcset="docs/img/readme-window-staircase-light.webp">
+  <img src="docs/img/readme-window-staircase-light.webp" alt="The 3DCraft window building the spiral-staircase example one command at a time. Each command is named over the view as it runs, such as “feature.extrude · Landing collar blank” and “assert.add · One tread per riser below the landing”; the staircase grows in the view, the history in the side panel to 93 features and its checks to 16, all passing. The loop starts and ends on the finished staircase">
+</picture>
+
+*The window building the spiral staircase, one of the examples, command by command: the example's own
+commands sent one at a time over the control channel, as an agent sends them, each named over the view. It
+ends on 93 features rebuilt and 16 checks, all passing.*
 
 It is written in pure Rust, with its own B-rep kernel, constraint solver, tessellator and renderers: no
 OpenCascade, no Parasolid, no third-party geometry of any kind. Licence: [MIT](LICENSE).
