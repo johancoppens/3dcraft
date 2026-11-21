@@ -623,3 +623,251 @@ const EVALUATIONS: u64 = 200_000_000;
 
 /// How many of the sweep's questions are refused today (owed).
 const REFUSED: usize = 4;
+
+// ----- a part against a cylinder far larger than it ---------------------------
+
+/// A cylinder of `radius` about a line along z through `(−radius, 0)`: its
+/// wall passes through the origin, and its face runs from z = −30 to 30
+/// (the review of the floor's round, 2026-11-21: a part of millimetres in
+/// the wall of a cylinder of a million was refused outright, "the box has
+/// no size, or the tolerance is finer than rounding allows at its size",
+/// where the box was fine and the pair had always been answered).
+#[derive(Clone, Copy, Debug)]
+struct Wall {
+    radius: f64,
+}
+
+impl Wall {
+    fn surface(&self) -> Surface {
+        let foot = Vec3::new(-self.radius, 0.0, -30.0);
+        cylinder(Frame::WORLD.at(foot).unwrap(), self.radius)
+    }
+
+    fn face(&self) -> Bbox3 {
+        let r = self.radius;
+        Bbox3::from_points([Vec3::new(-2.0 * r, -r, -30.0), Vec3::new(0.0, r, 30.0)])
+    }
+
+    /// The wall's signed distance at `q` (outside positive), without the
+    /// loss of `ρ − r`: `ρ² − r²` is `x² + 2 x r + y²` with the axis at
+    /// `−r`; and its outward normal.
+    fn at(&self, q: Vec3) -> (f64, Vec3) {
+        let r = self.radius;
+        let rho = (q.x + r).phypot(q.y);
+        (
+            (q.x * q.x + 2.0 * q.x * r + q.y * q.y) / (rho + r),
+            Vec3::new((q.x + r) / rho, q.y / rho, 0.0),
+        )
+    }
+}
+
+/// A part by the wall: its surface, the box of its face, its signed
+/// distance and outward normal at a point, and the angle of a point about
+/// the line its crossing with the wall goes round.
+struct Part {
+    surface: Surface,
+    face: Bbox3,
+    at: Box<dyn Fn(Vec3) -> (f64, Vec3)>,
+    around: Box<dyn Fn(Vec3) -> f64>,
+}
+
+/// A ball of radius 5 about `centre`.
+fn ball_by_the_wall(centre: Vec3) -> Part {
+    let pad = Vec3::new(5.0, 5.0, 5.0);
+    Part {
+        surface: sphere(Frame::WORLD.at(centre).unwrap(), 5.0),
+        face: Bbox3::from_points([centre - pad, centre + pad]),
+        at: Box::new(move |q| {
+            (
+                (q - centre).length() - 5.0,
+                (q - centre).normalized().unwrap(),
+            )
+        }),
+        around: Box::new(move |q| (q.z - centre.z).patan2(q.y - centre.y)),
+    }
+}
+
+/// A cylinder of radius 5 and length 40 from (−20, 1, 2) along
+/// (1, 0.1, 0.2): through the wall, askew.
+fn cylinder_through_the_wall() -> Part {
+    let foot = Vec3::new(-20.0, 1.0, 2.0);
+    let frame = Frame::new(foot, Vec3::new(1.0, 0.1, 0.2), Vec3::new(0.0, 1.0, 0.0)).unwrap();
+    let radial = move |q: Vec3| {
+        let (x, y, _) = frame.local(q);
+        (x, y)
+    };
+    let pad = Vec3::new(5.0, 5.0, 5.0);
+    let top = frame.point(0.0, 0.0, 40.0);
+    let hull = Bbox3::from_points([foot, top]);
+    let (lo, hi) = hull.corners().unwrap();
+    Part {
+        surface: cylinder(frame, 5.0),
+        face: Bbox3::from_points([lo - pad, hi + pad]),
+        at: Box::new(move |q| {
+            let (x, y) = radial(q);
+            let rho = x.phypot(y);
+            (rho - 5.0, frame.vector(x / rho, y / rho, 0.0))
+        }),
+        around: Box::new(move |q| {
+            let (x, y) = radial(q);
+            y.patan2(x)
+        }),
+    }
+}
+
+/// The boxes a boolean asks a part and the wall in: what the two faces'
+/// boxes share, grown by the room of the larger face (the wall's:
+/// thousands), and by the room of the smaller.
+fn boxes_by_the_wall(wall: &Wall, part: &Part) -> [Bbox3; 2] {
+    let ((alo, ahi), (blo, bhi)) = (wall.face().corners().unwrap(), part.face.corners().unwrap());
+    let lo = Vec3::new(alo.x.max(blo.x), alo.y.max(blo.y), alo.z.max(blo.z));
+    let hi = Vec3::new(ahi.x.min(bhi.x), ahi.y.min(bhi.y), ahi.z.min(bhi.z));
+    [wall.face().diagonal(), part.face.diagonal()].map(|diagonal| {
+        let room = 16.0 * TOL + 0.013 * diagonal;
+        let pad = Vec3::new(room, room, room);
+        Bbox3::from_points([lo - pad, hi + pad])
+    })
+}
+
+/// Whether the wall and the part meet in `within` as they do: one closed
+/// curve, once round, on both surfaces within what it says and within a
+/// tolerance of the crossing along the wall (`Ok`, with how far from the
+/// crossing at most, in tolerances); refused (`Err` that begins with
+/// "refused"); or wrong.
+fn by_the_wall(wall: &Wall, part: &Part, within: &Bbox3) -> Result<f64, String> {
+    let tol = Tolerance::new(TOL, 1e-9).unwrap();
+    let met = match meet_surfaces(&wall.surface(), &part.surface, within, &tol) {
+        Ok(met) => met,
+        Err(e) => return Err(format!("refused: {e}")),
+    };
+    let m = match met {
+        SurfaceMeeting::Meets(m) => m,
+        other => return Err(format!("WRONG: they cross, and {other:?}")),
+    };
+    if !(m.curves.len() == 1 && m.curves[0].closed && m.points.is_empty()) {
+        return Err(format!(
+            "WRONG: {} curves (closed: {:?}) and {} points",
+            m.curves.len(),
+            m.curves.iter().map(|c| c.closed).collect::<Vec<_>>(),
+            m.points.len()
+        ));
+    }
+    let curve = &m.curves[0];
+    let (t0, t1) = curve.range;
+    let n = 4000;
+    let (mut off_a_surface, mut off_the_crossing, mut turned) = (0.0_f64, 0.0_f64, 0.0_f64);
+    let mut before: Option<f64> = None;
+    for k in 0..=n {
+        let q = curve
+            .curve
+            .eval(t0 + (t1 - t0) * f64::from(k) / f64::from(n));
+        let ((a, na), (b, nb)) = (wall.at(q), (part.at)(q));
+        let (sine, cosine) = (na.cross(nb).length(), na.dot(nb));
+        off_a_surface = off_a_surface.max(a.abs()).max(b.abs());
+        off_the_crossing = off_the_crossing.max(a.phypot((b - a * cosine) / sine));
+        let angle = (part.around)(q);
+        if let Some(was) = before {
+            turned += (angle - was + PI).rem_euclid(TAU) - PI;
+        }
+        before = Some(angle);
+    }
+    if !(curve.deviation <= TOL && off_a_surface <= curve.deviation + 1e-3 * TOL) {
+        return Err(format!(
+            "WRONG: a curve {off_a_surface:e} from a surface, its deviation {:e}",
+            curve.deviation
+        ));
+    }
+    if !(off_the_crossing <= ALONG * TOL) {
+        return Err(format!(
+            "WRONG: a point of the curve {:.3} tolerances from the crossing",
+            off_the_crossing / TOL
+        ));
+    }
+    if !((turned.abs() - TAU).abs() <= 0.01) {
+        return Err(format!(
+            "WRONG: the curve goes {:.3} times round",
+            turned.abs() / TAU
+        ));
+    }
+    Ok(off_the_crossing / TOL)
+}
+
+/// A small part in the wall of a cylinder of a million or two is met as
+/// it lies, in both boxes a boolean asks it in: a ball of 5 half in the
+/// wall, and a cylinder of 5 through it askew. They cross squarely; the
+/// wall's own numbers, a million times the part's, are no reason to
+/// refuse the pair. (The truth is closed form: the wall's distance
+/// without its loss, the part's as it is.)
+#[test]
+fn a_part_in_the_wall_of_a_cylinder_a_million_times_its_size_is_met_as_it_lies() {
+    let mut failed = Vec::new();
+    let cases: [(f64, &str, Part); 3] = [
+        (
+            1e6,
+            "a ball half in the wall",
+            ball_by_the_wall(Vec3::new(0.0, 1.0, 2.0)),
+        ),
+        (
+            2e6,
+            "a ball half in the wall",
+            ball_by_the_wall(Vec3::new(0.0, 1.0, 2.0)),
+        ),
+        (
+            1e6,
+            "a cylinder through the wall",
+            cylinder_through_the_wall(),
+        ),
+    ];
+    for (radius, what, part) in &cases {
+        let wall = Wall { radius: *radius };
+        for (which, within) in boxes_by_the_wall(&wall, part).iter().enumerate() {
+            let before = craft3d_geom::intersect::march_work();
+            let said = by_the_wall(&wall, part, within);
+            println!(
+                "{what} of {radius:e}, the {} box: {said:?} [{} evaluations]",
+                if which == 0 { "large" } else { "small" },
+                craft3d_geom::intersect::march_work() - before
+            );
+            if let Err(why) = said {
+                failed.push(format!("{what} of {radius:e}, box {which}: {why}"));
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+/// A ball of 5 sunk a little into the wall of a cylinder of a million
+/// from outside crosses it in a small circle at a shallow angle (a sine
+/// of 0.063 sunk 0.01, 0.02 sunk 0.001, 0.0063 sunk 1e-4, 0.002 sunk
+/// 1e-5, 0.0011 sunk 3e-6). The wall tells its distance at the size of a
+/// million: where that leaves a point within half a tolerance of the
+/// circle the pair is met as it lies, and where it does not the pair is
+/// refused in the words that say so; never anything else, and never a
+/// wrong curve. Sunk 0.001 and more, it is met in both boxes.
+#[test]
+fn a_ball_sunk_a_little_into_the_wall_of_a_cylinder_of_a_million_is_met_or_refused_in_words() {
+    let wall = Wall { radius: 1e6 };
+    let mut failed = Vec::new();
+    for sunk in [1e-2, 1e-3, 1e-4, 1e-5, 3e-6] {
+        let part = ball_by_the_wall(Vec3::new(5.0 - sunk, 1.0, 2.0));
+        for (which, within) in boxes_by_the_wall(&wall, &part).iter().enumerate() {
+            let before = craft3d_geom::intersect::march_work();
+            let said = by_the_wall(&wall, &part, within);
+            println!(
+                "sunk {sunk:e}, the {} box: {said:?} [{} evaluations]",
+                if which == 0 { "large" } else { "small" },
+                craft3d_geom::intersect::march_work() - before
+            );
+            match said {
+                Ok(_) => {}
+                Err(why) if why.starts_with("refused") && why.contains("cannot be placed") => {
+                    if sunk >= 1e-3 {
+                        failed.push(format!("sunk {sunk:e}, box {which}: {why}"));
+                    }
+                }
+                Err(why) => failed.push(format!("sunk {sunk:e}, box {which}: {why}")),
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
