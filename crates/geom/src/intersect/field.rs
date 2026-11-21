@@ -204,6 +204,18 @@ impl Projector {
         })
     }
 
+    /// The furthest of the surface's control points from the origin: how
+    /// large the numbers are that its points are computed from
+    /// ([`Field::scale`]).
+    fn scale(&self) -> f64 {
+        let points = match &self.surface {
+            Surface::Bezier(b) => b.control_points(),
+            Surface::Nurbs(s) => s.control_points(),
+            _ => return 0.0,
+        };
+        points.iter().map(|p| p.length()).fold(0.0, f64::max)
+    }
+
     /// The estimate of the largest normal curvature of the part of the
     /// surface within `radius` of `p`: twice the fastest turn of the
     /// normal along the grid lines there (every grid cell that reaches
@@ -448,6 +460,10 @@ pub(super) enum Field {
         center: Vec3,
         x: Vec3,
         radius: f64,
+        /// The distance is taken without the loss of `|p − c| − r`
+        /// ([`ball_distance`]): where the centre and the radius are far
+        /// larger than the places asked ([`Field::for_places_within`]).
+        lossless: bool,
     },
     Torus {
         frame: Frame,
@@ -483,6 +499,7 @@ impl Field {
                 center: s.frame().origin(),
                 x: s.frame().x(),
                 radius: s.radius(),
+                lossless: false,
             },
             Surface::Torus(t) => Field::Torus {
                 frame: *t.frame(),
@@ -539,10 +556,20 @@ impl Field {
                     }
                 }
             }
-            Field::Sphere { center, x, radius } => {
+            Field::Sphere {
+                center,
+                x,
+                radius,
+                lossless,
+            } => {
                 let q = p - *center;
                 let d = q.length();
-                exact(d - radius, q.normalized().unwrap_or(*x))
+                let signed = if *lossless {
+                    ball_distance(p, *center, *radius, d)
+                } else {
+                    d - radius
+                };
+                exact(signed, q.normalized().unwrap_or(*x))
             }
             Field::Torus {
                 frame,
@@ -623,12 +650,134 @@ impl Field {
         }
     }
 
+    /// The field for places no further than `reach` from the origin: a
+    /// ball whose centre and radius are far larger than that
+    /// ([`far_ball`]) is measured without the loss of the plain
+    /// difference; every other field is as it was.
+    pub(super) fn for_places_within(self, reach: f64) -> Self {
+        match self {
+            Field::Sphere {
+                center, x, radius, ..
+            } => Field::Sphere {
+                center,
+                x,
+                radius,
+                lossless: far_ball(center, radius, reach),
+            },
+            other => other,
+        }
+    }
+
+    /// How large the numbers are that [`Field::sample`] adds and
+    /// subtracts beyond the place asked itself: the distance comes back
+    /// rounded at that size, whatever the size of the place (a plane's
+    /// origin, an axis and its radius, an apex, the control net of a
+    /// freeform surface). Nothing for a ball measured without the loss.
+    /// The same numbers size the rounding of the surface's own points,
+    /// walked as a chart.
+    pub(super) fn scale(&self) -> f64 {
+        match self {
+            Field::Plane { origin, .. } => origin.length(),
+            Field::Cylinder { frame, radius } => frame.origin().length() + radius,
+            Field::Cone { apex, .. } => apex.length(),
+            Field::Sphere {
+                center,
+                radius,
+                lossless,
+                ..
+            } => {
+                if *lossless {
+                    0.0
+                } else {
+                    center.length() + radius
+                }
+            }
+            Field::Torus {
+                frame,
+                major,
+                minor,
+            } => frame.origin().length() + major + minor,
+            Field::Free(projector) => projector.scale(),
+        }
+    }
+
     /// The apex, when the field is a cone's.
     pub(super) fn apex(&self) -> Option<Vec3> {
         match self {
             Field::Cone { apex, .. } => Some(*apex),
             _ => None,
         }
+    }
+}
+
+/// How many times larger than the places asked a ball's centre and radius
+/// together are before it is *far*: its distance is then taken without
+/// the loss ([`ball_distance`]), and it is measured against rather than
+/// walked where the other surface is a cone (`meet.rs` › `numeric`). The
+/// plain difference `|p − c| − r` is rounded at the size of the centre
+/// and the radius; a place is held to `f = 0` as near as 64 units of
+/// rounding at its own size ([`super::march`] › `held`), so from 8 times
+/// on the plain difference's own rounding is an eighth of that and more.
+const FAR: f64 = 8.0;
+
+/// Whether the ball about `center` is far larger than places no further
+/// than `reach` from the origin ([`FAR`]).
+pub(super) fn far_ball(center: Vec3, radius: f64, reach: f64) -> bool {
+    center.length() + radius > FAR * reach
+}
+
+/// `a + b` and what rounding took from it: the two together are the sum
+/// exactly (Knuth's two-sum; no step of it is contracted or reordered).
+fn two_sum(a: f64, b: f64) -> (f64, f64) {
+    let s = a + b;
+    let bb = s - a;
+    (s, (a - (s - bb)) + (b - bb))
+}
+
+/// `a²` and what rounding took from it: the two together are the square
+/// exactly (Dekker's product, the factor split in two halves of 26 bits
+/// by Veltkamp's constant `2²⁷ + 1`).
+fn two_square(a: f64) -> (f64, f64) {
+    const SPLIT: f64 = 134_217_729.0;
+    let c = SPLIT * a;
+    let hi = c - (c - a);
+    let lo = a - hi;
+    let p = a * a;
+    (p, ((hi * hi - p) + 2.0 * hi * lo) + lo * lo)
+}
+
+/// The signed distance `|p − c| − r` from a ball's surface, without the
+/// loss of that difference: `(|p − c|² − r²) / (|p − c| + r)`, the
+/// difference of the squares summed exactly (each `p − c` with what
+/// rounding took from it, each square likewise, the large terms added
+/// first with their errors kept). `d` is `|p − c|` as plainly computed.
+///
+/// Where the centre and the radius are thousands of times the place
+/// asked, `p − c` drops the last bits of `p` and `|p − c| − r` comes
+/// back in steps of the rounding of `r`: a ball of radius 1e5 measures a
+/// place four units from the origin in steps of 1.5e-11, and a point
+/// held to `f = 0` within less than that is on the curve only where the
+/// distance rounds to exactly 0 (docs/design/booleans.md › *A surface
+/// far larger than the box*). Computed this way the distance of a place
+/// near the surface is right to the last bits of the place itself.
+fn ball_distance(p: Vec3, c: Vec3, r: f64, d: f64) -> f64 {
+    // One coordinate: the head of `(p − c)²`, and everything smaller.
+    let part = |place: f64, centre: f64| {
+        let (h, l) = two_sum(place, -centre);
+        let (hh, hl) = two_square(h);
+        (hh, hl + (2.0 * h * l + l * l))
+    };
+    let ((xx, xs), (yy, ys), (zz, zs)) = (part(p.x, c.x), part(p.y, c.y), part(p.z, c.z));
+    let (rr, rs) = two_square(r);
+    let (sum, e1) = two_sum(xx, yy);
+    let (sum, e2) = two_sum(sum, zz);
+    let (sum, e3) = two_sum(sum, -rr);
+    let squares = sum + ((e1 + e2 + e3) + ((xs + ys + zs) - rs));
+    let both = d + r;
+    if squares.is_finite() && both > 0.0 {
+        squares / both
+    } else {
+        d - r
     }
 }
 
@@ -1098,11 +1247,31 @@ impl Chart {
     ///
     /// For a freeform surface the bounds are those of the pieces under
     /// the part ([`Pieces::over`]) where they are tighter.
+    ///
+    /// For a cone the speed and the bend around its axis are its radius,
+    /// at most the radius at the wider end of the part: [`Chart::bounds`]
+    /// has the radius at the wider end of the whole chart, which in a box
+    /// far larger than the part of the cone that matters (the box of a
+    /// pair with a ball of 1e5 reaches thousands down the cone's
+    /// extension, where it is hundreds wide) is a hundred times the
+    /// radius where the surfaces meet, and so many times more cells were
+    /// neither empty nor simple there. A bound still: the radius is
+    /// linear along the cone.
     pub(super) fn bounds_in(&self, u: (f64, f64), v: (f64, f64)) -> Bounds {
         let mut b = match self.pieces.as_ref().and_then(|p| p.over(u, v)) {
             Some(local) => self.bounds.min(&local),
             None => self.bounds,
         };
+        if let Surface::Cone(c) = &self.surface {
+            let slope = c.half_angle().ptan();
+            let widest = (c.radius() + v.0 * slope)
+                .abs()
+                .max((c.radius() + v.1 * slope).abs());
+            if widest.is_finite() {
+                b.lu = b.lu.min(widest);
+                b.muu = b.muu.min(widest);
+            }
+        }
         for cusp in &self.cusps {
             let n = &cusp.narrowing;
             let (lo, hi) = if cusp.pole.across_v() { v } else { u };
@@ -2194,6 +2363,49 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// A far ball's distance is told to the last bits of the place. The
+    /// centre on the x axis at `r + e`: `q.x − c.x` is `(q.x − e) − r`,
+    /// both differences of numbers within a factor of two of each other
+    /// and so exact, and the `r²` of `|q − c|² − r²` goes by hand. Against
+    /// that the distance without the loss agrees to 13 digits at radii
+    /// from 1e3 to 1e7, where the plain difference is off by the rounding
+    /// of the radius (1e-11 at 1e5). A ball is measured that way only
+    /// where it is far larger than the places asked.
+    #[test]
+    fn a_far_balls_distance_is_told_to_the_last_bits_of_the_place() {
+        for r in [1e3, 1e5, 1e7] {
+            let c = Vec3::new(r + 3.999_996_3, 0.0, 0.7);
+            let e = c.x - r;
+            let ball = Surface::Sphere(crate::Sphere::new(Frame::WORLD.at(c).unwrap(), r).unwrap());
+            let plain = Field::new(&ball).unwrap();
+            let far = Field::new(&ball).unwrap().for_places_within(10.0);
+            assert!(matches!(far, Field::Sphere { lossless: true, .. }));
+            assert!(matches!(
+                Field::new(&ball).unwrap().for_places_within(0.5 * r),
+                Field::Sphere {
+                    lossless: false,
+                    ..
+                }
+            ));
+            assert_eq!(far.scale(), 0.0);
+            assert_eq!(plain.scale(), c.length() + r);
+            let mut lost = 0.0_f64;
+            for k in 0..200 {
+                let k = f64::from(k);
+                let q = Vec3::new(4.0 - 1e-7 * k, 1e-3 * k, 0.7 + 3e-3 * k);
+                let (s, dz) = (q.x - e, q.z - 0.7);
+                let by_hand = (s * s - 2.0 * s * r + q.y * q.y + dz * dz) / (q.distance(c) + r);
+                let told = far.sample(q).unwrap().signed;
+                assert!(
+                    (told - by_hand).abs() <= 1e-18 + 1e-13 * by_hand.abs(),
+                    "radius {r:e}, place {k}: {told:e} and {by_hand:e}"
+                );
+                lost = lost.max((plain.sample(q).unwrap().signed - by_hand).abs());
+            }
+            assert!(lost > 0.01 * f64::EPSILON * r, "radius {r:e}: {lost:e}");
         }
     }
 

@@ -6,7 +6,7 @@
 
 use super::clip;
 use super::exact::{self, Closed};
-use super::field::{Chart, Field};
+use super::field::{Chart, Field, far_ball};
 use super::march::Marcher;
 use crate::{Curve3, GeomError, Surface};
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
@@ -288,6 +288,27 @@ fn numeric(
         (b, a)
     } else {
         (a, b)
+    };
+    // A ball far larger than the box is not walked where the other
+    // surface is a cone: its points come back rounded at the size of its
+    // centre and radius (a chart of radius 2e4 places a point to 4e-12,
+    // which at a sine of 2e-5 is a fifth of a tolerance of 1e-6 along the
+    // curve), while measured against it is exact to the place
+    // (`field.rs` › `ball_distance`), and the cone's points are computed
+    // from numbers of the box's own size.
+    let (walked, other) = match (walked, other) {
+        (Surface::Sphere(ball), Surface::Cone(_))
+            if within.corners().is_some_and(|(lo, hi)| {
+                far_ball(
+                    ball.frame().origin(),
+                    ball.radius(),
+                    lo.length().max(hi.length()),
+                )
+            }) =>
+        {
+            (other, walked)
+        }
+        pair => pair,
     };
     let field = Field::new(other)?;
     let back = Field::new(walked)?;

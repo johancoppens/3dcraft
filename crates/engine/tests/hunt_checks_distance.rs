@@ -39,20 +39,18 @@
 //! (`HUNT_CASES` cases per kind, default 120) and prints every case that is
 //! not right. Cases found wrong are pinned in [`KNOWN`] with what is wrong
 //! (none at present: the ten a cone's face that holds its apex gave were
-//! repaired on 2026-11-14). Known wrong and pinned in tests of their own,
-//! which fail when it is mended: the distance of faces that cross at a
+//! repaired on 2026-11-14). Known wrong and pinned in a test of its own,
+//! which fails when it is mended: the distance of faces that cross at a
 //! shallow angle is not 0
-//! (`a_big_ball_sunk_into_a_block_is_given_a_distance_known`), and a ball
-//! of radius 20 000 sunk 5 tolerances into a cone's side is answered clear
-//! (`a_ball_of_twenty_thousand_sunk_five_tolerances_into_a_cone_is_answered_clear_known`).
+//! (`a_big_ball_sunk_into_a_block_is_given_a_distance_known`).
 //! A ball of radius 10 000 sunk a few tolerances into a cone's or a
 //! cylinder's side was answered clear until 2026-11-20 and is held to the
 //! overlap (`a_huge_ball_sunk_a_few_tolerances_into_a_side_overlaps`),
 //! and to what it is on both sides of zero
 //! (`a_huge_ball_by_a_side_is_clear_touching_or_overlapping_as_it_lies`);
-//! eight larger balls that are not told since then are owed
-//! (`a_ball_tens_of_thousands_of_times_the_body_sunk_into_a_side_overlaps`,
-//! ignored).
+//! nine larger balls, one answered clear and eight not told between
+//! 2026-11-20 and 2026-11-21, are held to the overlap
+//! (`a_ball_tens_of_thousands_of_times_the_body_sunk_into_a_side_overlaps`).
 
 #![allow(
     clippy::unwrap_used,
@@ -2340,56 +2338,33 @@ fn by_the_side(cone: bool, rb: f64, depth: f64) -> (Step, V) {
 }
 
 /// Found by the review of the repair of the shallow crossing (2026-11-20),
-/// known wrong: **a ball of radius 20 000 sunk 5 tolerances into the
-/// cone's side is answered clear** (5.56e-7, `atLeast` 0), where it was an
-/// overlap before the repair (which answered clear at 4.5 and at 6
-/// tolerances: the answer is unsteady there on both). Nothing false is
-/// proven, but the status is false. The ball of 10 000 is held to the
-/// truth above; from 20 000 up the nearest a marched point is asked to the
-/// other surface (`Marcher::held`, down to `64 ε` of the pair's box) is
-/// finer than the rounding of a distance to a centre that far away
-/// (docs/design/verification.md › *Answered clear though sharing volume*).
-/// When it is mended this test fails: make it the right answer, an
-/// overlap.
+/// right since 2026-11-21: **a ball tens of thousands of times the body,
+/// sunk a few tolerances into its side, overlaps.** Nine pairs: a ball of
+/// 20 000 sunk 5 tolerances into the cone's side, which that repair
+/// answered *clear* (5.56e-7, `atLeast` 0) where it was an overlap before
+/// (this test held that wrong answer, and failed when it changed, as it
+/// was written to); and eight, balls of 30 000 to 200 000 sunk 3 to 50
+/// tolerances into the cone's side or the cylinder's wall, that were
+/// told to overlap before that repair and could not be told since
+/// ("marching an intersection curve stalled"). Each shares volume with
+/// the body by its closed form (the placement), so an overlap is the
+/// truth.
+///
+/// The wrong answer was a march that passed its own start and went round
+/// the thin loop a second time before it closed: one closed curve twice
+/// round, which divides nothing. The stalls were points held nearer the
+/// ball than its distance, the difference of two numbers of 1e5, could be
+/// told. A far ball's distance is now taken without that loss, a point is
+/// held as near as rounding leaves at its own place, and a cone is walked
+/// rather than a far ball (docs/design/booleans.md › *A surface far larger
+/// than the box*; the sweep itself, both sides of zero, is
+/// `crates/geom/tests/meet_far.rs`).
 #[test]
-fn a_ball_of_twenty_thousand_sunk_five_tolerances_into_a_cone_is_answered_clear_known() {
-    let tol = 1e-6;
-    let rb = 20_000.0;
-    let (body, centre) = by_the_side(true, rb, 5.0 * tol);
-    let mut s = document(1.0);
-    build(&mut s, &[body, sphere("B", rb, centre)]).unwrap();
-    let Ran::Ok(clear) = run(
-        &mut s,
-        "measure.clearance",
-        &json!({"from": "A", "to": "B"}),
-    ) else {
-        panic!("no clearance");
-    };
-    // Never a proof above the truth, known or not.
-    let at_least = clear["atLeast"].as_f64().unwrap_or(0.0);
-    assert!(at_least <= 0.0, "proven {at_least:e} apart: {clear}");
-    assert!(
-        clear["pairs"][0]["status"] == "clear",
-        "answered otherwise now: {clear}: if an overlap, it is mended; make this the right answer"
-    );
-}
-
-/// Owed, found by the same review: eight pairs that were told to overlap
-/// before the repair of the shallow crossing and are not told since
-/// (`measure.clearance` cannot tell, `document.interference` answers
-/// *unknown*: "marching an intersection curve stalled"): balls of 30 000
-/// to 200 000 sunk 3 to 50 tolerances into the cone's side or the
-/// cylinder's wall. A step of the march must end as near the other
-/// surface as `Marcher::held` asks, which there is nearer than the
-/// distance to a centre so far away can be told; no step does, however
-/// short. Each shares volume with the body by its closed form (the
-/// placement), so an overlap is the truth.
-#[test]
-#[ignore = "owed: a ball thousands of times the body, a few tolerances in, is not told since the shallow crossing's repair"]
 fn a_ball_tens_of_thousands_of_times_the_body_sunk_into_a_side_overlaps() {
     let tol = 1e-6;
     let mut failed = Vec::new();
-    for (cone, rb, sunk) in [
+    let pairs = [
+        (true, 2e4, 5.0),
         (true, 3e4, 3.0),
         (true, 5e4, 3.0),
         (true, 7e4, 20.0),
@@ -2398,7 +2373,8 @@ fn a_ball_tens_of_thousands_of_times_the_body_sunk_into_a_side_overlaps() {
         (true, 1e5, 50.0),
         (true, 2e5, 50.0),
         (false, 1e5, 20.0),
-    ] {
+    ];
+    for (cone, rb, sunk) in pairs {
         let (body, centre) = by_the_side(cone, rb, sunk * tol);
         let mut s = document(1.0);
         build(&mut s, &[body, sphere("B", rb, centre)]).unwrap();
@@ -2407,7 +2383,12 @@ fn a_ball_tens_of_thousands_of_times_the_body_sunk_into_a_side_overlaps() {
             "measure.clearance",
             &json!({"from": "A", "to": "B"}),
         ) {
-            Ran::Ok(clear) => clear["pairs"][0]["status"].to_string(),
+            Ran::Ok(clear) => {
+                // Never a proof above the truth.
+                let at_least = clear["atLeast"].as_f64().unwrap_or(0.0);
+                assert!(at_least <= 0.0, "proven {at_least:e} apart: {clear}");
+                clear["pairs"][0]["status"].to_string()
+            }
             Ran::Err(e) => e,
             Ran::Panic(e) => panic!("{e}"),
         };
@@ -2420,8 +2401,9 @@ fn a_ball_tens_of_thousands_of_times_the_body_sunk_into_a_side_overlaps() {
     }
     assert!(
         failed.is_empty(),
-        "{} of 8 not told to overlap:\n{}",
+        "{} of {} not told to overlap:\n{}",
         failed.len(),
+        pairs.len(),
         failed.join("\n")
     );
 }
