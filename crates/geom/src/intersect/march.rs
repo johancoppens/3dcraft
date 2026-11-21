@@ -479,6 +479,11 @@ impl Marcher {
         self
     }
 
+    /// The evaluations of the chart made so far.
+    pub(super) fn evaluations(&self) -> u64 {
+        u64::try_from(self.evals).unwrap_or(u64::MAX)
+    }
+
     fn spent(&self) -> Result<(), GeomError> {
         if self.evals > MAX_EVALS {
             Err(GeomError::NoConvergence(

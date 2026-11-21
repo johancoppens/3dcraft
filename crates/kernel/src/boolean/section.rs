@@ -2137,13 +2137,17 @@ impl Ahead {
                         to_meet((a, fa, box_a), (b, fb), covers, Outlines::Made, tol)
                         && (is_freeform(&pair.oa.surface) || is_freeform(&pair.ob.surface))
                     {
-                        // Kept on the shelf; the section takes it from there.
-                        let _ = meet_surfaces(
-                            &pair.oa.surface,
-                            &pair.ob.surface,
-                            &pair.within,
-                            tolerance,
-                        );
+                        // Kept on the shelf; the section takes it from
+                        // there, and its question is the one counted
+                        // (`craft3d_geom::intersect::march_work`).
+                        let _ = craft3d_geom::intersect::ahead_of_the_asker(|| {
+                            meet_surfaces(
+                                &pair.oa.surface,
+                                &pair.ob.surface,
+                                &pair.within,
+                                tolerance,
+                            )
+                        });
                         self.warmed.fetch_add(1, Ordering::Relaxed);
                     }
                 })
