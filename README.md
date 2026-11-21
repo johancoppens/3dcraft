@@ -35,12 +35,12 @@ classic interface with buttons can build one on top: it would send the same comm
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/readme-window-staircase-dark.webp">
   <source media="(prefers-color-scheme: light)" srcset="docs/img/readme-window-staircase-light.webp">
-  <img src="docs/img/readme-window-staircase-light.webp" alt="The 3DCraft window building the spiral-staircase example one command at a time. Each command is named over the view as it runs, such as “feature.extrude · Landing collar blank” and “assert.add · One tread per riser below the landing”; the staircase grows in the view, the history in the side panel to 93 features and its checks to 16, all passing. The loop starts and ends on the finished staircase">
+  <img src="docs/img/readme-window-staircase-light.webp" alt="The 3DCraft window building the spiral-staircase example one command at a time. Each feature, material and check is named over the view as it runs, such as “feature.extrude · Landing collar blank” and “assert.add · One tread per riser below the landing”; the staircase grows in the view, the history in the side panel to 93 features and its checks to 16, all passing. The loop starts and ends on the finished staircase">
 </picture>
 
 *The window building the spiral staircase, one of the examples, command by command: the example's own
-commands sent one at a time over the control channel, as an agent sends them, each named over the view. It
-ends on 93 features rebuilt and 16 checks, all passing.*
+commands sent one at a time over the control channel, as an agent sends them; a caption over the view names
+each feature, material and check as it is added. It ends on 93 features rebuilt and 16 checks, all passing.*
 
 It is written in pure Rust, with its own B-rep kernel, constraint solver, tessellator and renderers: no
 OpenCascade, no Parasolid, no third-party geometry of any kind. Licence: [MIT](LICENSE).
