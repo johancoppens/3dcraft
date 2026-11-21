@@ -25,6 +25,12 @@ use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
+/// TEMPORARY (investigation): prints what the section does.
+pub(super) static TRACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(super) fn trace() -> bool {
+    TRACE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The outline of a face, made the first time it is asked for. Making
 /// the outline of a freeform face indexes its surface (a tree of up to
 /// 2^15 pieces, tens of megabytes), and of a body with thousands of faces
@@ -582,19 +588,36 @@ fn edge_cuts(
     let tol = tolerance.linear;
     let reach = EDGE_REACH * tol;
     let mut asked = crate::work::Tally::edges();
+    if trace() {
+        eprintln!(
+            "  edge_cuts {:?} face {face}: edges of face {:?}, near {:?}",
+            own.operand,
+            own.edges_of(face),
+            near
+        );
+    }
     for id in own.edges_near(face, |b| boxes_meet(b, near, reach)) {
         asked.one();
+        if trace() {
+            eprintln!("    edge {id:?} box {:?}", own.edge_box(id));
+        }
         // An edge further from the other face than its cover meets the
         // other surface only where no stretch can be kept: a stretch
         // between the cuts that are left crosses no boundary of the other
         // face, and holds a point outside it, so all of it is outside.
         if other.is_some_and(|(cover, of)| !cover.reaches(of, &own.edge_box(id), None, APART * tol))
         {
+            if trace() {
+                eprintln!("      skipped: the other face's cover does not reach the edge's box");
+            }
             continue;
         }
         // Nor does an edge whose box is further than that from the other
         // surface (then it does not meet it at all).
         if clear_of_surface(surface.surface, &own.edge_box(id), APART * tol) {
+            if trace() {
+                eprintln!("      skipped: clear of the surface");
+            }
             continue;
         }
         let edge = own.body.edge(id).ok_or(Stop::of(LOST))?;
@@ -627,9 +650,25 @@ fn edge_cuts(
             surface_distance(surface, edge.curve.eval(t)) <= tol
         });
         if lies_on {
+            if trace() {
+                eprintln!("      lies on the surface");
+            }
             cut(a.point, false);
             cut(b.point, false);
             continue;
+        }
+        if trace() {
+            let hits = curve_hits(&edge.curve, edge.range, surface, tolerance);
+            eprintln!("      curve_hits over {:?}: {hits:?}", edge.range);
+            if let Ok(CurveIntersection::Hits(hits)) = &hits {
+                for hit in hits {
+                    eprintln!(
+                        "        located: {:?} nearest {:?}",
+                        locate(&edge.curve, edge.range, hit.point, tol),
+                        nearest(&edge.curve, edge.range, hit.point)
+                    );
+                }
+            }
         }
         // The edge's own curve with the other body's surface: a tolerant
         // edge is taken as it is, not as the exact curve it stands for.
@@ -896,6 +935,22 @@ fn clip(
         }
     }
     along.sort_by(|p, q| p.t.total_cmp(&q.t));
+    if trace() {
+        eprintln!(
+            "  clip a{fa} b{fb}: curve range {first}..{last} closed {closed} periodic {periodic} tangent {}; found {} cuts; along:",
+            meeting.tangent,
+            found.len()
+        );
+        for cut in found {
+            eprintln!(
+                "    found {:?} a_edge {:?} b_edge {:?}",
+                cut.point, cut.a_edge, cut.b_edge
+            );
+        }
+        for cut in &along {
+            eprintln!("    along t {} {:?} end {}", cut.t, cut.point, cut.end);
+        }
+    }
     let along = ends_at_places(
         along,
         curve,
@@ -1010,7 +1065,21 @@ fn clip(
         // end beyond a face's box (where the box the surfaces were asked
         // in cut the curve, that end is clear of one of the two boxes).
         let clear = |p: Vec3| !(box_a.contains(p, 2.0 * tol) && box_b.contains(p, 2.0 * tol));
+        if trace() {
+            eprintln!(
+                "    span {t0}..{t1} from {:?} to {:?} middle {middle:?}",
+                from.point, to.point
+            );
+        }
         if clear(middle) || clear(from.point) || clear(to.point) {
+            if trace() {
+                eprintln!(
+                    "      dropped: clear of a box (middle {} from {} to {})",
+                    clear(middle),
+                    clear(from.point),
+                    clear(to.point)
+                );
+            }
             continue;
         }
         // Out of either face at the middle is no part of the imprint,
@@ -1020,6 +1089,15 @@ fn clip(
         // tolerance of that edge for a while beyond the other face too.
         // (Further from either face than its cover is outside it.)
         if !(a.may_hold(fa, middle, tol) && b.may_hold(fb, middle, tol)) {
+            if trace() {
+                eprintln!(
+                    "      dropped: a cover does not hold the middle (a {} b {}); sides a {:?} b {:?}",
+                    a.may_hold(fa, middle, tol),
+                    b.may_hold(fb, middle, tol),
+                    oa.side(middle, tol),
+                    ob.side(middle, tol)
+                );
+            }
             continue;
         }
         let mut heres = [Side::On; 2];
@@ -1030,6 +1108,9 @@ fn clip(
             if *here == Side::Out {
                 break;
             }
+        }
+        if trace() {
+            eprintln!("      sides at the middle: {heres:?}");
         }
         if heres.contains(&Side::Out) {
             continue;
@@ -1192,6 +1273,9 @@ fn clip(
                     _ => {}
                 }
             }
+        }
+        if trace() {
+            eprintln!("      keep {keep} inside {inside:?}");
         }
         if !keep {
             continue;
@@ -1646,6 +1730,12 @@ fn section_with(
             }
             at = at.saturating_add(1);
             let covers = (a.covers.as_slice(), b.covers.as_slice());
+            if trace() {
+                eprintln!(
+                    "PAIR a{fa} b{fb}: box a {box_a:?} box b {:?}",
+                    b.boxes.get(fb)
+                );
+            }
             let Some(Pair {
                 box_b,
                 within,
@@ -1654,6 +1744,9 @@ fn section_with(
                 ob,
             }) = to_meet((a, fa, box_a), (b, fb), covers, Outlines::Make, tol)?
             else {
+                if trace() {
+                    eprintln!("  not met");
+                }
                 continue;
             };
             let named = [a.name(fa), b.name(fb)];
@@ -1679,6 +1772,33 @@ fn section_with(
                 }
                 Err(error) => return Err(geometry(error, &named)),
             };
+            if trace() {
+                match &met {
+                    SurfaceMeeting::None => eprintln!("  met: none"),
+                    SurfaceMeeting::Coincident { same_normal } => {
+                        eprintln!("  met: coincident {same_normal}")
+                    }
+                    SurfaceMeeting::Meets(m) => {
+                        eprintln!(
+                            "  met: {} points, {} curves",
+                            m.points.len(),
+                            m.curves.len()
+                        );
+                        for c in &m.curves {
+                            let kind = match &c.curve {
+                                Curve3::Line(_) => "line",
+                                Curve3::Circle(_) => "circle",
+                                Curve3::Ellipse(_) => "ellipse",
+                                Curve3::Nurbs(_) => "nurbs",
+                            };
+                            eprintln!(
+                                "    curve {kind} range {:?} closed {} tangent {}",
+                                c.range, c.closed, c.tangent
+                            );
+                        }
+                    }
+                }
+            }
             // Faces on one surface, or on two that never cross: the same
             // surface when they are within half the tolerance of each
             // other where one is over the other, apart when twice the
@@ -1853,6 +1973,9 @@ fn to_meet<'s>(
     // else either body holds. (With room to spare, so that where a curve
     // is cut off is not where anything of either face is.)
     if !boxes_meet(box_a, box_b, 2.0 * tol) {
+        if trace() && outlines == Outlines::Make {
+            eprintln!("  to_meet: the boxes do not meet");
+        }
         return Ok(None);
     }
     let room = 16.0 * tol + 0.013 * box_a.diagonal().max(box_b.diagonal());
@@ -1870,6 +1993,13 @@ fn to_meet<'s>(
         },
     };
     if clear_of(oa.sheet(), hull_b, 2.0 * tol) || clear_of(ob.sheet(), hull_a, 2.0 * tol) {
+        if trace() && outlines == Outlines::Make {
+            eprintln!(
+                "  to_meet: clear by the hulls (a's surface of b's hull {}, b's surface of a's hull {})",
+                clear_of(oa.sheet(), hull_b, 2.0 * tol),
+                clear_of(ob.sheet(), hull_a, 2.0 * tol)
+            );
+        }
         return Ok(None);
     }
     // Faces whose covers are further apart than this cannot meet
@@ -1882,6 +2012,13 @@ fn to_meet<'s>(
         (None, Some((cb, of_b))) => cb.reaches(of_b, box_a, Some(&oa.surface), apart),
         (None, None) => true,
     };
+    if trace() && outlines == Outlines::Make {
+        eprintln!(
+            "  to_meet: covers a {} b {} meet {meet}",
+            a.cover_in(covers.0, fa, tol).is_some(),
+            b.cover_in(covers.1, fb, tol).is_some()
+        );
+    }
     Ok(meet.then_some(Pair {
         box_b,
         within,
