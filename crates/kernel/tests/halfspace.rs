@@ -775,9 +775,10 @@ fn half_a_cone_cut_beside_its_apex_is_cut_level() {
 /// under the hyperbola's tip: each side of each level is built, to the
 /// closed forms, or refused as a state that cannot be told, never handed
 /// to the boolean's own check as a body it refuses (before the repair of
-/// seed 118385 every level from half the height up was, and the levels
-/// closest under the tip were refused as *"not the boolean of its
-/// operands"*). What is refused today is owed: the winding sum about a
+/// seed 118385 the levels from 4 up were, at the distances 1e-3 and 1e-4
+/// tried then, and the levels closest under the tip were refused as
+/// *"not the boolean of its operands"*; 3e-4 was not tried before it).
+/// What is refused today is owed: the winding sum about a
 /// point (`chart::turn`) runs out of steps on the spline's one speed
 /// bound, as the search for its nearest point did, and says *"a point too
 /// close to a face boundary"* of a point that is not. Per distance of the
