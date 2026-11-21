@@ -154,3 +154,55 @@ pub fn ell(session: &mut Session, k: f64) {
         json!({"sketch": "Outline", "distance": 2.0 * k, "name": "Ell"}),
     );
 }
+
+/// A block 20 × 30 × 10 (`Base`) with a pocket 3 deep in its top, 10
+/// wide from x = 5, from y = 5 on, which ends in a ramp: the plane
+/// x − y + z = 0, through the corner (5, 15, 10) of the pocket's rim, with
+/// the pocket on the side its normal (1, −1, 1) points to (`Part`). The
+/// rim along the wall x = 5 runs from (5, 5, 10), where it ends square
+/// against the wall y = 5, to (5, 15, 10), where it ends in the ramp at a
+/// slant: 10 long, with the wall below it 3 high. Returns the rim's two
+/// faces, the top's first. The pocket is the part of x + z ≥ y ≥ 5 with
+/// 5 ≤ x ≤ 15 and 7 ≤ z ≤ 10, 10 · 3 · (10 + 8.5 − 5) = 405, so the
+/// part is 6000 − 405 = 5595 (`k` = 1). This version has no plane cut
+/// (`feature.planeCut` came after 0.2): what the ramp takes off the
+/// pocket's block is a large block below its own top, turned so that its
+/// top's normal is (1, −1, 1) (by acos(1/√3) = 54.7356° about (1, 1, 0))
+/// and moved to the corner.
+pub fn ramp_pocket(session: &mut Session, k: f64) -> Value {
+    built(
+        session,
+        "feature.block",
+        json!({"name": "Base", "size": [20.0 * k, 30.0 * k, 10.0 * k]}),
+    );
+    built(
+        session,
+        "feature.block",
+        json!({"name": "Pocket", "size": [10.0 * k, 25.0 * k, 5.0 * k], "position": [5.0 * k, 5.0 * k, 7.0 * k]}),
+    );
+    built(
+        session,
+        "feature.block",
+        json!({"name": "Cutter", "size": [200.0 * k, 200.0 * k, 100.0 * k], "position": [-100.0 * k, -100.0 * k, -100.0 * k]}),
+    );
+    built(
+        session,
+        "feature.transform",
+        json!({"name": "Turned", "source": "Cutter", "angle": "54.735610317245346 deg", "axis": [1, 1, 0], "translate": [5.0 * k, 15.0 * k, 10.0 * k]}),
+    );
+    built(
+        session,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Pocket", "tool": "Turned", "name": "Ramp"}),
+    );
+    built(
+        session,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Base", "tool": "Ramp", "name": "Part"}),
+    );
+    let rim = json!(["F6:copy(0)/F1:face(1)", "F6:copy(1)/F2:face(4)"]);
+    let mut found = edge_between(session, "Part", k, [5.0, 5.0, 10.0], [5.0, 15.0, 10.0]);
+    found.as_array_mut().unwrap().sort_by_key(|n| n.to_string());
+    assert_eq!(found, rim, "the rim of the pocket");
+    rim
+}

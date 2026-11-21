@@ -41,7 +41,9 @@
 //!   edge (a root that ends on a chamfer, a ledge that runs into a
 //!   slanted wall), the tool is made long enough to reach that plane and
 //!   cut there ([`end_plane`], [`trim`]): its end lies in the plane of the
-//!   face, which the boolean merges it into.
+//!   face, which the boolean merges it into. A size so large that the
+//!   plane leaves nothing of the blend face (or leaves it in pieces) is
+//!   refused as too large.
 //! - In every other case the end of the tool would be left in the result
 //!   as a face nobody asked for, which the check at the end finds and
 //!   refuses.
@@ -1403,10 +1405,28 @@ fn end_plane(
     Ok(Some((far, 1.5 * reach + largest)))
 }
 
-/// The tool cut by the plane through `point` square to `far`: what lies
-/// beyond it (along `far`) is taken off. `size` bounds the tool.
+/// The tool of `edge` cut by the plane through `point` square to `far`:
+/// what lies beyond it (along `far`) is taken off. `size` bounds the tool.
+///
+/// The blend face has to keep one piece. The plane passes through the
+/// vertex at the end of the edge, so nothing of the blend face is left
+/// when the whole of its section lies further past the plane than the
+/// plane slants back along the edge from the vertex to where the tool
+/// begins (with a plane at each end: when every point of the face is past
+/// one of the two): the rim of a pocket, 10 long along y, whose far end
+/// is a ramp with the normal (1, −1, 1) (the wall below the rim facing
+/// +x) loses its whole face from a chamfer of 10 on, and from a fillet of
+/// 10 / (2 − √2) (the middle of the arc is the nearest the edge). There
+/// is no blend face to build then: the size is too large for what is near
+/// the edge, and it is refused as the check at the end refuses a blend
+/// face that is not there or not in one piece ([`Reason::InPieces`]),
+/// which the search for what fits ([`fit`]) answers by building smaller.
+/// A face the plane leaves in two pieces is refused alike. Until
+/// 2026-11-21 both were said as a bug, "lost track of an entity" (the
+/// random designs' seeds 109228 and 117254).
 fn trim(
     tool: Tool,
+    edge: EdgeId,
     point: Vec3,
     far: Vec3,
     size: f64,
@@ -1430,13 +1450,13 @@ fn trim(
             continue;
         }
         if slope.is_some() {
-            return Err(lost());
+            return Err(refused(edge, Reason::InPieces));
         }
         slope = Some(FaceId(index_u32(index)));
     }
     Ok(Tool {
         body: result.body,
-        slope: slope.ok_or_else(lost)?,
+        slope: slope.ok_or_else(|| refused(edge, Reason::InPieces))?,
     })
 }
 
@@ -1569,7 +1589,7 @@ fn tool(plan: &Plan, tolerance: &Tolerance) -> Result<Tool, BlendError> {
             let mut made = slope_of(extrude(&profiles, &frame, 0.0, total, tolerance)?)?;
             for (point, far) in plan.trims.into_iter().flatten() {
                 let size = 4.0 * (total + plan.largest());
-                made = trim(made, point, far, size, tolerance)?;
+                made = trim(made, plan.edge, point, far, size, tolerance)?;
             }
             Ok(made)
         }

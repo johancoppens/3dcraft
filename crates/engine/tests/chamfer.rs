@@ -511,6 +511,64 @@ fn a_distance_too_large_names_the_edge_the_face_and_what_fits() {
     }
 }
 
+/// The rim of a pocket that ends in a ramp (`ramp_pocket`: 10 long, the
+/// wall below it 3 high), chamfered by distances from 0.25 to three times
+/// the rim's length. Below 3 the chamfer is built, and it is the closed
+/// form: across the rim the triangle `u + w ≤ d` (u along the top, w down
+/// the wall) is taken from the square end at y = 5 to the ramp's plane,
+/// which it meets at y = 15 − u − w, so `10 d²/2 − d³/3` goes (10 times
+/// the triangle's area less the integral of u + w over it). From 3 on it
+/// is too large, with 3 as the largest that fits, at every distance
+/// tried: also from 10 on, the rim's length, from which the ramp's plane
+/// leaves nothing of the tool's chamfer face. There the chamfer failed
+/// with a bug's words, "the chamfer lost track of an entity", until
+/// 2026-11-21 (the random designs' seeds 109228 and 117254, on `main`).
+#[test]
+fn a_chamfer_that_ends_in_a_slanted_plane_is_built_or_too_large_at_every_distance() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        let rim = ramp_pocket(&mut s, k);
+        let (top, wall) = (rim[0].as_str().unwrap(), rim[1].as_str().unwrap());
+        built(
+            &mut s,
+            "feature.chamfer",
+            json!({"edges": [rim], "distance": 0.25 * k, "name": "Bevel"}),
+        );
+        let gone = |d: f64| 5.0 * d * d - d * d * d / 3.0;
+        assert_solid(&mut s, "Bevel", 5595.0 - gone(0.25), None, k);
+        for d in [
+            1.0, 2.0, 2.999, 3.0, 3.001, 5.0, 9.999, 10.0, 10.001, 12.0, 20.0, 30.0,
+        ] {
+            let params = json!({"feature": "Bevel", "distance": d * k});
+            if d < 3.0 {
+                built(&mut s, "feature.edit", params);
+                assert_solid(&mut s, "Bevel", 5595.0 - gone(d), None, k);
+                continue;
+            }
+            let reason = failed(&mut s, "feature.edit", params);
+            assert!(!reason.contains(craft3d_engine::BUG), "{k} {d}: {reason}");
+            assert!(
+                reason.starts_with(&format!(
+                    "size.distance: too large for edges.0 (between {top} and {wall}): the cut line, "
+                )),
+                "{k} {d}: {reason}"
+            );
+            assert!(
+                reason.contains(&format!("along the face {wall}, leaves that face")),
+                "{k} {d}: {reason}"
+            );
+            assert!(
+                reason.ends_with(&format!(
+                    "the largest distance that fits there is below {} mm",
+                    3.0 * k
+                )),
+                "{k} {d}: {reason}"
+            );
+        }
+    }
+}
+
 #[test]
 fn bad_parameters_are_errors_and_what_is_not_built_says_its_kind() {
     let mut s = session();
