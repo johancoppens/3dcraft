@@ -349,8 +349,11 @@ fn other_side(params: &Value) -> Option<Value> {
 /// `measure.below`'s params for one plane of a cut, as the cut takes it
 /// (a base plane, a datum plane or a face by name, alone or as
 /// `{plane, offset, side}`; or `{point, normal, offset, side}`), applied to
-/// the body of the feature `of`; and whether the plane keeps the side
-/// above it. `None` for a plane the cut would not take.
+/// the body of the feature `of`, so that what `measure.below` gives is
+/// what the plane keeps; or, with `true`, what it cuts away (a face's or a
+/// datum's plane keeping the side above, whose normal cannot be turned in
+/// the params: the part kept is then the body less that). `None` for a
+/// plane the cut would not take.
 fn below_params(of: &str, plane: &Value) -> Option<(Value, bool)> {
     let map = match plane {
         Value::String(_) => return Some((json!({"of": of, "plane": plane}), false)),
@@ -367,15 +370,50 @@ fn below_params(of: &str, plane: &Value) -> Option<(Value, bool)> {
         },
     };
     let offset = given("offset").cloned().unwrap_or_else(|| json!(0));
-    let at = match (given("plane"), given("normal")) {
-        (Some(by), None) => by.clone(),
+    // The plane as a point and a normal where it is one: given so, or a
+    // base plane (its normal its third axis).
+    let pointed = match (given("plane"), given("normal")) {
+        (Some(by), None) => by
+            .as_str()
+            .and_then(|name| match name {
+                "xy" => Some([0.0, 0.0, 1.0]),
+                "yz" => Some([1.0, 0.0, 0.0]),
+                "zx" => Some([0.0, 1.0, 0.0]),
+                _ => None,
+            })
+            .map(|normal| (json!([0, 0, 0]), json!(normal))),
         (None, Some(normal)) => {
             let point = given("point").cloned().unwrap_or_else(|| json!([0, 0, 0]));
-            json!({"point": point, "normal": normal})
+            Some((point, normal.clone()))
         }
         _ => return None,
     };
+    // The side above asked for itself where it can be: the normal and the
+    // offset turned, so that a refusal is about the part the cut keeps.
+    if above
+        && let Some((point, normal)) = &pointed
+        && let (Some(turned), Some(offset)) = (negated(normal), offset.as_f64())
+    {
+        let plane = json!({"point": point, "normal": turned});
+        return Some((json!({"of": of, "plane": plane, "offset": -offset}), false));
+    }
+    let at = match (given("plane"), pointed) {
+        (Some(by), _) => by.clone(),
+        (None, Some((point, normal))) => json!({"point": point, "normal": normal}),
+        (None, None) => return None,
+    };
     Some((json!({"of": of, "plane": at, "offset": offset}), above))
+}
+
+/// Three plain numbers with their signs turned; `None` for anything else
+/// (an expression).
+fn negated(normal: &Value) -> Option<Value> {
+    let items = normal.as_array()?;
+    let mut out = Vec::with_capacity(3);
+    for v in items {
+        out.push(json!(-v.as_f64()?));
+    }
+    (out.len() == 3).then_some(Value::Array(out))
 }
 
 /// The volume and area of a feature's body.
@@ -771,8 +809,11 @@ impl Runner {
     /// cut by planes 1 to `k` is the cut by plane `k` of what planes 1 to
     /// `k − 1` left, `plane-cut.md` › *One feature against a feature a
     /// plane, bit for bit*); `measure.below` of that body by plane `k`
-    /// gives what the plane keeps (below it, or for `above` the body less
-    /// that), and the body plane `k` leaves (the next copy, or for the last
+    /// gives what the plane keeps (for `above`, by a point and a normal or
+    /// a base plane, asked with the plane turned round; by a face's or a
+    /// datum's plane, asked for the side cut away, and the body less that
+    /// is kept: a refusal there is about a part the cut never makes, so
+    /// the check is undone, counted), and the body plane `k` leaves (the next copy, or for the last
     /// plane the cut itself) has it, within `4 t (S + A) + 2e-9 V` of the
     /// body the plane is applied to: each of the two within `2 t (S + A)`
     /// of the exact part (rule 1, `A` the section) and the integrator's
@@ -803,7 +844,7 @@ impl Runner {
         let mut base = cut.target.clone();
         let number = |v: Option<&Value>| v.and_then(Value::as_f64).filter(|x| x.is_finite());
         for (k, plane) in planes.iter().enumerate() {
-            let Some((params, above)) = below_params(&base, plane) else {
+            let Some((params, cut_away)) = below_params(&base, plane) else {
                 return Ok(false);
             };
             let answer = match copy.execute("measure.below", &params) {
@@ -814,12 +855,16 @@ impl Runner {
                         "measure.below refused plane {} of the cut {name}, which was built: {message}",
                         k + 1
                     );
-                    return Err(match bug_kind(&message) {
+                    return match bug_kind(&message) {
                         Some(kind) => {
-                            self.found(kind, oracle_of_bug(kind), "measure.below", &detail)
+                            Err(self.found(kind, oracle_of_bug(kind), "measure.below", &detail))
                         }
-                        None => self.found("wrong", "cut-below", PLANE_CUT, &detail),
-                    });
+                        // Asked about the part the plane cuts away, which
+                        // the cut never makes (two parts touching there, say):
+                        // no disagreement, the check undone, counted.
+                        None if cut_away => Ok(false),
+                        None => Err(self.found("wrong", "cut-below", PLANE_CUT, &detail)),
+                    };
                 }
             };
             let section = answer.get("section").and_then(|s| s.get("area"));
@@ -832,7 +877,7 @@ impl Runner {
                 return Err(self.found("wrong", "cut-below", PLANE_CUT, &detail));
             };
             let (vb, sb) = applied_to;
-            let expected = if above { vb - below } else { below };
+            let expected = if cut_away { vb - below } else { below };
             let got = if k + 1 == planes.len() {
                 made
             } else {
@@ -867,11 +912,16 @@ impl Runner {
             let allowed = 4.0 * t * (sb + section) + 2e-9 * vb.abs();
             let gap = got.0 - expected;
             if !(gap.is_finite() && gap.abs() <= allowed) {
-                let side = if above { "above" } else { "below" };
+                let asked = if cut_away {
+                    "on the side it cuts away"
+                } else {
+                    "on the side it keeps"
+                };
                 let detail = format!(
-                    "plane {} of the cut {name} keeps {:e} of the {vb:e} it is applied to, but measure.below gives {below:e} below it, so {expected:e} on the side kept ({side}): off by {gap:e}, allowed {allowed:e}",
+                    "plane {} of the cut {name} keeps {:e} of the {vb:e} it is applied to, but measure.below gives {below:e} {asked} ({}), so {expected:e} kept: off by {gap:e}, allowed {allowed:e}",
                     k + 1,
-                    got.0
+                    got.0,
+                    params
                 );
                 return Err(self.found("wrong", "cut-below", PLANE_CUT, &detail));
             }
@@ -1244,6 +1294,30 @@ mod tests {
                 json!({"of": "__plane1", "plane": {"point": [1, 2, 3], "normal": [0, 0, 1]}, "offset": 0}),
                 false
             ))
+        );
+        // Above, by a point and a normal or a base plane: the kept side
+        // asked for itself, the normal and the offset turned.
+        assert_eq!(
+            below_params(
+                "F1",
+                &json!({"point": [1, 2, 3], "normal": [0, 1, 1], "offset": 2, "side": "above"})
+            ),
+            Some((
+                json!({"of": "F1", "plane": {"point": [1, 2, 3], "normal": [-0.0, -1.0, -1.0]}, "offset": -2.0}),
+                false
+            ))
+        );
+        assert_eq!(
+            below_params("F1", &json!({"plane": "zx", "offset": 5, "side": "above"})),
+            Some((
+                json!({"of": "F1", "plane": {"point": [0, 0, 0], "normal": [-0.0, -1.0, -0.0]}, "offset": -5.0}),
+                false
+            ))
+        );
+        // A base plane below stays as it is given.
+        assert_eq!(
+            below_params("F1", &json!({"plane": "yz", "offset": 5})),
+            Some((json!({"of": "F1", "plane": "yz", "offset": 5}), false))
         );
         // No point: the origin, as the cut takes it.
         assert_eq!(
