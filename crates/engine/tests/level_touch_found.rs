@@ -247,8 +247,9 @@ fn what_lies_beside_it_through_the_commands() {
     }
 }
 
-/// Replays a seed as found; the session after it.
-fn replay(seed: &str) -> Session {
+/// Replays a seed as found, or with its last step's radius times
+/// `radius`; the session after it.
+fn replay_with(seed: &str, radius: Option<f64>) -> Session {
     let text = match seed {
         "110965" => include_str!("level_touch_found/seed-110965.json"),
         "116424" => include_str!("level_touch_found/seed-116424.json"),
@@ -256,7 +257,12 @@ fn replay(seed: &str) -> Session {
         "115646" => include_str!("level_touch_found/seed-115646.json"),
         _ => panic!("no seed {seed}"),
     };
-    let steps: Vec<Value> = serde_json::from_str(text).unwrap();
+    let mut steps: Vec<Value> = serde_json::from_str(text).unwrap();
+    if let Some(radius) = radius {
+        let last = steps.last_mut().unwrap();
+        let asked = last["params"]["radius"].as_f64().unwrap();
+        last["params"]["radius"] = json!(asked * radius);
+    }
     let mut s = session();
     for step in &steps {
         run(
@@ -266,6 +272,10 @@ fn replay(seed: &str) -> Session {
         );
     }
     s
+}
+
+fn replay(seed: &str) -> Session {
+    replay_with(seed, None)
 }
 
 /// Seed 111609 as found (scale 1e-3, tolerance 1e-9): a quarter turn of an
@@ -301,24 +311,37 @@ fn seed_115646_as_found() {
     assert_eq!(the_one_problem(&mut s, "N6"), error);
 }
 
-/// Seeds 110965 (scale 1) and 116424 (scale 1e3) as found: two edges of a
-/// body filleted together, one fillet's round tangent to a side along its
-/// top edge where the other fillet's tool sits level with the top, the
-/// reduction's touch inside the fillet's steps. The fillet is refused, and
-/// no longer as an invalid body: its tool's union builds the body that
-/// touches itself, and the fillet's own check of that body refuses it.
-/// Its words today (*"the fillet does not end cleanly: at one end of the
-/// edge it would stop in a face of its own"*, the tool's top left apart
-/// from the body's) are not the true reason, which is that the filleted
-/// body would touch itself along the line; that is owed by the blend
-/// (docs/design/booleans.md › the same finding › *Owed*), so only that it
-/// is refused for an edge, and not as an invalid body, is held here.
+/// Seeds 110965 (scale 1) and 116424 (scale 1e3) as found: two or three
+/// edges of a body filleted together, a convex edge whose round is tangent
+/// to a side along its top edge (the radius is the side's height) and a
+/// concave edge beside it whose tool sits level with the top: the
+/// reduction's touch, inside the fillet's steps. The fillet is refused no
+/// longer as an invalid body but as it is refused at a smaller radius,
+/// where the round does not reach the top edge and nothing touches: word
+/// for word what it says at 0.8 of the radius (*"the fillet does not end
+/// cleanly: at one end of the edge it would stop in a face of its own …"*,
+/// 110965's second edge, 116424's first), which the base said as well at
+/// 0.8 (and on the seeds' reductions at 0.4 and 0.8 of the radius, on
+/// 110965's also at 0.998: measured on the base's program). Whether those
+/// words are true of the corner where a
+/// convex and a concave fillet meet is the blend's, not this finding's: a
+/// regression test, not a proof.
 #[test]
 fn seeds_110965_and_116424_as_found() {
-    for (seed, name) in [("110965", "N5"), ("116424", "N2")] {
+    for (seed, name, edge) in [("110965", "N5", "edges.1 ("), ("116424", "N2", "edges.0 (")] {
         let mut s = replay(seed);
         let error = failure(&mut s, name);
-        assert!(error.starts_with("edges."), "{seed}: {error}");
+        assert!(error.starts_with(edge), "{seed}: {error}");
+        assert!(
+            error.contains("the fillet does not end cleanly"),
+            "{seed}: {error}"
+        );
         assert_eq!(the_one_problem(&mut s, name), error, "{seed}");
+        let mut smaller = replay_with(seed, Some(0.8));
+        assert_eq!(
+            failure(&mut smaller, name),
+            error,
+            "{seed} at 0.8 of its radius"
+        );
     }
 }
