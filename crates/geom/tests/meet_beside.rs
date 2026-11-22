@@ -67,7 +67,7 @@
 mod common;
 
 use common::*;
-use craft3d_geom::intersect::{MeetingCurve, SurfaceMeeting, meet_surfaces};
+use craft3d_geom::intersect::{MeetingCurve, SurfaceMeeting, meet_surfaces, meet_surfaces_once};
 use craft3d_geom::{Curve3, NurbsSurface, Surface};
 use craft3d_math::{Bbox3, Frame, Portable, Vec3};
 
@@ -878,4 +878,39 @@ fn a_plane_level_with_the_crests_of_a_corrugated_sheet_meets_it_in_hairpins_side
 #[test]
 fn a_plane_level_with_a_shoulder_of_a_corrugated_sheet_meets_it_in_stretches_side_by_side() {
     all_come_back(corrugations(&SHOULDER, [(0.10, 0.15), (0.10, 0.5)]));
+}
+
+/// Asked once (`meet_surfaces_once`), a pair is marched as it was before
+/// branches were taken up again: the corrugated sheet is refused, in the
+/// fit's words, and a pair that march answers (the sharp ridge) comes
+/// back from `meet_surfaces` as from it, curve for curve and number for
+/// number: `meet_surfaces` marches a pair a second time, taking branches
+/// up, only where the first march's fit gives up.
+#[test]
+fn asked_once_a_pair_is_marched_as_it_was_and_again_only_where_that_fit_gives_up() {
+    for k in SCALES {
+        let t = tol(k);
+        let sheet = corrugated(k, "upright", Frame::WORLD, &CRESTS, 0.9, (0.11, 0.12));
+        let once = meet_surfaces_once(&sheet.flat, &sheet.other, &sheet.within, &t);
+        assert!(
+            matches!(&once, Err(e) if e.to_string().contains("could not be fitted within the tolerance")),
+            "{k}: {once:?}"
+        );
+        let again = meet_surfaces(&sheet.flat, &sheet.other, &sheet.within, &t);
+        assert!(
+            matches!(again, Ok(SurfaceMeeting::Meets(_))),
+            "{k}: {again:?}"
+        );
+        let ridge = rippled(
+            k,
+            "upright",
+            Frame::WORLD,
+            RIDGES[1],
+            Level::AboveSaddle(10.0),
+        );
+        let once = meet_surfaces_once(&ridge.flat, &ridge.other, &ridge.within, &t).unwrap();
+        let again = meet_surfaces(&ridge.flat, &ridge.other, &ridge.within, &t).unwrap();
+        assert!(matches!(once, SurfaceMeeting::Meets(_)), "{k}");
+        assert_eq!(once, again, "{k}");
+    }
 }

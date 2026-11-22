@@ -18,7 +18,7 @@ use super::{
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::certify::{CurveBound, Within, curve_on_surface};
 use craft3d_geom::intersect::CurveIntersection;
-use craft3d_geom::intersect::{MeetingCurve, SurfaceMeeting, meet_surfaces};
+use craft3d_geom::intersect::{MeetingCurve, SurfaceMeeting, meet_surfaces, meet_surfaces_once};
 use craft3d_geom::{Curve3, GeomError, Surface};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
@@ -1563,6 +1563,34 @@ fn meet_in(
     }
 }
 
+/// `meet_in` by the march as it is first made (`once`), and only where
+/// that refuses in every box, `meet_in` again by the march that takes a
+/// branch up where its fit gave up (`again`:
+/// `craft3d_geom::intersect::meet_surfaces`).
+///
+/// A march taken up again answers pairs that were refused (*A step of the
+/// march onto the curve beside the one it follows*, docs/design/
+/// booleans.md), and one of them may be a pair that a later box answered:
+/// asked with `again` at once, that pair would be answered in the earlier
+/// box, by other curves. So every box is asked the old way first, and
+/// what was met before is met the same. Where neither answers, the first
+/// refusal of the old way stands, as before.
+fn meet_once_then_again(
+    boxes: (&Bbox3, &Bbox3),
+    near: (Option<&Bbox3>, Option<&Bbox3>),
+    room: (&Bbox3, f64),
+    tol: f64,
+    once: impl Fn(&Bbox3) -> Result<SurfaceMeeting, GeomError>,
+    again: impl Fn(&Bbox3) -> Result<SurfaceMeeting, GeomError>,
+) -> Result<SurfaceMeeting, GeomError> {
+    match meet_in(boxes, near, room, tol, once) {
+        Err(first @ (GeomError::NoConvergence(_) | GeomError::Unsupported(_))) => {
+            meet_in(boxes, near, room, tol, again).map_err(|_| first)
+        }
+        met => met,
+    }
+}
+
 /// How far apart, in tolerances, two faces' covers must be for the pair
 /// to be passed over: beyond every distance a rule of the section reads
 /// (two tolerances for faces over each other or touching, the outline's
@@ -1677,9 +1705,14 @@ fn section_with(
             #[cfg(test)]
             tests::PAIRS_MET.with(|n| n.set(n.get() + 1));
             let near = (a.near.get(fa), b.near.get(fb));
-            let met = match meet_in((box_a, box_b), near, (&within, room), tol, |room| {
-                meet_surfaces(&oa.surface, &ob.surface, room, tolerance)
-            }) {
+            let met = match meet_once_then_again(
+                (box_a, box_b),
+                near,
+                (&within, room),
+                tol,
+                |room| meet_surfaces_once(&oa.surface, &ob.surface, room, tolerance),
+                |room| meet_surfaces(&oa.surface, &ob.surface, room, tolerance),
+            ) {
                 Ok(met) => met,
                 // Surfaces that cannot be traced may be faces that lie on
                 // one another where one is over the other, though the
@@ -2156,8 +2189,9 @@ impl Ahead {
                         // Kept on the shelf; the section takes it from
                         // there, and its question is the one counted
                         // (`craft3d_geom::intersect::march_work`).
+                        // (As the section asks it first: `meet_once_then_again`.)
                         let _ = craft3d_geom::intersect::ahead_of_the_asker(|| {
-                            meet_surfaces(
+                            meet_surfaces_once(
                                 &pair.oa.surface,
                                 &pair.ob.surface,
                                 &pair.within,
@@ -3161,6 +3195,115 @@ pub(super) mod tests {
             assert!(in_room(&terrain, &other, &within, room, tol, fails).is_err());
             assert_eq!(*count.borrow(), 1, "at {k}");
         }
+    }
+
+    /// The march that takes a branch up again is asked only where the
+    /// march as it is first made refuses in every box
+    /// (`meet_once_then_again`): a pair that a later box answered the old
+    /// way keeps that answer, though the taken-up march would answer in
+    /// the first box; where the old way refuses in both, the boxes are
+    /// asked again in the same order; where that refuses too, the old
+    /// way's first refusal stands; and a failure of another kind is not
+    /// asked again at all. (The boxes of the test above: a "lake" in the
+    /// larger room that the smaller leaves out.)
+    #[test]
+    fn the_march_taken_up_again_is_asked_only_where_the_first_refuses_in_every_box() {
+        use std::cell::RefCell;
+        let tol = 1e-6;
+        let at = |lo: [f64; 3], hi: [f64; 3]| {
+            Bbox3::from_points([
+                Vec3::new(lo[0], lo[1], lo[2]),
+                Vec3::new(hi[0], hi[1], hi[2]),
+            ])
+        };
+        let terrain = at([0.0, -500.0, 700.0], [1000.0, 500.0, 800.0]);
+        let pit = at([400.0, 112.0, 735.0], [430.0, 132.0, 735.0]);
+        let lake = Vec3::new(415.0, 100.0, 735.0);
+        let room = 16.0 * tol + 0.013 * terrain.diagonal().max(pit.diagonal());
+        let within = overlap(&terrain, &pit, room).unwrap();
+        // What was asked: how, and whether in the box that holds the lake.
+        let asked = RefCell::new(Vec::new());
+        let ask = |how: &'static str, b: &Bbox3| {
+            asked.borrow_mut().push((how, b.contains(lake, 0.0)));
+        };
+        let meet =
+            |once: &dyn Fn(&Bbox3) -> Result<SurfaceMeeting, GeomError>,
+             again: &dyn Fn(&Bbox3) -> Result<SurfaceMeeting, GeomError>| {
+                asked.borrow_mut().clear();
+                let met = meet_once_then_again(
+                    (&terrain, &pit),
+                    (None, None),
+                    (&within, room),
+                    tol,
+                    once,
+                    again,
+                );
+                (met, asked.borrow().clone())
+            };
+        let taken_up = SurfaceMeeting::Coincident { same_normal: true };
+        // Refused the old way in the larger room, answered in the smaller.
+        let (met, order) = meet(
+            &|b: &Bbox3| {
+                ask("once", b);
+                if b.contains(lake, 0.0) {
+                    Err(GeomError::NoConvergence("first"))
+                } else {
+                    Ok(SurfaceMeeting::None)
+                }
+            },
+            &|b: &Bbox3| {
+                ask("again", b);
+                Ok(taken_up.clone())
+            },
+        );
+        assert_eq!(met, Ok(SurfaceMeeting::None));
+        assert_eq!(order, vec![("once", true), ("once", false)]);
+        // Refused the old way in both: asked again, the larger room first.
+        let (met, order) = meet(
+            &|b: &Bbox3| {
+                ask("once", b);
+                Err(GeomError::NoConvergence("first"))
+            },
+            &|b: &Bbox3| {
+                ask("again", b);
+                Ok(taken_up.clone())
+            },
+        );
+        assert_eq!(met, Ok(taken_up.clone()));
+        assert_eq!(
+            order,
+            vec![("once", true), ("once", false), ("again", true)]
+        );
+        // Refused both ways: the old way's first refusal stands.
+        let (met, order) = meet(
+            &|b: &Bbox3| {
+                ask("once", b);
+                Err(GeomError::NoConvergence(if b.contains(lake, 0.0) {
+                    "first"
+                } else {
+                    "second"
+                }))
+            },
+            &|b: &Bbox3| {
+                ask("again", b);
+                Err(GeomError::NoConvergence("taken up"))
+            },
+        );
+        assert_eq!(met, Err(GeomError::NoConvergence("first")));
+        assert_eq!(order.len(), 4);
+        // A failure of another kind is not asked again.
+        let (met, order) = meet(
+            &|b: &Bbox3| {
+                ask("once", b);
+                Err(GeomError::InvalidParameter("other"))
+            },
+            &|b: &Bbox3| {
+                ask("again", b);
+                Ok(taken_up.clone())
+            },
+        );
+        assert_eq!(met, Err(GeomError::InvalidParameter("other")));
+        assert_eq!(order, vec![("once", true)]);
     }
     use craft3d_math::Frame;
 

@@ -199,6 +199,12 @@ fn halved(h: f64, hmin: f64) -> Result<f64, GeomError> {
     }
 }
 
+/// The fit's refusal: no points it could add brought a span within the
+/// tolerance.
+pub(super) fn not_fitted() -> GeomError {
+    GeomError::NoConvergence("an intersection curve could not be fitted within the tolerance")
+}
+
 pub(super) fn too_many() -> GeomError {
     GeomError::NoConvergence(
         "the surfaces are tangent or nearly coincident over too large an area to intersect",
@@ -436,6 +442,10 @@ pub(super) struct Marcher {
     /// was given, between which no points it could add brought the curve
     /// within the tolerance ([`Marcher::refine_to_edge`]).
     unfitted: Option<(Pt, Pt)>,
+    /// A branch is taken up again where the fit gives up on a step's span
+    /// ([`Marcher::trace`]); not when the march is asked as it was before
+    /// branches were taken up ([`Marcher::once`]).
+    takes_up: bool,
 }
 
 impl Marcher {
@@ -488,6 +498,7 @@ impl Marcher {
             within: *within,
             bounded: false,
             unfitted: None,
+            takes_up: true,
         })
     }
 
@@ -571,6 +582,15 @@ impl Marcher {
     /// through a node of the marcher's grid*).
     fn clear_of_zero(&self, dist: f64, reach: f64) -> bool {
         dist > reach + self.on
+    }
+
+    /// The march as it was before branches were taken up again: where
+    /// the fit gives up on a branch, the intersection is refused. What a
+    /// pair is asked first, in every box it is asked in, so that whatever
+    /// was answered so is answered so still (`meet.rs` › `meet_surfaces`).
+    pub(super) fn once(mut self) -> Self {
+        self.takes_up = false;
+        self
     }
 
     /// Tells the marcher the chart of the field's surface, when that is a
@@ -2738,6 +2758,9 @@ impl Marcher {
                 }
                 Err(e) => e,
             };
+            if !self.takes_up {
+                return Err(refused);
+            }
             // The span the fit gave up on, where it is a step of the
             // march: that step is taken to have left the curve it
             // followed (onto a curve beside it that heads the same way:
@@ -3270,9 +3293,7 @@ impl Marcher {
     fn refine(&mut self, pts: &mut Vec<Pt>) -> Result<(), GeomError> {
         match self.refine_to_edge(pts)? {
             Refined::Done => Ok(()),
-            Refined::Leaves(..) => Err(GeomError::NoConvergence(
-                "an intersection curve could not be fitted within the tolerance",
-            )),
+            Refined::Leaves(..) => Err(not_fitted()),
         }
     }
 
@@ -3307,9 +3328,7 @@ impl Marcher {
                 ));
             }
             split = true;
-            let give_up = GeomError::NoConvergence(
-                "an intersection curve could not be fitted within the tolerance",
-            );
+            let give_up = not_fitted();
             let (Some(a), Some(b)) = (rest.get(i).copied(), rest.get(i + 1).copied()) else {
                 return Err(give_up);
             };
@@ -3453,9 +3472,7 @@ impl Marcher {
                 }
                 continue;
             }
-            let give_up = GeomError::NoConvergence(
-                "an intersection curve could not be fitted within the tolerance",
-            );
+            let give_up = not_fitted();
             if pts.len() >= 2 * MAX_POINTS || a.p.distance(b.p) <= 8.0 * self.on {
                 self.unfitted = pts.get(first).copied().zip(pts.get(last).copied());
                 return Err(give_up);
@@ -3968,9 +3985,7 @@ impl Marcher {
                 let (curve, total, worst) = self.fit(&pts)?;
                 let deviation = 1.5 * worst + 4.0 * self.on;
                 if !(deviation <= self.tol.linear) {
-                    return Err(GeomError::NoConvergence(
-                        "an intersection curve could not be fitted within the tolerance",
-                    ));
+                    return Err(not_fitted());
                 }
                 curves.push(MeetingCurve {
                     curve: Curve3::Nurbs(curve),
@@ -4931,6 +4946,18 @@ mod tests {
         }
     }
 
+    /// Asked as it was before branches were taken up again
+    /// ([`Marcher::once`]), the march refuses where the fit gives up: the
+    /// sheet's branch that steps onto another curve, in the fit's words.
+    #[test]
+    fn a_march_asked_once_refuses_where_the_fit_gives_up() {
+        for k in [1e-3, 1.0, 1e6] {
+            let seed = a_seed_whose_march_steps_beside(k);
+            let mut m = sheet(k, false).once();
+            assert_eq!(m.trace(seed, &[]).err(), Some(not_fitted()), "{k}");
+        }
+    }
+
     /// The fit tells which span of the points it was given it gave up on,
     /// whatever it had put between them and before them by then: the two
     /// points of the step onto another curve, as the march made them.
@@ -4957,13 +4984,7 @@ mod tests {
                 .unwrap();
             let mut pts = run.clone();
             let refused = m.refine_to_edge(&mut pts).err().unwrap();
-            assert_eq!(
-                refused,
-                GeomError::NoConvergence(
-                    "an intersection curve could not be fitted within the tolerance"
-                ),
-                "{k}"
-            );
+            assert_eq!(refused, not_fitted(), "{k}");
             let (a, b) = m.unfitted.unwrap();
             assert_eq!((a.u, a.v), (run[wrong].u, run[wrong].v), "{k}");
             assert_eq!((b.u, b.v), (run[wrong + 1].u, run[wrong + 1].v), "{k}");
