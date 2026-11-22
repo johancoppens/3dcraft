@@ -1684,7 +1684,13 @@ mod tests {
     /// on tori of four proportions (a thin ring, the seed's, two fat ones
     /// with small holes), in the axes and turned and moved out of them,
     /// at three scales; and on the freeform torus of `closed`, both ways
-    /// round. Without the chart, as before the repair, some are not.
+    /// round. Without the chart, as before the repair, 8 of the freeform
+    /// torus's 1,920 are not; on the analytic tori none is: a circle that
+    /// goes all the way round is nearer than the loop a step past the cut
+    /// came from, in every meridian, and the step is not taken (the seed's
+    /// step passed the cut where the next loop, the oval the first plane
+    /// cuts, was not). The face's own loops of the seed are in
+    /// `halfspace_torus.rs`.
     #[test]
     fn a_point_beside_a_loop_on_a_torus_is_where_a_hair_beside_it_is() {
         use super::super::outline::{Boxes, boxes, left_of, nearest, onto, outward_normal};
