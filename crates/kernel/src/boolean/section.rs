@@ -3800,15 +3800,16 @@ pub(super) mod tests {
     /// (`Sections::near`, `super::near_places`). (Where it leaves nothing
     /// open the body is built as before: `tests/boolean_level_touch.rs` ›
     /// `what_lies_beside_it`, a block beside a slanted face moved by 0.45
-    /// tolerances, refused only as zero thickness.) The roof's corner, the second plane at `t`
-    /// tolerances from V: over it by 0.5, the place where the edge that
-    /// leaves V along the wall crosses the plane is 1.6 tolerances from V,
-    /// on the curve in which the plane meets the roof's first plane, and V
-    /// is 1.45 tolerances from that curve (the two planes are 20 degrees
-    /// apart); under it by 0.5 the eaves' place is so; under it by 0.95
-    /// the upright edge's place, 1.2 tolerances from V, is on the curves
-    /// in which the plane meets the two walls, and V more than a tolerance
-    /// from both. The curve loses its piece from the place on, and the
+    /// tolerances, refused only as zero thickness.) The roof's corner, the
+    /// second plane at `t` tolerances from V: over it by 0.5, the place
+    /// where the edge that leaves V along the wall crosses the plane is 1.6
+    /// tolerances from V, on the curve in which the plane meets the roof's
+    /// first plane, and V is 1.45 tolerances from that curve (the two
+    /// planes are 20 degrees apart); under it by 0.5 the eaves' place is
+    /// so; under it by 0.95 the upright edge's place, 1.2 tolerances from
+    /// V, is on the curves in which the plane meets the two walls, and V
+    /// more than a tolerance from both. The curve loses its piece from the
+    /// place on, and the
     /// imprint of the second block's top is left open: until 2026-11-22
     /// (`END_ONLY`, which notes no pair) the boolean said "imprint lost",
     /// with no place. Where V is within the tolerance of every curve (0.3
