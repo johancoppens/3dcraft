@@ -291,12 +291,15 @@ fn cut(body: &Body, plane: &Frame, k: f64) -> Result<Option<Body>, String> {
     }
 }
 
-/// One cut of the grid: the torus (made in `frame`), the first plane at
-/// `d` keeping `beside`, the second at `h` keeping `level`.
+/// One cut of the grid: the torus (made in `frame`, turned about its own
+/// axis by `turn` radians, which moves where its curves start), the first
+/// plane at `d` keeping `beside`, the second at `h` keeping `level` (the
+/// planes in `frame`).
 #[derive(Clone, Copy, Debug)]
 struct Case {
     k: f64,
     frame: Frame,
+    turn: f64,
     freeform: Option<(f64, f64)>,
     d: f64,
     beside: Beside,
@@ -332,13 +335,16 @@ fn judged(case: &Case) -> Result<(f64, f64), String> {
     let Case {
         k,
         frame,
+        turn,
         freeform,
         d,
         beside,
         h,
         level,
     } = *case;
-    let body = torus(&frame, k, freeform);
+    let (sin, cos) = turn.psin_cos();
+    let turned = Frame::new(frame.origin(), frame.z(), frame.vector(cos, sin, 0.0)).unwrap();
+    let body = torus(&turned, k, freeform);
     let first = Frame::from_z(
         frame.point(0.0, -d * k, 0.0),
         frame.vector(0.0, if beside == Beside::Ring { -1.0 } else { 1.0 }, 0.0),
@@ -440,6 +446,7 @@ fn a_torus_cut_beside_its_axis_then_square_to_it() {
                             cases.push(Case {
                                 k,
                                 frame,
+                                turn: 0.0,
                                 freeform: None,
                                 d,
                                 beside,
@@ -455,26 +462,34 @@ fn a_torus_cut_beside_its_axis_then_square_to_it() {
     held(cases, "the analytic torus");
 }
 
-/// The seed's two planes with the torus turned about its own axis in
-/// twelve steps (which moves where its circles start, and so where a
-/// point is stepped in from them): one in twelve built before the repair.
+/// The seed's two planes, and two more pairs, with the torus turned about
+/// its own axis in twelve steps under planes that stay where they are:
+/// where the circles the second plane cuts start moves with the torus,
+/// and so does the place a point is stepped in from them (the middle of
+/// each circle). Before the repair the seed's planes built at one turn
+/// of the twelve, where that middle faces the first plane and the oval's
+/// pieces are nearer than the circle to the first step from it; in both
+/// frames, at three scales.
 #[test]
 fn a_torus_turned_about_its_axis_is_cut_the_same() {
     let mut cases = Vec::new();
-    for turn in 0..12 {
-        let (sin, cos) = (f64::from(turn) * PI / 6.0).psin_cos();
-        let frame = Frame::new(Vec3::ZERO, Vec3::Z, Vec3::new(cos, sin, 0.0)).unwrap();
-        for (d, h) in [(8.0, 0.5), (8.0, 1.0), (6.0, -0.5)] {
-            for level in LEVEL {
-                cases.push(Case {
-                    k: 1.0,
-                    frame,
-                    freeform: None,
-                    d,
-                    beside: Beside::Ring,
-                    h,
-                    level,
-                });
+    for k in SCALES {
+        for frame in frames(k) {
+            for turn in 0..12 {
+                for (d, h) in [(8.0, 0.5), (8.0, 1.0), (6.0, -0.5)] {
+                    for level in LEVEL {
+                        cases.push(Case {
+                            k,
+                            frame,
+                            turn: f64::from(turn) * PI / 6.0,
+                            freeform: None,
+                            d,
+                            beside: Beside::Ring,
+                            h,
+                            level,
+                        });
+                    }
+                }
             }
         }
     }
@@ -498,6 +513,7 @@ fn a_freeform_torus_cut_beside_its_axis_then_square_to_it() {
                                 cases.push(Case {
                                     k,
                                     frame,
+                                    turn: 0.0,
                                     freeform: Some(freeform),
                                     d,
                                     beside,
