@@ -914,3 +914,126 @@ fn asked_once_a_pair_is_marched_as_it_was_and_again_only_where_that_fit_gives_up
         assert_eq!(once, again, "{k}");
     }
 }
+
+/// The heights of a sheet's profile at its control points, drawn: five
+/// crests 0.15 to 0.36 high there, the troughs between them low (within
+/// 0.05 of nothing) or, two in five, high (0.08 to 0.2: a shoulder), and
+/// the ends well below, as [`CRESTS`] has them.
+fn drawn_profile(rng: &mut Rng) -> [f64; 11] {
+    let mut heights = [-0.6; 11];
+    for (i, h) in heights.iter_mut().enumerate().take(10).skip(1) {
+        *h = if i % 2 == 1 {
+            rng.range(0.15, 0.36)
+        } else if rng.range(0.0, 1.0) < 0.4 {
+            rng.range(0.08, 0.2)
+        } else {
+            rng.range(-0.05, 0.05)
+        };
+    }
+    heights
+}
+
+/// The greatest height of a profile and the heights of its troughs (the
+/// least between two crests), by the sheet's own evaluation along its
+/// first section.
+fn profile_shape(heights: &[f64; 11]) -> (f64, Vec<f64>) {
+    // (Under a plane the whole profile is below: only the sheet is read.)
+    let trial = corrugated(1.0, "upright", Frame::WORLD, heights, 1.0, (0.0, 10.0));
+    let height = |u: f64| trial.other.eval(u, 0.0).z;
+    let at = |i: i32| height(f64::from(i) / 20_000.0);
+    let top = (0..=20_000).map(at).fold(f64::NEG_INFINITY, f64::max);
+    let mut troughs = Vec::new();
+    for i in 1..20_000 {
+        let here = at(i);
+        if here < at(i - 1) && here <= at(i + 1) && here > -0.2 {
+            let (lo, hi) = (f64::from(i - 1) / 20_000.0, f64::from(i + 1) / 20_000.0);
+            troughs.push(extreme(&height, lo, hi, 1.0));
+        }
+    }
+    (top, troughs)
+}
+
+/// A sheet's pair at each scale, upright at the least and the greatest
+/// and askew at the middle one.
+fn at_each_scale(
+    what: &str,
+    heights: &[f64; 11],
+    taper: f64,
+    plane: (f64, f64),
+    pairs: &mut Vec<Pair>,
+) {
+    for (i, k) in SCALES.into_iter().enumerate() {
+        let [upright, askew] = frames(k);
+        let (name, frame) = if i == 1 { askew } else { upright };
+        let mut pair = corrugated(k, name, frame, heights, taper, plane);
+        pair.what = format!("{what}: {}", pair.what);
+        pairs.push(pair);
+    }
+}
+
+/// Sheets of drawn profiles under drawn planes (2026-11-22, the review
+/// of the march taken up again): eight profiles of five crests with
+/// troughs and shoulders as they fall, each tapered to 1, 0.9 or 0.8 of
+/// its height under two planes from three to eight tenths of its
+/// greatest height at the near edge, which leave the sheet three to nine
+/// tenths of the way along it. 48 pairs, held to the crossing as the
+/// sheets of [`CRESTS`] and [`SHOULDER`] are. When this was written 15 of
+/// them were refused where a pair is marched once (`meet_surfaces_once`),
+/// in the fit's words, and came back right with their branches taken up
+/// again; the other 33 were answered by the first march.
+#[test]
+fn planes_over_sheets_of_drawn_profiles_meet_them_in_their_curves() {
+    let mut rng = Rng(20_261_122);
+    let mut pairs = Vec::new();
+    for n in 0..8 {
+        let heights = drawn_profile(&mut rng);
+        let (top, _) = profile_shape(&heights);
+        for _ in 0..2 {
+            let taper = [1.0, 0.9, 0.8][(rng.next() % 3) as usize];
+            let from = top * rng.range(0.3, 0.8);
+            let reach = rng.range(0.3, 0.9);
+            // (No lower: the tapered profile's low ends stay under it.)
+            let rise = ((top - from) / reach).max(0.6 * (1.0 - taper) + 0.02);
+            let what = format!("drawn profile {n}");
+            at_each_scale(&what, &heights, taper, (from, rise), &mut pairs);
+        }
+    }
+    assert_eq!(pairs.len(), 48);
+    all_come_back(pairs);
+}
+
+/// Sheets of drawn profiles under a plane whose lowest line is 3, 10 and
+/// 100 tolerances below and above the profile's highest trough at the
+/// near edge. Below it the two hairpins either side of the trough are
+/// one curve, which turns back a short way inside the edge (0.001 to
+/// 0.3 of a sheet 100 long), far tighter than a step; above it they are
+/// two curves whose feet on the edge are a few thousand to a few ten
+/// thousand tolerances apart.
+/// Five profiles (a sixth, whose highest trough is within a tenth of its
+/// greatest height, is left out), six planes, 90 pairs. When this was
+/// written 45 of them were refused where a pair is marched once, in the
+/// fit's words, and came back right with their branches taken up again.
+#[test]
+fn planes_level_with_a_trough_of_a_drawn_sheet_meet_it_in_its_curves() {
+    let mut rng = Rng(7_112_026);
+    let mut pairs = Vec::new();
+    for n in 0..6 {
+        let heights = drawn_profile(&mut rng);
+        let (top, troughs) = profile_shape(&heights);
+        let trough = troughs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        if trough <= 0.02 || trough >= 0.9 * top {
+            continue;
+        }
+        let taper = [1.0, 0.9][(rng.next() % 2) as usize];
+        let reach = rng.range(0.4, 0.9);
+        for by in [-100.0, -10.0, -3.0, 3.0, 10.0, 100.0] {
+            let from = trough + by * 1e-6;
+            let rise = ((top - from) / reach).max(0.6 * (1.0 - taper) + 0.02);
+            let what =
+                format!("drawn profile {n}, the plane {by} tolerances above its highest trough");
+            at_each_scale(&what, &heights, taper, (from, rise), &mut pairs);
+        }
+    }
+    assert_eq!(pairs.len(), 90);
+    all_come_back(pairs);
+}

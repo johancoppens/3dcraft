@@ -1705,25 +1705,37 @@ fn section_with(
             #[cfg(test)]
             tests::PAIRS_MET.with(|n| n.set(n.get() + 1));
             let near = (a.near.get(fa), b.near.get(fb));
-            let met = match meet_once_then_again(
-                (box_a, box_b),
-                near,
-                (&within, room),
-                tol,
-                |room| meet_surfaces_once(&oa.surface, &ob.surface, room, tolerance),
-                |room| meet_surfaces(&oa.surface, &ob.surface, room, tolerance),
-            ) {
+            // As it always was first: every box by the march as it is
+            // first made, and where none answers, whether the faces lie
+            // on one another (`coincide`). Only a pair that neither
+            // settles, which was refused, is asked by the march that
+            // takes a branch up again (`meet_once_then_again`): a pair
+            // that a box or `coincide` answered is answered by it still.
+            let once = |room: &Bbox3| meet_surfaces_once(&oa.surface, &ob.surface, room, tolerance);
+            let again = |room: &Bbox3| meet_surfaces(&oa.surface, &ob.surface, room, tolerance);
+            let met = match meet_in((box_a, box_b), near, (&within, room), tol, once) {
                 Ok(met) => met,
                 // Surfaces that cannot be traced may be faces that lie on
                 // one another where one is over the other, though the
                 // surfaces part beyond them (`coincide`).
-                Err(error @ (GeomError::NoConvergence(_) | GeomError::Unsupported(_))) => {
+                Err(GeomError::NoConvergence(_) | GeomError::Unsupported(_)) => {
                     match coincide(a, fa, b, fb, tol).map_err(|s| s.at(&named))? {
                         Coincidence::Faces(same_normal) => {
                             SurfaceMeeting::Coincident { same_normal }
                         }
                         Coincidence::Partly => return Err(Stop::of(PARTLY).at(&named)),
-                        Coincidence::Unknown => return Err(geometry(error, &named)),
+                        // (The boxes asked the old way come from the
+                        // shelf; its first refusal stands where the march
+                        // taken up refuses too.)
+                        Coincidence::Unknown => meet_once_then_again(
+                            (box_a, box_b),
+                            near,
+                            (&within, room),
+                            tol,
+                            once,
+                            again,
+                        )
+                        .map_err(|first| geometry(first, &named))?,
                     }
                 }
                 Err(error) => return Err(geometry(error, &named)),
