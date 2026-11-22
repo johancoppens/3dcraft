@@ -495,3 +495,28 @@ fn a_spline_roof_face_and_a_plane_past_its_vertex_by_more_than_the_guard() {
         }
     }
 }
+
+/// What the owed case above may not become in the meantime: with the
+/// roof's face a spline surface and the plane 0.7 tolerances from V, the
+/// place where the edge crosses the plane is 2.26 tolerances from V over
+/// it (2.08 under it), past the guard of twice the tolerance: two places
+/// by the tolerance rule, which the planes build. Whatever is answered
+/// there, a body or a refusal, it is not the rule's refusal of two points
+/// closer together than the tolerance can tell apart (`section.rs` ›
+/// `clip`: a place taken to an end of its edge is noted only where it is
+/// at most the guard from that end).
+#[test]
+fn a_spline_roof_face_and_a_plane_past_its_vertex_by_more_than_the_guard_is_not_too_near() {
+    for k in [1.0, 1e3] {
+        let case = Case::new(k, Frame::WORLD, Spline::First);
+        for t in [0.7, -0.7] {
+            match case.second_cut(t, Spline::First) {
+                Ok(body) => assert_eq!(check(&body, &case.tol), [], "{t} at {k}"),
+                Err(KernelError::Unsupported { reason, faces, .. }) => {
+                    assert_ne!(reason, NEAR, "{t} at {k}: {faces:?}");
+                }
+                Err(_) => {}
+            }
+        }
+    }
+}
