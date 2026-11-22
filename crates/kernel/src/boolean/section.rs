@@ -3667,4 +3667,215 @@ pub(super) mod tests {
         assert_eq!(cut.body.edges.len(), 7);
         assert_eq!(cut.body.vertices.len(), 5);
     }
+
+    /// TRACE (2026-11-22, replaced by the repair's own test): the plane
+    /// that passes a vertex by less than a tolerance
+    /// (`tests/boolean_plane_by_vertex.rs`), its sweep and what the section
+    /// makes of it near the vertex.
+    #[test]
+    fn trace_plane_by_vertex() {
+        use crate::boolean::{BooleanOp, boolean};
+        use crate::profile::{Curve2, SketchCurve, detect_profiles};
+        use craft3d_math::Frame;
+        let tolerance = Tolerance::new(1e-6, 1e-9).unwrap();
+        let tol = tolerance.linear;
+        let corners = [[50.4, 0.0], [50.464, 9.658], [0.0, 20.0], [44.727, -8.56]];
+        let outline: Vec<SketchCurve> = (0..4)
+            .map(|i| SketchCurve {
+                id: 1 + i as u64,
+                curve: Curve2::Line {
+                    start: corners[i],
+                    end: corners[(i + 1) % 4],
+                },
+            })
+            .collect();
+        let profiles = detect_profiles(&outline, &tolerance).unwrap();
+        let prism = crate::extrude::extrude(&profiles, &Frame::WORLD, 0.0, 40.0, &tolerance)
+            .unwrap()
+            .body;
+        let under = |at: Vec3, n: [f64; 3]| {
+            let plane = Frame::from_z(at, Vec3::new(n[0], n[1], n[2])).unwrap();
+            let reach = 150.0;
+            let corner = at - plane.x() * reach - plane.y() * reach - plane.z() * reach;
+            crate::primitives::block(&plane.at(corner).unwrap(), 2.0 * reach, 2.0 * reach, reach)
+                .unwrap()
+        };
+        let first_normal = [0.615_648, -0.004_08, 0.788_011];
+        let second_normal = [0.513_191, -0.340_109, 0.788_011];
+        let at = Vec3::new(50.4, 0.0, 14.0);
+        let first = boolean(
+            &prism,
+            &under(at, first_normal),
+            BooleanOp::Intersect,
+            &tolerance,
+        )
+        .unwrap()
+        .body;
+        let vertex = first
+            .vertices
+            .iter()
+            .map(|v| v.point)
+            .min_by(|p, q| p.distance(at).total_cmp(&q.distance(at)))
+            .unwrap();
+        let n2 = Vec3::new(second_normal[0], second_normal[1], second_normal[2])
+            .normalized()
+            .unwrap();
+        let rel = |p: Vec3| p.distance(vertex) / tol;
+        let mut sweep: Vec<f64> = (-44..=44).map(|i| f64::from(i) * 0.05).collect();
+        sweep.extend([
+            0.49, 0.497, 0.51, 0.33, 0.36, 0.6, 0.63, -0.33, -0.36, -0.66, -0.69, -0.77, -0.8,
+            -0.84, -0.87, -0.99, -1.01, -1.56, -1.59,
+        ]);
+        sweep.sort_by(f64::total_cmp);
+        sweep.dedup_by(|p, q| (*p - *q).abs() < 1e-9);
+        for &t in &sweep {
+            let second = under(vertex + n2 * (t * tol), second_normal);
+            let said = match boolean(&first, &second, BooleanOp::Intersect, &tolerance) {
+                Ok(made) => {
+                    let points: Vec<Vec3> = made.body.vertices.iter().map(|v| v.point).collect();
+                    let mut nearest_two = f64::INFINITY;
+                    for (i, p) in points.iter().enumerate() {
+                        for q in points.iter().skip(i + 1) {
+                            nearest_two = nearest_two.min(p.distance(*q));
+                        }
+                    }
+                    format!(
+                        "built: {} vertices, the two nearest {:.3} tolerances apart, problems {}",
+                        points.len(),
+                        nearest_two / tol,
+                        crate::boolean::checked(&made.body, &tolerance).len()
+                    )
+                }
+                Err(error) => format!("refused: {error}"),
+            };
+            println!("TRACE sweep {t:+.3}: {said}");
+        }
+        for t in [0.3, 0.5, 0.7, -0.45, -0.7, -1.0, -1.5] {
+            let second = under(vertex + n2 * (t * tol), second_normal);
+            let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
+            let a = prepare(&first, Operand::A, &mut vertices, &tolerance, true).unwrap();
+            let b = prepare(&second, Operand::B, &mut vertices, &tolerance, true).unwrap();
+            for (fa, box_a) in a.boxes.iter().enumerate() {
+                for fb in candidates(&b, box_a, tol) {
+                    let covers = (a.covers.as_slice(), b.covers.as_slice());
+                    let Ok(Some(pair)) =
+                        to_meet((&a, fa, box_a), (&b, fb), covers, Outlines::Make, tol)
+                    else {
+                        continue;
+                    };
+                    let Ok(SurfaceMeeting::Meets(meeting)) =
+                        meet_surfaces(&pair.oa.surface, &pair.ob.surface, &pair.within, &tolerance)
+                    else {
+                        continue;
+                    };
+                    let from_curves = |p: Vec3| -> Vec<String> {
+                        meeting
+                            .curves
+                            .iter()
+                            .map(|c| match nearest(&c.curve, c.range, p) {
+                                Some((_, d)) => format!("{:.3}", d / tol),
+                                None => "none".to_string(),
+                            })
+                            .collect()
+                    };
+                    let curves_near = meeting.curves.iter().any(|c| {
+                        nearest(&c.curve, c.range, vertex).is_some_and(|(_, d)| d < 8.0 * tol)
+                    });
+                    if !curves_near {
+                        continue;
+                    }
+                    println!(
+                        "TRACE {t:+.3} pair A{fa} B{fb}: V is {:?} tolerances from the curves, {:.3} from B's surface, {:.3} from A's",
+                        from_curves(vertex),
+                        surface_distance(pair.ob.sheet(), vertex) / tol,
+                        surface_distance(pair.oa.sheet(), vertex) / tol,
+                    );
+                    for (own, face, other) in [(&a, fa, pair.ob), (&b, fb, pair.oa)] {
+                        for id in own.edges_of(face) {
+                            let edge = own.body.edge(id).unwrap();
+                            if let Ok(CurveIntersection::Hits(hits)) =
+                                curve_hits(&edge.curve, edge.range, other.sheet(), &tolerance)
+                            {
+                                for hit in hits {
+                                    if rel(hit.point) > 8.0 {
+                                        continue;
+                                    }
+                                    println!(
+                                        "TRACE {t:+.3}   hit of {:?}'s edge {} with the other surface: {:.3} tolerances from V, {:?} from the curves",
+                                        own.operand,
+                                        id.0,
+                                        rel(hit.point),
+                                        from_curves(hit.point)
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    let mut found = Vec::new();
+                    let near = overlap(box_a, pair.box_b, 2.0 * tol).unwrap_or(pair.within);
+                    let named = [a.name(fa), b.name(fb)];
+                    let (ca, cb) = (a.cover(fa, tol), b.cover(fb, tol));
+                    let made = edge_cuts(
+                        &a,
+                        fa,
+                        pair.ob.sheet(),
+                        &near,
+                        cb,
+                        &named,
+                        &tolerance,
+                        &mut found,
+                    )
+                    .and_then(|()| {
+                        edge_cuts(
+                            &b,
+                            fb,
+                            pair.oa.sheet(),
+                            &near,
+                            ca,
+                            &named,
+                            &tolerance,
+                            &mut found,
+                        )
+                    });
+                    if let Err(stop) = made {
+                        println!("TRACE {t:+.3}   edge_cuts refused: {stop:?}");
+                    }
+                    for cut in found.iter().filter(|cut| rel(cut.point) <= 8.0) {
+                        println!(
+                            "TRACE {t:+.3}   cut (edges A {:?}, B {:?}): {:.3} tolerances from V, {:?} from the curves",
+                            cut.a_edge.map(|e| e.0),
+                            cut.b_edge.map(|e| e.0),
+                            rel(cut.point),
+                            from_curves(cut.point)
+                        );
+                    }
+                }
+            }
+            let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
+            let a = prepare(&first, Operand::A, &mut vertices, &tolerance, true).unwrap();
+            let b = prepare(&second, Operand::B, &mut vertices, &tolerance, true).unwrap();
+            match section(&a, &b, &mut vertices, &tolerance) {
+                Ok(sections) => {
+                    for s in &sections.stretches {
+                        let (p, q) = (vertices.points[s.start], vertices.points[s.end]);
+                        if rel(p) <= 8.0 || rel(q) <= 8.0 {
+                            println!(
+                                "TRACE {t:+.3}   stretch A{} B{}: from {:.3} to {:.3} tolerances from V (vertices {} and {}), inside {} {}, crossing {}",
+                                s.fa,
+                                s.fb,
+                                rel(p),
+                                rel(q),
+                                s.start,
+                                s.end,
+                                s.inside_a,
+                                s.inside_b,
+                                s.crossing
+                            );
+                        }
+                    }
+                }
+                Err(stop) => println!("TRACE {t:+.3}   section refused: {stop:?}"),
+            }
+        }
+    }
 }
