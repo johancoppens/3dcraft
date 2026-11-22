@@ -930,10 +930,11 @@ fn hole_by_a_side_cut_across(frame: &Frame, k: f64, r: f64, over: f64) -> Vec<St
 ///
 /// Held: every cut at decimal places and out of the axes is built, to
 /// its closed form, at three scales; and so is a hole that passes the
-/// side, or stops short of it, by a billionth and a millionth of the
-/// tolerance, which is rounding still (a touch is told to a
-/// two-hundredth of the tolerance on this hole). Further than that is
-/// owed: the test below.
+/// side, or stops short of it, by a billionth, a millionth and a
+/// thousandth of the tolerance, which is rounding still (a touch is told
+/// to a two-hundredth of the tolerance on this hole; the thousandth
+/// stood in the owed test below until the reread of 2026-11-22, though
+/// it was built). Further than that is owed: the test below.
 #[test]
 fn a_hole_tangent_to_a_side_to_rounding_is_cut_across() {
     let turned_out = [
@@ -978,7 +979,7 @@ fn a_hole_tangent_to_a_side_to_rounding_is_cut_across() {
                 wrong.push(format!("scale {k}, frame {index}, {fault}"));
             }
         }
-        for part in [1e-9, 1e-6, -1e-9, -1e-6] {
+        for part in [1e-9, 1e-6, 1e-3, -1e-9, -1e-6, -1e-3] {
             cuts += 1;
             for fault in hole_by_a_side_cut_across(&Frame::WORLD, k, 2.5, part * 1e-6 * k) {
                 wrong.push(format!(
@@ -999,10 +1000,11 @@ fn a_hole_tangent_to_a_side_to_rounding_is_cut_across() {
 /// it): a hole that passes the side by less than half the tolerance but
 /// by more than rounding, which the boolean that makes the hole takes
 /// for a touch, cut across. Measured on the build server (Check
-/// 44960341198, through the commands, with the touch told as it is now) at
+/// 44960341198, through the commands, at the round after the review) at
 /// three scales: past the side by a thousandth of the tolerance the cut
-/// is built; by a hundredth and a tenth it is refused in the words of a
-/// face too thin to find a point inside it; by 0.4 it is refused as
+/// is built (rounding still: the test above holds it); by a hundredth
+/// and a tenth it is refused in the words of a face too thin to find a
+/// point inside it; by 0.4 it is refused as
 /// *"boolean produced an invalid body"*, both sides at every scale (the
 /// circle's loop given to the region beyond the side, as before the
 /// repair). What tells such a touch is a rule about the tolerance, not
@@ -1016,7 +1018,7 @@ fn a_hole_within_the_tolerance_of_a_side_is_cut_across_or_refused_in_words() {
     let mut wrong = Vec::new();
     let mut cuts = 0;
     for k in SCALES {
-        for part in [1e-3, 0.01, 0.1, 0.4] {
+        for part in [0.01, 0.1, 0.4] {
             cuts += 1;
             for fault in hole_by_a_side_cut_across(&Frame::WORLD, k, 2.5, part * 1e-6 * k) {
                 if fault.contains("invalid body") {
@@ -1110,41 +1112,63 @@ fn two_holes_cut_across(
     wrong
 }
 
-/// Owed (found by the reread of 2026-11-22). Two holes of one radius whose
-/// walls touch, cut across, the middle of a circle at the touch: a step
-/// of the radius out from there is the centre of the other circle, where
-/// that circle is as near at no place in particular, the touch is not
-/// told, and the hole's loop is given to the other circle's disc
-/// (`boolean/outline.rs` › *a point left of a loop is not the centre of a
-/// circle that touches it*). The cut is refused as *"boolean produced an
-/// invalid body"*, as before the repair of fuzz seed 115098.
+/// Found by the reread of 2026-11-22. Two holes of one radius, or one
+/// twice as wide as the other, whose walls touch, cut across, the middle
+/// of a circle at the touch: a step of the radius out from there (or the
+/// second step, half of it) is the centre of the other circle, where
+/// that circle is as near at no place in particular. While a touch was
+/// told by the other piece's nearest point being at the place of the
+/// step, none was told there, and the hole's loop was given to the other
+/// circle's disc (`boolean/outline.rs` › *a point left of a loop is not
+/// the centre of a circle that touches it*): the cut was refused as
+/// *"boolean produced an invalid body"*, as before the repair of fuzz
+/// seed 115098.
 ///
 /// Measured through the commands, on the programs of `main`, of the
 /// repair and of the round after its review: of 60 cuts (radii 1.5, 1
-/// and 1.7, five pairs of starts, four scales) 36, 23 and 23 are refused
+/// and 1.7, five pairs of starts, four scales) 36, 23 and 23 were refused
 /// so, all twelve with both middles at the touch in each, and the 24
-/// that are built were built before the repair. In the kernel (Check
+/// that were built were built before the repair. In the kernel (Check
 /// 44971122228: seven pairs of radii, the four pairs of starts, three
-/// scales, in the axes and out of them) 75 of 168 cuts are refused so,
+/// scales, in the axes and out of them) 75 of 168 cuts were refused so,
 /// every one with radii the same or one twice the other (1 and 1, 1.5
 /// and 1.5, 1.7 and 1.7, 2 and 1, 1 and 2, 1 and 0.5) and none with 1.5
-/// and 1, which is what *two holes that touch are cut across* holds
+/// and 1, which is what *two holes that touch are cut across* held
 /// (`crates/engine/tests/plane_cut_found.rs`): there the steps of
-/// neither circle land on the other's centre. Held when it is: both
-/// sides of every cut, to the closed form, at three scales.
+/// neither circle land on the other's centre.
+///
+/// Held, since a touch is told by the other piece's own distance from
+/// the place of the step: both sides of every cut, to the closed form,
+/// for those six pairs of radii, wherever the two circles start, in the
+/// axes and out of them, at three scales.
 #[test]
-#[ignore = "owed: two holes of one radius that touch, cut across with the middle of a circle at the touch, are still refused as an invalid body"]
 fn two_holes_of_one_radius_that_touch_are_cut_across() {
+    let turned_out = Frame::new(
+        Vec3::new(3.0, -1.0, 2.0),
+        Vec3::new(0.2, -0.5, 1.0),
+        Vec3::new(1.0, 0.3, 0.0),
+    )
+    .unwrap();
     let mut wrong = Vec::new();
     let mut cuts = 0;
     for k in SCALES {
-        for r in [1.5, 1.0, 1.7] {
-            for middles in [(true, true), (true, false), (false, true), (false, false)] {
-                cuts += 1;
-                for fault in two_holes_cut_across(&Frame::WORLD, k, (r, r), middles) {
-                    wrong.push(format!(
-                        "scale {k}, radius {r}, the middles at the touch {middles:?}, {fault}"
-                    ));
+        for (which, frame) in [("in the axes", Frame::WORLD), ("turned out", turned_out)] {
+            let frame = frame.at(frame.origin() * k).unwrap();
+            for radii in [
+                (1.5, 1.5),
+                (1.0, 1.0),
+                (1.7, 1.7),
+                (2.0, 1.0),
+                (1.0, 2.0),
+                (1.0, 0.5),
+            ] {
+                for middles in [(true, true), (true, false), (false, true), (false, false)] {
+                    cuts += 1;
+                    for fault in two_holes_cut_across(&frame, k, radii, middles) {
+                        wrong.push(format!(
+                            "scale {k}, {which}, radii {radii:?}, the middles at the touch {middles:?}, {fault}"
+                        ));
+                    }
                 }
             }
         }

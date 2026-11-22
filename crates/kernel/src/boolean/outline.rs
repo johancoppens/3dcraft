@@ -771,29 +771,95 @@ fn passes(margin: f64) -> [(f64, usize, f64); 3] {
     ]
 }
 
-/// The rounding of two distances that are to be told the same
-/// ([`touched_at`]), as a part of the lengths they are measured in: of a
-/// step, and of the width of the piece stepped in from.
+/// Rounding, as a part of the width of the piece a point is stepped in
+/// from ([`touched_at`], [`left_at`]).
+///
+/// No test holds it to a billionth. From below the tests need 7e-10 of
+/// the width (a hole that passes a side by that much is told as touching
+/// it: with 5e-10 *a point left of a loop is not beyond a loop that
+/// touches it to rounding* fails). From above nothing bounds it, since
+/// rounding is held to the tolerance as well ([`left_at`]): a larger
+/// part gives more pieces that bound for rounding, and with that bound
+/// for every piece, whatever its width, no test fails either. What a
+/// larger part would change is a touch within the tolerance but beyond
+/// rounding, which is owed as a design (`docs/design/booleans.md`) and
+/// is not had by widening this. A billionth is the slack [`left_at`]
+/// leaves the other way, where nothing may be nearer to a candidate than
+/// its own piece less a billionth of that distance, and the room
+/// [`Boxes::near`] leaves its boxes.
 const AS_NEAR: f64 = 1e-9;
+
+/// The part of a step within which a piece that is as near to the
+/// candidate as the candidate's own piece must pass the place the step
+/// began from, to lie between the two ([`touched_at`]).
+///
+/// No test holds it to a thousandth. The tests need it between a
+/// billionth (with 5e-10 *a wall far thinner than its circle is wide*
+/// fails) and 1.6 (with 2 *a point left of a loop is not beyond a loop
+/// that touches it* fails: the plate's own point, where the circle is as
+/// near at another place).
+///
+/// What lies between a candidate and its own piece is nearer to the
+/// candidate by how far along the sheet it passes the foot, times the
+/// cosine of the angle at which the straight way to the candidate leaves
+/// the sheet there; and [`left_at`] lets nothing be nearer by more than
+/// a billionth of the step. So it passes the foot within a billionth of
+/// the step on a flat sheet, and on a curved one within that over the
+/// cosine: a thousandth leaves room for a cosine down to a millionth. A
+/// straight piece that is as near at another place passes the foot at
+/// one less the cosine of the angle between the two places, seen from
+/// the candidate, times the step: a thousandth tells the two apart from
+/// two and a half degrees on.
+const AT_THE_PLACE: f64 = 1e-3;
 
 /// True when a piece of `all` that is not the curve piece `own` (nor
 /// another use of it: an arc with the face on both sides is in two loops,
-/// one each way) is as near to `candidate` as `own` is, `reach`, at the
-/// place `foot` where `own` is nearest: it touches `own` there, and
-/// `candidate`, a step to the left of `own`, is beyond it.
+/// one each way) lies between `candidate` and `own`, or touches `own`,
+/// at the place `foot` where `own` is nearest to `candidate`, `reach`
+/// away: `candidate`, a step to the left of `own`, is then beyond that
+/// piece.
 ///
-/// "As near" and "at the place" are to rounding, and `rounding` is that
-/// as a length that does not shrink with the step: [`AS_NEAR`] of the
-/// width of `own`. A piece that passes `own` by a unit in the last place
-/// of a coordinate (which is what a touch a designer gives exactly comes
-/// to anywhere but on binary fractions in the axes) is as near to a
-/// billionth of a step as long as the piece is wide, and measurably
+/// Two things are asked of the other piece, each a distance of its own.
+///
+/// It is *as near* to `candidate` as `own` is: no further than `reach`
+/// and `rounding`. (No nearer than `reach` less a billionth of it: the
+/// caller saw to that. So a piece between the two is always as near,
+/// and a piece behind `own`, the wall of a pin in its hole, is further
+/// by its distance from `own`.)
+///
+/// And it *passes the foot*: it is no further from `foot` than
+/// [`AT_THE_PLACE`] of `reach`, or than `rounding`. A piece that is as
+/// near at another place (the far side of a strip twice the step wide)
+/// is not between the two.
+///
+/// `rounding` is rounding as a length that does not shrink with the
+/// step, the caller's: [`AS_NEAR`] of the width of `own`, and no more
+/// than the least distance from a boundary at which a point is looked
+/// for ([`left_at`]). A piece that passes `own` by a unit in the last
+/// place of a coordinate (which is what a touch a designer gives exactly
+/// comes to anywhere but on binary fractions in the axes) is as near to
+/// a billionth of a step as long as the piece is wide, and measurably
 /// further by that measure at a step a fifth of a tolerance long. Until
 /// the review of 2026-11-21 that was the only measure, the touch was
 /// told at the first steps and not at the last, and the candidate beyond
 /// the other piece was taken there after all: a hole tangent to a side
 /// at decimal coordinates, or turned out of the axes, cut across, was
 /// still built wrong and refused.
+///
+/// Until the reread of 2026-11-22 "passes the foot" was asked of the
+/// other piece's point nearest to `candidate`: that point was to be
+/// within the same distance of `foot`. But a candidate can be the centre
+/// of a circle that touches `own` (a step of one radius out from the
+/// middle of a circle of that radius, or the second step from one twice
+/// as wide). That circle is as near everywhere and its nearest point is
+/// no place in particular, so the touch was not told, and two holes of
+/// one radius that touch, cut across, were still refused as an invalid
+/// body. And "as near" had a billionth of `reach` to spare beside
+/// `rounding`. It said nothing while `rounding` was a billionth of a
+/// width that is twice the longest step; with `rounding` held to the
+/// tolerance it would tell a piece behind a wide `own` by less than a
+/// billionth of the step as touching it (a pin a hundred tolerances
+/// smaller than a hole a million million tolerances wide), so it went.
 fn touched_at(
     all: &[Vec<Seg>],
     all_boxes: &Boxes,
@@ -811,24 +877,12 @@ fn touched_at(
         if other.curve == own.curve && other.range == own.range {
             return false;
         }
-        // As near as `own` to rounding (nothing is nearer: the caller
-        // looked), and nearest at the same place. A piece that touches
-        // the ball about the candidate elsewhere (the far side of a strip
-        // twice the step wide) is not between the two.
-        //
-        // "As near" by the step is the caller's own slack the other way:
-        // it lets nothing be nearer than `reach * (1 - 1e-9)`, so what is
-        // left of "as near" is the band up to `reach * (1 + 1e-9)`. It may
-        // not be much wider. A piece that is nearest at the same place is
-        // no further than `reach * (1 + 1e-3)` as it is, so from a
-        // thousandth up the number would say nothing, and a piece that
-        // runs beside `own` behind it without touching it (the wall of a
-        // pin in its hole, tolerances away) would be a touch all along
-        // `own`. (`Boxes::near` leaves the same room for its boxes.)
-        nearest(&other.curve, other.range, candidate).is_some_and(|(t, d)| {
-            d <= reach * (1.0 + AS_NEAR) + rounding
-                && other.curve.eval(t).distance(foot) <= (1e-3 * reach).max(rounding)
-        })
+        // As near as `own`, and passing the foot. (The second distance
+        // is asked only of a piece that is as near: of none, where
+        // nothing touches and nothing is as near elsewhere.)
+        nearest(&other.curve, other.range, candidate).is_some_and(|(_, d)| d <= reach + rounding)
+            && nearest(&other.curve, other.range, foot)
+                .is_some_and(|(_, off)| off <= (AT_THE_PLACE * reach).max(rounding))
     })
 }
 
@@ -846,7 +900,10 @@ fn touched_at(
 /// tried leaving a touched piece for good at that place; a full circle
 /// tangent to an edge at its own end was then touched from all three
 /// places at their first step, the same centre, and the face refused as
-/// a sliver: `boolean_border_tangent.rs`, 56 of its faults.)
+/// a sliver: `boolean_border_tangent.rs`, 56 of its faults. A wall a
+/// billionth of its circle's radius thin is another: the first step from
+/// either circle of the ring lands beyond the other and is told so, and
+/// with the piece left for good no step is left to land in the wall.)
 #[allow(clippy::too_many_arguments)]
 fn left_at(
     sheet: Sheet,
@@ -858,7 +915,12 @@ fn left_at(
     station: f64,
     touched: &mut bool,
 ) -> Option<Vec3> {
-    for (shrink, most, margin) in passes(margin).into_iter().chain(passes(margin / 16.0)) {
+    // The least distance from the boundary at which a point is looked
+    // for (but for the last pass, which settles for three quarters of
+    // it): a sixteenth of the margin, a quarter of a tolerance where the
+    // regions of a face are told apart.
+    let least = margin / 16.0;
+    for (shrink, most, margin) in passes(margin).into_iter().chain(passes(least)) {
         for seg in of {
             let (point, travel) = seg.travel_at(station);
             let Some(outward) = outward_normal(sheet, reversed, point) else {
@@ -902,7 +964,26 @@ fn left_at(
                     // lies between the two. (Asked only of a candidate
                     // that would otherwise be taken: once per answer, and
                     // once more per candidate left out for a touch.)
-                    let rounding = AS_NEAR * width;
+                    //
+                    // Rounding is a part of the piece's width, and no more
+                    // than `least`: two pieces further apart than that
+                    // have room for a point between them, and are not in
+                    // one place. A piece narrower than 2.5e8 tolerances
+                    // is not touched by this. Without it a circle of
+                    // radius 5e5 at a tolerance of 1e-6 had a thousand
+                    // tolerances for rounding, a second circle up to that
+                    // far inside it (the section of a tube's wall) passed
+                    // its foot everywhere, and both loops were refused as
+                    // a sliver (the reread of 2026-11-22). No test holds
+                    // it to a sixteenth of the margin: the tests need it
+                    // between a hundredth of a tolerance (a touch on a
+                    // circle that wide is told to that: with a 1024th of
+                    // the margin it is not) and half a tolerance (a wall
+                    // that thin is answered: with a quarter of the margin
+                    // it is a touch). Under three eighths of a tolerance,
+                    // twice the nearest a point is looked for, any wall
+                    // with room for a point keeps it.
+                    let rounding = (AS_NEAR * width).min(least);
                     if touched_at(all, all_boxes, seg, candidate, foot, reach, rounding) {
                         *touched = true;
                         continue;
@@ -959,8 +1040,11 @@ pub(super) fn left_of(
     // which its own check refused (fuzz seed 115098). Only where a piece
     // was found touched: every other loop is answered from the middle or
     // not at all, as before. A loop touched at all three places of every
-    // piece it has is refused as a sliver, which it need not be: no case
-    // of it is known.
+    // piece it has is refused as a sliver, which it need not be. One
+    // case of it is known, and that one made for it: a hole with three
+    // smaller holes touching its circle at the three places (the reread
+    // of 2026-11-22). What would answer it is to know on which side of
+    // its piece the touching one lies (`docs/design/booleans.md`, owed).
     let mut touched = false;
     let middle = left_at(
         sheet,
@@ -2731,15 +2815,26 @@ mod tests {
     /// circle's middle at the touch: the point left of the hole's loop,
     /// as its height over that side.
     fn beside_a_hole_by_a_side(frame: Frame, over: f64) -> Result<f64, Reason> {
-        let p = |x: f64, y: f64| frame.point(x, y, 0.0);
-        let about = Frame::new(p(1.5, 0.5 - over), frame.z(), frame.y()).unwrap();
+        beside_a_wide_hole_by_a_side(frame, 1.0, over)
+    }
+
+    /// [`beside_a_hole_by_a_side`] of the plate `k` times the size, at the
+    /// same tolerance of 1e-6.
+    fn beside_a_wide_hole_by_a_side(frame: Frame, k: f64, over: f64) -> Result<f64, Reason> {
+        let p = |x: f64, y: f64| frame.point(x * k, y * k, 0.0);
+        let about = Frame::new(
+            frame.point(1.5 * k, 0.5 * k - over, 0.0),
+            frame.z(),
+            frame.y(),
+        )
+        .unwrap();
         let outer = vec![
             line(p(0.0, 0.0), p(4.0, 0.0), false),
             line(p(4.0, 0.0), p(4.0, 2.0), false),
             line(p(4.0, 2.0), p(0.0, 2.0), false),
             line(p(0.0, 2.0), p(0.0, 0.0), false),
         ];
-        let loops = vec![outer, vec![arc(about, 0.5, (0.0, TAU), true)]];
+        let loops = vec![outer, vec![arc(about, 0.5 * k, (0.0, TAU), true)]];
         let plane = Surface::Plane(Plane::new(frame));
         let all = boxes(&loops);
         left_of(Sheet::bare(&plane), false, &loops, &all, &loops[1], 4e-6)
@@ -2772,19 +2867,63 @@ mod tests {
     /// and from 1.2e-16 on out of them). A touch is now told to 1e-9 of
     /// the width of the piece as well, at every step: the plate of the
     /// test above with its hole moved towards the side, or away from it,
-    /// by a few units in the last place and up to a hundredth of that
-    /// (1e-9 of the hole's width, which is 1), in frames in and out of
-    /// the axes. The point is in the plate.
+    /// by a few units in the last place and up to seven tenths of what is
+    /// told (1e-9 of the hole's width, which is 1), in frames in and out
+    /// of the axes. The point is in the plate.
+    ///
+    /// Past the side by 7e-10 is what holds the two numbers of the rule
+    /// to rounding, each from below (the reread of 2026-11-22 found that
+    /// no test did): "as near" with less than 7e-10 of the width for
+    /// rounding does not tell it at any step; and "passes the foot" by a
+    /// thousandth of the step alone, without rounding, does not tell it
+    /// at the last steps, which are shorter than 7e-7.
     #[test]
     fn a_point_left_of_a_loop_is_not_beyond_a_loop_that_touches_it_to_rounding() {
         let mut wrong = Vec::new();
         let mut asked = 0;
         for (name, frame) in frames_for_a_touch() {
             for over in [
-                0.0, 1.2e-16, 2.3e-16, 4.5e-16, 1e-15, 1e-13, 1e-11, -1.2e-16, -1e-15, -1e-11,
+                0.0, 1.2e-16, 2.3e-16, 4.5e-16, 1e-15, 1e-13, 1e-11, 7e-10, -1.2e-16, -1e-15,
+                -1e-11,
             ] {
                 asked += 1;
                 match beside_a_hole_by_a_side(frame, over) {
+                    Ok(height) if height > 0.0 => {}
+                    Ok(height) => {
+                        wrong.push(format!("{name}, past the side by {over:e}: {height}"))
+                    }
+                    Err(reason) => wrong.push(format!("{name}, by {over:e}: {reason}")),
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} of {asked}:\n{}",
+            wrong.len(),
+            wrong.join("\n")
+        );
+    }
+
+    /// The same plate a million times the size at the same tolerance of
+    /// 1e-6, the hole's circle a million million tolerances wide: a
+    /// billionth of that width is a thousand tolerances, and rounding is
+    /// held to a quarter of one (the reread of 2026-11-22: *a wall far
+    /// thinner than its circle is wide*, below). A unit in the last place
+    /// of a coordinate is 5e-10 here, and a touch a designer gives
+    /// exactly comes to a few of those: the hole moved towards the side,
+    /// or away from it, by one of them and by a hundredth of the
+    /// tolerance is told as touching it, and the point is in the plate.
+    /// (What holds that the bound is no less than a hundredth of a
+    /// tolerance: with a thousandth of the margin for it, the hole past
+    /// the side by 1e-8 is answered outside the plate.)
+    #[test]
+    fn a_point_left_of_a_wide_loop_is_not_beyond_a_loop_that_touches_it_to_rounding() {
+        let mut wrong = Vec::new();
+        let mut asked = 0;
+        for (name, frame) in frames_for_a_touch() {
+            for over in [0.0, 5e-10, 1e-8, -5e-10, -1e-8] {
+                asked += 1;
+                match beside_a_wide_hole_by_a_side(frame, 1e6, over) {
                     Ok(height) if height > 0.0 => {}
                     Ok(height) => {
                         wrong.push(format!("{name}, past the side by {over:e}: {height}"))
@@ -2950,6 +3089,33 @@ mod tests {
                     "{name}, a pin {gap} smaller: {beside:?}, not {first:?}"
                 );
             }
+            // The same of a hole a million million tolerances wide, its
+            // pin twenty to five hundred tolerances smaller: less than a
+            // billionth of the first step, which is as long as the hole's
+            // radius. "As near" is to rounding alone, and rounding is no
+            // wider than a quarter of the tolerance: with a billionth of
+            // the step beside it (as until the reread of 2026-11-22,
+            // where it said nothing: rounding was a billionth of twice
+            // the longest step) the pin is a touch at the first steps
+            // and the point is no longer the first one.
+            let (sin, cos) = 0.3_f64.psin_cos();
+            let wide =
+                Frame::new(frame.origin(), frame.z(), frame.x() * cos + frame.y() * sin).unwrap();
+            let radius = 5e5;
+            for gap in [2e-5, 1e-4, 5e-4] {
+                let loops = vec![
+                    vec![arc(wide, radius, (0.0, TAU), true)],
+                    vec![arc(wide, radius - gap, (0.0, TAU), false)],
+                ];
+                let all = boxes(&loops);
+                let beside =
+                    left_of(Sheet::bare(&plane), false, &loops, &all, &loops[0], 4e-6).unwrap();
+                let first = wide.point(-2.0 * radius, 0.0, 0.0);
+                assert!(
+                    beside.distance(first) <= 1e-9 * radius,
+                    "{name}, radius {radius}, a pin {gap} smaller: {beside:?}, not {first:?}"
+                );
+            }
         }
     }
 
@@ -2966,8 +3132,10 @@ mod tests {
     /// stepped in from again: a step of the radius in from any place of
     /// the circle is its centre, as near to both sides as to the circle.
     /// With a touched piece left for good at that place (the first
-    /// review's trial, which `boolean_border_tangent.rs` alone refused,
-    /// and of its three scales the one at 1 only) the disc in the slot
+    /// review's trial, which `boolean_border_tangent.rs` alone refused
+    /// when it was tried, and of its three scales the one at 1 only; since
+    /// round three its grid at a million and *a wall far thinner than its
+    /// circle is wide*, below, refuse it too) the disc in the slot
     /// whose circle starts at `PI - 0.7236 * TAU` is refused as a sliver
     /// in the axes, and this test fails (Checks 44968548848, where 53 of
     /// 4,356 such discs over six scales and four frames were refused,
@@ -3048,34 +3216,26 @@ mod tests {
         );
     }
 
-    /// Owed (found by the reread of 2026-11-22). Two holes that touch, the
-    /// middle of each circle at the touch, their radii the same, or one
-    /// twice the other. A point is stepped out from the middle of a circle
-    /// by its radius, then by half of it, and so on: with the radii the
-    /// same the first step is the centre of the other circle, with the
-    /// other half as wide the second is (the first lies on it). A centre
-    /// is as near to its circle everywhere, so the place where that circle
-    /// is nearest is no place in particular, it is not found to be the
-    /// place of the touch, no touch is told ([`touched_at`] asks for the
-    /// two nearest points to be the same place), and the centre is taken:
-    /// a point inside the other hole. In a plane cut both circles are
-    /// there twice, once as a hole and once around its disc, the hole is
-    /// given to the other circle's disc, and the boolean's own check
-    /// refuses the body: *two holes of one radius that touch are cut
-    /// across* (`crates/kernel/tests/halfspace.rs`) has the counts.
+    /// Found by the reread of 2026-11-22. Two holes that touch, the middle
+    /// of each circle at the touch, their radii the same, or one twice
+    /// the other. A point is stepped out from the middle of a circle by
+    /// its radius, then by half of it, and so on: with the radii the same
+    /// the first step is the centre of the other circle, with the other
+    /// half as wide the second is (the first lies on it). A centre is as
+    /// near to its circle everywhere, so the point of that circle nearest
+    /// to it is no place in particular. While a touch was told by that
+    /// point being at the place the step began from, none was told here
+    /// and the centre was taken: a point inside the other hole. In a
+    /// plane cut both circles are there twice, once as a hole and once
+    /// around its disc; the hole was given to the other circle's disc,
+    /// and the boolean's own check refused the body (*two holes of one
+    /// radius that touch are cut across*,
+    /// `crates/kernel/tests/halfspace.rs`, has the counts).
     ///
-    /// What would tell it, measured (Check 44971122228, a switch on a
-    /// throwaway commit): the other piece's distance from the place where
-    /// the candidate's own piece is nearest, for the distance between the
-    /// two nearest points. This test then passes, the 168 cuts of the
-    /// kernel's probe are all built, and no test of `boolean::outline`,
-    /// `boolean::section`, `halfspace.rs`, `boolean_border_tangent.rs`
-    /// (its grid at three scales) or `plane_cut_found.rs` fails. It has
-    /// not had the gate, the corpus, the benchmark or the random designs.
-    /// Held when it is: the point of each hole is in the plate and outside
-    /// both discs.
+    /// A touch is told by the other piece's own distance from that place
+    /// ([`touched_at`]): the point of each hole is in the plate and
+    /// outside both discs.
     #[test]
-    #[ignore = "owed: a step that lands on the centre of a circle that touches the loop is taken (two holes of one radius, or one twice the other)"]
     fn a_point_left_of_a_loop_is_not_the_centre_of_a_circle_that_touches_it() {
         let mut wrong = Vec::new();
         let mut asked = 0;
@@ -3138,32 +3298,41 @@ mod tests {
         );
     }
 
-    /// Owed (found by the reread of 2026-11-22). "To rounding" is a
-    /// billionth of the width of the piece stepped in from, whatever the
-    /// tolerance: on a circle of radius 5e5 at a tolerance of 1e-6 that
-    /// is a thousandth, a thousand tolerances, and a second circle up to
-    /// that far inside the first (a ring: the section of a tube's wall)
-    /// is told as touching it at every place and every step, so both
-    /// loops are refused as a sliver, *"too thin to find a point inside
-    /// it (at the edge of tolerance)"*, with a wall 500 tolerances thick.
-    /// Until the round after the review of 2026-11-21 the touch was told
-    /// by the step alone, and each of these was answered (Check
-    /// 44968548848; and through the commands: a tube of radius 5e5 with a
-    /// wall of 20, 100 and 500 tolerances and one of radius 5e4 with a
-    /// wall of 20 are refused at that round where the first repair built
-    /// all four, and `main` the third; before the repair the other three
-    /// were refused as *"a piece of a face is not closed off by its
-    /// boundary"*, the point of a loop taken beyond the other circle).
+    /// Found by the reread of 2026-11-22. "To rounding" was a billionth
+    /// of the width of the piece stepped in from, whatever the tolerance:
+    /// on a circle of radius 5e5 at a tolerance of 1e-6 that is a
+    /// thousandth, a thousand tolerances, and a second circle up to that
+    /// far inside the first (a ring: the section of a tube's wall) was
+    /// told as touching it at every place and every step, so both loops
+    /// were refused as a sliver, *"too thin to find a point inside it (at
+    /// the edge of tolerance)"*, with a wall 500 tolerances thick. Until
+    /// the round after the review of 2026-11-21 the touch was told by the
+    /// step alone, and each of these was answered (Check 44968548848; and
+    /// through the commands: a tube of radius 5e5 with a wall of 20, 100
+    /// and 500 tolerances and one of radius 5e4 with a wall of 20 were
+    /// refused at that round where the first repair built all four, and
+    /// `main` the third; before the repair the other three were refused
+    /// as *"a piece of a face is not closed off by its boundary"*, the
+    /// point of a loop taken beyond the other circle).
     ///
-    /// What would keep it, measured (Check 44971122228, a switch on a
-    /// throwaway commit): rounding no wider than a sixteenth of the
-    /// margin, a quarter of the tolerance, which changes nothing for a
-    /// piece narrower than 2.5e8 tolerances. This test then passes, and no
-    /// test of the five files named above fails. It has not had the gate,
-    /// the corpus, the benchmark or the random designs. Held when it is:
-    /// the point of each loop is in the ring.
+    /// Rounding is no more than a sixteenth of the margin, a quarter of
+    /// the tolerance, which changes nothing for a piece narrower than
+    /// 2.5e8 tolerances: the point of each loop is in the ring, down to a
+    /// wall of half a tolerance, which has room for a point three
+    /// sixteenths of a tolerance from both circles. (What holds that the
+    /// bound is no more than half a tolerance: with a quarter of the
+    /// margin for it that wall is a touch from every place.)
+    ///
+    /// The walls of 20 and 100 tolerances on the circle of radius 5e5 are
+    /// also what holds the step's part of "passes the foot": the first
+    /// steps from the one circle across the wall land beyond the other,
+    /// nearer to it by the wall alone, which is less than the billionth
+    /// of the step `left_at` allows, and before the repair of fuzz seed
+    /// 115098 the first of them was taken. They are told as beyond the
+    /// other circle by its passing the foot within a thousandth of the
+    /// step: by rounding alone, a quarter of the tolerance, they are
+    /// not.
     #[test]
-    #[ignore = "owed: rounding is a billionth of the piece's width whatever the tolerance, and a wall up to that thin is told as a touch"]
     fn a_wall_far_thinner_than_its_circle_is_wide_is_not_a_touch() {
         let mut wrong = Vec::new();
         let mut asked = 0;
@@ -3176,6 +3345,8 @@ mod tests {
                 (5e5, 100.0),
                 (5e5, 500.0),
                 (5e5, 2000.0),
+                (5e5, 1.0),
+                (5e5, 0.5),
             ] {
                 let wall = tolerances * 1e-6;
                 let loops = vec![

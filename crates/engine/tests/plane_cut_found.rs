@@ -8,9 +8,11 @@
 //! commands at three scales and held to closed forms; and, after the
 //! review of 2026-11-21, the second seed's cut where its touch is exact
 //! only to rounding (decimal coordinates, the body turned out of the
-//! axes, two holes that touch one another). The kernel's side is
-//! `crates/kernel/tests/halfspace.rs` and the unit tests of
-//! `boolean/outline.rs`.
+//! axes, two holes that touch one another); and, after the reread of
+//! 2026-11-22, two holes of one radius, or one twice as wide as the
+//! other, and tubes whose wall is far thinner than they are wide. The
+//! kernel's side is `crates/kernel/tests/halfspace.rs` and the unit
+//! tests of `boolean/outline.rs`.
 
 #![allow(
     clippy::unwrap_used,
@@ -443,52 +445,240 @@ fn a_hole_tangent_to_a_side_turned_out_of_the_axes_is_cut_across() {
     );
 }
 
+/// A block of 2 × 10 × 10 less two holes along x, of radii `r1` and
+/// `r2`, side by side, their walls touching along a line: the body
+/// `Holed`. The cylinders are turned about their axes by `a1` and `a2`:
+/// the circles about the first hole start away from the second at 180
+/// degrees, so that their middle is at the touch, and at the touch at 0;
+/// the circles about the second the other way round.
+fn two_touching_holes(s: &mut Session, k: f64, (r1, r2): (f64, f64), (a1, a2): (&str, &str)) {
+    built(
+        s,
+        "feature.block",
+        json!({"size": [2.0 * k, 10.0 * k, 10.0 * k], "name": "Block"}),
+    );
+    let holes = [
+        ("One", "Block", "First", 3.0, r1, a1),
+        ("Two", "First", "Holed", 3.0 + r1 + r2, r2, a2),
+    ];
+    for (drill, from, name, y, r, angle) in holes {
+        built(
+            s,
+            "feature.cylinder",
+            json!({"angle": angle, "axis": [1.0, 0.0, 0.0], "height": 6.0 * k, "name": drill,
+                   "position": [-2.0 * k, y * k, 5.0 * k], "radius": r * k}),
+        );
+        built(
+            s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": from, "tool": drill, "name": name}),
+        );
+    }
+}
+
+/// The pairs of radii of two holes that touch: 1.5 and 1, where no step
+/// from the middle of one circle lands on the centre of the other; and
+/// the same radius twice, or one twice the other, where the first step
+/// or the second does (the reread of 2026-11-22).
+const TOUCHING: [(f64, f64); 5] = [(1.5, 1.0), (1.5, 1.5), (1.0, 1.0), (1.7, 1.7), (2.0, 1.0)];
+
 /// Two holes side by side through a block, their walls touching along a
 /// line, cut across: the two circles the plane cuts touch one another in
 /// a point that is a vertex of neither, each circle's middle there (the
 /// first hole's circles start away from the second, the second's away
-/// from the first). At scales where the radii and centres are no binary
-/// fractions the touch is exact only to rounding: after the repair of
-/// seed 115098 the cut was built at scales 1, 1e3 and 1e6 and still
-/// refused as *"boolean produced an invalid body"* at 1e-3 (the review
-/// of 2026-11-21). Both sides, to the closed form, at four scales.
+/// from the first). Both sides, to the closed form, at four scales.
+///
+/// With radii 1.5 and 1, at scales where the radii and centres are no
+/// binary fractions, the touch is exact only to rounding: after the
+/// repair of seed 115098 the cut was built at scales 1, 1e3 and 1e6 and
+/// still refused as *"boolean produced an invalid body"* at 1e-3 (the
+/// review of 2026-11-21). With the radii the same, or one twice the
+/// other, a step out from the middle of a circle is the centre of the
+/// other circle, where that circle is as near at no place in
+/// particular: the cut was still refused so after the round that
+/// followed the review, at every scale (the reread of 2026-11-22: all
+/// twelve of radii 1.5, 1 and 1.7 on `main`, after the repair and after
+/// that round), a touch being told by where the other piece is nearest.
 #[test]
 fn two_holes_that_touch_are_cut_across() {
     let mut wrong = Vec::new();
+    let mut cuts = 0;
     for k in WIDER {
-        let mut s = session();
-        new_document(&mut s, k);
-        built(
-            &mut s,
-            "feature.block",
-            json!({"size": [2.0 * k, 10.0 * k, 10.0 * k], "name": "Block"}),
-        );
-        let holes = [
-            ("One", "Block", "First", 3.0, 1.5, "180 deg"),
-            ("Two", "First", "Holed", 3.0 + 1.5 + 1.0, 1.0, "0 deg"),
-        ];
-        for (drill, from, name, y, r, angle) in holes {
-            built(
-                &mut s,
-                "feature.cylinder",
-                json!({"angle": angle, "axis": [1.0, 0.0, 0.0], "height": 6.0 * k, "name": drill,
-                       "position": [-2.0 * k, y * k, 5.0 * k], "radius": r * k}),
-            );
-            built(
-                &mut s,
-                "feature.boolean",
-                json!({"op": "subtract", "target": from, "tool": drill, "name": name}),
-            );
-        }
-        let across = Vec3::new(k, 0.0, 0.0);
-        let plate = plate_less(&[1.5, 1.0]);
-        for fault in sides_wrong(&mut s, "Holed", across, -Vec3::X, plate, k) {
-            wrong.push(format!("scale {k}, {fault}"));
+        for radii in TOUCHING {
+            let mut s = session();
+            new_document(&mut s, k);
+            two_touching_holes(&mut s, k, radii, ("180 deg", "0 deg"));
+            cuts += 1;
+            let across = Vec3::new(k, 0.0, 0.0);
+            let plate = plate_less(&[radii.0, radii.1]);
+            for fault in sides_wrong(&mut s, "Holed", across, -Vec3::X, plate, k) {
+                wrong.push(format!("scale {k}, radii {radii:?}, {fault}"));
+            }
         }
     }
     assert!(
         wrong.is_empty(),
-        "{} sides of 4 cuts:\n{}",
+        "{} sides of {cuts} cuts:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+/// The same two holes with the middle of one hole's circles at the touch
+/// and the other's circles starting there: the cut body has a vertex of
+/// the one circle on the other, which is no end of that edge, and
+/// regeneration's own check refuses the body as touching itself, naming
+/// the place, as it does the hole tangent to a side whose circle starts
+/// at the touch (*a hole tangent to a side is cut across*, above; the
+/// developer's open question, docs/design/booleans.md › *A tangency line
+/// on which another wall ends*). What is held here is what happens
+/// today, in words: until the reread of 2026-11-22 the cuts of holes of
+/// one radius among these were refused by the boolean's own check as an
+/// invalid body instead, the hole whose middle is at the touch given to
+/// the other circle's disc. Both sides, at four scales.
+#[test]
+fn two_holes_that_touch_at_the_start_of_one_circle_are_refused_in_words() {
+    let mut wrong = Vec::new();
+    let mut cuts = 0;
+    for k in WIDER {
+        for radii in TOUCHING {
+            for starts in [("180 deg", "180 deg"), ("0 deg", "0 deg")] {
+                let mut s = session();
+                new_document(&mut s, k);
+                two_touching_holes(&mut s, k, radii, starts);
+                cuts += 1;
+                for (name, side) in [("Below", "below"), ("Above", "above")] {
+                    let result = run(
+                        &mut s,
+                        CUT,
+                        json!({"target": "Holed", "keep": true, "name": name, "planes": [
+                            {"point": [k, 0.0, 0.0], "normal": [-1.0, 0.0, 0.0], "side": side},
+                        ]}),
+                    );
+                    let reason = result["error"].as_str().unwrap_or("no reason");
+                    if result["status"] != "failed"
+                        || !reason.contains("the cut body touches itself at (")
+                        || !reason.contains("move what meets there apart")
+                    {
+                        let said: String = reason.chars().take(140).collect();
+                        wrong.push(format!(
+                            "scale {k}, radii {radii:?}, starts {starts:?}, {side}: {} ({said})",
+                            result["status"]
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} sides of {cuts} cuts:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+/// A tube whose wall is far thinner than the tube is wide, at the
+/// default tolerance of 1e-6, made by boring a bar and then cut across:
+/// radii of 500 to 5e5, walls of 20 to 10,000 tolerances. The end face
+/// of such a tube is a ring between two circles, and the point left of
+/// either circle is looked for in a wall that is a hundred-thousandth
+/// to a hundred-thousand-millionth of the circle's width.
+///
+/// Found by the reread of 2026-11-22: the round after the review of
+/// 2026-11-21 told a touch to a billionth of a piece's width whatever
+/// the tolerance, which on a circle of radius 5e5 is a thousand
+/// tolerances, and the boolean that bores the tube refused four of
+/// these twenty as *"a piece of a face too thin to find a point inside
+/// it"* (radius 5e5 with walls of 20, 100 and 500 tolerances, radius
+/// 5e4 with 20), one of which `main` built (the wall of 500): what a
+/// touch is told by had made a wall into one. On `main` the other three
+/// were refused as *"a piece of a face is not closed off by its
+/// boundary"*: the first step from a circle that wide across a wall
+/// that thin was taken, being no nearer to the other circle by the
+/// measure of the step. Rounding is now no wider than a quarter of the
+/// tolerance, and all twenty are bored and cut, to the closed form.
+/// (The form is a difference of two discs a million million times its
+/// size, so it is held to a thousandth.)
+#[test]
+fn a_tube_far_thinner_than_it_is_wide_is_bored_and_cut_across() {
+    let mut wrong = Vec::new();
+    let mut tubes = 0;
+    for radius in [5e2, 5e3, 5e4, 5e5] {
+        for tolerances in [20.0, 100.0, 500.0, 2000.0, 1e4] {
+            tubes += 1;
+            let wall = tolerances * 1e-6;
+            let what = format!("radius {radius}, a wall of {tolerances} tolerances");
+            let mut s = session();
+            run(
+                &mut s,
+                "file.new",
+                json!({"units": "mm", "tolerance": 1e-6}),
+            );
+            built(
+                &mut s,
+                "feature.cylinder",
+                json!({"radius": radius, "height": 10.0, "name": "Bar"}),
+            );
+            built(
+                &mut s,
+                "feature.cylinder",
+                json!({"radius": radius - wall, "height": 30.0, "position": [0.0, 0.0, -10.0],
+                       "name": "Bore"}),
+            );
+            let steps = [
+                (
+                    "feature.boolean",
+                    json!({"op": "subtract", "target": "Bar", "tool": "Bore", "name": "Tube"}),
+                    "Tube",
+                    10.0,
+                ),
+                (
+                    CUT,
+                    json!({"target": "Tube", "keep": true, "name": "Half", "planes": [
+                        {"point": [0.0, 0.0, 5.0], "normal": [0.0, 0.0, 1.0]},
+                    ]}),
+                    "Half",
+                    5.0,
+                ),
+            ];
+            let mut refused = false;
+            for (command, params, name, height) in steps {
+                let result = run(&mut s, command, params);
+                if result["status"] != "ok" {
+                    let reason: String = result["error"]
+                        .as_str()
+                        .unwrap_or("no reason")
+                        .chars()
+                        .take(140)
+                        .collect();
+                    wrong.push(format!("{what}, {name}: {reason}"));
+                    refused = true;
+                    break;
+                }
+                let found = body(&mut s, name);
+                let volume = PI * (2.0 * radius * wall - wall * wall) * height;
+                let close = found["volume"]
+                    .as_f64()
+                    .is_some_and(|v| (v - volume).abs() <= 1e-3 * volume);
+                if found["valid"] != true || !close {
+                    wrong.push(format!(
+                        "{what}, {name}: valid {}, volume {} for {volume}",
+                        found["valid"], found["volume"]
+                    ));
+                }
+            }
+            if !refused {
+                let check = run(&mut s, "document.check", json!({"deep": true}));
+                if check["ok"] != true || check["problems"] != json!([]) {
+                    wrong.push(format!("{what}, the deep check: {check}"));
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} faults in {tubes} tubes:\n{}",
         wrong.len(),
         wrong.join("\n")
     );
