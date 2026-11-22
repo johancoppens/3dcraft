@@ -912,6 +912,7 @@ fn left_at(
     all_boxes: &Boxes,
     of: &[Seg],
     margin: f64,
+    chart: Option<&Chart>,
     station: f64,
     touched: &mut bool,
 ) -> Option<Vec3> {
@@ -959,6 +960,13 @@ fn left_at(
                 let travel = if seg.reversed { -tangent } else { tangent };
                 let left = outward_normal(sheet, reversed, foot).map(|n| n.cross(travel));
                 if left.is_some_and(|left| left.dot(candidate - foot) > 0.0) {
+                    // Nor may the cut a chart opens its surface along lie
+                    // between the two (asked only where a chart is given):
+                    // a candidate at the other end of the chart from its
+                    // foot is not next to its piece in the chart.
+                    if chart.is_some_and(|chart| chart.beyond_cut(foot, candidate)) {
+                        continue;
+                    }
                     // Nothing is nearer than its piece; but a piece that
                     // touches its piece at that very place is as near, and
                     // lies between the two. (Asked only of a candidate
@@ -999,7 +1007,10 @@ fn left_at(
 /// A point of the surface just to the left of one of the pieces `of`, seen
 /// from outside: on the side of it that the face it bounds is on, and with
 /// nothing of `all` between it and that piece. At least `margin` away from
-/// everything.
+/// everything. With a `chart`, nor does the cut the chart opens a closed
+/// surface along lie between them ([`Chart::beyond_cut`]): the point is
+/// next to its piece in the chart too, which is what a winding about it
+/// in that chart asks of it.
 pub(super) fn left_of(
     sheet: Sheet,
     reversed: bool,
@@ -1007,6 +1018,7 @@ pub(super) fn left_of(
     all_boxes: &Boxes,
     of: &[Seg],
     margin: f64,
+    chart: Option<&Chart>,
 ) -> Result<Vec3, Reason> {
     // Steps that halve find a face of ordinary width at once. In a strip
     // ten tolerances wide the candidate must be more than the margin (four
@@ -1045,6 +1057,22 @@ pub(super) fn left_of(
     // smaller holes touching its circle at the three places (the reread
     // of 2026-11-22). What would answer it is to know on which side of
     // its piece the touching one lies (`docs/design/booleans.md`, owed).
+    //
+    // A candidate is stepped from its piece by up to half the piece's
+    // width, and is taken where nothing of `all` is nearer than its piece.
+    // On a surface that a chart cuts open along a circle that is no
+    // place: a region that holds the cut is drawn at both ends of the
+    // chart, and a long step from a loop that bounds it at one end can
+    // land beyond the cut, at the other. A loop that winds about the
+    // region at its own end winds about nothing there, and the other way
+    // about. Until 2026-11-22 such a candidate was taken where the regions
+    // of a face are told apart (`regions::group`, which asks what a loop
+    // winds about): the circle a level plane cuts round the inner side of
+    // a torus, stepped from by half its width (its diameter), landed past
+    // the cut low on the tube's inner side and was called an outline; the
+    // other loop of the band above the plane was given to it as a hole,
+    // and the band was kept without that loop (fuzz seed 124506: a torus
+    // cut beside its axis, then square to it, an invalid body).
     let mut touched = false;
     let middle = left_at(
         sheet,
@@ -1053,6 +1081,7 @@ pub(super) fn left_of(
         all_boxes,
         of,
         margin,
+        chart,
         0.5,
         &mut touched,
     );
@@ -1063,7 +1092,7 @@ pub(super) fn left_of(
         for &(station, ..) in STATIONS.iter().skip(1) {
             let mut again = false;
             let found = left_at(
-                sheet, reversed, all, all_boxes, of, margin, station, &mut again,
+                sheet, reversed, all, all_boxes, of, margin, chart, station, &mut again,
             );
             if let Some(found) = found {
                 return Ok(found);
@@ -1142,7 +1171,10 @@ impl Outline {
             // not at all when the face is the outside of them.
             let mut found = None;
             for loop_ in &loops {
-                if let Ok(witness) = left_of(sheet, reversed, &loops, &boxes, loop_, margin) {
+                // All the loops together wind alike about every point of
+                // the face, at either end of the chart: a point beyond
+                // the cut serves here, and no chart is given.
+                if let Ok(witness) = left_of(sheet, reversed, &loops, &boxes, loop_, margin, None) {
                     found = Some(witness);
                     break;
                 }
@@ -1956,6 +1988,7 @@ mod tests {
                 &boxes(&face.loops),
                 &face.loops[1],
                 4e-6,
+                None,
             )
             .unwrap();
             assert_eq!(face.side(beside, 1e-6), Ok(Side::In));
@@ -2497,7 +2530,7 @@ mod tests {
                     ((x - 1.5).phypot(y - 0.5), y)
                 };
                 // Left of the hole's loop: in the plate, outside the disc.
-                let beside = left_of(sheet, false, &loops, &all, &loops[1], 4e-6).unwrap();
+                let beside = left_of(sheet, false, &loops, &all, &loops[1], 4e-6, None).unwrap();
                 let (reach, height) = from_centre(beside);
                 assert!(reach > 0.5 + 4e-6, "start {start}: {beside:?}");
                 assert!(
@@ -2505,14 +2538,14 @@ mod tests {
                     "start {start}: {beside:?} is outside the plate"
                 );
                 // Left of the disc's: inside it.
-                let within = left_of(sheet, false, &loops, &all, &loops[2], 4e-6).unwrap();
+                let within = left_of(sheet, false, &loops, &all, &loops[2], 4e-6, None).unwrap();
                 assert!(from_centre(within).0 < 0.5 - 4e-6, "start {start}");
                 // Left of the plate's outline: in the plate, at the first
                 // step in from the middle of its lower side that nothing
                 // is nearer to than that side. The circle is as near
                 // there, 0.125, at another place of its own, (1.9, 0.2):
                 // not between the two, and the point is taken as before.
-                let inside = left_of(sheet, false, &loops, &all, &loops[0], 4e-6).unwrap();
+                let inside = left_of(sheet, false, &loops, &all, &loops[0], 4e-6, None).unwrap();
                 let (x, y, _) = frame.local(inside);
                 assert!(
                     (x - 2.0).abs() < 1e-9 && (y - 0.125).abs() < 1e-9,
@@ -2837,8 +2870,16 @@ mod tests {
         let loops = vec![outer, vec![arc(about, 0.5 * k, (0.0, TAU), true)]];
         let plane = Surface::Plane(Plane::new(frame));
         let all = boxes(&loops);
-        left_of(Sheet::bare(&plane), false, &loops, &all, &loops[1], 4e-6)
-            .map(|beside| frame.local(beside).1)
+        left_of(
+            Sheet::bare(&plane),
+            false,
+            &loops,
+            &all,
+            &loops[1],
+            4e-6,
+            None,
+        )
+        .map(|beside| frame.local(beside).1)
     }
 
     /// Frames in the axes, out of them, and out of them far from the
@@ -3023,7 +3064,7 @@ mod tests {
                 vec![hole],
             ];
             let all = boxes(&loops);
-            let beside = left_of(sheet, false, &loops, &all, &loops[1], 4e-6).unwrap();
+            let beside = left_of(sheet, false, &loops, &all, &loops[1], 4e-6, None).unwrap();
             let (sin, cos) = (0.2764 * TAU).psin_cos();
             let first = about.point(0.75 * cos, 0.75 * sin, 0.0);
             assert!(
@@ -3049,7 +3090,7 @@ mod tests {
                 vec![hole],
             ];
             let all = boxes(&loops);
-            let beside = left_of(sheet, false, &loops, &all, &loops[1], 4e-6).unwrap();
+            let beside = left_of(sheet, false, &loops, &all, &loops[1], 4e-6, None).unwrap();
             let (sin, cos) = (0.7236 * TAU).psin_cos();
             let second = about.point(0.75 * cos, 0.75 * sin, 0.0);
             assert!(
@@ -3081,8 +3122,16 @@ mod tests {
                     vec![arc(about, 0.5 - gap, (0.0, TAU), false)],
                 ];
                 let all = boxes(&loops);
-                let beside =
-                    left_of(Sheet::bare(&plane), false, &loops, &all, &loops[0], 4e-6).unwrap();
+                let beside = left_of(
+                    Sheet::bare(&plane),
+                    false,
+                    &loops,
+                    &all,
+                    &loops[0],
+                    4e-6,
+                    None,
+                )
+                .unwrap();
                 let first = about.point(-1.0, 0.0, 0.0);
                 assert!(
                     beside.distance(first) <= 1e-9,
@@ -3108,8 +3157,16 @@ mod tests {
                     vec![arc(wide, radius - gap, (0.0, TAU), false)],
                 ];
                 let all = boxes(&loops);
-                let beside =
-                    left_of(Sheet::bare(&plane), false, &loops, &all, &loops[0], 4e-6).unwrap();
+                let beside = left_of(
+                    Sheet::bare(&plane),
+                    false,
+                    &loops,
+                    &all,
+                    &loops[0],
+                    4e-6,
+                    None,
+                )
+                .unwrap();
                 let first = wide.point(-2.0 * radius, 0.0, 0.0);
                 assert!(
                     beside.distance(first) <= 1e-9 * radius,
@@ -3178,7 +3235,7 @@ mod tests {
                     let all = boxes(&loops);
                     let sheet = Sheet::bare(&plane);
                     asked += 2;
-                    match left_of(sheet, false, &loops, &all, &loops[1], 4e-6) {
+                    match left_of(sheet, false, &loops, &all, &loops[1], 4e-6, None) {
                         Ok(q) => {
                             let (x, y, _) = frame.local(q);
                             let off = (x - cx).phypot(y - cy);
@@ -3192,7 +3249,7 @@ mod tests {
                             wrong.push(format!("{name}, {what}, from {start}: the hole: {reason}"))
                         }
                     }
-                    match left_of(sheet, false, &loops, &all, &loops[2], 4e-6) {
+                    match left_of(sheet, false, &loops, &all, &loops[2], 4e-6, None) {
                         Ok(q) => {
                             let (x, y, _) = frame.local(q);
                             if (x - cx).phypot(y - cy) >= 0.5 {
@@ -3271,6 +3328,7 @@ mod tests {
                         &all,
                         &loops[which],
                         4e-6,
+                        None,
                     ) {
                         Ok(q) => {
                             let (x, y, _) = frame.local(q);
@@ -3356,7 +3414,7 @@ mod tests {
                 let all = boxes(&loops);
                 for (which, what) in [(0, "outer"), (1, "inner")] {
                     asked += 1;
-                    match left_of(Sheet::bare(&plane), false, &loops, &all, &loops[which], 4e-6) {
+                    match left_of(Sheet::bare(&plane), false, &loops, &all, &loops[which], 4e-6, None) {
                         Ok(q) => {
                             let (x, y, _) = frame.local(q);
                             let off = x.phypot(y);

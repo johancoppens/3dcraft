@@ -12,7 +12,11 @@
 //! 2026-11-22, two holes of one radius, or one twice as wide as the
 //! other, and tubes whose wall is far thinner than they are wide. The
 //! kernel's side is `crates/kernel/tests/halfspace.rs` and the unit
-//! tests of `boolean/outline.rs`.
+//! tests of `boolean/outline.rs`. And seed 124506 (found 2026-11-21,
+//! repaired 2026-11-22: a torus cut beside its axis and then square to
+//! it), as found and reduced; its kernel's side is
+//! `crates/kernel/tests/halfspace_torus.rs` and the unit tests of
+//! `boolean/chart.rs`.
 
 #![allow(
     clippy::unwrap_used,
@@ -682,4 +686,169 @@ fn a_tube_far_thinner_than_it_is_wide_is_bored_and_cut_across() {
         wrong.len(),
         wrong.join("\n")
     );
+}
+
+/// Seed 124506 as the fuzzer made it (scale 1), group 4: a ball about
+/// (7.5, 2.5, 7.5) of radius 10 intersected with a torus along x (radii
+/// 7.5 and 2.5 about (7.5, 2.5, 5)), whose face on the torus is bounded
+/// by one closed spline, then cut by three planes in one feature. The
+/// second, square to the torus's axis, was refused as an invalid body
+/// (docs/design/booleans.md › *A torus cut beside its axis and then
+/// square to it*); each of the three cuts something.
+#[test]
+fn seed_124506_as_found() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    built(
+        &mut s,
+        "feature.sphere",
+        json!({"name": "N0", "position": [7.5, 2.5, 7.5], "radius": 10.0}),
+    );
+    built(
+        &mut s,
+        "feature.torus",
+        json!({"angle": "0 deg", "axis": [-1.0, 0.0, 0.0], "major": 7.5, "minor": 2.5,
+               "name": "N1", "position": [7.5, 2.5, 5.0]}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"keepTool": false, "name": "N2", "op": "intersect", "target": "N0", "tool": "N1"}),
+    );
+    let result = built(
+        &mut s,
+        CUT,
+        json!({"keep": true, "name": "N4", "target": "N2", "planes": [
+            {"normal": [1.0, 0.0, 1.0], "point": [6.480000104101965, 2.4999758306655444, 14.98717841757042], "side": "below"},
+            {"normal": [-1.0, 0.0, 0.0], "point": [6.118073004018599, 12.083333333333343, 5.0], "side": "above"},
+            {"offset": 12.647268363619851, "plane": "xy", "side": "above"},
+        ]}),
+    );
+    let cuts: Vec<bool> = result["planes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|plane| plane["cuts"].as_bool().unwrap())
+        .collect();
+    assert_eq!(cuts, [true, true, true], "{result}");
+    let found = body(&mut s, "N4");
+    assert_eq!(found["valid"], true, "{found}");
+    assert_eq!(found["shells"], 1, "{found}");
+    deep(&mut s);
+}
+
+/// The volume and area at scale 1 of a torus of radii 7.5 and 2.5 about
+/// the z axis kept at y > −d and above or below z = h: by the quadrature
+/// of `crates/kernel/tests/halfspace_torus.rs` › `Pieces`, written
+/// without the kernel, to fifteen digits.
+fn torus_piece(d: f64, h: f64, above: bool) -> (f64, f64) {
+    match (d, h, above) {
+        (8.0, 0.5, true) => (326.786412782065, 530.079894924525),
+        (8.0, 0.5, false) => (544.690194344909, 624.021362533056),
+        (8.0, 1.0, true) => (222.049331113915, 468.31758406988),
+        (8.0, 1.0, false) => (649.427276013059, 659.871814295448),
+        (6.0, -0.5, true) => (468.904934785047, 567.422289182001),
+        (6.0, -0.5, false) => (279.285237097381, 475.191421647434),
+        _ => panic!("no closed form for d {d}, h {h}"),
+    }
+}
+
+/// The piece `name` is valid and measures as `torus_piece` says: within
+/// the tolerance over its faces (volume) and along its edges (area), as
+/// its spline edges are fitted within the tolerance of the surfaces.
+#[track_caller]
+fn assert_torus_piece(s: &mut Session, name: &str, (volume, area): (f64, f64), k: f64) {
+    let found = body(s, name);
+    assert_eq!(found["valid"], true, "{name}: {found}");
+    let t = 1e-6 * k;
+    let (volume, area) = (volume * k * k * k, area * k * k);
+    let edges = 4.0 * PI * 12.5 * k;
+    let (v, a) = (
+        found["volume"].as_f64().unwrap(),
+        found["area"].as_f64().unwrap(),
+    );
+    assert!(
+        (v - volume).abs() <= t * area && (a - area).abs() <= t * edges,
+        "{name} at scale {k}: volume {v} for {volume}, area {a} for {area}"
+    );
+}
+
+/// Seed 124506 reduced: a torus cut by the plane y = −8 (parallel to its
+/// axis, keeping y > −8), then by z = 0.5 square to it, both sides kept;
+/// and the second plane at 1, and the first at 6 with the second at −0.5,
+/// at three scales. The first leaves the torus's face bounded by one
+/// closed spline; the second was refused as an invalid body (*"edge 1 is
+/// used 1 times … Euler-Poincaré fails: V - E + F - R = 3 - 4 + 3 - 1"*),
+/// or on the side below as *"an edge shared by faces that do not pair up
+/// around it (at the edge of tolerance)"* or *"imprint lost"*.
+#[test]
+fn a_torus_cut_beside_its_axis_then_square_to_it() {
+    for k in SCALES {
+        for (d, h) in [(8.0, 0.5), (8.0, 1.0), (6.0, -0.5)] {
+            let mut s = session();
+            new_document(&mut s, k);
+            built(
+                &mut s,
+                "feature.torus",
+                json!({"name": "T", "major": 7.5 * k, "minor": 2.5 * k}),
+            );
+            built(
+                &mut s,
+                CUT,
+                json!({"name": "A", "target": "T", "planes": [
+                    {"normal": [0.0, -1.0, 0.0], "point": [0.0, -d * k, 0.0], "side": "below"},
+                ]}),
+            );
+            for (above, side, name) in [(true, "below", "Over"), (false, "above", "Under")] {
+                built(
+                    &mut s,
+                    CUT,
+                    json!({"name": name, "target": "A", "keep": true, "planes": [
+                        {"normal": [0.0, 0.0, -1.0], "point": [0.0, 0.0, h * k], "side": side},
+                    ]}),
+                );
+                assert_torus_piece(&mut s, name, torus_piece(d, h, above), k);
+            }
+            deep(&mut s);
+        }
+    }
+}
+
+/// The same as booleans: the torus intersected with a block beyond y =
+/// −8 and then with a block above z = 0.5 (refused the same way).
+#[test]
+fn a_torus_intersected_with_two_blocks_is_built() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        built(
+            &mut s,
+            "feature.torus",
+            json!({"name": "T", "major": 7.5 * k, "minor": 2.5 * k}),
+        );
+        built(
+            &mut s,
+            "feature.block",
+            json!({"name": "K1", "position": [-20.0 * k, -8.0 * k, -20.0 * k],
+                   "size": [40.0 * k, 40.0 * k, 40.0 * k]}),
+        );
+        built(
+            &mut s,
+            "feature.block",
+            json!({"name": "K2", "position": [-20.0 * k, -20.0 * k, 0.5 * k],
+                   "size": [40.0 * k, 40.0 * k, 20.0 * k]}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"name": "A", "op": "intersect", "target": "T", "tool": "K1"}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"name": "B", "op": "intersect", "target": "A", "tool": "K2"}),
+        );
+        assert_torus_piece(&mut s, "B", torus_piece(8.0, 0.5, true), k);
+        deep(&mut s);
+    }
 }

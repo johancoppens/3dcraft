@@ -21,7 +21,8 @@
 //! the outside of a region, any other loop a hole in the innermost region
 //! around it. On a sphere or a torus the holes that no loop is around
 //! bound one more region, the one that contains the place the chart leaves
-//! out.
+//! out. On a torus that point is taken on the loop's side of the circle
+//! the chart cuts it open along, where the region beside the loop is.
 
 use super::chart::{About, Chart, TOO_CLOSE};
 use super::outline::{Seg, Sheet, boxes, left_of, outward_normal};
@@ -560,7 +561,19 @@ fn group(
     let mut measured = Vec::with_capacity(loops.len());
     for (index, halves) in loops.into_iter().enumerate() {
         let own = all.get(index).ok_or(LOST)?;
-        let witness = left_of(surface, reversed, &all, &all_boxes, own, 4.0 * tol)?;
+        // What one loop winds about tells which side of it a point is on
+        // only next to it in the chart: where the chart cuts its surface
+        // open along a circle (a torus), the witness is taken on the
+        // loop's side of the cut (`outline::left_of`).
+        let witness = left_of(
+            surface,
+            reversed,
+            &all,
+            &all_boxes,
+            own,
+            4.0 * tol,
+            Some(&chart),
+        )?;
         measured.push(Measured {
             halves,
             witness,
