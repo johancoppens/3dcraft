@@ -1672,4 +1672,257 @@ mod tests {
             );
         }
     }
+
+    /// Where the regions of a face on a torus are told apart, the point
+    /// `left_of` takes beside a loop, given the chart the loops themselves
+    /// give (`Chart::new`), lies where a point a hair to the left of that
+    /// loop does: every loop of the face winds about the two alike, so
+    /// neither the cut of the chart nor a loop lies between them (the
+    /// review of 2026-11-22 of seed 124506's repair). Three circles about
+    /// the axis (a `Ring` chart) or round the tube (a `Tube` chart), at
+    /// places that leave the cut within reach of a step, each way round,
+    /// on tori of four proportions (a thin ring, the seed's, two fat ones
+    /// with small holes), in the axes and turned and moved out of them,
+    /// at three scales; and on the freeform torus of `closed`, both ways
+    /// round. Without the chart, as before the repair, some are not.
+    #[test]
+    fn a_point_beside_a_loop_on_a_torus_is_where_a_hair_beside_it_is() {
+        use super::super::outline::{Boxes, boxes, left_of, nearest, onto, outward_normal};
+        use craft3d_geom::{Circle, Torus};
+
+        struct Asked {
+            asked: usize,
+            wrong: Vec<String>,
+            bare_wrong: [usize; 3],
+        }
+
+        /// Each loop's point with the chart against a hair beside the loop
+        /// at the point's foot; and the same without the chart.
+        fn ask(
+            sheet: Sheet,
+            loops: &[Vec<Seg>],
+            margin: f64,
+            hair: f64,
+            what: &str,
+            kind: usize,
+            out: &mut Asked,
+        ) {
+            let chart = match Chart::new(sheet, loops) {
+                Ok(chart) => chart,
+                Err(e) => {
+                    out.wrong.push(format!("{what}: no chart: {e}"));
+                    return;
+                }
+            };
+            let all: Boxes = boxes(loops);
+            let winds = |p: Vec3| -> Vec<Option<i32>> {
+                loops
+                    .iter()
+                    .map(|l| chart.winding([l.as_slice()], About::Point(p)).ok())
+                    .collect()
+            };
+            for (which, own) in loops.iter().enumerate() {
+                out.asked += 1;
+                // A hair to the left of the loop at the foot of `w`.
+                let beside = |w: Vec3| -> Option<Vec3> {
+                    let seg = &own[0];
+                    let (t, _) = nearest(&seg.curve, seg.range, w)?;
+                    let (foot, tangent) = seg.curve.derivatives(t);
+                    let travel = if seg.reversed { -tangent } else { tangent };
+                    let left = outward_normal(sheet, false, foot)?
+                        .cross(travel)
+                        .normalized()?;
+                    onto(sheet, foot + left * hair)
+                };
+                match left_of(sheet, false, loops, &all, own, margin, Some(&chart)) {
+                    Ok(w) => match beside(w) {
+                        Some(hair_point) => {
+                            let (at, near) = (winds(w), winds(hair_point));
+                            if at != near || at.iter().any(Option::is_none) {
+                                out.wrong.push(format!(
+                                    "{what}, loop {which}: {at:?} at the point, {near:?} beside the loop ({chart:?})"
+                                ));
+                            }
+                        }
+                        None => out.wrong.push(format!("{what}, loop {which}: no foot")),
+                    },
+                    Err(e) => out.wrong.push(format!("{what}, loop {which}: {e}")),
+                }
+                if let Ok(w) = left_of(sheet, false, loops, &all, own, margin, None)
+                    && let Some(hair_point) = beside(w)
+                    && winds(w) != winds(hair_point)
+                {
+                    out.bare_wrong[kind] += 1;
+                }
+            }
+        }
+
+        fn seg(curve: Curve3, reversed: bool) -> Seg {
+            Seg {
+                a: curve.eval(0.0),
+                b: curve.eval(TAU),
+                curve,
+                range: (0.0, TAU),
+                reversed,
+            }
+        }
+
+        let mut out = Asked {
+            asked: 0,
+            wrong: Vec::new(),
+            bare_wrong: [0; 3],
+        };
+        // Three of twelve places, a twelfth of a turn apart, that leave no
+        // gap wider than five twelfths: the cut, in the middle of the
+        // widest, lies a sixth to five twenty-fourths of a turn from a
+        // circle, which a step from it can reach. (Two circles leave at
+        // least half a turn, which no step from them reaches.)
+        let places: Vec<f64> = (0..12)
+            .map(|i| (f64::from(i) * 30.0 + 7.0).to_radians())
+            .collect();
+        let mut threes = Vec::new();
+        for i in 0..12 {
+            for j in i + 1..12 {
+                for l in j + 1..12 {
+                    if [j - i, l - j, 12 + i - l].iter().all(|&gap| gap <= 5) {
+                        threes.push([i, j, l]);
+                    }
+                }
+            }
+        }
+        assert_eq!(threes.len(), 40);
+        let ways = [
+            [false, false, false],
+            [false, false, true],
+            [false, true, false],
+            [false, true, true],
+        ];
+        for (big, small) in [(7.5, 2.5), (10.0, 0.5), (3.0, 2.7), (5.0, 4.5)] {
+            for k in [1e-3, 1.0, 1e6] {
+                let frames = [
+                    Frame::WORLD,
+                    Frame::new(
+                        Vec3::new(1.0, -2.0, 0.5) * k,
+                        Vec3::new(0.3, -0.4, 0.8),
+                        Vec3::X,
+                    )
+                    .unwrap(),
+                ];
+                for frame in frames {
+                    let torus = Surface::Torus(Torus::new(frame, big * k, small * k).unwrap());
+                    let sheet = Sheet::bare(&torus);
+                    for about_axis in [true, false] {
+                        let circle = |a: f64| -> Curve3 {
+                            let (s, c) = a.psin_cos();
+                            if about_axis {
+                                let level = Frame::new(
+                                    frame.point(0.0, 0.0, small * k * s),
+                                    frame.z(),
+                                    frame.x(),
+                                )
+                                .unwrap();
+                                Curve3::Circle(Circle::new(level, (big + small * c) * k).unwrap())
+                            } else {
+                                let across = Frame::new(
+                                    frame.point(big * k * c, big * k * s, 0.0),
+                                    frame.vector(-s, c, 0.0),
+                                    frame.vector(c, s, 0.0),
+                                )
+                                .unwrap();
+                                Curve3::Circle(Circle::new(across, small * k).unwrap())
+                            }
+                        };
+                        for three in &threes {
+                            for way in ways {
+                                let loops: Vec<Vec<Seg>> = three
+                                    .iter()
+                                    .zip(way)
+                                    .map(|(&i, reversed)| vec![seg(circle(places[i]), reversed)])
+                                    .collect();
+                                let what = format!(
+                                    "torus {big}, {small} at {k} in {frame:?}, {} {three:?} {way:?}",
+                                    if about_axis {
+                                        "about the axis"
+                                    } else {
+                                        "round the tube"
+                                    }
+                                );
+                                let kind = usize::from(!about_axis);
+                                ask(
+                                    sheet,
+                                    &loops,
+                                    4e-6 * k,
+                                    1e-4 * small * k,
+                                    &what,
+                                    kind,
+                                    &mut out,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // The freeform torus of `closed` (radii 2 and 0.6 about z).
+        for around_v in [false, true] {
+            let (_, surface) = closed(around_v)
+                .into_iter()
+                .find(|(name, _)| *name == "torus")
+                .unwrap();
+            let tree = Arc::new(PatchTree::new(&surface).unwrap());
+            let sheet = Sheet {
+                surface: &surface,
+                tree: Some(&tree),
+            };
+            for about_axis in [true, false] {
+                let circle = |a: f64| -> Curve3 {
+                    let (s, c) = a.psin_cos();
+                    if about_axis {
+                        let level = Frame::WORLD.at(Vec3::new(0.0, 0.0, 0.6 * s)).unwrap();
+                        Curve3::Circle(Circle::new(level, 2.0 + 0.6 * c).unwrap())
+                    } else {
+                        let across = Frame::new(
+                            Vec3::new(2.0 * c, 2.0 * s, 0.0),
+                            Vec3::new(-s, c, 0.0),
+                            Vec3::new(c, s, 0.0),
+                        )
+                        .unwrap();
+                        Curve3::Circle(Circle::new(across, 0.6).unwrap())
+                    }
+                };
+                for three in &threes {
+                    for way in ways {
+                        let loops: Vec<Vec<Seg>> = three
+                            .iter()
+                            .zip(way)
+                            .map(|(&i, reversed)| vec![seg(circle(places[i]), reversed)])
+                            .collect();
+                        let what = format!(
+                            "freeform torus, around v {around_v}, {} {three:?} {way:?}",
+                            if about_axis {
+                                "about the axis"
+                            } else {
+                                "round the tube"
+                            }
+                        );
+                        ask(sheet, &loops, 4e-6, 6e-5, &what, 2, &mut out);
+                    }
+                }
+            }
+        }
+        println!(
+            "a point beside a loop on a torus: {} asked, {} wrong with the chart; without it {:?} wrong (about the axis, round the tube, freeform)",
+            out.asked,
+            out.wrong.len(),
+            out.bare_wrong
+        );
+        for w in out.wrong.iter().take(40) {
+            println!("  {w}");
+        }
+        assert!(out.wrong.is_empty(), "{} wrong", out.wrong.len());
+        assert!(
+            out.bare_wrong.iter().sum::<usize>() > 0,
+            "without the chart nothing was wrong"
+        );
+    }
 }

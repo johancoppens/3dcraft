@@ -18,7 +18,12 @@
 //! second planes from −2.4 to 2.4, at three scales, in the axes and turned
 //! out of them, and the torus turned about its own axis; on the same torus
 //! as one rational NURBS face closed both ways (its chart cut open along a
-//! line of one share), with its seams in two places.
+//! line of one share), with its seams in two places. And, from the review
+//! of 2026-11-22, the analytic torus and the same one face closed both ways
+//! cut at a slant to the axis, through its middle, by a first plane nearer
+//! the axis than the tube (whose loops go round the tube), and a fat torus
+//! with a small hole: the freeform torus's pieces held to the analytic
+//! one's, and the two sides of the last plane to what it cuts.
 
 #![allow(
     clippy::unwrap_used,
@@ -530,4 +535,205 @@ fn a_freeform_torus_cut_beside_its_axis_then_square_to_it() {
         }
     }
     held(cases, "the freeform torus");
+}
+
+/// The torus of radii `big` and `small` (times `k`) about the z axis of
+/// `frame`, as [`torus`] makes it of the seed's radii.
+fn torus_of(frame: &Frame, big: f64, small: f64, k: f64, freeform: Option<(f64, f64)>) -> Body {
+    let Some((from, tube_from)) = freeform else {
+        return primitives::torus(frame, big * k, small * k).unwrap();
+    };
+    let mut profile = arc(tube_from, tube_from + TAU, 0.0, 1.0);
+    for point in &mut profile.points {
+        *point = ((big + small * point.0) * k, small * point.1 * k);
+    }
+    let surface = Surface::Nurbs(revolved(frame, &profile, from, from + TAU));
+    let mut body = Body::new(BodyKind::Solid);
+    let face = body.add_face(surface, false, Vec::new());
+    body.add_shell(vec![face]);
+    body
+}
+
+/// Planes `n·x ≤ c` in the torus's frame at scale 1, cut in turn, the
+/// last both ways.
+#[derive(Clone, Debug)]
+struct Slant {
+    big: f64,
+    small: f64,
+    first: Vec<(Vec3, f64)>,
+    last: (Vec3, f64),
+}
+
+/// The plane `n·x = c` of `frame` at scale `k`, keeping `n·x ≤ c`.
+fn plane_of(frame: &Frame, (n, c): (Vec3, f64), k: f64) -> Frame {
+    let at = n * (c * k / n.length_squared());
+    Frame::from_z(frame.point(at.x, at.y, at.z), frame.vector(n.x, n.y, n.z)).unwrap()
+}
+
+/// Volume and area of what the last plane is cut from, and of what it
+/// keeps below and above (`None` where nothing is left).
+type Sides = [Option<(f64, f64)>; 3];
+
+fn sides(
+    planes: &Slant,
+    k: f64,
+    frame: &Frame,
+    freeform: Option<(f64, f64)>,
+) -> Result<Sides, String> {
+    let mut body = torus_of(frame, planes.big, planes.small, k, freeform);
+    for (i, &p) in planes.first.iter().enumerate() {
+        body = cut(&body, &plane_of(frame, p, k), k)
+            .map_err(|e| format!("plane {i}: {e}"))?
+            .ok_or(format!("plane {i} leaves nothing"))?;
+    }
+    let (n, c) = planes.last;
+    let mut out = [None, None, None];
+    let m = mass_properties(&body).map_err(|e| e.to_string())?;
+    out[0] = Some((m.volume, m.area));
+    for (slot, side) in [(1, (n, c)), (2, (-n, -c))] {
+        if let Some(kept) =
+            cut(&body, &plane_of(frame, side, k), k).map_err(|e| format!("last, {slot}: {e}"))?
+        {
+            let m = mass_properties(&kept).map_err(|e| e.to_string())?;
+            out[slot] = Some((m.volume, m.area));
+        }
+    }
+    Ok(out)
+}
+
+fn slants() -> Vec<(String, Slant)> {
+    let mut sets = Vec::new();
+    let seed = |first: Vec<(Vec3, f64)>, last: (Vec3, f64)| Slant {
+        big: MAJOR,
+        small: MINOR,
+        first,
+        last,
+    };
+    // The seed's first plane, the second at a slant to the axis.
+    for theta in [0.01_f64, 0.1, 0.4, 0.9] {
+        for psi in [0.0_f64, 0.5 * PI] {
+            for h in [0.5, -0.5] {
+                let ((st, ct), (sp, cp)) = (theta.psin_cos(), psi.psin_cos());
+                sets.push((
+                    format!("slant {theta} {psi} at {h}"),
+                    seed(
+                        vec![(Vec3::new(0.0, -1.0, 0.0), 8.0)],
+                        (Vec3::new(st * cp, st * sp, ct), h * ct),
+                    ),
+                ));
+            }
+        }
+    }
+    // A plane through the middle at a slant, then y = −8.
+    for alpha in [0.3_f64, 1.2, 0.5 * PI] {
+        let (s, c) = alpha.psin_cos();
+        sets.push((
+            format!("through the middle {alpha}"),
+            seed(
+                vec![(Vec3::new(0.0, s, c), 0.0)],
+                (Vec3::new(0.0, -1.0, 0.0), 8.0),
+            ),
+        ));
+    }
+    // The first plane nearer the axis than the tube: its loops go round
+    // the tube.
+    for d in [0.0, 3.0, 4.9] {
+        sets.push((
+            format!("first plane at {d}"),
+            seed(
+                vec![(Vec3::new(0.0, -1.0, 0.0), d)],
+                (Vec3::new(0.0, 0.0, 1.0), 0.5),
+            ),
+        ));
+    }
+    // A fat torus with a small hole.
+    for (d, h) in [(3.54, 0.54), (1.38, -0.81)] {
+        sets.push((
+            format!("fat at {d}, {h}"),
+            Slant {
+                big: 3.0,
+                small: 2.7,
+                first: vec![(Vec3::new(0.0, -1.0, 0.0), d)],
+                last: (Vec3::new(0.0, 0.0, 1.0), h),
+            },
+        ));
+    }
+    sets
+}
+
+/// The torus cut at a slant to its axis, through its middle, by a first
+/// plane nearer the axis than the tube, and a fat torus with a small hole
+/// (the review of 2026-11-22): as one rational NURBS face closed both
+/// ways, with its seams in three places, it is cut as the analytic torus
+/// is, within the tolerance over its faces (volume) and along its edges
+/// (area); and the two sides of the last plane add up to what it cuts,
+/// in both frames at three scales. Before the repair 159 of these 576
+/// cuts were refused.
+#[test]
+fn a_freeform_torus_is_cut_at_a_slant_as_the_analytic_one_is() {
+    let mut items = Vec::new();
+    for k in SCALES {
+        for frame in frames(k) {
+            for (name, planes) in slants() {
+                for freeform in [None, Some((0.0, 0.0)), Some((2.0, 2.5)), Some((4.0, 1.0))] {
+                    items.push((k, frame, name.clone(), planes.clone(), freeform));
+                }
+            }
+        }
+    }
+    let count = items.len();
+    let found = map_parallel(items, |(k, frame, name, planes, freeform)| {
+        let got = sides(&planes, k, &frame, freeform);
+        (k, frame, name, planes, freeform, got)
+    });
+    let mut analytic = std::collections::BTreeMap::new();
+    for (k, frame, name, _, freeform, got) in &found {
+        if freeform.is_none()
+            && let Ok(m) = got
+        {
+            analytic.insert(format!("{k} {frame:?} {name}"), *m);
+        }
+    }
+    let mut wrong = Vec::new();
+    for (k, frame, name, planes, freeform, got) in &found {
+        let what = format!("{name} at {k} in {frame:?}, {freeform:?}");
+        let m = match got {
+            Ok(m) => m,
+            Err(e) => {
+                wrong.push(format!("{what}: {e}"));
+                continue;
+            }
+        };
+        let t = tolerance(*k).linear;
+        let edges = 8.0 * PI * (planes.big + planes.small) * k;
+        if let [Some(whole), Some(below), Some(above)] = *m
+            && (below.0 + above.0 - whole.0).abs() > t * whole.1
+        {
+            wrong.push(format!(
+                "{what}: the sides {} + {} against {}",
+                below.0, above.0, whole.0
+            ));
+        }
+        if freeform.is_some()
+            && let Some(a) = analytic.get(&format!("{k} {frame:?} {name}"))
+        {
+            for (slot, (x, y)) in a.iter().zip(m.iter()).enumerate() {
+                match (x, y) {
+                    (Some(x), Some(y)) => {
+                        if (x.0 - y.0).abs() > 2.0 * t * x.1 || (x.1 - y.1).abs() > 2.0 * t * edges
+                        {
+                            wrong.push(format!("{what}, {slot}: {y:?} against analytic {x:?}"));
+                        }
+                    }
+                    (None, None) => {}
+                    _ => wrong.push(format!("{what}, {slot}: {y:?} against analytic {x:?}")),
+                }
+            }
+        }
+    }
+    println!(
+        "a freeform torus at a slant: {count} tori cut, {} wrong",
+        wrong.len()
+    );
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
