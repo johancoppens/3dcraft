@@ -522,6 +522,9 @@ struct Cut {
     /// Where the curve itself starts or ends, rather than where an edge
     /// meets a surface.
     end: bool,
+    /// Where the edge meets the surface, when the cut was taken from there
+    /// to an end of the edge (`edge_cuts`): `point` is that end.
+    hit: Option<Vec3>,
 }
 
 /// Whether two places, each found where an edge meets a surface, are the
@@ -606,7 +609,7 @@ fn edge_cuts(
         let (Some(a), Some(b)) = (own.body.vertex(edge.start), own.body.vertex(edge.end)) else {
             return Err(Stop::of(LOST));
         };
-        let mut cut = |point: Vec3, on_edge: bool| {
+        let mut cut = |point: Vec3, on_edge: bool, hit: Option<Vec3>| {
             let edge = on_edge.then_some(id);
             cuts.push(match own.operand {
                 Operand::A => Cut {
@@ -615,6 +618,7 @@ fn edge_cuts(
                     a_edge: edge,
                     b_edge: None,
                     end: false,
+                    hit,
                 },
                 Operand::B => Cut {
                     t: 0.0,
@@ -622,6 +626,7 @@ fn edge_cuts(
                     a_edge: None,
                     b_edge: edge,
                     end: false,
+                    hit,
                 },
             });
         };
@@ -632,8 +637,8 @@ fn edge_cuts(
             surface_distance(surface, edge.curve.eval(t)) <= tol
         });
         if lies_on {
-            cut(a.point, false);
-            cut(b.point, false);
+            cut(a.point, false, None);
+            cut(b.point, false, None);
             continue;
         }
         // The edge's own curve with the other body's surface: a tolerant
@@ -686,11 +691,11 @@ fn edge_cuts(
                     // cone up to its apex, meets it there.)
                     let approximated = matches!(edge.curve, Curve3::Nurbs(_));
                     if approximated && surface_distance(surface, a.point) <= tol && hugs(t0) {
-                        cut(a.point, true);
+                        cut(a.point, true, Some(hit.point));
                         continue;
                     }
                     if approximated && surface_distance(surface, b.point) <= tol && hugs(t1) {
-                        cut(b.point, true);
+                        cut(b.point, true, Some(hit.point));
                         continue;
                     }
                     // A hit next to an end of the edge that lies on the
@@ -701,7 +706,9 @@ fn edge_cuts(
                     // and the end, which the other edges there share, is
                     // exact. Two such hits of edges that meet there would
                     // otherwise be two places closer together than the
-                    // tolerance can tell apart.
+                    // tolerance can tell apart. (Here and above the hit
+                    // is kept with the cut: a curve the hit is on and the
+                    // end is not cannot end at the end, `clip`.)
                     let end = [a.point, b.point].into_iter().find(|end| {
                         hit.point.distance(*end) <= 2.0 * tol
                             && surface_distance(surface, *end) <= tol
@@ -740,7 +747,7 @@ fn edge_cuts(
                     };
                     // A touch is a cut like any other: the stretches on
                     // either side of it are judged on their own.
-                    cut(point, true);
+                    cut(point, true, end.map(|_| hit.point));
                 }
             }
         }
@@ -882,22 +889,59 @@ fn clip(
         a_edge: None,
         b_edge: None,
         end: true,
+        hit: None,
+    };
+    // Where along the curve a point within the tolerance of it is.
+    let on_curve = |p: Vec3| -> Option<f64> {
+        if periodic {
+            curve
+                .project(p)
+                .ok()
+                .filter(|&t| curve.eval(t).distance(p) <= tol)
+        } else {
+            nearest(curve, (first, last), p).and_then(|(t, d)| (d <= tol).then_some(t))
+        }
     };
 
     // The cuts on this curve (the surfaces may meet in another one too),
     // in order along it, each place once.
     let mut along: Vec<Cut> = Vec::new();
     for &(mut cut) in found {
-        let t = if periodic {
-            match curve.project(cut.point) {
-                Ok(t) if curve.eval(t).distance(cut.point) <= tol => t,
-                _ => continue,
+        let Some(t) = on_curve(cut.point) else {
+            // A place where an edge meets the surface, taken to an end of
+            // the edge (`edge_cuts`), where this curve passes through the
+            // place and more than the tolerance from the end: the curve
+            // cannot end at the end, and the end and the place, further
+            // apart than points that are one and within the guard, are
+            // two points closer together than the tolerance can tell
+            // apart (a plane that passes a vertex by about half a
+            // tolerance, crossing the edge that leaves it at a shallow
+            // angle next to a face at a shallow angle to it:
+            // docs/design/booleans.md › *A plane that passes a vertex by
+            // less than a tolerance*). Left out, the curve would have no
+            // cut there, and its piece in both faces from there on would
+            // be lost. Where the curve has no piece there (the place is
+            // outside either face, or the surfaces only touch along the
+            // curve, which divides nothing) the cut is left out as any
+            // other.
+            let between = |hit: Vec3| {
+                let apart = hit.distance(cut.point);
+                apart > vertices.merge
+                    && apart <= vertices.guard
+                    && !meeting.tangent
+                    && on_curve(hit).is_some()
+                    && [oa, ob]
+                        .iter()
+                        .all(|o| matches!(o.side(hit, tol), Ok(Side::In | Side::On)))
+            };
+            #[cfg(test)]
+            if tests::END_ONLY.with(std::cell::Cell::get) {
+                continue;
             }
-        } else {
-            match nearest(curve, (first, last), cut.point) {
-                Some((t, d)) if d <= tol => t,
-                _ => continue,
+            if cut.hit.is_some_and(between) {
+                return Err(Stop::of(NEAR).at(&named));
             }
+            continue;
         };
         cut.t = t;
         along.push(cut);
@@ -2473,6 +2517,7 @@ fn edge_crossings(
                 a_edge,
                 b_edge,
                 end: false,
+                hit: None,
             });
         }
     }
@@ -2744,6 +2789,12 @@ pub(super) mod tests {
         /// the curve's pieces (`outline::nearest_on_spline`).
         pub(in crate::boolean) static NO_PIECES: std::cell::Cell<bool> =
             const { std::cell::Cell::new(false) };
+        /// Booleans on this thread leave a place where an edge meets a
+        /// surface, taken to an end of the edge, out of a curve that runs
+        /// through the place and more than the tolerance from the end, as
+        /// all did before 2026-11-22 (`clip`).
+        pub(in crate::boolean) static END_ONLY: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
     }
 
     use super::*;
@@ -2969,6 +3020,7 @@ pub(super) mod tests {
             a_edge: Some(EdgeId(7)),
             b_edge: None,
             end: false,
+            hit: None,
         };
         (curve, (0.0, 1.0), place)
     }
@@ -3017,6 +3069,7 @@ pub(super) mod tests {
                         a_edge: None,
                         b_edge: None,
                         end: true,
+                        hit: None,
                     };
                     let d = seam.point.distance(place.point);
                     assert!(
@@ -3048,6 +3101,7 @@ pub(super) mod tests {
                 a_edge: Some(EdgeId(7)),
                 b_edge: None,
                 end: false,
+                hit: None,
             };
             let seam = Cut {
                 t: 0.0,
@@ -3055,6 +3109,7 @@ pub(super) mod tests {
                 a_edge: None,
                 b_edge: None,
                 end: true,
+                hit: None,
             };
             let found = ends_at_places(vec![seam, far], &curve, range, true, (0.5 * tol, guard));
             assert!(found[0].end, "at {k}: {:?}", found[0]);
@@ -3067,6 +3122,7 @@ pub(super) mod tests {
                 a_edge: None,
                 b_edge: None,
                 end: true,
+                hit: None,
             };
             let end = Cut {
                 t: 0.5,
@@ -3074,6 +3130,7 @@ pub(super) mod tests {
                 a_edge: None,
                 b_edge: None,
                 end: true,
+                hit: None,
             };
             let found = ends_at_places(
                 vec![start, place, end],
@@ -3399,6 +3456,7 @@ pub(super) mod tests {
                     a_edge: None,
                     b_edge: None,
                     end: false,
+                    hit: None,
                 };
                 let cuts = [cut(FRAC_PI_2 - away), cut(FRAC_PI_2 + away)];
                 let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
@@ -3504,6 +3562,7 @@ pub(super) mod tests {
                 a_edge: None,
                 b_edge: None,
                 end: false,
+                hit: None,
             })
             .collect();
         let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
@@ -3668,18 +3727,16 @@ pub(super) mod tests {
         assert_eq!(cut.body.vertices.len(), 5);
     }
 
-    /// TRACE (2026-11-22, replaced by the repair's own test): the plane
-    /// that passes a vertex by less than a tolerance
-    /// (`tests/boolean_plane_by_vertex.rs`), its sweep and what the section
-    /// makes of it near the vertex.
-    #[test]
-    fn trace_plane_by_vertex() {
-        use crate::boolean::{BooleanOp, boolean};
+    /// Two planes of a hipped roof at a convex corner of its outline, at
+    /// scale `k` (`tests/boolean_plane_by_vertex.rs`, where the case is
+    /// told): the prism over the outline under the first plane, the vertex
+    /// V that plane made on the corner's upright edge, and the second
+    /// plane's normal.
+    fn roof_corner(k: f64) -> (craft3d_topo::Body, Vec3, Vec3, Tolerance) {
         use crate::profile::{Curve2, SketchCurve, detect_profiles};
-        use craft3d_math::Frame;
-        let tolerance = Tolerance::new(1e-6, 1e-9).unwrap();
-        let tol = tolerance.linear;
-        let corners = [[50.4, 0.0], [50.464, 9.658], [0.0, 20.0], [44.727, -8.56]];
+        let tolerance = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+        let corners = [[50.4, 0.0], [50.464, 9.658], [0.0, 20.0], [44.727, -8.56]]
+            .map(|[x, y]: [f64; 2]| [x * k, y * k]);
         let outline: Vec<SketchCurve> = (0..4)
             .map(|i| SketchCurve {
                 id: 1 + i as u64,
@@ -3690,23 +3747,14 @@ pub(super) mod tests {
             })
             .collect();
         let profiles = detect_profiles(&outline, &tolerance).unwrap();
-        let prism = crate::extrude::extrude(&profiles, &Frame::WORLD, 0.0, 40.0, &tolerance)
+        let prism = crate::extrude::extrude(&profiles, &Frame::WORLD, 0.0, 40.0 * k, &tolerance)
             .unwrap()
             .body;
-        let under = |at: Vec3, n: [f64; 3]| {
-            let plane = Frame::from_z(at, Vec3::new(n[0], n[1], n[2])).unwrap();
-            let reach = 150.0;
-            let corner = at - plane.x() * reach - plane.y() * reach - plane.z() * reach;
-            crate::primitives::block(&plane.at(corner).unwrap(), 2.0 * reach, 2.0 * reach, reach)
-                .unwrap()
-        };
-        let first_normal = [0.615_648, -0.004_08, 0.788_011];
-        let second_normal = [0.513_191, -0.340_109, 0.788_011];
-        let at = Vec3::new(50.4, 0.0, 14.0);
-        let first = boolean(
+        let at = Vec3::new(50.4 * k, 0.0, 14.0 * k);
+        let first = crate::boolean::boolean(
             &prism,
-            &under(at, first_normal),
-            BooleanOp::Intersect,
+            &under_plane(at, Vec3::new(0.615_648, -0.004_08, 0.788_011), k),
+            crate::boolean::BooleanOp::Intersect,
             &tolerance,
         )
         .unwrap()
@@ -3717,164 +3765,89 @@ pub(super) mod tests {
             .map(|v| v.point)
             .min_by(|p, q| p.distance(at).total_cmp(&q.distance(at)))
             .unwrap();
-        let n2 = Vec3::new(second_normal[0], second_normal[1], second_normal[2])
+        assert!(vertex.distance(at) <= 1e-6 * tolerance.linear);
+        let normal = Vec3::new(0.513_191, -0.340_109, 0.788_011)
             .normalized()
             .unwrap();
-        let rel = |p: Vec3| p.distance(vertex) / tol;
-        let mut sweep: Vec<f64> = (-44..=44).map(|i| f64::from(i) * 0.05).collect();
-        sweep.extend([
-            0.49, 0.497, 0.51, 0.33, 0.36, 0.6, 0.63, -0.33, -0.36, -0.66, -0.69, -0.77, -0.8,
-            -0.84, -0.87, -0.99, -1.01, -1.56, -1.59,
-        ]);
-        sweep.sort_by(f64::total_cmp);
-        sweep.dedup_by(|p, q| (*p - *q).abs() < 1e-9);
-        for &t in &sweep {
-            let second = under(vertex + n2 * (t * tol), second_normal);
-            let said = match boolean(&first, &second, BooleanOp::Intersect, &tolerance) {
-                Ok(made) => {
-                    let points: Vec<Vec3> = made.body.vertices.iter().map(|v| v.point).collect();
-                    let mut nearest_two = f64::INFINITY;
-                    for (i, p) in points.iter().enumerate() {
-                        for q in points.iter().skip(i + 1) {
-                            nearest_two = nearest_two.min(p.distance(*q));
-                        }
-                    }
-                    format!(
-                        "built: {} vertices, the two nearest {:.3} tolerances apart, problems {}",
-                        points.len(),
-                        nearest_two / tol,
-                        crate::boolean::checked(&made.body, &tolerance).len()
-                    )
-                }
-                Err(error) => format!("refused: {error}"),
+        (first, vertex, normal, tolerance)
+    }
+
+    /// A block whose top is the plane through `at` square to `normal`,
+    /// reaching `150 k` to every side of `at` and down from it.
+    fn under_plane(at: Vec3, normal: Vec3, k: f64) -> craft3d_topo::Body {
+        let plane = Frame::from_z(at, normal).unwrap();
+        let reach = 150.0 * k;
+        let corner = at - plane.x() * reach - plane.y() * reach - plane.z() * reach;
+        crate::primitives::block(&plane.at(corner).unwrap(), 2.0 * reach, 2.0 * reach, reach)
+            .unwrap()
+    }
+
+    /// A place where an edge meets the other body's surface, taken to an
+    /// end of the edge (`edge_cuts`), on a curve that runs through the
+    /// place and more than the tolerance from the end, is refused as two
+    /// points closer together than the tolerance can tell apart, with the
+    /// two faces (`clip`). The roof's corner, the second plane at `t`
+    /// tolerances from V: over it by 0.5, the place where the edge that
+    /// leaves V along the wall crosses the plane is 1.6 tolerances from V,
+    /// on the curve in which the plane meets the roof's first plane, and V
+    /// is 1.45 tolerances from that curve (the two planes are 20 degrees
+    /// apart); under it by 0.5 the eaves' place is so; under it by 0.95
+    /// the upright edge's place, 1.2 tolerances from V, is on the curves
+    /// in which the plane meets the two walls, and V more than a tolerance
+    /// from both. Left out of the curve, as before 2026-11-22
+    /// (`END_ONLY`), the curve lost its piece from the place on, and the
+    /// boolean said "imprint lost", with no place. Where V is within the
+    /// tolerance of every curve (0.3 either side), or no place is taken to
+    /// it (0.7 and beyond), the body is what it was, bit for bit.
+    #[test]
+    fn a_place_taken_to_an_end_off_a_curve_through_it_is_two_points_too_near() {
+        use crate::boolean::{BooleanOp, IMPRINT_LOST, boolean};
+        let each_way =
+            |first: &craft3d_topo::Body, second: &craft3d_topo::Body, tol: &Tolerance| {
+                let now = boolean(first, second, BooleanOp::Intersect, tol);
+                END_ONLY.with(|only| only.set(true));
+                let before = boolean(first, second, BooleanOp::Intersect, tol);
+                END_ONLY.with(|only| only.set(false));
+                (now, before)
             };
-            println!("TRACE sweep {t:+.3}: {said}");
-        }
-        for t in [0.3, 0.5, 0.7, -0.45, -0.7, -1.0, -1.5] {
-            let second = under(vertex + n2 * (t * tol), second_normal);
-            let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
-            let a = prepare(&first, Operand::A, &mut vertices, &tolerance, true).unwrap();
-            let b = prepare(&second, Operand::B, &mut vertices, &tolerance, true).unwrap();
-            for (fa, box_a) in a.boxes.iter().enumerate() {
-                for fb in candidates(&b, box_a, tol) {
-                    let covers = (a.covers.as_slice(), b.covers.as_slice());
-                    let Ok(Some(pair)) =
-                        to_meet((&a, fa, box_a), (&b, fb), covers, Outlines::Make, tol)
-                    else {
-                        continue;
-                    };
-                    let Ok(SurfaceMeeting::Meets(meeting)) =
-                        meet_surfaces(&pair.oa.surface, &pair.ob.surface, &pair.within, &tolerance)
-                    else {
-                        continue;
-                    };
-                    let from_curves = |p: Vec3| -> Vec<String> {
-                        meeting
-                            .curves
-                            .iter()
-                            .map(|c| match nearest(&c.curve, c.range, p) {
-                                Some((_, d)) => format!("{:.3}", d / tol),
-                                None => "none".to_string(),
-                            })
-                            .collect()
-                    };
-                    let curves_near = meeting.curves.iter().any(|c| {
-                        nearest(&c.curve, c.range, vertex).is_some_and(|(_, d)| d < 8.0 * tol)
-                    });
-                    if !curves_near {
-                        continue;
+        for k in [1e-3, 1.0, 1e6] {
+            let (first, vertex, normal, tolerance) = roof_corner(k);
+            let block = |t: f64| under_plane(vertex + normal * (t * tolerance.linear), normal, k);
+            for t in [0.5, -0.5, -0.95] {
+                let what = format!("{t} tolerances from V at {k}");
+                match each_way(&first, &block(t), &tolerance) {
+                    (
+                        Err(KernelError::Unsupported { reason, faces, .. }),
+                        Err(KernelError::Unsupported { reason: was, .. }),
+                    ) => {
+                        assert_eq!(reason, NEAR, "{what}");
+                        assert_eq!(faces.len(), 2, "{what}: {faces:?}");
+                        assert_eq!(faces[0].0, Operand::A, "{what}");
+                        assert_eq!(faces[1].0, Operand::B, "{what}");
+                        assert_eq!(was, IMPRINT_LOST, "{what}");
                     }
-                    println!(
-                        "TRACE {t:+.3} pair A{fa} B{fb}: V is {:?} tolerances from the curves, {:.3} from B's surface, {:.3} from A's",
-                        from_curves(vertex),
-                        surface_distance(pair.ob.sheet(), vertex) / tol,
-                        surface_distance(pair.oa.sheet(), vertex) / tol,
-                    );
-                    for (own, face, other) in [(&a, fa, pair.ob), (&b, fb, pair.oa)] {
-                        for id in own.edges_of(face) {
-                            let edge = own.body.edge(id).unwrap();
-                            if let Ok(CurveIntersection::Hits(hits)) =
-                                curve_hits(&edge.curve, edge.range, other.sheet(), &tolerance)
-                            {
-                                for hit in hits {
-                                    if rel(hit.point) > 8.0 {
-                                        continue;
-                                    }
-                                    println!(
-                                        "TRACE {t:+.3}   hit of {:?}'s edge {} with the other surface: {:.3} tolerances from V, {:?} from the curves",
-                                        own.operand,
-                                        id.0,
-                                        rel(hit.point),
-                                        from_curves(hit.point)
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    let mut found = Vec::new();
-                    let near = overlap(box_a, pair.box_b, 2.0 * tol).unwrap_or(pair.within);
-                    let named = [a.name(fa), b.name(fb)];
-                    let (ca, cb) = (a.cover(fa, tol), b.cover(fb, tol));
-                    let made = edge_cuts(
-                        &a,
-                        fa,
-                        pair.ob.sheet(),
-                        &near,
-                        cb,
-                        &named,
-                        &tolerance,
-                        &mut found,
-                    )
-                    .and_then(|()| {
-                        edge_cuts(
-                            &b,
-                            fb,
-                            pair.oa.sheet(),
-                            &near,
-                            ca,
-                            &named,
-                            &tolerance,
-                            &mut found,
-                        )
-                    });
-                    if let Err(stop) = made {
-                        println!("TRACE {t:+.3}   edge_cuts refused: {stop:?}");
-                    }
-                    for cut in found.iter().filter(|cut| rel(cut.point) <= 8.0) {
-                        println!(
-                            "TRACE {t:+.3}   cut (edges A {:?}, B {:?}): {:.3} tolerances from V, {:?} from the curves",
-                            cut.a_edge.map(|e| e.0),
-                            cut.b_edge.map(|e| e.0),
-                            rel(cut.point),
-                            from_curves(cut.point)
-                        );
-                    }
+                    other => panic!("{what}: {other:?}"),
                 }
             }
-            let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
-            let a = prepare(&first, Operand::A, &mut vertices, &tolerance, true).unwrap();
-            let b = prepare(&second, Operand::B, &mut vertices, &tolerance, true).unwrap();
-            match section(&a, &b, &mut vertices, &tolerance) {
-                Ok(sections) => {
-                    for s in &sections.stretches {
-                        let (p, q) = (vertices.points[s.start], vertices.points[s.end]);
-                        if rel(p) <= 8.0 || rel(q) <= 8.0 {
-                            println!(
-                                "TRACE {t:+.3}   stretch A{} B{}: from {:.3} to {:.3} tolerances from V (vertices {} and {}), inside {} {}, crossing {}",
-                                s.fa,
-                                s.fb,
-                                rel(p),
-                                rel(q),
-                                s.start,
-                                s.end,
-                                s.inside_a,
-                                s.inside_b,
-                                s.crossing
-                            );
-                        }
-                    }
-                }
-                Err(stop) => println!("TRACE {t:+.3}   section refused: {stop:?}"),
+            for (t, count) in [
+                (0.0, 11),
+                (0.3, 11),
+                (0.7, 12),
+                (2.1, 12),
+                (-0.3, 11),
+                (-0.7, 12),
+                (-1.9, 12),
+            ] {
+                let what = format!("{t} tolerances from V at {k}");
+                let (now, before) = each_way(&first, &block(t), &tolerance);
+                let (now, before) = (now.unwrap().body, before.unwrap().body);
+                assert_eq!(crate::boolean::checked(&now, &tolerance), [], "{what}");
+                assert_eq!(now.vertices.len(), count, "{what}");
+                assert_eq!(
+                    craft3d_math::bits_of(&now),
+                    craft3d_math::bits_of(&before),
+                    "{what}"
+                );
             }
         }
     }
