@@ -1,8 +1,8 @@
-//! Owed by the boolean (found 2026-11-20 in a hipped roof of 24 planes
-//! whose normals were rounded to six decimals; docs/design/booleans.md ›
-//! *A plane that passes a vertex by less than a tolerance*): a block
-//! whose top passes within about a tolerance of a vertex an earlier
-//! intersection made, at a convex corner of a prism.
+//! A block whose top passes within about a tolerance of a vertex an
+//! earlier intersection made, at a convex corner of a prism (found
+//! 2026-11-20 in a hipped roof of 24 planes whose normals were rounded to
+//! six decimals; docs/design/booleans.md › *A plane that passes a vertex
+//! by less than a tolerance*).
 //!
 //! The case, with plain booleans. A prism over a four-cornered outline,
 //! 40 high; its corner at (50.4, 0) is the one of the roof's outline. A
@@ -19,15 +19,22 @@
 //! leaves V along the other wall at a place W. That edge leaves at a
 //! shallow angle to the plane, so W is 3.23 `t` tolerances from V.
 //!
-//! What each distance answers today is printed by the test
-//! (`--ignored --nocapture`) and written under it. One thing is owed:
-//! where V and W come between one and two tolerances apart (the plane
-//! about half a tolerance from V), the refusal says "imprint lost: a
-//! curve in which two faces cross does not divide them; a piece of it is
-//! missing", which names no place, no tolerance and nothing to do, where
-//! the tolerance rule's own refusal names its faces. The bodies built
-//! with the plane 0.7 to 2 tolerances from V are not inside that rule's
-//! band: their V and W are more than two tolerances apart.
+//! Until 2026-11-22, where V and W came between one and two tolerances
+//! apart (the plane about half a tolerance from V), the refusal said
+//! "imprint lost: a curve in which two faces cross does not divide them;
+//! a piece of it is missing", which names no place, no tolerance and
+//! nothing to do. W was taken to V (a place within twice the tolerance of
+//! an end of its edge that lies within the tolerance of the surface is
+//! that end), and the curve in which the plane meets the roof's first
+//! plane runs through W and, the two planes being 20 degrees apart, 1.45
+//! tolerances from V: it got no cut there and lost its piece. Under V the
+//! eaves' place and the upright edge's did the same. Now, where the lost
+//! piece leaves the imprint open, as it does here, the state is refused
+//! as the tolerance rule refuses it, "two points closer together than the
+//! tolerance can tell apart (at the edge of tolerance)", with a face of
+//! each body. The bodies built with the plane 0.7 to 2 tolerances
+//! from V are not inside that rule's band: their V and W are more than
+//! two tolerances apart.
 
 #![allow(
     clippy::unwrap_used,
@@ -41,12 +48,13 @@ mod common;
 
 use boolean_common::tolerance;
 use common::polygon;
+use craft3d_geom::{NurbsSurface, Surface};
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::extrude::extrude;
 use craft3d_kernel::primitives::block;
 use craft3d_kernel::profile::detect_profiles;
-use craft3d_math::{Frame, Vec3};
+use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, check};
 
 /// The corner, and its neighbours along the outline of the roof.
@@ -67,6 +75,11 @@ const OVER: [f64; 13] = [
 ];
 /// And under it.
 const UNDER: [f64; 8] = [-0.3, -0.45, -0.55, -0.7, -1.0, -1.5, -1.9, -2.1];
+
+/// The tolerance rule's refusal of two places closer together than the
+/// tolerance can tell apart.
+const NEAR: &str =
+    "two points closer together than the tolerance can tell apart (at the edge of tolerance)";
 
 fn prism() -> Body {
     let outline = polygon(1, 1, &[CORNER, AFTER, [0.0, 20.0], BEFORE]);
@@ -127,11 +140,10 @@ fn nearest_pair(body: &Body) -> f64 {
     nearest
 }
 
-/// Owed: at every distance the second block either cuts (a body that
-/// passes its check) or is refused as at the edge of tolerance, with the
-/// faces.
+/// At every distance the second block either cuts (a body that passes
+/// its check) or is refused as at the edge of tolerance, with the faces.
 ///
-/// Today (2026-11-20; Check runs 44767663080 and 44769475435 on
+/// Until 2026-11-22 (Check runs 44767663080 and 44769475435 on
 /// `check/cut-planes`, 44767711875 on `check/contact-border` f93760c7
 /// with this file added: the same answers), by the plane's distance from
 /// the vertex in tolerances, with how far apart the two nearest vertices
@@ -149,8 +161,10 @@ fn nearest_pair(body: &Body) -> f64 {
 ///   refused as it should be, "two points closer together than the
 ///   tolerance can tell apart (at the edge of tolerance)", with its
 ///   faces; 1.9 and 2.1: built (6.14 and 6.78 apart).
+///
+/// Since, every "imprint lost" there is that refusal, with the two faces,
+/// and every other answer is as it was.
 #[test]
-#[ignore = "owed: a block's top within about half a tolerance of a vertex is refused as \"imprint lost\", with no place, tolerance or action: run with --ignored --nocapture"]
 fn a_block_whose_top_passes_a_vertex_by_less_than_a_tolerance_cuts_or_says_where() {
     let tol = tolerance(1.0);
     let (body, vertex) = first_cut();
@@ -197,6 +211,312 @@ fn a_block_whose_top_passes_a_vertex_well_clear_of_it_cuts() {
         match second_cut(&body, vertex, t) {
             Ok(cut) => assert_eq!(check(&cut, &tol), [], "{t} tolerances"),
             Err(error) => panic!("{t} tolerances: {error}"),
+        }
+    }
+}
+
+/// The case at scale `k` (the tolerance `1e-6 k`), its outline drawn in
+/// the plane of `frame` and the prism raised along its z axis, either
+/// block's top a spline surface on the same plane when asked.
+struct Case {
+    k: f64,
+    tol: Tolerance,
+    /// The prism under the first plane.
+    first: Body,
+    /// The vertex the first plane made on the corner's upright edge.
+    vertex: Vec3,
+    /// The second plane's normal.
+    normal: Vec3,
+}
+
+/// Which top is a spline surface.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Spline {
+    Neither,
+    /// The second block's: the plane that passes V.
+    Second,
+    /// The first block's: the roof's face that holds V and the edge that
+    /// leaves it along the wall, whose edges are then splines.
+    First,
+}
+
+impl Case {
+    fn new(k: f64, frame: Frame, spline: Spline) -> Case {
+        let tol = tolerance(k);
+        let scaled = |p: [f64; 2]| [p[0] * k, p[1] * k];
+        let outline = polygon(
+            1,
+            1,
+            &[
+                scaled(CORNER),
+                scaled(AFTER),
+                [0.0, 20.0 * k],
+                scaled(BEFORE),
+            ],
+        );
+        let profiles = detect_profiles(&outline, &tol).unwrap();
+        let prism = extrude(&profiles, &frame, 0.0, 40.0 * k, &tol)
+            .unwrap()
+            .body;
+        let at = frame.point(CORNER[0] * k, CORNER[1] * k, EAVES * k);
+        let normal = frame.vector(FIRST[0], FIRST[1], FIRST[2]);
+        let mut roof = under_at(at, normal, k);
+        if spline == Spline::First {
+            roof = spline_top(roof, at, normal, &tol);
+        }
+        let first = boolean(&prism, &roof, BooleanOp::Intersect, &tol)
+            .unwrap()
+            .body;
+        assert_eq!(check(&first, &tol), [], "the first cut at {k}");
+        let vertex = first
+            .vertices
+            .iter()
+            .map(|v| v.point)
+            .min_by(|a, b| a.distance(at).total_cmp(&b.distance(at)))
+            .unwrap();
+        // Where an edge meets a spline surface is found to a fraction of
+        // the tolerance.
+        let exact = if spline == Spline::First { 0.05 } else { 1e-6 };
+        assert!(
+            vertex.distance(at) <= exact * tol.linear,
+            "{vertex:?} at {k}"
+        );
+        Case {
+            k,
+            tol,
+            first,
+            vertex,
+            normal: frame
+                .vector(SECOND[0], SECOND[1], SECOND[2])
+                .normalized()
+                .unwrap(),
+        }
+    }
+
+    /// What the second block answers at `t` tolerances over the vertex.
+    fn second_cut(&self, t: f64, spline: Spline) -> Result<Body, KernelError> {
+        let at = self.vertex + self.normal * (t * self.tol.linear);
+        let mut second = under_at(at, self.normal, self.k);
+        if spline == Spline::Second {
+            second = spline_top(second, at, self.normal, &self.tol);
+        }
+        boolean(&self.first, &second, BooleanOp::Intersect, &self.tol).map(|result| result.body)
+    }
+}
+
+/// `under` at scale `k`, square to a normal given as a vector.
+fn under_at(at: Vec3, normal: Vec3, k: f64) -> Body {
+    let plane = Frame::from_z(at, normal).unwrap();
+    let reach = 150.0 * k;
+    let corner = at - plane.x() * reach - plane.y() * reach - plane.z() * reach;
+    block(&plane.at(corner).unwrap(), 2.0 * reach, 2.0 * reach, reach).unwrap()
+}
+
+/// `body` with the face that lies in the plane through `at` square to
+/// `normal` given a spline surface on that plane: a bicubic net over the
+/// face's extent, so the face, its edges and its vertices stay where they
+/// were and the surface is freeform.
+fn spline_top(mut body: Body, at: Vec3, normal: Vec3, tol: &Tolerance) -> Body {
+    let index = body
+        .faces
+        .iter()
+        .position(|face| match &face.surface {
+            Surface::Plane(plane) => {
+                let f = *plane.frame();
+                f.z().cross(normal).length() <= 1e-9
+                    && (at - f.origin()).dot(f.z()).abs() <= tol.linear
+            }
+            _ => false,
+        })
+        .expect("the block's top");
+    let Surface::Plane(plane) = &body.faces[index].surface else {
+        panic!("a plane");
+    };
+    let f = *plane.frame();
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for vertex in &body.vertices {
+        let (x, y, z) = f.local(vertex.point);
+        if z.abs() <= tol.linear {
+            lo = [lo[0].min(x), lo[1].min(y)];
+            hi = [hi[0].max(x), hi[1].max(y)];
+        }
+    }
+    let mut ctrl = Vec::new();
+    for i in 0..4 {
+        for j in 0..4 {
+            ctrl.push(f.point(
+                lo[0] + (hi[0] - lo[0]) * f64::from(i) / 3.0,
+                lo[1] + (hi[1] - lo[1]) * f64::from(j) / 3.0,
+                0.0,
+            ));
+        }
+    }
+    let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+    body.faces[index].surface = Surface::Nurbs(
+        NurbsSurface::new(3, 3, knots.clone(), knots, 4, 4, ctrl, vec![1.0; 16]).unwrap(),
+    );
+    assert_eq!(check(&body, tol), [], "the block with a spline top");
+    body
+}
+
+/// A frame turned in space, at scale `k`.
+fn turned(k: f64) -> Frame {
+    Frame::new(
+        Vec3::new(13.0 * k, -7.0 * k, 3.0 * k),
+        Vec3::new(0.3, -0.5, 0.81),
+        Vec3::new(1.0, 0.2, 0.0),
+    )
+    .unwrap()
+}
+
+/// What the second block answers: a body that passes its check, with this
+/// many vertices, or the refusal of two places closer together than the
+/// tolerance can tell apart, naming a face of each body.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Answer {
+    Built(usize),
+    Near,
+}
+
+fn answer(case: &Case, t: f64, spline: Spline, what: &str) -> Answer {
+    match case.second_cut(t, spline) {
+        Ok(body) => {
+            assert_eq!(check(&body, &case.tol), [], "{what}");
+            Answer::Built(body.vertices.len())
+        }
+        Err(KernelError::Unsupported { reason, faces, .. }) if reason == NEAR => {
+            assert_eq!(faces.len(), 2, "{what}: {faces:?}");
+            Answer::Near
+        }
+        Err(error) => panic!("{what}: {error}"),
+    }
+}
+
+/// The state at four scales, as found and turned in space, the plane over
+/// V and under it. Over V by 0.2 tolerances the plane holds V (one place,
+/// 11 vertices); by 0.5, W is 1.6 tolerances from V and V 1.45 from the
+/// curve in which the two planes of the roof meet: two places too near;
+/// by 0.9, W is 2.9 from V: two places (12 vertices). Under V by 0.2: one
+/// place; by 0.5 the eaves' place is 1.5 from V and V 1.45 from that
+/// curve: too near; by 0.72 the eaves' place is 2.14 from V and the
+/// upright edge's 0.91, taken to V, which is within the tolerance of the
+/// curves in which the plane meets both walls: two places; by 0.95 the
+/// upright edge's place is 1.2 from V and V more than a tolerance from
+/// those curves: too near; by 1.3 that place is 1.65 from V and not taken
+/// to it (V is more than the tolerance from the plane): too near, as 1.5
+/// was before; by 1.9: two places.
+#[test]
+fn the_same_state_at_four_scales_turned_in_space_over_and_under() {
+    use Answer::{Built, Near};
+    let answers = [
+        (0.2, Built(11)),
+        (0.5, Near),
+        (0.9, Built(12)),
+        (-0.2, Built(11)),
+        (-0.5, Near),
+        (-0.72, Built(12)),
+        (-0.95, Near),
+        (-1.3, Near),
+        (-1.9, Built(12)),
+    ];
+    for k in [1e-3, 1.0, 1e3, 1e6] {
+        for (name, frame) in [("as found", Frame::WORLD), ("turned", turned(k))] {
+            let case = Case::new(k, frame, Spline::Neither);
+            for (t, want) in answers {
+                let what = format!("{t} tolerances from V, at {k}, {name}");
+                assert_eq!(answer(&case, t, Spline::Neither, &what), want, "{what}");
+            }
+        }
+    }
+}
+
+/// The same with a freeform neighbour, at 1 and 1e3: the second block's
+/// top a spline surface on its plane (where an edge meets it is then found
+/// numerically, and the curves it meets the roof's planes in are traced),
+/// or the first block's (the roof's face is then a spline surface and the
+/// edges that leave V along the walls are traced curves, taken to V where
+/// they hug the plane up to their place, `edge_cuts` › `hugs`). The answers
+/// are those of the planes, except the first block's at 0.7 either side
+/// (owed: below).
+#[test]
+fn the_same_state_beside_a_spline_surface() {
+    use Answer::{Built, Near};
+    let answers = [
+        (0.0, Built(11)),
+        (0.3, Built(11)),
+        (0.5, Near),
+        (0.7, Built(12)),
+        (1.0, Built(12)),
+        (-0.3, Built(11)),
+        (-0.5, Near),
+        (-0.7, Built(12)),
+        (-0.95, Near),
+        (-1.5, Near),
+        (-1.9, Built(12)),
+    ];
+    for spline in [Spline::Second, Spline::First] {
+        for k in [1.0, 1e3] {
+            let case = Case::new(k, Frame::WORLD, spline);
+            for (t, want) in answers {
+                if spline == Spline::First && (t == 0.7 || t == -0.7) {
+                    continue;
+                }
+                let what = format!("{t} tolerances from V, at {k}, {spline:?} a spline");
+                assert_eq!(answer(&case, t, spline, &what), want, "{what}");
+            }
+        }
+    }
+}
+
+/// Owed: with the roof's face a spline surface, the plane 0.7 tolerances
+/// over V (or under it) is refused as *"imprint lost"* (2026-11-22, Check
+/// 45021513502; the same before the repair of that day, which changes no
+/// answer but that refusal's words where it notes a pair). Not traced; by
+/// the distances: the traced edge that leaves V crosses the plane 2.26
+/// tolerances from V (the eaves 2.08, under it), past the guard, and is
+/// within the tolerance of the plane all the way from V to there, so
+/// `edge_cuts` would take the place to V as it takes the place of an edge
+/// that leaves a surface tangentially (`hugs`), and V is 2.02 tolerances
+/// from the curve through the place. The planes build the same distances,
+/// as two places. What is owed: a body that passes its check, or a
+/// refusal at the edge of tolerance with its faces.
+#[test]
+#[ignore = "owed: beside a spline face, a plane 0.7 tolerances from a vertex is refused as \"imprint lost\" (not traced: an edge that crosses it at a shallow angle taken to its end as one that hugs it?)"]
+fn a_spline_roof_face_and_a_plane_past_its_vertex_by_more_than_the_guard() {
+    for k in [1.0, 1e3] {
+        let case = Case::new(k, Frame::WORLD, Spline::First);
+        for t in [0.7, -0.7] {
+            match case.second_cut(t, Spline::First) {
+                Ok(body) => assert_eq!(check(&body, &case.tol), [], "{t} at {k}"),
+                Err(KernelError::Unsupported { reason, faces, .. })
+                    if reason.ends_with("(at the edge of tolerance)") && !faces.is_empty() => {}
+                Err(error) => panic!("{t} at {k}: {error}"),
+            }
+        }
+    }
+}
+
+/// What the owed case above may not become in the meantime: with the
+/// roof's face a spline surface and the plane 0.7 tolerances from V, the
+/// place where the edge crosses the plane is 2.26 tolerances from V over
+/// it (2.08 under it), past the guard of twice the tolerance: two places
+/// by the tolerance rule, which the planes build. Whatever is answered
+/// there, a body or a refusal, it is not the rule's refusal of two points
+/// closer together than the tolerance can tell apart (`section.rs` ›
+/// `clip`: a place taken to an end of its edge is noted only where it is
+/// at most the guard from that end).
+#[test]
+fn a_spline_roof_face_and_a_plane_past_its_vertex_by_more_than_the_guard_is_not_too_near() {
+    for k in [1.0, 1e3] {
+        let case = Case::new(k, Frame::WORLD, Spline::First);
+        for t in [0.7, -0.7] {
+            match case.second_cut(t, Spline::First) {
+                Ok(body) => assert_eq!(check(&body, &case.tol), [], "{t} at {k}"),
+                Err(KernelError::Unsupported { reason, faces, .. }) => {
+                    assert_ne!(reason, NEAR, "{t} at {k}: {faces:?}");
+                }
+                Err(_) => {}
+            }
         }
     }
 }
