@@ -665,4 +665,49 @@ mod tests {
         assert_eq!(left(&chain), [0, 1, 3, 4]);
         assert!(!one_face_uses(&chain, 1, 2));
     }
+
+    #[test]
+    fn a_group_keeps_its_copies_at_its_root_and_is_asked_there() {
+        // A's top in two pieces, 0 and 1, and B's top in two, 2 and 3.
+        // Edge 0 joins 0 and 2 first (the group's root is 0); edge 1 then
+        // joins 1, which uses copy 3 of arc 9, to that group through 2, a
+        // face that is not the root, from the root 1 of its own group;
+        // edge 2 then asks whether 3, which uses copy 4, joins the group
+        // through 2 again. The group's copies are kept at its root, 0, and
+        // asked for there: 3 stays apart.
+        let faces = [
+            (
+                Operand::A,
+                0,
+                true,
+                vec![vec![(0, false), (5, false), (6, false)]],
+            ),
+            (
+                Operand::A,
+                0,
+                true,
+                vec![vec![(1, false), (3, false), (7, false)]],
+            ),
+            (
+                Operand::B,
+                0,
+                true,
+                vec![vec![(0, true), (1, true), (2, false), (8, false)]],
+            ),
+            (
+                Operand::B,
+                0,
+                true,
+                vec![vec![(2, true), (4, true), (9, false)]],
+            ),
+            (Operand::A, 1, false, vec![vec![(3, true), (10, false)]]),
+            (Operand::B, 1, false, vec![vec![(4, false), (11, false)]]),
+        ];
+        let coincident = BTreeMap::from([(0, vec![(0, true)])]);
+        let mut chain = work(&faces, &[0, 1, 2, 9, 9, 20, 21, 22, 23, 24, 25, 26]);
+        merge_faces(&mut chain, &coincident).unwrap();
+        // 0, 1 and 2 are one face; 3 stays apart.
+        assert_eq!(left(&chain), [0, 3, 4, 5]);
+        assert!(!one_face_uses(&chain, 3, 4));
+    }
 }

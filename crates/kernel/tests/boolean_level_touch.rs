@@ -25,8 +25,12 @@
 //! touching itself at the place by a witness that asks nothing of the
 //! boolean): the reduction at four scales either way round, turned out of
 //! the axes, cut back by a tangent cylinder, B reaching into A over the
-//! stretch they share; and beside it what builds, and B's top higher,
-//! which was refused in these words already.
+//! stretch they share, B a frame round A (the line in an inner loop of
+//! B's top), the tops sharing one touch and parting at another; the
+//! pair's interference, a touch over the sides they share, which was
+//! "unknown" before (its union with the refusal off was an invalid body);
+//! and beside it what builds, and B's top higher, which was refused in
+//! these words already.
 
 #![allow(
     clippy::unwrap_used,
@@ -39,12 +43,15 @@ mod boolean_common;
 
 use boolean_common::*;
 use craft3d_geom::Surface;
-use craft3d_kernel::boolean::{BooleanOp, boolean};
+use craft3d_kernel::KernelError;
+use craft3d_kernel::boolean::{
+    BooleanOp, BooleanOptions, ContactKind, Interference, boolean, boolean_with, interference,
+};
 use craft3d_kernel::extrude::extrude;
 use craft3d_kernel::primitives;
 use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
 use craft3d_math::{Frame, Portable, Transform, Vec3};
-use craft3d_topo::Body;
+use craft3d_topo::{Body, check};
 
 use BooleanOp::{Subtract, Union};
 
@@ -88,6 +95,16 @@ fn block_a(k: f64) -> Body {
 
 fn block_b(k: f64) -> Body {
     boxed(k, [5.0, 0.0, 0.0], [10.0, 10.0, 5.0])
+}
+
+/// A block 20 × 20 × 5 round A, with A's place (and a little above and
+/// below) as a hole through it. 1750 in volume.
+fn frame(k: f64) -> Body {
+    less(
+        &boxed(k, [-5.0, -5.0, 0.0], [15.0, 15.0, 5.0]),
+        &boxed(k, [0.0, 0.0, -1.0], [5.0, 10.0, 6.0]),
+        k,
+    )
 }
 
 /// Block A less the wedge between its side x = 5 and the plane
@@ -249,6 +266,87 @@ fn a_block_reaching_into_the_cut_one_over_the_side_they_share() {
         let on = |at: Vec3| on_the_line(at, k);
         refused_along_the_line(&slanted(k), &ell, k, 475.0, &on);
         refused_along_the_line(&rounded(k), &ell, k, 500.0 - 5.0 * rounded_off(), &on);
+    }
+}
+
+/// B a frame round A, whose hole A fills but for the groove under the
+/// line: the line where they part is a stretch of the hole's rim, in the
+/// inner loop of B's top. The copies a face uses are read from every loop
+/// of it, not from its outline alone. Volume 225 + 1750.
+#[test]
+fn a_frame_round_the_cut_block() {
+    for k in SCALES {
+        let on = |at: Vec3| on_the_line(at, k);
+        for body in refused_along_the_line(&slanted(k), &frame(k), k, 1975.0, &on) {
+            assert_eq!(level_tops(&body, k), 2, "scale {k}");
+        }
+    }
+}
+
+/// What the interference of the pair says (`document.interference`): a
+/// touch over the sides they share, of their area. It measures that area
+/// by the union of the two with the zero-thickness refusal off, which was
+/// an invalid body before the repair, so that the pair was "unknown". 25
+/// for the block beside the cut one (the side x = 5 over y 0..5), and
+/// beside the rounded one; 120 for the frame round the cut one (the
+/// hole's walls x = 0, y = 0 and x = 5 over y 0..5: 50 + 25 + 25; and
+/// A's end y = 10, cut back: 20).
+#[test]
+fn their_interference_is_a_touch_over_the_sides_they_share() {
+    for k in SCALES {
+        for (a, b, area) in [
+            (slanted(k), block_b(k), 25.0),
+            (rounded(k), block_b(k), 25.0),
+            (slanted(k), frame(k), 120.0),
+        ] {
+            for (x, y) in [(&a, &b), (&b, &a)] {
+                match interference(x, y, &tolerance(k)) {
+                    Ok(Interference::Touch {
+                        kind, area: shared, ..
+                    }) => {
+                        assert_eq!(kind, ContactKind::Face, "scale {k}");
+                        assert_close(shared, area * k * k, "shared area");
+                    }
+                    other => panic!("scale {k}: {other:?}"),
+                }
+            }
+        }
+    }
+}
+
+/// Copies of two arcs. X with a ridge standing on its top edge over
+/// y 0..5 (the two touch along that edge: made with the refusal off, as a
+/// blend's steps make their bodies), joined to B: over y 0..5 the tops
+/// use one copy of the edge and the ridge the other, over y 5..10 the
+/// tops part. Joined across the first, the tops would run along the
+/// second on both sides of it: a joining is left out where the copies of
+/// any one arc differ, not only where those of every arc do. Made without
+/// the refusal: valid, 475 + 30 (the ridge's triangle 4 wide and 3 high,
+/// 5 long); with it, refused as zero thickness.
+#[test]
+fn tops_that_share_one_touch_and_part_at_another() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let off = BooleanOptions {
+            refuse_zero_thickness: false,
+            ..BooleanOptions::default()
+        };
+        let upright = Frame::new(Vec3::ZERO, Vec3::Y, Vec3::Z).unwrap();
+        let ridge = prism(k, &upright, &[[5.0, 5.0], [8.0, 3.0], [8.0, 7.0]], 0.0, 5.0);
+        let with_ridge = boolean_with(&slanted(k), &ridge, Union, &tol, &off)
+            .unwrap()
+            .body;
+        let made = boolean_with(&with_ridge, &block_b(k), Union, &tol, &off)
+            .unwrap_or_else(|e| panic!("scale {k}: {e}"));
+        assert_eq!(check(&made.body, &tol), [], "scale {k}");
+        assert_close(mass(&made.body).volume, 505.0 * k * k * k, "volume");
+        assert!(
+            matches!(
+                boolean(&with_ridge, &block_b(k), Union, &tol),
+                Err(KernelError::ZeroThickness { .. })
+            ),
+            "scale {k}"
+        );
     }
 }
 
