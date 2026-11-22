@@ -747,6 +747,7 @@ fn run(
             )?;
         }
     }
+    let near = |stop: Stop| near_places(stop, &sections.near, &a, &b);
     if mode == Mode::Solids || mode == Mode::Trim {
         classify::select(
             &a,
@@ -761,7 +762,8 @@ fn run(
             table,
             tolerance,
             &mut kept,
-        )?;
+        )
+        .map_err(near)?;
     }
     if mode == Mode::Solids || mode == Mode::Cut {
         classify::select(
@@ -781,7 +783,8 @@ fn run(
             } else {
                 &mut kept
             },
-        )?;
+        )
+        .map_err(near)?;
     }
     if mode == Mode::Cut {
         cut::select(
@@ -894,6 +897,31 @@ fn run(
         }
     }
     Ok(result)
+}
+
+/// `stop`, except a lost imprint at a face of a pair whose curve has no cut
+/// where an edge meets the other face's surface, because that place was
+/// taken to an end of the edge more than the tolerance from the curve
+/// (`section::Sections::near`): that is the curve's piece missing, and the
+/// end and the place are two points closer together than the tolerance
+/// can tell apart, refused in those words with the pair's two faces (the
+/// first such pair, in the order the section met them). Where the curve's
+/// missing cut leaves no imprint open, nothing is refused for it.
+fn near_places(stop: Stop, near: &[(usize, usize)], a: &Solid, b: &Solid) -> Stop {
+    match stop {
+        Stop::Unsupported { reason, faces } if reason == IMPRINT_LOST => {
+            let pair = near.iter().find(|&&(fa, fb)| {
+                faces
+                    .iter()
+                    .any(|&face| face == a.name(fa) || face == b.name(fb))
+            });
+            match pair {
+                Some(&(fa, fb)) => Stop::of(NEAR).at(&[a.name(fa), b.name(fb)]),
+                None => Stop::Unsupported { reason, faces },
+            }
+        }
+        other => other,
+    }
 }
 
 /// The places in their first order, each once: a place found by several

@@ -1561,3 +1561,71 @@ fn a_roof_from_the_outlines_own_numbers_meets_on_the_corners() {
         );
     }
 }
+
+/// The roof as it was found (2026-11-20): the same 24 planes with their
+/// unit normals rounded to six decimals. The last plane, through the side
+/// that ends at the corner (50.4, 0), passes 0.497 tolerances over the
+/// vertex the first plane made on that corner's upright edge, and crosses
+/// the edge that leaves the vertex along the wall 1.6 tolerances further
+/// on: two places closer together than the tolerance can tell apart. The
+/// cut is refused there in the tolerance rule's words, naming the plane,
+/// the faces and the tolerance and saying what to do; until 2026-11-22 it
+/// was refused as *"imprint lost"*, which said none of that
+/// (docs/design/booleans.md › *A plane that passes a vertex by less than
+/// a tolerance*).
+#[test]
+fn a_roof_with_its_normals_rounded_is_refused_where_a_plane_passes_a_corner() {
+    let run_over_rise = 1.279_941_632_193_078_8;
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    let outline = EAVES_OUTLINE.to_vec();
+    built(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Outline"}),
+    );
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Outline", "points": outline, "closed": true}),
+    );
+    built(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Outline", "distance": 40.0, "name": "Prism"}),
+    );
+    let six = |x: f64| (x * 1e6).round() / 1e6;
+    let planes: Vec<Value> = (0..outline.len())
+        .map(|i| {
+            let (from, to) = (outline[i], outline[(i + 1) % outline.len()]);
+            let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+            let length = (dx * dx + dy * dy).sqrt();
+            let normal = [dy, -dx, length * run_over_rise];
+            let size = normal.iter().map(|c| c * c).sum::<f64>().sqrt();
+            json!({
+                "point": [from[0], from[1], 14.0],
+                "normal": normal.map(|c| six(c / size)),
+            })
+        })
+        .collect();
+    let reason = failed(
+        &mut s,
+        CUT,
+        json!({"target": "Prism", "planes": planes, "name": "Roof"}),
+    );
+    println!("the roof with its normals rounded: {reason}");
+    assert!(
+        reason.starts_with(
+            "planes.23: plane 24: two points closer together than the tolerance can tell apart (at the edge of tolerance)"
+        ),
+        "{reason}"
+    );
+    assert!(reason.contains(":cut(1)"), "{reason}");
+    assert!(reason.contains(":cut(24)"), "{reason}");
+    assert!(reason.contains("tolerance of 1e-6"), "{reason}");
+    assert!(
+        reason.contains("move the plane by more than the tolerance"),
+        "{reason}"
+    );
+    assert!(!reason.contains("imprint lost"), "{reason}");
+}

@@ -277,6 +277,14 @@ pub(super) struct Sections {
     /// Per edge: the vertices to split it at.
     pub splits_a: BTreeMap<EdgeId, BTreeSet<usize>>,
     pub splits_b: BTreeMap<EdgeId, BTreeSet<usize>>,
+    /// The pairs of faces (of A, of B), in the order met, a curve of which
+    /// runs through a place where an edge meets the other face's surface,
+    /// and more than the tolerance from the end of the edge the place was
+    /// taken to: the curve has no cut there (`clip`). Where an imprint is
+    /// then left open at one of the two faces, the boolean is refused as
+    /// two points closer together than the tolerance can tell apart,
+    /// naming the pair, not as a lost imprint (`super::near_places`).
+    pub near: Vec<(usize, usize)>,
 }
 
 /// The outline of face `index` of `body`, as [`prepare`] makes it.
@@ -918,12 +926,13 @@ fn clip(
             // tolerance, crossing the edge that leaves it at a shallow
             // angle next to a face at a shallow angle to it:
             // docs/design/booleans.md › *A plane that passes a vertex by
-            // less than a tolerance*). Left out, the curve would have no
-            // cut there, and its piece in both faces from there on would
-            // be lost. Where the curve has no piece there (the place is
-            // outside either face, or the surfaces only touch along the
-            // curve, which divides nothing) the cut is left out as any
-            // other.
+            // less than a tolerance*). The curve has no cut there, as
+            // before, and the pair is noted: where that leaves the
+            // imprint open, the boolean is refused in those words, not as
+            // a lost imprint (`Sections::near`). Where the curve has no
+            // piece there (the place is outside either face, or the
+            // surfaces only touch along the curve, which divides nothing)
+            // nothing is noted.
             let between = |hit: Vec3| {
                 let apart = hit.distance(cut.point);
                 apart > vertices.merge
@@ -938,8 +947,8 @@ fn clip(
             if tests::END_ONLY.with(std::cell::Cell::get) {
                 continue;
             }
-            if cut.hit.is_some_and(between) {
-                return Err(Stop::of(NEAR).at(&named));
+            if cut.hit.is_some_and(between) && !sections.near.contains(&(fa, fb)) {
+                sections.near.push((fa, fb));
             }
             continue;
         };
@@ -2789,10 +2798,10 @@ pub(super) mod tests {
         /// the curve's pieces (`outline::nearest_on_spline`).
         pub(in crate::boolean) static NO_PIECES: std::cell::Cell<bool> =
             const { std::cell::Cell::new(false) };
-        /// Booleans on this thread leave a place where an edge meets a
-        /// surface, taken to an end of the edge, out of a curve that runs
-        /// through the place and more than the tolerance from the end, as
-        /// all did before 2026-11-22 (`clip`).
+        /// Booleans on this thread note no pair of faces whose curve has
+        /// no cut at a place taken to an end of its edge (`clip`,
+        /// `Sections::near`), so an imprint left open there is refused as
+        /// lost, as all were before 2026-11-22.
         pub(in crate::boolean) static END_ONLY: std::cell::Cell<bool> =
             const { std::cell::Cell::new(false) };
     }
@@ -3784,9 +3793,14 @@ pub(super) mod tests {
 
     /// A place where an edge meets the other body's surface, taken to an
     /// end of the edge (`edge_cuts`), on a curve that runs through the
-    /// place and more than the tolerance from the end, is refused as two
-    /// points closer together than the tolerance can tell apart, with the
-    /// two faces (`clip`). The roof's corner, the second plane at `t`
+    /// place and more than the tolerance from the end, leaves that curve
+    /// without a cut there (`clip`); where that leaves the imprint open,
+    /// the boolean is refused as two points closer together than the
+    /// tolerance can tell apart, with the pair's two faces
+    /// (`Sections::near`, `super::near_places`). (Where it leaves nothing
+    /// open the body is built as before: `tests/boolean_level_touch.rs` ›
+    /// `what_lies_beside_it`, a block beside a slanted face moved by 0.45
+    /// tolerances, refused only as zero thickness.) The roof's corner, the second plane at `t`
     /// tolerances from V: over it by 0.5, the place where the edge that
     /// leaves V along the wall crosses the plane is 1.6 tolerances from V,
     /// on the curve in which the plane meets the roof's first plane, and V
@@ -3794,11 +3808,12 @@ pub(super) mod tests {
     /// apart); under it by 0.5 the eaves' place is so; under it by 0.95
     /// the upright edge's place, 1.2 tolerances from V, is on the curves
     /// in which the plane meets the two walls, and V more than a tolerance
-    /// from both. Left out of the curve, as before 2026-11-22
-    /// (`END_ONLY`), the curve lost its piece from the place on, and the
-    /// boolean said "imprint lost", with no place. Where V is within the
-    /// tolerance of every curve (0.3 either side), or no place is taken to
-    /// it (0.7 and beyond), the body is what it was, bit for bit.
+    /// from both. The curve loses its piece from the place on, and the
+    /// imprint of the second block's top is left open: until 2026-11-22
+    /// (`END_ONLY`, which notes no pair) the boolean said "imprint lost",
+    /// with no place. Where V is within the tolerance of every curve (0.3
+    /// either side), or no place is taken to it (0.7 and beyond), the body
+    /// is what it was, bit for bit.
     #[test]
     fn a_place_taken_to_an_end_off_a_curve_through_it_is_two_points_too_near() {
         use crate::boolean::{BooleanOp, IMPRINT_LOST, boolean};
