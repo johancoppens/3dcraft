@@ -420,9 +420,11 @@ fn frames(k: f64) -> [Frame; 2] {
     ]
 }
 
-/// Heights of the second plane, none where it would touch the cap's oval
-/// at its highest or lowest point (1.5, 2, √5.25, √6 and 2.5 from the
-/// equator for the first planes below).
+/// Heights of the second plane, none where it would be tangent to the
+/// oval the first plane cuts, at x = 0 (its top, or for a first plane
+/// nearer the axis than the tube's middle where its upper branch dips
+/// lowest: 1.5, 2, √5.25, √6 and 2.5 from the equator for the first
+/// planes below), which leaves pieces that touch.
 const LEVELS: [f64; 19] = [
     -2.4, -2.2, -1.9, -1.6, -1.3, -1.0, -0.7, -0.5, -0.3, 0.0, 0.3, 0.5, 0.7, 1.0, 1.3, 1.6, 1.9,
     2.2, 2.4,

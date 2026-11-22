@@ -1060,19 +1060,20 @@ pub(super) fn left_of(
     //
     // A candidate is stepped from its piece by up to half the piece's
     // width, and is taken where nothing of `all` is nearer than its piece.
-    // On a surface that a chart cuts open along a circle that is no
-    // place: a region that holds the cut is drawn at both ends of the
-    // chart, and a long step from a loop that bounds it at one end can
-    // land beyond the cut, at the other. A loop that winds about the
-    // region at its own end winds about nothing there, and the other way
-    // about. Until 2026-11-22 such a candidate was taken where the regions
-    // of a face are told apart (`regions::group`, which asks what a loop
-    // winds about): the circle a level plane cuts round the inner side of
-    // a torus, stepped from by half its width (its diameter), landed past
-    // the cut low on the tube's inner side and was called an outline; the
-    // other loop of the band above the plane was given to it as a hole,
-    // and the band was kept without that loop (fuzz seed 124506: a torus
-    // cut beside its axis, then square to it, an invalid body).
+    // On a surface a chart cuts open along a circle that is not enough: a
+    // region that holds the cut is drawn in two pieces, one at each end of
+    // the chart, and a long step from a loop that bounds one of them can
+    // land beyond the cut, in the other. A loop that goes around the piece
+    // at its own end does not go around the piece at the other end, and
+    // the other way about. Until 2026-11-22 such a candidate was taken
+    // where the regions of a face are told apart (`regions::group`, which
+    // asks what a loop winds about): the circle a level plane cuts round
+    // the inner side of a torus, stepped from by half its width (its
+    // diameter), landed past the cut low on the tube's inner side and was
+    // called an outline; the other loop of the band above the plane was
+    // given to it as a hole, and the band was kept without that loop
+    // (fuzz seed 124506: a torus cut beside its axis, then square to it,
+    // an invalid body).
     let mut touched = false;
     let middle = left_at(
         sheet,
