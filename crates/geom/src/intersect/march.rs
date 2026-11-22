@@ -69,6 +69,24 @@
 //! spline, as a NURBS with double knots, parametrised close to arc
 //! length). Its distance to both surfaces is measured at three places per
 //! span and points are added until it is within the tolerance.
+//!
+//! **A step onto the curve beside.** Nothing a step is held to (how far
+//! it goes, the turn of the tangent, its end on the curve) tells a step
+//! along a curve from one that lands on another stretch of `f = 0` beside
+//! it that heads the same way: a later stretch of this curve where it
+//! runs back and forth a little apart (a step past the turn of a hairpin
+//! lands two stretches on), or the foot of another curve on the chart's
+//! border (a run's last step, which leaves the rectangle, is put on the
+//! border where a zero is found from where the step pointed). The fit
+//! tells them apart: between two such points it finds no points of one
+//! curve, and gives up on the span. The run is then taken up again from
+//! the point before that step, in steps of at most a quarter of it over
+//! twice its length, and what it had marched beyond is dropped (another
+//! curve there is found from its own seeds).
+//! Only where the fit gives up: a branch it brings within the tolerance
+//! is marched once, as it was before branches were taken up again
+//! (docs/design/booleans.md › *A step of the march onto the curve beside
+//! the one it follows*).
 
 // `!(x > 0.0)` is deliberate throughout: unlike `x <= 0.0` it is also true
 // for NaN.
@@ -139,6 +157,17 @@ const FAR_SURFACE: f64 = 2.0;
 const BORDER_SAMPLES: u32 = 64;
 /// Halvings by which an end of such a stretch is found.
 const BORDER_HALVINGS: usize = 48;
+/// How often a branch is taken up again from the point before a span
+/// that the fit could not bring within the tolerance
+/// ([`Marcher::trace`]).
+const TAKEN_UP: usize = 8;
+/// The longest step of a march taken up again, as a share of the span
+/// that could not be fitted.
+const SHORTER: f64 = 0.25;
+/// How far a march taken up again is held to that step, in lengths of
+/// the span: a step ends no further than twice what it was asked, so what
+/// the step that made the span passed over lies within that of its start.
+const HELD_OVER: f64 = 2.0;
 
 fn stalled() -> GeomError {
     GeomError::NoConvergence(
@@ -168,6 +197,12 @@ fn halved(h: f64, hmin: f64) -> Result<f64, GeomError> {
     } else {
         Ok(0.5 * h)
     }
+}
+
+/// The fit's refusal: no points it could add brought a span within the
+/// tolerance.
+pub(super) fn not_fitted() -> GeomError {
+    GeomError::NoConvergence("an intersection curve could not be fitted within the tolerance")
 }
 
 pub(super) fn too_many() -> GeomError {
@@ -312,6 +347,33 @@ struct Branch {
     closed: bool,
 }
 
+/// A march taken up again part of the way along a run
+/// ([`Marcher::trace`]).
+#[derive(Clone, Copy, Debug)]
+struct Again {
+    /// The point it goes on from, travelling as the run does.
+    from: Pt,
+    /// The points the run had before it, `from` among them.
+    taken: usize,
+    /// The longest step while it has gone less than `over` from `from`.
+    cap: f64,
+    over: f64,
+}
+
+impl Again {
+    /// A run taken up again from `from`, its `taken`-th point, where the
+    /// fit gave up on the step from there, `span` long: in steps of a
+    /// quarter of that, over twice its length.
+    fn past(from: Pt, taken: usize, span: f64) -> Self {
+        Self {
+            from,
+            taken,
+            cap: SHORTER * span,
+            over: HELD_OVER * span,
+        }
+    }
+}
+
 /// What refining a branch came to (`Marcher::refine_to_edge`).
 enum Refined {
     Done,
@@ -376,6 +438,14 @@ pub(super) struct Marcher {
     /// Cells are also left out where a bound on the field's second
     /// derivative over them proves it clear of zero ([`Marcher::bounded`]).
     bounded: bool,
+    /// The span the fit last gave up on: the two points, of the points it
+    /// was given, between which no points it could add brought the curve
+    /// within the tolerance ([`Marcher::refine_to_edge`]).
+    unfitted: Option<(Pt, Pt)>,
+    /// A branch is taken up again where the fit gives up on a step's span
+    /// ([`Marcher::trace`]); not when the march is asked as it was before
+    /// branches were taken up ([`Marcher::once`]).
+    takes_up: bool,
 }
 
 impl Marcher {
@@ -427,6 +497,8 @@ impl Marcher {
             field_chart: None,
             within: *within,
             bounded: false,
+            unfitted: None,
+            takes_up: true,
         })
     }
 
@@ -510,6 +582,15 @@ impl Marcher {
     /// through a node of the marcher's grid*).
     fn clear_of_zero(&self, dist: f64, reach: f64) -> bool {
         dist > reach + self.on
+    }
+
+    /// The march as it was before branches were taken up again: where
+    /// the fit gives up on a branch, the intersection is refused. What a
+    /// pair is asked first, in every box it is asked in, so that whatever
+    /// was answered so is answered so still (`meet.rs` › `meet_surfaces`).
+    pub(super) fn once(mut self) -> Self {
+        self.takes_up = false;
+        self
     }
 
     /// Tells the marcher the chart of the field's surface, when that is a
@@ -2308,15 +2389,35 @@ impl Marcher {
         singular: &[Singular],
         may_close: bool,
     ) -> Result<(Vec<Pt>, End), GeomError> {
+        self.run_on(start, sign, singular, may_close, None)
+    }
+
+    /// [`Marcher::run`], or the rest of such a run taken up again from a
+    /// point of it (`again`): on from there, with steps no longer than
+    /// its cap until it has gone as far as the cap is held over, and as
+    /// any run from there on. The points come without the one it goes on
+    /// from, as a run's come without its start; it closes on `start`, the
+    /// run's own.
+    fn run_on(
+        &mut self,
+        start: &Pt,
+        sign: f64,
+        singular: &[Singular],
+        may_close: bool,
+        again: Option<Again>,
+    ) -> Result<(Vec<Pt>, End), GeomError> {
         let mut pts: Vec<Pt> = Vec::new();
-        let mut cur = *start;
-        let mut h = 0.25 * self.hmax;
+        let mut cur = again.map_or(*start, |a| a.from);
+        let taken = again.map_or(0, |a| a.taken);
+        let mut h = again.map_or(0.25 * self.hmax, |a| a.cap.min(0.25 * self.hmax));
+        // How far this run has gone since it was taken up.
+        let mut gone = 0.0_f64;
         let cos_turn = MAX_TURN.pcos();
         let cos_half = (0.5 * MAX_TURN).pcos();
         let hmin = self.hmin;
         loop {
             self.spent()?;
-            if pts.len() > MAX_POINTS {
+            if pts.len() + taken > MAX_POINTS {
                 return Err(GeomError::NoConvergence(
                     "an intersection curve needs more points than the cap allows",
                 ));
@@ -2466,7 +2567,8 @@ impl Marcher {
                         // A loop that closes within the step closes here
                         // too, as after any other step.
                         let went = new.p.distance(cur.p);
-                        if may_close && pts.len() >= 2 && self.closes_on(start, &cur, went) {
+                        if may_close && pts.len() + taken >= 2 && self.closes_on(start, &cur, went)
+                        {
                             return Ok((pts, End::Closed));
                         }
                         if let Some(end) = self.onto_stretch(&cur, &new) {
@@ -2475,12 +2577,13 @@ impl Marcher {
                         }
                         pts.push(new);
                         cur = new;
+                        gone += went;
                         continue;
                     }
                 };
                 continue;
             };
-            if may_close && pts.len() >= 2 && self.closes_on(start, &cur, len) {
+            if may_close && pts.len() + taken >= 2 && self.closes_on(start, &cur, len) {
                 return Ok((pts, End::Closed));
             }
             if e.dist > self.cut {
@@ -2512,8 +2615,15 @@ impl Marcher {
             }
             pts.push(new);
             cur = new;
+            gone += len;
             if turn >= cos_half {
-                h = (1.5 * h).min(self.hmax);
+                // (A run taken up again: no longer than its cap while it
+                // has not gone as far as the cap is held over.)
+                let most = match again {
+                    Some(a) if gone < a.over => a.cap.min(self.hmax),
+                    _ => self.hmax,
+                };
+                h = (1.5 * h).min(most);
             }
         }
     }
@@ -2625,30 +2735,172 @@ impl Marcher {
         let Some(start) = Self::point(&e, u, v, 1.0) else {
             return Ok(Vec::new());
         };
-        let (forward, end) = self.run(&start, 1.0, singular, true)?;
-        let mut pts;
-        let closed = end == End::Closed;
+        let (mut forward, end) = self.run(&start, 1.0, singular, true)?;
+        let mut closed = end == End::Closed;
+        // (In the order of the march: away from the start, reversed.)
+        let mut backward = if closed {
+            Vec::new()
+        } else {
+            self.run(&start.reversed(), -1.0, singular, false)?.0
+        };
+        let mut taken_up = 0;
+        loop {
+            let Some((pts, at)) = self.assembled(&start, &backward, &forward, closed)? else {
+                return Ok(Vec::new());
+            };
+            self.unfitted = None;
+            let refused = match self.refine_pieces(pts.clone(), closed) {
+                Ok(pieces) => {
+                    return Ok(pieces
+                        .into_iter()
+                        .map(|(pts, closed)| Branch { pts, closed })
+                        .collect());
+                }
+                Err(e) => e,
+            };
+            if !self.takes_up {
+                return Err(refused);
+            }
+            // The span the fit gave up on, where it is a step of the
+            // march: that step is taken to have left the curve it
+            // followed (onto a curve beside it that heads the same way:
+            // nothing a step is held to tells the two apart, and the fit
+            // then looks for points between two points that are not
+            // neighbours on one curve). The run is taken up again from
+            // the point before it, in shorter steps, and what it had
+            // marched beyond is dropped: where that was another curve,
+            // its own seeds find it. What the fit brings within the
+            // tolerance is never marched again, so every curve fitted
+            // before is the curve it was.
+            let Some((a, b)) = self.unfitted.take() else {
+                return Err(refused);
+            };
+            if taken_up >= TAKEN_UP {
+                return Err(refused);
+            }
+            taken_up += 1;
+            let Some(k) = Self::span_of(&pts, &a, &b) else {
+                return Err(refused);
+            };
+            let (k, a, b) = self.nearest_the_start(&pts, at, k, a, b)?;
+            // (A span too short to be marched in shorter steps stands.)
+            let span = a.p.distance(b.p);
+            if !(SHORTER * span >= self.hmin) {
+                return Err(refused);
+            }
+            if k >= at && k - at < forward.len() + usize::from(closed) {
+                // A step of the forward run (or the step it closed by).
+                forward.truncate(k - at);
+                let from = forward.last().copied().unwrap_or(start);
+                let again = Again::past(from, forward.len(), span);
+                let (more, end) = self.run_on(&start, 1.0, singular, true, Some(again))?;
+                forward.extend(more);
+                let was_closed = closed;
+                closed = end == End::Closed;
+                if closed {
+                    backward.clear();
+                } else if was_closed {
+                    backward = self.run(&start.reversed(), -1.0, singular, false)?.0;
+                }
+            } else if k < at && at - k <= backward.len() {
+                // A step of the backward run, from the later of the two
+                // points to the earlier.
+                backward.truncate(at - k - 1);
+                let back = start.reversed();
+                let from = backward.last().copied().unwrap_or(back);
+                let again = Again::past(from, backward.len(), span);
+                let (more, _) = self.run_on(&back, -1.0, singular, false, Some(again))?;
+                backward.extend(more);
+            } else {
+                // Not a step of the march (a span drawn on into a cusp).
+                return Err(refused);
+            }
+        }
+    }
+
+    /// The wrong step a run is put right from: the span the fit gave up
+    /// on (`k`, from `a` to `b`), or one nearer the start (`at`) that it
+    /// would give up on too.
+    ///
+    /// A run is put right from its first wrong step on: what it marched
+    /// after that step is on another curve, or further along this one
+    /// than it had come. The fit meets the spans of the forward run in
+    /// the order of the march, so the one it gave up on is the first;
+    /// those of the backward run it meets from the far end, so there the
+    /// span nearest the start is looked for, by fitting what lies between
+    /// the one found and the start. (Taken up from a later wrong step, a
+    /// run follows the curve that step was made on, and is as wrong as it
+    /// was up to there.)
+    fn nearest_the_start(
+        &mut self,
+        pts: &[Pt],
+        at: usize,
+        mut k: usize,
+        mut a: Pt,
+        mut b: Pt,
+    ) -> Result<(usize, Pt, Pt), GeomError> {
+        while k + 1 < at {
+            let mut rest: Vec<Pt> = pts.get(k + 1..=at).map(<[Pt]>::to_vec).unwrap_or_default();
+            self.unfitted = None;
+            let Err(e) = self.refine_to_edge(&mut rest) else {
+                break;
+            };
+            let Some(span) = self.unfitted.take() else {
+                return Err(e);
+            };
+            match Self::span_of(pts, &span.0, &span.1) {
+                Some(nearer) if nearer > k && nearer < at => {
+                    (k, a, b) = (nearer, span.0, span.1);
+                }
+                _ => break,
+            }
+        }
+        Ok((k, a, b))
+    }
+
+    /// Where in `pts` the span from `a` to `b` is: the index of `a`, with
+    /// `b` the point after it (told by their parameters, which no two
+    /// points of a march share).
+    fn span_of(pts: &[Pt], a: &Pt, b: &Pt) -> Option<usize> {
+        let same = |p: &Pt, q: &Pt| p.u == q.u && p.v == q.v;
+        pts.iter()
+            .zip(pts.iter().skip(1))
+            .position(|(p, q)| same(p, a) && same(q, b))
+    }
+
+    /// The points of a branch in the order of travel, from what was
+    /// marched either way from `start` (`backward` in the order of its
+    /// march, away from the start), with where `start` is among them;
+    /// `None` when they are no curve.
+    fn assembled(
+        &mut self,
+        start: &Pt,
+        backward: &[Pt],
+        forward: &[Pt],
+        closed: bool,
+    ) -> Result<Option<(Vec<Pt>, usize)>, GeomError> {
+        let mut pts: Vec<Pt>;
         if closed {
-            pts = vec![start];
-            pts.extend(forward);
+            pts = vec![*start];
+            pts.extend(forward.iter().copied());
             // Close on the start, with parameters that continue the last.
             if let Some(last) = pts.last().copied() {
                 let (cu, cv) = self.near((start.u, start.v), &last);
                 pts.push(Pt {
                     u: cu,
                     v: cv,
-                    ..start
+                    ..*start
                 });
             }
         } else {
-            let (backward, _) = self.run(&start.reversed(), -1.0, singular, false)?;
-            pts = backward.into_iter().rev().map(Pt::reversed).collect();
-            pts.push(start);
-            pts.extend(forward);
+            pts = backward.iter().rev().copied().map(Pt::reversed).collect();
+            pts.push(*start);
+            pts.extend(forward.iter().copied());
         }
         if pts.len() < 2 {
-            return Ok(Vec::new());
+            return Ok(None);
         }
+        let mut at = if closed { 0 } else { backward.len() };
         // An end on a border moved in short of a cusp is drawn on to it.
         if !closed {
             if let Some(last) = pts.last().copied()
@@ -2662,15 +2914,12 @@ impl Marcher {
             {
                 let more = self.on_into_cusp(&first.reversed(), &cusp)?;
                 let mut before: Vec<Pt> = more.into_iter().rev().map(Pt::reversed).collect();
+                at += before.len();
                 before.append(&mut pts);
                 pts = before;
             }
         }
-        Ok(self
-            .refine_pieces(pts, closed)?
-            .into_iter()
-            .map(|(pts, closed)| Branch { pts, closed })
-            .collect())
+        Ok(Some((pts, at)))
     }
 
     /// The border moved in short of a cusp that `p` is on, if any.
@@ -3044,9 +3293,7 @@ impl Marcher {
     fn refine(&mut self, pts: &mut Vec<Pt>) -> Result<(), GeomError> {
         match self.refine_to_edge(pts)? {
             Refined::Done => Ok(()),
-            Refined::Leaves(..) => Err(GeomError::NoConvergence(
-                "an intersection curve could not be fitted within the tolerance",
-            )),
+            Refined::Leaves(..) => Err(not_fitted()),
         }
     }
 
@@ -3081,9 +3328,7 @@ impl Marcher {
                 ));
             }
             split = true;
-            let give_up = GeomError::NoConvergence(
-                "an intersection curve could not be fitted within the tolerance",
-            );
+            let give_up = not_fitted();
             let (Some(a), Some(b)) = (rest.get(i).copied(), rest.get(i + 1).copied()) else {
                 return Err(give_up);
             };
@@ -3196,6 +3441,9 @@ impl Marcher {
     fn refine_to_edge(&mut self, pts: &mut Vec<Pt>) -> Result<Refined, GeomError> {
         let target = 0.5 * self.tol.linear;
         let mut i = 0;
+        // The span of the points as they were given that the span at `i`
+        // is part of: where its two points are now.
+        let (mut first, mut last) = (0_usize, 1_usize);
         while let (Some(mut a), Some(mut b)) = (pts.get(i).copied(), pts.get(i + 1).copied()) {
             self.spent()?;
             // An end on a crossing point or an apex has no tangent of its
@@ -3219,12 +3467,14 @@ impl Marcher {
             }
             if self.deviation(&a, &b) <= target {
                 i += 1;
+                if i == last {
+                    (first, last) = (i, i + 1);
+                }
                 continue;
             }
-            let give_up = GeomError::NoConvergence(
-                "an intersection curve could not be fitted within the tolerance",
-            );
+            let give_up = not_fitted();
             if pts.len() >= 2 * MAX_POINTS || a.p.distance(b.p) <= 8.0 * self.on {
+                self.unfitted = pts.get(first).copied().zip(pts.get(last).copied());
                 return Err(give_up);
             }
             let middle = if self.modelled(&a, &b) {
@@ -3232,7 +3482,10 @@ impl Marcher {
             } else {
                 self.between(&a, &b)
             };
-            let middle = middle.ok_or(give_up)?;
+            let Some(middle) = middle else {
+                self.unfitted = pts.get(first).copied().zip(pts.get(last).copied());
+                return Err(give_up);
+            };
             self.evals += 1;
             if self
                 .field
@@ -3242,6 +3495,7 @@ impl Marcher {
                 return Ok(Refined::Leaves(i, middle));
             }
             pts.insert(i + 1, middle);
+            last += 1;
         }
         Ok(Refined::Done)
     }
@@ -3731,9 +3985,7 @@ impl Marcher {
                 let (curve, total, worst) = self.fit(&pts)?;
                 let deviation = 1.5 * worst + 4.0 * self.on;
                 if !(deviation <= self.tol.linear) {
-                    return Err(GeomError::NoConvergence(
-                        "an intersection curve could not be fitted within the tolerance",
-                    ));
+                    return Err(not_fitted());
                 }
                 curves.push(MeetingCurve {
                     curve: Curve3::Nurbs(curve),
@@ -3871,7 +4123,7 @@ mod tests {
     )]
 
     use super::*;
-    use crate::{BezierPatch, Cylinder, Plane};
+    use crate::{BezierPatch, Cylinder, Plane, Torus};
     use craft3d_math::Frame;
 
     /// A marcher on the plane z = 0 (its chart is x and y) at scale `k`.
@@ -4453,6 +4705,503 @@ mod tests {
                     assert!(!in_bump(middle.y.patan2(middle.x)), "{k}: {middle:?}");
                 }
             }
+        }
+    }
+
+    /// The heights of a corrugated sheet's profile at its control points:
+    /// five crests of uneven height, the troughs between them, and its
+    /// ends well below.
+    const PROFILE: [f64; 11] = [-0.6, 0.30, 0.0, 0.24, 0.0, 0.32, 0.0, 0.26, 0.0, 0.31, -0.6];
+
+    /// A corrugated sheet walked against a plane level with its crests
+    /// that rises a little along them, at the scale `k` (a pair of
+    /// `crates/geom/tests/meet_beside.rs` › `corrugated`). The sheet: the
+    /// cubic spline of [`PROFILE`] over `x` in 0..10, drawn out along `y`
+    /// over 0..100 to the same profile at 0.9 of its height (a loft
+    /// between two sections). The plane: `z = 0.11 + 0.0012 y`, above
+    /// every crest at the sheet's far end. They cross in curves side by
+    /// side that begin and end on the sheet's near edge: a hairpin over
+    /// a crest, up one side of it, round where the plane is level with
+    /// the crest line, and back down the other; and, where the trough
+    /// between two crests is above the plane at the edge, one curve over
+    /// both, which turns once more where the plane is level with that
+    /// trough, a little way in from the edge.
+    /// `turned`: the plane's normal the other way, so that the distance
+    /// has the other sign, and what a march from a place calls forward
+    /// is backward.
+    fn sheet(k: f64, turned: bool) -> Marcher {
+        let mut knots = vec![0.0; 4];
+        knots.extend((1..8).map(|i| f64::from(i) / 8.0));
+        knots.extend([1.0; 4]);
+        let mut ctrl = Vec::new();
+        for (i, height) in PROFILE.iter().enumerate() {
+            let across = (knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0;
+            ctrl.push(Vec3::new(10.0 * across, 0.0, *height) * k);
+            ctrl.push(Vec3::new(10.0 * across, 100.0, 0.9 * height) * k);
+        }
+        let skin = Surface::Nurbs(
+            NurbsSurface::new(
+                3,
+                1,
+                knots,
+                vec![0.0, 0.0, 1.0, 1.0],
+                11,
+                2,
+                ctrl,
+                vec![1.0; 22],
+            )
+            .unwrap(),
+        );
+        let along = Vec3::new(0.0, 1.0, 0.0012).normalized().unwrap();
+        let normal = if turned {
+            along.cross(Vec3::X)
+        } else {
+            Vec3::X.cross(along)
+        };
+        let flat = Frame::new(Vec3::new(0.0, 0.0, 0.11) * k, normal, Vec3::X).unwrap();
+        let flat = Surface::Plane(Plane::new(flat));
+        let (centre, half) = (
+            Vec3::new(5.0, 50.0, 0.0) * k,
+            Vec3::new(52.0, 52.0, 52.0) * k,
+        );
+        let within = Bbox3::from_points([centre - half, centre + half]);
+        let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+        let field = Field::new(&flat).unwrap();
+        let chart = Chart::new(&skin, &within, &tol, &field).unwrap().unwrap();
+        Marcher::new(chart, field, &within, &tol).unwrap()
+    }
+
+    /// The stretches across the sheet over which its near edge is above
+    /// the plane, by the sheet's own profile there: one curve of the
+    /// crossing over each.
+    fn strands(m: &Marcher, k: f64) -> Vec<(f64, f64)> {
+        let above = |i: i32| m.chart.surface.eval(f64::from(i) / 8000.0, 0.0).z / k > 0.11;
+        let across = |i: i32| 10.0 * f64::from(i) / 8000.0;
+        let (mut found, mut from) = (Vec::new(), None);
+        for i in 0..=8000 {
+            match (from, above(i)) {
+                (None, true) => from = Some(i),
+                (Some(first), false) => {
+                    found.push((across(first), across(i)));
+                    from = None;
+                }
+                _ => {}
+            }
+        }
+        assert!(from.is_none() && found.len() >= 3, "{found:?}");
+        found
+    }
+
+    /// Which curve of the crossing a place is on: the stretch its `x` is
+    /// in, or nearest.
+    fn strand(p: Vec3, strands: &[(f64, f64)], k: f64) -> usize {
+        let apart = |(a, b): (f64, f64)| (a - p.x / k).max(p.x / k - b).max(0.0);
+        let mut nearest = 0;
+        for (i, stretch) in strands.iter().enumerate() {
+            if apart(*stretch) < apart(strands[nearest]) {
+                nearest = i;
+            }
+        }
+        nearest
+    }
+
+    /// How many steps of a run from `start` end on another curve of the
+    /// crossing than they began on.
+    fn steps_beside(start: &Pt, run: &[Pt], strands: &[(f64, f64)], k: f64) -> usize {
+        let mut pts = vec![*start];
+        pts.extend(run.iter().copied());
+        pts.windows(2)
+            .filter(|w| strand(w[0].p, strands, k) != strand(w[1].p, strands, k))
+            .count()
+    }
+
+    /// A branch as `trace` first marches it from `seed`: its start, the
+    /// forward run with how it ended, and the backward run (none where
+    /// the forward run closed).
+    fn first_march(m: &mut Marcher, seed: (f64, f64)) -> (Pt, Vec<Pt>, End, Vec<Pt>) {
+        let (e, u, v) = m.correct(seed.0, seed.1).unwrap();
+        let start = Marcher::point(&e, u, v, 1.0).unwrap();
+        let (forward, end) = m.run(&start, 1.0, &[], true).unwrap();
+        let backward = if end == End::Closed {
+            Vec::new()
+        } else {
+            m.run(&start.reversed(), -1.0, &[], false).unwrap().0
+        };
+        (start, forward, end, backward)
+    }
+
+    /// The first of the seeds the sheet's cells give whose march, as it
+    /// is first made (by a marcher that has done nothing else, as the
+    /// tests' are), steps onto another curve of the crossing.
+    fn a_seed_whose_march_steps_beside(k: f64) -> (f64, f64) {
+        let mut cells = sheet(k, false);
+        let strands = strands(&cells, k);
+        cells.border_stretches().unwrap();
+        let mut singular = Vec::new();
+        let seeds = cells.seeds(&mut singular).unwrap();
+        for seed in seeds {
+            let mut m = sheet(k, false);
+            let Some((e, u, v)) = m.correct(seed.0, seed.1) else {
+                continue;
+            };
+            let Some(start) = Marcher::point(&e, u, v, 1.0).filter(|_| m.inside(u, v)) else {
+                continue;
+            };
+            let Ok((forward, End::Open)) = m.run(&start, 1.0, &[], true) else {
+                continue;
+            };
+            let Ok((backward, _)) = m.run(&start.reversed(), -1.0, &[], false) else {
+                continue;
+            };
+            let stepped = steps_beside(&start, &forward, &strands, k)
+                + steps_beside(&start.reversed(), &backward, &strands, k);
+            if stepped > 0 {
+                return (u, v);
+            }
+        }
+        panic!("{k}: no march from the sheet's seeds steps onto another curve");
+    }
+
+    /// How far along the sheet a curve of the crossing reaches: where the
+    /// plane is level with the highest crest line over its stretch, by
+    /// the sheet's own profile along its near edge.
+    fn reach_of(m: &Marcher, stretch: (f64, f64), k: f64) -> f64 {
+        let mut top = f64::NEG_INFINITY;
+        for i in 0..=20_000 {
+            let x = stretch.0 + (stretch.1 - stretch.0) * f64::from(i) / 20_000.0;
+            top = top.max(m.chart.surface.eval(x / 10.0, 0.0).z / k);
+        }
+        100.0 * (top - 0.11) / (0.12 + 0.1 * top)
+    }
+
+    /// A step of the march onto the curve beside the one it follows: the
+    /// branch is marched again from the point before it, in shorter
+    /// steps, and comes back as the curve its seed is on. On the sheet a
+    /// march down a side of a curve, in steps of up to 5.6, comes within
+    /// a few of the sheet's near edge, and its last step, which leaves
+    /// the sheet, is put on the edge where the crossing is found from
+    /// where the step pointed: at the foot of another curve (as traced
+    /// on these pairs; the assertion below holds only that a step of the
+    /// first march ends on another curve than it began on: the march
+    /// steps so, or this tests nothing). The fit finds no points between
+    /// two points that are on two curves, and the pair was refused, "an
+    /// intersection curve could not be fitted within the tolerance".
+    /// Traced, the branch is the seed's own curve: open, from the sheet's
+    /// near edge up to where the plane is level with its highest crest
+    /// and back to the edge. With the plane as it is and turned over, so
+    /// that the wrong step is a step of the forward run from the one and
+    /// of the backward run from the other; at three scales.
+    #[test]
+    fn a_step_onto_the_curve_beside_is_marched_again_in_shorter_steps() {
+        for k in [1e-3, 1.0, 1e6] {
+            let seed = a_seed_whose_march_steps_beside(k);
+            let mut where_stepped = Vec::new();
+            for turned in [false, true] {
+                let mut m = sheet(k, turned);
+                let strands = strands(&m, k);
+                let (start, forward, end, backward) = first_march(&mut m, seed);
+                assert_eq!(end, End::Open, "{k}, {turned}");
+                where_stepped.push((
+                    steps_beside(&start, &forward, &strands, k),
+                    steps_beside(&start.reversed(), &backward, &strands, k),
+                ));
+                let mut m = sheet(k, turned);
+                let branches = m.trace(seed, &[]).unwrap();
+                assert_eq!(branches.len(), 1, "{k}, {turned}");
+                let branch = &branches[0];
+                assert!(!branch.closed, "{k}, {turned}");
+                let own = strand(start.p, &strands, k);
+                assert!(
+                    branch.pts.iter().all(|p| strand(p.p, &strands, k) == own),
+                    "{k}, {turned}: not all of it on curve {own} of {strands:?}"
+                );
+                let (first, last) = (branch.pts[0].p, branch.pts[branch.pts.len() - 1].p);
+                assert!(
+                    first.y.abs() <= 1e-3 * k && last.y.abs() <= 1e-3 * k,
+                    "{k}, {turned}: from {first:?} to {last:?}"
+                );
+                assert!(
+                    (first.x - last.x).abs() > 0.1 * k,
+                    "{k}, {turned}: both ends at one foot"
+                );
+                let reach = reach_of(&m, strands[own], k);
+                let top = branch
+                    .pts
+                    .iter()
+                    .map(|p| p.p.y / k)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                assert!(
+                    top > 0.999 * reach && top < reach + 1e-3,
+                    "{k}, {turned}: up to {top}, the curve to {reach}"
+                );
+            }
+            // The wrong steps are the forward run's with the plane one
+            // way up and the backward run's with it the other.
+            where_stepped.sort_unstable();
+            eprintln!("{k}: steps onto another curve, forward and backward: {where_stepped:?}");
+            assert!(
+                matches!(where_stepped[..], [(0, back), (forth, 0)] if back >= 1 && forth >= 1),
+                "{k}: {where_stepped:?}"
+            );
+        }
+    }
+
+    /// Asked as it was before branches were taken up again
+    /// ([`Marcher::once`]), the march refuses where the fit gives up: the
+    /// sheet's branch that steps onto another curve, in the fit's words.
+    #[test]
+    fn a_march_asked_once_refuses_where_the_fit_gives_up() {
+        for k in [1e-3, 1.0, 1e6] {
+            let seed = a_seed_whose_march_steps_beside(k);
+            let mut m = sheet(k, false).once();
+            assert_eq!(m.trace(seed, &[]).err(), Some(not_fitted()), "{k}");
+        }
+    }
+
+    /// The fit tells which span of the points it was given it gave up on,
+    /// whatever it had put between them and before them by then: the two
+    /// points of the step onto another curve, as the march made them.
+    #[test]
+    fn the_fit_names_the_span_of_the_points_it_was_given_that_it_gave_up_on() {
+        for k in [1e-3, 1.0, 1e6] {
+            let seed = a_seed_whose_march_steps_beside(k);
+            let mut m = sheet(k, false);
+            let strands = strands(&m, k);
+            let (start, forward, _, backward) = first_march(&mut m, seed);
+            // The run that stepped onto another curve, from the start on.
+            let run = if steps_beside(&start, &forward, &strands, k) > 0 {
+                let mut pts = vec![start];
+                pts.extend(forward);
+                pts
+            } else {
+                let mut pts = vec![start.reversed()];
+                pts.extend(backward);
+                pts
+            };
+            let wrong = run
+                .windows(2)
+                .position(|w| strand(w[0].p, &strands, k) != strand(w[1].p, &strands, k))
+                .unwrap();
+            let mut pts = run.clone();
+            let refused = m.refine_to_edge(&mut pts).err().unwrap();
+            assert_eq!(refused, not_fitted(), "{k}");
+            let (a, b) = m.unfitted.unwrap();
+            assert_eq!((a.u, a.v), (run[wrong].u, run[wrong].v), "{k}");
+            assert_eq!((b.u, b.v), (run[wrong + 1].u, run[wrong + 1].v), "{k}");
+            assert_eq!(Marcher::span_of(&run, &a, &b), Some(wrong), "{k}");
+        }
+    }
+
+    /// Across the sheet, from a trough to the crest line after it, for
+    /// the crests at 2.5, 5 and 7.5: on that side of each crest the
+    /// curve over it runs up the sheet the same way.
+    const SIDES: [(f64, f64); 3] = [(1.474, 2.5), (3.75, 5.0), (6.25, 7.5)];
+
+    /// The place on that side of a crest's curve, `y` along the sheet,
+    /// travelling up it.
+    fn up_the_side(m: &mut Marcher, crest: usize, y: f64, k: f64) -> Pt {
+        let (mut lo, mut hi) = (SIDES[crest].0 / 10.0, SIDES[crest].1 / 10.0);
+        let v = y / 100.0;
+        let below = m.eval(lo, v).unwrap().f < 0.0;
+        assert!((m.eval(hi, v).unwrap().f < 0.0) != below);
+        for _ in 0..60 {
+            let mid = 0.5 * (lo + hi);
+            if (m.eval(mid, v).unwrap().f < 0.0) == below {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let (e, u, v) = m.correct(0.5 * (lo + hi), v).unwrap();
+        let pt = Marcher::point(&e, u, v, 1.0).unwrap();
+        assert!((pt.p.y - y * k).abs() < 0.1 * k);
+        if pt.t.y < 0.0 { pt.reversed() } else { pt }
+    }
+
+    /// A run is put right from the wrong step nearest its start. The fit
+    /// meets a backward run's spans from the far end, so the span it
+    /// gives up on first there is the run's last wrong step; taken up
+    /// from that one the run would follow the curve it was wrongly on,
+    /// and be as wrong as it was up to there. Six points up three curves
+    /// of the sheet, two on each (over the crests at 2.5, 5 and 7.5, on
+    /// the side of each that heads the same way), as a run would hold
+    /// them had it stepped from the first curve onto the second and from
+    /// the second onto the third: the fit gives up on the first of the
+    /// two steps; with the start at the list's end (a backward run) the
+    /// step to put right is the second, and with the start at the second
+    /// curve's first point (the first step then the backward run's only
+    /// one) it is the first.
+    #[test]
+    fn a_backward_run_is_put_right_from_the_wrong_step_nearest_its_start() {
+        for k in [1e-3, 1.0, 1e6] {
+            let mut m = sheet(k, false);
+            let pts = [
+                up_the_side(&mut m, 0, 5.0, k),
+                up_the_side(&mut m, 0, 10.0, k),
+                up_the_side(&mut m, 1, 15.0, k),
+                up_the_side(&mut m, 1, 20.0, k),
+                up_the_side(&mut m, 2, 25.0, k),
+                up_the_side(&mut m, 2, 30.0, k),
+            ];
+            let mut fitted = pts.to_vec();
+            assert!(m.refine_to_edge(&mut fitted).is_err(), "{k}");
+            let (a, b) = m.unfitted.unwrap();
+            assert_eq!(Marcher::span_of(&pts, &a, &b), Some(1), "{k}");
+            let (nearest, from, to) = m.nearest_the_start(&pts, 5, 1, a, b).unwrap();
+            assert_eq!(nearest, 3, "{k}");
+            assert_eq!((from.u, to.u), (pts[3].u, pts[4].u), "{k}");
+            let (nearest, ..) = m.nearest_the_start(&pts, 2, 1, a, b).unwrap();
+            assert_eq!(nearest, 1, "{k}");
+        }
+    }
+
+    /// A plane along the axis of a thin ring (a torus of radii 10 and
+    /// 0.03, at the scale `k`), `inside` nearer the axis than the plane
+    /// that touches the ring's inner equator (in the ring's lengths at
+    /// scale 1), walked against the ring in a box that reaches from
+    /// `across.0` to `across.1` across the axis. The crossing is two long
+    /// ovals, one either side of the axis, 0.06 high: at an `inside` of
+    /// 0.01 from 0.45 to 1.18 from the axis. (A plain closed curve with
+    /// long sides, for what a march does along one.)
+    fn pinch(k: f64, inside: f64, across: (f64, f64)) -> Marcher {
+        let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+        let d = (9.97 - inside) * k;
+        let flat = Frame::new(Vec3::new(d, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap();
+        let flat = Surface::Plane(Plane::new(flat));
+        let ring = Surface::Torus(Torus::new(Frame::WORLD, 10.0 * k, 0.03 * k).unwrap());
+        let within = Bbox3::from_points([
+            Vec3::new(d - 0.1 * k, across.0 * k, -0.1 * k),
+            Vec3::new(d + 0.1 * k, across.1 * k, 0.1 * k),
+        ]);
+        let field = Field::new(&ring).unwrap();
+        let chart = Chart::new(&flat, &within, &tol, &field).unwrap().unwrap();
+        Marcher::new(chart, field, &within, &tol).unwrap()
+    }
+
+    /// The place of the oval at `y` across the axis, on its upper side,
+    /// as a seed.
+    fn on_oval(m: &Marcher, k: f64, inside: f64, y: f64) -> (f64, f64) {
+        let d = 9.97 - inside;
+        let from_circle = (d * d + y * y).sqrt() - 10.0;
+        let z = (0.03 * 0.03 - from_circle * from_circle).sqrt();
+        m.chart.surface.project(Vec3::new(d, y, z) * k).unwrap()
+    }
+
+    /// Where the fit brings every span within the tolerance, a branch is
+    /// marched once and comes back as it did before a branch could be
+    /// taken up again: the same points bit for bit, for the same
+    /// evaluations, as the two runs put together and fitted here by hand.
+    /// An oval of the thin ring, whole (a closed branch) and cut by the
+    /// box (an open one, with a backward run), at three scales.
+    #[test]
+    fn a_branch_the_fit_accepts_is_marched_once_and_is_the_same_bit_for_bit() {
+        for k in [1e-3, 1.0, 1e6] {
+            for (across, closed) in [((-3.0, 3.0), true), ((-3.0, 0.9), false)] {
+                let mut by_hand = pinch(k, 0.01, across);
+                let seed = on_oval(&by_hand, k, 0.01, 0.8);
+                let (start, forward, end, backward) = first_march(&mut by_hand, seed);
+                assert_eq!(end == End::Closed, closed, "{k}");
+                let mut pts: Vec<Pt> = backward.iter().rev().copied().map(Pt::reversed).collect();
+                pts.push(start);
+                pts.extend(forward.iter().copied());
+                if closed {
+                    let last = pts[pts.len() - 1];
+                    let (u, v) = by_hand.near((start.u, start.v), &last);
+                    pts.push(Pt { u, v, ..start });
+                }
+                let fitted = by_hand.refine_pieces(pts, closed).unwrap();
+                assert_eq!(fitted.len(), 1, "{k}");
+                let mut traced = pinch(k, 0.01, across);
+                let branches = traced.trace(seed, &[]).unwrap();
+                assert_eq!(branches.len(), 1, "{k}");
+                assert_eq!(branches[0].closed, fitted[0].1, "{k}");
+                let bits = |pts: &[Pt]| -> Vec<[u64; 10]> {
+                    pts.iter()
+                        .map(|p| {
+                            [
+                                p.u, p.v, p.p.x, p.p.y, p.p.z, p.t.x, p.t.y, p.t.z, p.du, p.dv,
+                            ]
+                            .map(f64::to_bits)
+                        })
+                        .collect()
+                };
+                assert_eq!(bits(&branches[0].pts), bits(&fitted[0].0), "{k}");
+                assert_eq!(traced.evals, by_hand.evals, "{k}");
+                assert!(traced.unfitted.is_none(), "{k}");
+            }
+        }
+    }
+
+    /// A march taken up again past a span the fit gave up on keeps to
+    /// steps of a quarter of that span until it has gone twice the span's
+    /// length, and to no more than that: beyond it the steps grow again
+    /// as any march's do. Along an oval of the thin ring, from the middle
+    /// of its upper side, past a span of an eighth of the longest step:
+    /// no step in that stretch is longer than twice the quarter (a step
+    /// ends no further than twice what it was asked), there are four
+    /// steps or more in it, and later steps are longer; a march not
+    /// taken up again starts with a longer step than that at once.
+    #[test]
+    fn a_march_taken_up_again_keeps_to_shorter_steps_over_a_stretch_and_no_further() {
+        for k in [1e-3, 1.0, 1e6] {
+            let mut m = pinch(k, 0.01, (-3.0, 3.0));
+            let seed = on_oval(&m, k, 0.01, 0.8);
+            let (e, u, v) = m.correct(seed.0, seed.1).unwrap();
+            let start = Marcher::point(&e, u, v, 1.0).unwrap();
+            let span = m.hmax / 8.0;
+            let again = Again::past(start, 0, span);
+            let (cap, over) = (again.cap, again.over);
+            assert_eq!((cap, over), (0.25 * span, 2.0 * span), "{k}");
+            let (pts, _) = m.run_on(&start, 1.0, &[], true, Some(again)).unwrap();
+            let (mut gone, mut held, mut longest_after) = (0.0, 0, 0.0_f64);
+            let mut before = start;
+            for p in &pts {
+                let step = p.p.distance(before.p);
+                if gone < over {
+                    assert!(step <= 2.0 * cap * (1.0 + 1e-9), "{k}: {step} at {gone}");
+                    held += 1;
+                } else {
+                    longest_after = longest_after.max(step);
+                }
+                gone += step;
+                before = *p;
+            }
+            assert!(held >= 4, "{k}: {held} steps");
+            assert!(longest_after > 3.0 * cap, "{k}: {longest_after}");
+            let (plain, _) = m.run(&start, 1.0, &[], true).unwrap();
+            assert!(plain[0].p.distance(start.p) > 2.0 * cap, "{k}");
+        }
+    }
+
+    /// A run taken up again closes on its start as the run it is part of
+    /// would: the points it had before count. Taken up from a point of
+    /// the oval half a step short of the start, a run that had five
+    /// points closes there at once. (A run closes only once it has two
+    /// points, so that it does not close on the start it has just left;
+    /// counting none but its own, a run taken up again passes the start
+    /// and goes round the oval a second time.)
+    #[test]
+    fn a_march_taken_up_again_short_of_its_start_closes_there() {
+        for k in [1e-3, 1.0, 1e6] {
+            let mut m = pinch(k, 0.01, (-3.0, 3.0));
+            let seed = on_oval(&m, k, 0.01, 0.8);
+            let (e, u, v) = m.correct(seed.0, seed.1).unwrap();
+            let start = Marcher::point(&e, u, v, 1.0).unwrap();
+            let back = 0.1 * m.hmax;
+            let (e, u, v) = m
+                .correct(start.u - back * start.du, start.v - back * start.dv)
+                .unwrap();
+            let from = Marcher::point(&e, u, v, 1.0).unwrap();
+            assert!(from.t.dot(start.t) > 0.9, "{k}");
+            let again = Again {
+                from,
+                taken: 5,
+                cap: 0.2 * m.hmax,
+                over: m.hmax,
+            };
+            let (more, end) = m.run_on(&start, 1.0, &[], true, Some(again)).unwrap();
+            assert_eq!(end, End::Closed, "{k}");
+            assert!(more.is_empty(), "{k}: {} points past the start", more.len());
         }
     }
 }

@@ -28,7 +28,9 @@ mod field;
 mod march;
 mod meet;
 
-pub use meet::{Meeting, MeetingCurve, SurfaceMeeting, meet_surfaces, meet_surfaces_numeric};
+pub use meet::{
+    Meeting, MeetingCurve, SurfaceMeeting, meet_surfaces, meet_surfaces_numeric, meet_surfaces_once,
+};
 
 /// Lets go of what the intersections keep between calls: the
 /// intersections of surfaces asked for lately and the projectors and

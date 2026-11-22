@@ -283,6 +283,7 @@ fn numeric(
     b: &Surface,
     within: &Bbox3,
     tol: &Tolerance,
+    taken_up: bool,
 ) -> Result<SurfaceMeeting, GeomError> {
     let (walked, other) = if chart_rank(b) < chart_rank(a) {
         (b, a)
@@ -324,6 +325,9 @@ fn numeric(
             return Ok(None);
         };
         let mut marcher = Marcher::new(chart, field, within, tol)?;
+        if !taken_up {
+            marcher = marcher.once();
+        }
         if bounded {
             marcher = marcher.bounded();
         }
@@ -379,7 +383,41 @@ pub fn meet_surfaces(
     let (a, b) = ordered(a, b);
     match exact::closed_form(a, b, tolerance)? {
         Some(closed) => finish(closed, within, tolerance),
-        None => remembered(a, b, within, tolerance),
+        // Marched as it always was first. Only where the fit gives up on
+        // a branch of that march is the pair marched again, with the
+        // branch taken up from the step the fit could not span
+        // (`march.rs` › `trace`): so a pair that was answered is answered
+        // by the march it was answered by, bit for bit, and found on the
+        // shelf under the question it was kept by.
+        None => match remembered(a, b, within, tolerance, false) {
+            Err(refused) if refused == super::march::not_fitted() => {
+                remembered(a, b, within, tolerance, true)
+            }
+            other => other,
+        },
+    }
+}
+
+/// [`meet_surfaces`] by the march as it is first made alone: where the
+/// fit gives up on a branch, the refusal, with no branch taken up again.
+///
+/// For a caller that asks a pair in more than one box (a boolean asks it
+/// again in a smaller one where the first refuses): asked so in every box
+/// first, and by [`meet_surfaces`] only where every box refuses, a pair
+/// that any of the boxes answered before branches were taken up again
+/// keeps that answer, whichever box an earlier refusal now turns into an
+/// answer in.
+pub fn meet_surfaces_once(
+    a: &Surface,
+    b: &Surface,
+    within: &Bbox3,
+    tolerance: &Tolerance,
+) -> Result<SurfaceMeeting, GeomError> {
+    check(within, tolerance)?;
+    let (a, b) = ordered(a, b);
+    match exact::closed_form(a, b, tolerance)? {
+        Some(closed) => finish(closed, within, tolerance),
+        None => remembered(a, b, within, tolerance, false),
     }
 }
 
@@ -478,15 +516,18 @@ fn remembered(
     b: &Surface,
     within: &Bbox3,
     tol: &Tolerance,
+    taken_up: bool,
 ) -> Result<SurfaceMeeting, GeomError> {
     // `format!("{a:?}|{b:?}|{within:?}|{tol:?}")`, with the surfaces'
-    // texts as they keep them.
+    // texts as they keep them (and a mark for the march with its
+    // branches taken up again: another question, kept beside the first).
     let key = [
         &*a.key().text,
         "|",
         &*b.key().text,
         "|",
         &format!("{within:?}|{tol:?}"),
+        if taken_up { "|taken up" } else { "" },
     ]
     .concat();
     // Charged by the work the march took, once per operation under a
@@ -505,11 +546,11 @@ fn remembered(
     let marched = || MARCHED.try_with(std::cell::Cell::get).unwrap_or(0);
     let before = marched();
     let (result, units) = if first {
-        crate::allowance::measured(|| numeric(a, b, within, tol))
+        crate::allowance::measured(|| numeric(a, b, within, tol, taken_up))
     } else {
         // Paid for already in this operation.
         (
-            crate::allowance::uncounted(|| numeric(a, b, within, tol)),
+            crate::allowance::uncounted(|| numeric(a, b, within, tol, taken_up)),
             0,
         )
     };
@@ -622,7 +663,7 @@ pub fn meet_surfaces_numeric(
 ) -> Result<SurfaceMeeting, GeomError> {
     check(within, tolerance)?;
     let (a, b) = ordered(a, b);
-    numeric(a, b, within, tolerance)
+    numeric(a, b, within, tolerance, true)
 }
 
 #[cfg(test)]
