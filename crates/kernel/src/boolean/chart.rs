@@ -641,8 +641,9 @@ impl Chart {
     /// other, in the angle the chart is cut open across, passes the cut
     /// (the distance jumps by the rest of a turn there), or is a quarter
     /// turn or longer, which a step can be (out of the tube's inner
-    /// equator across the hole a step lands on its outer side, half a turn
-    /// round) and then which way round it went is not known. Never for the
+    /// equator through the tube, past its core circle, a step lands on its
+    /// outer side, half a turn round) and then which way round it went is
+    /// not known. Never for the
     /// charts that leave out a point or nothing: a region holding the point
     /// a sphere's chart leaves out is drawn as one piece, the outside of
     /// its loops. A region holding a torus's cut is drawn as two, one at
