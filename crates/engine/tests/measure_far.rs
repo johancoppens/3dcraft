@@ -169,54 +169,114 @@ fn sliver_rows(shift: f64) -> Vec<(f64, Result<Value, String>)> {
         .collect()
 }
 
+/// Whether `gap` is a number no larger than `allowed` in size.
+fn within(gap: f64, allowed: f64) -> bool {
+    gap.abs() <= allowed
+}
+
+/// The sliver's section reaches 0.0014 along y and 0.0027 along x (and
+/// √2 times that across the slanted plane): its perimeter is less than
+/// this.
+const SLIVER_PERIMETER: f64 = 0.01;
+
+/// The sliver at the origin, moved by 100 and by 1e4: at each of the 41
+/// offsets `measure.below` answers, its volume within the tolerance times
+/// the surface below of the exact region's and its section's area within
+/// the tolerance times the perimeter (what the module says of a section
+/// bounded by curves where a plane meets a freeform or a torus face: the
+/// B-rep is held to the tolerance; the errors found are printed, some
+/// 3e-5 of the volume and 1e-6 of the area); `measure.section` gives the
+/// same area as `measure.below` there, to the bit; and `measure.levelFor`
+/// of the volume below at offset 0 lands within that volume's allowance
+/// over the area of 0. Before 2026-11-22 the sliver at the origin was
+/// refused at some offsets, and moved by 100 or 1e4 at every one: "the
+/// section of body 0: its edges take more panels than a section may".
 #[test]
-fn sliver_table() {
+fn the_sliver_is_measured_wherever_it_lies() {
+    let mut wrong = Vec::new();
     for shift in SHIFTS {
         let rows = sliver_rows(shift);
+        let mut at_zero = None;
         for ((offset, found), (_, volume, area)) in rows.iter().zip(QUADRATURE) {
-            match found {
-                Ok(m) => {
-                    let v = m["volume"].as_f64().unwrap();
-                    let a = m["section"]["area"].as_f64().unwrap();
-                    println!(
-                        "SLIVER shift={shift:e} offset={offset} | answered | volume {v:e} off {:.2e} ({:.1e} of it) | area {a:e} off {:.2e} ({:.1e} of it) | surface {:e} | hash {:016x}",
-                        v - volume,
-                        (v - volume) / volume,
-                        a - area,
-                        (a - area) / area,
-                        m["surface"].as_f64().unwrap(),
-                        hash(m)
-                    );
+            let m = match found {
+                Ok(m) => m,
+                Err(e) => {
+                    println!("SLIVER shift={shift:e} offset={offset} | REFUSED: {e}");
+                    wrong.push(format!("shift {shift}, offset {offset}: refused: {e}"));
+                    continue;
                 }
-                Err(e) => println!("SLIVER shift={shift:e} offset={offset} | REFUSED: {e}"),
+            };
+            let v = m["volume"].as_f64().unwrap();
+            let a = m["section"]["area"].as_f64().unwrap();
+            let surface = m["surface"].as_f64().unwrap();
+            println!(
+                "SLIVER shift={shift:e} offset={offset} | answered | volume {v:e} off {:.2e} ({:.1e} of it) | area {a:e} off {:.2e} ({:.1e} of it) | surface {surface:e} | hash {:016x}",
+                v - volume,
+                (v - volume) / volume,
+                a - area,
+                (a - area) / area,
+                hash(m)
+            );
+            if *offset == 0.0 {
+                at_zero = Some((v, a, surface));
+            }
+            if !within(v - volume, TOLERANCE * surface) {
+                wrong.push(format!(
+                    "shift {shift}, offset {offset}: volume {v:e}, want {volume:e}"
+                ));
+            }
+            if !within(a - area, TOLERANCE * SLIVER_PERIMETER) {
+                wrong.push(format!(
+                    "shift {shift}, offset {offset}: area {a:e}, want {area:e}"
+                ));
             }
         }
-        let refused = rows.iter().filter(|(_, f)| f.is_err()).count();
-        println!(
-            "SLIVER shift={shift:e}: {refused} of {} refused",
-            rows.len()
-        );
-        // The section with its torsion left out, and the level for the
-        // volume below at offset 0.
+        let Some((_, area_below, surface)) = at_zero else {
+            continue;
+        };
         let mut s = sliver(shift);
-        let section = s.execute(
+        let plane = sliver_plane(shift);
+        match s.execute(
             "measure.section",
-            &json!({"of": "N4", "plane": sliver_plane(shift), "offset": 0.0, "torsion": false}),
-        );
-        println!("SLIVER shift={shift:e} measure.section: {section:?}");
-        let level = s.execute(
+            &json!({"of": "N4", "plane": plane, "offset": 0.0, "torsion": false}),
+        ) {
+            Ok(section) => {
+                let a = section["area"].as_f64().unwrap();
+                println!("SLIVER shift={shift:e} measure.section area {a:e}");
+                if a.to_bits() != area_below.to_bits() {
+                    wrong.push(format!(
+                        "shift {shift}: measure.section's area {a:e} is not measure.below's {area_below:e}"
+                    ));
+                }
+            }
+            Err(e) => wrong.push(format!("shift {shift}: measure.section refused: {e}")),
+        }
+        let volume = QUADRATURE[20].1;
+        match s.execute(
             "measure.levelFor",
-            &json!({"of": "N4", "plane": sliver_plane(shift), "volume": QUADRATURE[20].1}),
-        );
-        println!("SLIVER shift={shift:e} measure.levelFor: {level:?}");
+            &json!({"of": "N4", "plane": plane, "volume": volume}),
+        ) {
+            Ok(level) => {
+                let offset = level["offset"].as_f64().unwrap();
+                println!("SLIVER shift={shift:e} measure.levelFor offset {offset:e}");
+                let allowed = TOLERANCE * surface / area_below;
+                if !within(offset, allowed) {
+                    wrong.push(format!(
+                        "shift {shift}: the level for {volume:e} is {offset:e}, want 0 within {allowed:e}"
+                    ));
+                }
+            }
+            Err(e) => wrong.push(format!("shift {shift}: measure.levelFor refused: {e}")),
+        }
     }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
 /// The seed's own commands: `measure.below` by the plane the fuzzer asked
-/// for, against what `feature.planeCut` keeps by that plane (the
-/// fuzzer's `cut-below` oracle).
+/// for, refused before 2026-11-22, against what `feature.planeCut` keeps
+/// by that plane, within the fuzzer's `cut-below` band.
 #[test]
-fn the_seed_itself() {
+fn the_seed_is_measured_as_its_cut_keeps() {
     let mut s = Session::new(Workspace::none());
     run(
         &mut s,
@@ -254,18 +314,29 @@ fn the_seed_itself() {
         run(&mut s, command, params);
     }
     let plane = json!({"point": [-12.368198247467179, -12.378836115306143, 0.0778737124994808], "normal": [-3.0, 3.0, 3.0]});
-    let below = s.execute(
+    let below = run(
+        &mut s,
         "measure.below",
-        &json!({"of": "N4", "plane": plane, "offset": 0}),
+        json!({"of": "N4", "plane": plane, "offset": 0}),
     );
-    println!("SEED measure.below: {below:?}");
+    println!("SEED measure.below: {below}");
+    let whole = run(&mut s, "document.measure", json!({"feature": "N4"}));
     run(
         &mut s,
         "feature.planeCut",
         json!({"name": "N7", "planes": {"normal": [-3.0, 3.0, 3.0], "point": [-12.368198247467179, -12.378836115306143, 0.0778737124994808], "side": "below"}, "target": "N4"}),
     );
     let kept = run(&mut s, "document.measure", json!({"feature": "N7"}));
-    println!("SEED N7: {kept}");
+    println!("SEED N4: {whole}; N7: {kept}");
+    let number = |v: &Value| v.as_f64().unwrap();
+    let (v, area) = (number(&whole["volume"]), number(&whole["area"]));
+    let section = number(&below["section"]["area"]);
+    let band = 4.0 * TOLERANCE * (area + section) + 2e-9 * v;
+    let gap = number(&kept["volume"]) - number(&below["volume"]);
+    assert!(
+        gap.abs() <= band,
+        "the cut keeps {kept}, measure.below gives {below}: off by {gap:e}, allowed {band:e}"
+    );
 }
 
 // ------------------------------------------------------ today's answers
@@ -394,12 +465,218 @@ fn todays_answers() -> Vec<(String, Result<u64, String>)> {
     out
 }
 
+/// What each command of [`todays_answers`] gave on `main` before the
+/// change (5305636e, printed by the Check run 45024256884 on the probe
+/// commit 31d39767, which is that commit and these tests alone): the hash
+/// of its answer. One not listed was refused there.
+const PINS: &[(&str, u64)] = &[
+    ("kayak below 30.2 mm", 0xc497f4d03fe4d877),
+    ("kayak below 30.28 mm", 0x480d69489ed1c0ad),
+    ("kayak below 30.3 mm", 0xa420b4ba6135dc29),
+    ("kayak section 30.28 mm", 0xd46292a7a4df5c60),
+    ("kayak level", 0xd99450e973503dda),
+    ("kayak floating", 0x90beca73ecd4f5a3),
+    ("notched section", 0x7caaa6ffd54e0ff9),
+    ("notched below", 0x48541ab7dcb1bb72),
+    ("notched level", 0x299c1e477bfbc74a),
+    ("notched floating", 0x92e1aacddaad957d),
+    ("barge floating", 0xc2a58231d5e62918),
+    ("barge floating trimmed", 0xbc6715354b9c081b),
+    ("sliver -0.002", 0x1ceddf85f7b14465),
+    ("sliver -0.0018", 0x8ce1ce4b47713641),
+    ("sliver -0.0017", 0x32360e2537e4f249),
+    ("sliver -0.0016", 0x81a99dd7894aae80),
+    ("sliver -0.0015", 0x95e01a890de53c3f),
+    ("sliver -0.0014", 0x3a1bbc23ae2c43cf),
+    ("sliver -0.0013", 0x8fbd2bac4091b401),
+    ("sliver -0.0012", 0x61229b52151291ac),
+    ("sliver -0.0009", 0x36585c10ba9a1ea8),
+    ("sliver -0.0008", 0x78cd2476220053a1),
+    ("sliver -0.0007", 0x589ddb80a25a8428),
+    ("sliver -0.0006", 0x46f0eaff6f945dc8),
+    ("sliver -0.0005", 0xe84a7cea043b89e9),
+    ("sliver -0.0004", 0x44c539af0962968a),
+    ("sliver -0.0003", 0xc000321bb3bb0773),
+    ("sliver -0.0002", 0x2e5bb5c171728f0d),
+    ("sliver -0.0001", 0x35f50f9ad9bf8932),
+    ("sliver 0", 0x173b57620e8e93d7),
+    ("sliver 0.0001", 0x2b816e0b284da2e2),
+    ("sliver 0.0002", 0x01f236538249d1ae),
+    ("sliver 0.0003", 0xf6e6ec67d9350c56),
+    ("sliver 0.0006", 0xcb9df3dfa37a79d6),
+    ("sliver 0.0007", 0xeb58d97178ce7946),
+    ("sliver 0.0008", 0x05cde3232712ac89),
+    ("sliver 0.001", 0xd53aa611cedb8755),
+    ("sliver 0.0011", 0x8482b86d57af2a99),
+    ("sliver 0.0014", 0xb2c9a4e0d9c73169),
+    ("sliver 0.0015", 0x371c807f845d537a),
+    ("sliver 0.0017", 0x1229c0f9fc787d06),
+    ("sliver 0.0018", 0x29bc185ad40067e5),
+    ("sliver 0.0019", 0xbdcbb03e2e47c0d8),
+];
+
+/// Every answer of [`todays_answers`] given before the change is given the
+/// same to the bit; every one refused before is answered.
 #[test]
-fn todays_answers_table() {
+fn todays_answers_are_kept_to_the_bit() {
+    let mut wrong = Vec::new();
     for (name, found) in todays_answers() {
-        match found {
-            Ok(h) => println!("PIN (\"{name}\", 0x{h:016x}),"),
-            Err(e) => println!("REFUSED {name}: {e}"),
+        let pin = PINS.iter().find(|(n, _)| *n == name).map(|(_, h)| *h);
+        match (found, pin) {
+            (Ok(h), Some(pin)) if h == pin => {}
+            (Ok(h), Some(pin)) => wrong.push(format!("{name}: 0x{h:016x}, before 0x{pin:016x}")),
+            (Ok(h), None) => println!("ANSWERED NOW {name}: 0x{h:016x}"),
+            (Err(e), _) => wrong.push(format!("{name}: refused: {e}")),
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+// ------------------------------------------------- a ball far from the origin
+
+/// A ball of radius 1 whose centre `p` lies `far` (times (1, −0.8, 0.6))
+/// from the origin, and the plane through `p` with the normal (0.3, −0.5,
+/// 0.8).
+fn ball(far: f64) -> (Session, [f64; 3], Value) {
+    let p = [far, -0.8 * far, 0.6 * far];
+    let mut s = Session::new(Workspace::none());
+    run(
+        &mut s,
+        "file.new",
+        json!({"units": "mm", "tolerance": TOLERANCE}),
+    );
+    run(
+        &mut s,
+        "feature.sphere",
+        json!({"name": "Ball", "position": p, "radius": 1.0}),
+    );
+    (s, p, json!({"point": p, "normal": [0.3, -0.5, 0.8]}))
+}
+
+/// A ball of radius 1 with its centre 1.4e5 and 1.4e7 from the origin,
+/// refused by every command before 2026-11-22 (`craft3d-cli` on `main`
+/// 5305636e: "the section of body 0: its edges take more panels than a
+/// section may"; answered at 1.4e3): its section through the centre is
+/// the circle, area π, moments π/4, torsion constant π/2 (to the torsion's
+/// tolerance, 1e-4) about the centre; below the plane 0.3 above the
+/// centre the cap π s² (3 − s)/3 with s = 1.3; the level for half its
+/// volume the centre's plane; and floating with 0.3 of its volume below
+/// and its centre of gravity 0.2 and −0.3 off its centre along y and z,
+/// turned until the centre of gravity is below the centre, the normal
+/// along (0, −0.2, 0.3), stable with a metacentric height of √0.13 about
+/// every axis. Each held to 1e-9 (1e-7 for the floating, as the module's
+/// own oracles) and to 64 units of the last place of the distance (1e3 for
+/// the floating's derived numbers).
+#[test]
+fn a_far_ball_is_measured_with_its_torsion_level_and_floating() {
+    use std::f64::consts::PI;
+    for far in [1e5, 1e7] {
+        let (mut s, p, plane) = ball(far);
+        let distance = far * (1.0_f64 + 0.64 + 0.36).sqrt();
+        let ulps = f64::EPSILON * distance;
+        let what = format!("the ball {distance:e} from the origin");
+        let number = |v: &Value| v.as_f64().unwrap_or_else(|| panic!("{what}: {v}"));
+        let near = |got: f64, want: f64, allowed: f64, name: &str| {
+            assert!(
+                (got - want).abs() <= allowed,
+                "{what}: {name} {got:e}, want {want:e} (allowed {allowed:e})"
+            );
+        };
+        let section = run(
+            &mut s,
+            "measure.section",
+            json!({"of": "Ball", "plane": plane}),
+        );
+        println!("BALL {distance:e} section: {section}");
+        let perimeter = 2.0 * PI;
+        near(
+            number(&section["area"]),
+            PI,
+            1e-9 * PI + 64.0 * ulps * perimeter,
+            "area",
+        );
+        for key in ["ix", "iy"] {
+            near(
+                number(&section[key]),
+                PI / 4.0,
+                1e-9 + 64.0 * ulps * perimeter,
+                key,
+            );
+        }
+        for (k, c) in p.iter().enumerate() {
+            near(
+                number(&section["centroid"][k]),
+                *c,
+                1e-9 + 64.0 * ulps * 3.0,
+                "centroid",
+            );
+            near(
+                number(&section["shearCentre"][k]),
+                *c,
+                1e-4 * PI.sqrt() + 64.0 * ulps * 3.0,
+                "shear centre",
+            );
+        }
+        assert_eq!(
+            section["torsionSolve"]["converged"], true,
+            "{what}: {section}"
+        );
+        near(
+            number(&section["torsion"]),
+            PI / 2.0,
+            1e-4 * PI / 2.0,
+            "torsion constant",
+        );
+        let below = run(
+            &mut s,
+            "measure.below",
+            json!({"of": "Ball", "plane": plane, "offset": 0.3}),
+        );
+        println!("BALL {distance:e} below: {below}");
+        let cap = PI * 1.3 * 1.3 * (3.0 - 1.3) / 3.0;
+        near(
+            number(&below["volume"]),
+            cap,
+            1e-9 * cap + 64.0 * ulps * 4.0 * PI,
+            "cap",
+        );
+        near(
+            number(&below["section"]["area"]),
+            PI * (1.0 - 0.09),
+            1e-9 * PI + 64.0 * ulps * perimeter,
+            "the cap's circle",
+        );
+        let level = run(
+            &mut s,
+            "measure.levelFor",
+            json!({"of": "Ball", "plane": plane, "volume": 2.0 * PI / 3.0}),
+        );
+        println!("BALL {distance:e} level: {level}");
+        near(
+            number(&level["offset"]),
+            0.0,
+            1e-9 + 64.0 * ulps * 4.0,
+            "the level of half",
+        );
+        let floated = run(
+            &mut s,
+            "measure.floating",
+            json!({"of": "Ball", "plane": {"point": p, "normal": [0, 0, 1]}, "volume": 0.4 * PI, "centerOfGravity": [p[0], p[1] + 0.2, p[2] - 0.3]}),
+        );
+        println!("BALL {distance:e} floating: {floated}");
+        let e = &floated["equilibria"][0];
+        let down = 0.13_f64.sqrt();
+        for (k, want) in [0.0, -0.2 / down, 0.3 / down].into_iter().enumerate() {
+            near(
+                number(&e["normal"][k]),
+                want,
+                1e-7 + 1e3 * ulps,
+                "the normal",
+            );
+        }
+        assert_eq!(e["stable"], true, "{what}: {floated}");
+        for principal in e["principal"].as_array().unwrap() {
+            near(number(&principal["gm"]), down, 1e-7 + 1e3 * ulps, "GM");
         }
     }
 }
