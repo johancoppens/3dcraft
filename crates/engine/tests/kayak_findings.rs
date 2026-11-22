@@ -19,7 +19,11 @@
 //!    apart). Now the path is thinned before the fit; the curvature
 //!    measure and its assertion settle.
 //! 6. The coaming: a boolean of the hull's cylinders refused ("imprint
-//!    lost"); built since 2026-10-27, the ring cut from the hull owed.
+//!    lost"); built since 2026-10-27. The ring cut from the hull was
+//!    refused as a curve that cannot be fitted, and is built since
+//!    2026-11-22 (the march is taken up again where the fit gives up on
+//!    a step's span: docs/design/booleans.md › *A step of the march onto
+//!    the curve beside the one it follows*).
 //! 7. The hull's panels with a deep check: all built and passing (the
 //!    check's finding on TipHalfD was its ray casting, fixed 2026-10-27).
 //! 8. The hull's panels unfolded: panels 2 and 3 had end fans 1e-5 mm
@@ -123,6 +127,11 @@ use std::path::PathBuf;
 /// an error, a deep check that is not ok, an assertion that cannot be
 /// measured, a feature that failed).
 fn steps(file: &str) -> (Session, Vec<String>) {
+    first_steps(file, usize::MAX)
+}
+
+/// [`steps`], of the first `count` steps of `file` only.
+fn first_steps(file: &str, count: usize) -> (Session, Vec<String>) {
     let text = std::fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/kayak_findings")
@@ -133,7 +142,7 @@ fn steps(file: &str) -> (Session, Vec<String>) {
     let mut s = Session::new(Workspace::unrestricted());
     s.execute("file.new", &json!({"units": "mm"})).unwrap();
     let mut failed = Vec::new();
-    for (id, params) in &steps {
+    for (id, params) in steps.iter().take(count) {
         match s.execute(id, params) {
             Ok(v) => {
                 if id == "document.check" && v["ok"] != true {
@@ -184,30 +193,175 @@ fn the_panels_of_a_five_metre_hull_are_built_and_measured() {
     assert_eq!(measured["developable"], true, "{measured}");
 }
 
+/// The stretches of the line up from `from` that lie inside `body`, as
+/// `measure.ray` tells them (the line against each face's surface, kept
+/// to the face): where it goes in and where it comes out, by distance
+/// from `from`. `None` where the line meets the body at an edge or
+/// grazes it: no stretch is told there.
+fn inside_along(s: &mut Session, body: &str, from: &Value) -> Option<Vec<(f64, f64)>> {
+    let out = s
+        .execute(
+            "measure.ray",
+            &json!({"from": from, "direction": "z", "of": [body]}),
+        )
+        .unwrap();
+    let mut stretches = Vec::new();
+    let mut entered = None;
+    for hit in out["hits"].as_array().unwrap() {
+        if hit["edge"] == true || hit["tangent"] == true {
+            return None;
+        }
+        let at = hit["distance"].as_f64().unwrap();
+        match (hit["enters"].as_bool(), entered) {
+            (Some(true), None) => entered = Some(at),
+            (Some(false), Some(start)) => {
+                stretches.push((start, at));
+                entered = None;
+            }
+            _ => return None,
+        }
+    }
+    entered.is_none().then_some(stretches)
+}
+
+/// The stretches of a line that are in `a` and in `b`.
+fn in_both(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for x in a {
+        for y in b {
+            let (from, to) = (x.0.max(y.0), x.1.min(y.1));
+            if to > from {
+                out.push((from, to));
+            }
+        }
+    }
+    out
+}
+
+/// The stretches of a line that are in `a` and not in `b`.
+fn in_one_only(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut left = a.to_vec();
+    for y in b {
+        let mut next = Vec::new();
+        for x in left {
+            if y.0 > x.0 {
+                next.push((x.0, x.1.min(y.0)));
+            }
+            if y.1 < x.1 {
+                next.push((x.0.max(y.1), x.1));
+            }
+        }
+        left = next.into_iter().filter(|x| x.1 > x.0).collect();
+    }
+    left
+}
+
+/// The coaming: the cockpit's ring (the stock between two ellipses, 30 mm
+/// apart, drawn up from the plane of the keel) where it is inside the
+/// hull raised by the rim's 30 mm, less the hull. Until 2026-11-22 the
+/// first of the two booleans was refused, "an intersection curve could
+/// not be fitted within the tolerance", and this test held that refusal
+/// as owed; it is built since the march is taken up again where the fit
+/// gives up on a step's span, and held here to what it must be, by two
+/// routes that do not pass through the boolean:
+///
+/// - *lines up through the ring.* Along a vertical line the coaming is
+///   what of the line is inside the ring's stock and inside the raised
+///   hull and not inside the hull, and where each of those three begins
+///   and ends on the line is told by `measure.ray` of that body alone
+///   (the stock and the raised hull in the document as it is before the
+///   two booleans, the hull beside the coaming after them). 360 lines:
+///   72 round the ring, at two tenths, half and eight tenths of its
+///   width and just inside and outside it;
+/// - *its volume in closed form.* On every line through the ring the
+///   coaming is one stretch, from the deck up by the rim (held by the
+///   lines): a solid between a surface and the same surface raised by 30
+///   mm has the volume of its plan times 30 mm, whatever the surface,
+///   and the plan is the ring between the two ellipses,
+///   `π (430 · 240 − 400 · 210)` mm²: 1 809 557.37 mm³, held within what
+///   the measure says its own volume may be off (0.7 mm³; measured
+///   0.0003 mm³ from it).
 #[test]
-fn the_coaming_boolean_is_refused_as_owed_not_wrong() {
-    // The hull's first intersect lost the ruling in which an end plane
-    // cuts a neighbouring cylinder ("imprint lost"), and the tips' first
-    // was refused at the edge of tolerance: both were the distance from a
-    // segment to a flat box read as its rounding (docs/design/booleans.md,
-    // *The sea kayak's tips*, 2026-10-27), and both are built now. Owed:
-    // the coaming's ring cut from the hull, refused as a curve that
-    // cannot be fitted; nothing else fails, and what is built passes the
-    // deep check.
-    let (mut s, failed) = steps("sea_kayak_6.steps.json");
-    assert_eq!(failed.len(), 2, "{failed:#?}");
-    assert!(
-        failed[0].starts_with("feature \"RingIn\"") && failed[0].contains("does not support"),
-        "{failed:#?}"
+fn the_coaming_is_the_ring_between_the_deck_and_the_deck_raised_by_the_rim() {
+    let (mut built, failed) = steps("sea_kayak_6.steps.json");
+    assert!(failed.is_empty(), "{failed:#?}");
+    let check = built
+        .execute("document.check", &json!({"deep": true}))
+        .unwrap();
+    assert_eq!(check["ok"], true, "{check}");
+    // The document before the two booleans: the stock and the raised hull.
+    let (mut before, failed) = first_steps("sea_kayak_6.steps.json", 131);
+    assert!(failed.is_empty(), "{failed:#?}");
+    let (mut held, mut unread, mut through_the_ring) = (0, 0, 0);
+    let mut worst = 0.0_f64;
+    for i in 0..72 {
+        let t = std::f64::consts::TAU * f64::from(i) / 72.0;
+        for across in [0.2, 0.5, 0.8, -0.3, 1.3] {
+            let from = json!([
+                format!("Xc + (cockL / 2 + ({across}) * rim) * cos({t})"),
+                format!("(cockW / 2 + ({across}) * rim) * sin({t})"),
+                "-2000 mm",
+            ]);
+            let (Some(stock), Some(raised)) = (
+                inside_along(&mut before, "RingStock", &from),
+                inside_along(&mut before, "Raised", &from),
+            ) else {
+                unread += 1;
+                continue;
+            };
+            let (Some(hull), Some(coaming)) = (
+                inside_along(&mut built, "Hull", &from),
+                inside_along(&mut built, "Coaming", &from),
+            ) else {
+                unread += 1;
+                continue;
+            };
+            let expected = in_one_only(&in_both(&stock, &raised), &hull);
+            assert_eq!(
+                coaming.len(),
+                expected.len(),
+                "line {i} at {across}: the coaming {coaming:?}, by its three bodies {expected:?} (stock {stock:?}, raised {raised:?}, hull {hull:?})"
+            );
+            for (c, e) in coaming.iter().zip(&expected) {
+                worst = worst.max((c.0 - e.0).abs()).max((c.1 - e.1).abs());
+            }
+            held += 1;
+            if (0.0..=1.0).contains(&across) {
+                // One stretch, from the deck up by the rim.
+                assert!(
+                    expected.len() == 1 && (expected[0].1 - expected[0].0 - 30.0).abs() <= 1e-6,
+                    "line {i} at {across}: {expected:?}"
+                );
+                through_the_ring += 1;
+            } else {
+                assert!(expected.is_empty(), "line {i} at {across}: {expected:?}");
+            }
+        }
+    }
+    let measured = built
+        .execute(
+            "document.measure",
+            &json!({"feature": "Coaming", "inertia": false, "bound": true}),
+        )
+        .unwrap();
+    let (volume, bound) = (
+        measured["volume"].as_f64().unwrap(),
+        measured["volumeBound"].as_f64().unwrap(),
     );
-    assert!(failed[1].starts_with("feature \"Coaming\""), "{failed:#?}");
-    let check = s.execute("document.check", &json!({"deep": true})).unwrap();
-    let problems = check["problems"].as_array().unwrap();
+    let plan = std::f64::consts::PI * (430.0 * 240.0 - 400.0 * 210.0);
+    eprintln!(
+        "{held} lines held, {unread} not read (an edge or a graze), {through_the_ring} through the ring; at most {worst:e} mm from the three bodies; volume {volume} mm³ within {bound}, in closed form {}",
+        plan * 30.0
+    );
     assert!(
-        problems
-            .iter()
-            .all(|p| p["name"] == "RingIn" || p["name"] == "Coaming"),
-        "{check}"
+        held >= 300 && through_the_ring >= 180,
+        "{held}, {through_the_ring}"
+    );
+    assert!(worst <= 1e-6, "{worst:e} mm");
+    assert!(
+        bound <= 1.0 && (volume - plan * 30.0).abs() <= bound,
+        "{volume} mm³ within {bound}, in closed form {}",
+        plan * 30.0
     );
 }
 
