@@ -1,0 +1,122 @@
+[
+ {
+  "command": "file.new",
+  "params": {
+   "tolerance": 1e-09,
+   "units": "mm"
+  }
+ },
+ {
+  "command": "sketch.create",
+  "params": {
+   "name": "S0",
+   "offset": 0.0025,
+   "plane": "yz"
+  }
+ },
+ {
+  "command": "sketch.polyline",
+  "params": {
+   "closed": true,
+   "points": [
+    [
+     0.0,
+     -0.005
+    ],
+    [
+     0.01,
+     -0.005
+    ],
+    [
+     0.01,
+     -0.0025
+    ],
+    [
+     0.005,
+     -0.0025
+    ],
+    [
+     0.005,
+     0.005
+    ],
+    [
+     0.0,
+     0.005
+    ]
+   ],
+   "sketch": "S0"
+  }
+ },
+ {
+  "command": "feature.revolve",
+  "params": {
+   "angle": "90 deg",
+   "axis": "y",
+   "name": "N0",
+   "sketch": "S0"
+  }
+ },
+ {
+  "command": "feature.planeCut",
+  "params": {
+   "name": "N1",
+   "planes": [
+    {
+     "normal": [
+      3.0,
+      -1.0,
+      -2.0
+     ],
+     "point": [
+      -0.0024999999999999996,
+      0.01,
+      -0.0075
+     ],
+     "side": "above"
+    }
+   ],
+   "target": "N0"
+  }
+ },
+ {
+  "command": "feature.transform",
+  "params": {
+   "keep": false,
+   "name": "N2",
+   "source": "N1",
+   "translate": [
+    0.0,
+    0.0,
+    -0.01
+   ]
+  }
+ },
+ {
+  "command": "feature.mirror",
+  "params": {
+   "keep": true,
+   "name": "N3",
+   "normal": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "point": [
+    -0.0025,
+    0.005,
+    -0.0075
+   ],
+   "source": "N2"
+  }
+ },
+ {
+  "command": "feature.boolean",
+  "params": {
+   "keepTool": false,
+   "name": "N6",
+   "op": "union",
+   "target": "N3",
+   "tool": "N2"
+  }
+ }
+]

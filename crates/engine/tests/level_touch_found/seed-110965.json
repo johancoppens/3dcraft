@@ -1,0 +1,107 @@
+[
+ {
+  "command": "file.new",
+  "params": {
+   "tolerance": 1e-06,
+   "units": "mm"
+  }
+ },
+ {
+  "command": "sketch.create",
+  "params": {
+   "name": "S0",
+   "offset": 0.0,
+   "plane": "xy"
+  }
+ },
+ {
+  "command": "sketch.polyline",
+  "params": {
+   "closed": true,
+   "points": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     10.0,
+     0.0
+    ],
+    [
+     10.0,
+     5.0
+    ],
+    [
+     5.0,
+     5.0
+    ],
+    [
+     5.0,
+     10.0
+    ],
+    [
+     0.0,
+     10.0
+    ]
+   ],
+   "sketch": "S0"
+  }
+ },
+ {
+  "command": "feature.extrude",
+  "params": {
+   "distance": 5.0,
+   "name": "N0",
+   "sketch": "S0"
+  }
+ },
+ {
+  "command": "feature.mirror",
+  "params": {
+   "keep": true,
+   "name": "N3",
+   "normal": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "point": [
+    -10.0,
+    -2.5,
+    7.5
+   ],
+   "source": "N0"
+  }
+ },
+ {
+  "command": "feature.transform",
+  "params": {
+   "keep": false,
+   "name": "N4",
+   "source": "N3",
+   "translate": [
+    5.0,
+    0.0,
+    0.0
+   ]
+  }
+ },
+ {
+  "command": "feature.fillet",
+  "params": {
+   "chain": false,
+   "edges": [
+    [
+     "F2:side(e10)",
+     "F2:startCap(e7,e8,e9,e10,e11,e12)"
+    ],
+    [
+     "F2:side(e9)",
+     "F2:side(e10)"
+    ]
+   ],
+   "name": "N5",
+   "radius": 5.0
+  }
+ }
+]
