@@ -28,10 +28,11 @@
 //! that end), and the curve in which the plane meets the roof's first
 //! plane runs through W and, the two planes being 20 degrees apart, 1.45
 //! tolerances from V: it got no cut there and lost its piece. Under V the
-//! eaves' place and the upright edge's did the same. Now the state is
-//! refused as the tolerance rule refuses it, "two points closer together
-//! than the tolerance can tell apart (at the edge of tolerance)", with
-//! the two faces. The bodies built with the plane 0.7 to 2 tolerances
+//! eaves' place and the upright edge's did the same. Now, where the lost
+//! piece leaves the imprint open, as it does here, the state is refused
+//! as the tolerance rule refuses it, "two points closer together than the
+//! tolerance can tell apart (at the edge of tolerance)", with a face of
+//! each body. The bodies built with the plane 0.7 to 2 tolerances
 //! from V are not inside that rule's band: their V and W are more than
 //! two tolerances apart.
 
