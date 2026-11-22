@@ -54,6 +54,10 @@ pub(super) struct WorkEdge {
     pub start: usize,
     pub end: usize,
     pub source: EdgeSource,
+    /// The arc it was sewn from. Where more than two faces meet along an
+    /// arc (parts of the result touch there), each fan of them has its own
+    /// copy, and the copies have the same arc.
+    pub arc: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -350,6 +354,7 @@ pub(super) fn sew(kept: Vec<Kept>, arcs: &Arcs, vertices: &Vertices) -> Result<W
             start,
             end,
             source: arc.source,
+            arc: arc_index,
         }));
     }
     Ok(Work {

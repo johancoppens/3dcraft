@@ -1,0 +1,92 @@
+[
+ {
+  "command": "file.new",
+  "params": {
+   "tolerance": 0.001,
+   "units": "mm"
+  }
+ },
+ {
+  "command": "feature.cylinder",
+  "params": {
+   "angle": "0 deg",
+   "axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "height": 12500.0,
+   "name": "N0",
+   "position": [
+    8750.0,
+    -6250.0,
+    -2500.0
+   ],
+   "radius": 5000.0
+  }
+ },
+ {
+  "command": "sketch.create",
+  "params": {
+   "name": "S1",
+   "offset": 0.0,
+   "plane": "yz"
+  }
+ },
+ {
+  "command": "sketch.polyline",
+  "params": {
+   "closed": true,
+   "points": [
+    [
+     -2500.0,
+     5000.0
+    ],
+    [
+     2500.0,
+     5000.0
+    ],
+    [
+     2500.0,
+     10000.0
+    ],
+    [
+     -2500.0,
+     10000.0
+    ]
+   ],
+   "sketch": "S1"
+  }
+ },
+ {
+  "command": "feature.extrude",
+  "params": {
+   "distance": 17500.0,
+   "join": "N0",
+   "name": "N1",
+   "sketch": "S1"
+  }
+ },
+ {
+  "command": "feature.fillet",
+  "params": {
+   "chain": false,
+   "edges": [
+    [
+     "F4:copy(1)/F3:side(e5)",
+     "F4:copy(1)/F3:side(e8)"
+    ],
+    [
+     "F4:copy(1)/F3:side(e8)",
+     "F4:copy(1)/F3:startCap(e5,e6,e7,e8)"
+    ],
+    [
+     "F4:copy(0)/F1:face(0)",
+     "F4:copy(1)/F3:side(e8)"
+    ]
+   ],
+   "name": "N2",
+   "radius": 5000.0
+  }
+ }
+]

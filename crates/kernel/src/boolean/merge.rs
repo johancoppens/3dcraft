@@ -9,6 +9,21 @@
 //! is the first of the group (the lowest-numbered face of A in it, or
 //! else of B) and has its surface and its source.
 //!
+//! **Never a face on both sides of an edge.** Where parts of the result
+//! touch along an arc, more than two faces meet there and the sewing gives
+//! each fan of them its own copy of the arc. Two faces that use different
+//! copies of one arc lie on its two sides; one face made of both would run
+//! along the arc twice, a slit of no width (a block cut back to its top
+//! edge beside a block whose top is level with its own: the two tops,
+//! joined over the side the blocks share, ran along the line where the
+//! blocks part on both sides of it; fuzz seeds 110965, 116424, 111609 and
+//! 115646, 2026-11-22). So a group never takes in two copies of one arc:
+//! the joining that would bring the second copy in (the first such, in
+//! the order of the edges) is left out, and the faces stay two. The body
+//! is then valid and touches itself there, which the boolean's
+//! zero-thickness refusal finds, as it does where the faces do not lie on
+//! one surface.
+//!
 //! **Vertices.** A vertex left with two edge ends, of two edges that
 //! continue each other along one curve, is not needed: the edges become
 //! one, with the lesser of their sources. The exception is a vertex that
@@ -53,11 +68,53 @@ fn uses(work: &Work) -> BTreeMap<usize, Vec<(usize, usize, usize)>> {
     found
 }
 
+/// Per face, the copy it uses of each arc the sewing gave more than one
+/// edge (one per fan of faces along it: parts of the result touch there),
+/// as arc to edge. Faces that use none are left out, and so is everything
+/// when no arc has copies, the common case.
+fn copies_used(work: &Work) -> BTreeMap<usize, BTreeMap<usize, usize>> {
+    let mut copies: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    for (index, edge) in work.edges.iter().enumerate() {
+        let Some(edge) = edge else { continue };
+        copies.entry(edge.arc).or_default().insert(index);
+    }
+    copies.retain(|_, edges| edges.len() > 1);
+    let mut used: BTreeMap<usize, BTreeMap<usize, usize>> = BTreeMap::new();
+    if copies.is_empty() {
+        return used;
+    }
+    for (index, face) in work.faces.iter().enumerate() {
+        let Some(face) = face else { continue };
+        for &(edge, _) in face.loops.iter().flatten() {
+            let Some(Some(made)) = work.edges.get(edge) else {
+                continue;
+            };
+            if copies.contains_key(&made.arc) {
+                used.entry(index).or_default().insert(made.arc, edge);
+            }
+        }
+    }
+    used
+}
+
+/// Whether the faces of the groups `x` and `y` (by their roots) use two
+/// different copies of one arc, so that one face made of both would lie
+/// on both sides of it.
+fn on_both_sides(used: &BTreeMap<usize, BTreeMap<usize, usize>>, x: usize, y: usize) -> bool {
+    let (Some(here), Some(there)) = (used.get(&x), used.get(&y)) else {
+        return false;
+    };
+    here.iter()
+        .any(|(arc, edge)| there.get(arc).is_some_and(|other| other != edge))
+}
+
 fn merge_faces(
     work: &mut Work,
     coincident: &BTreeMap<usize, Vec<(usize, bool)>>,
 ) -> Result<(), Stop> {
     let mut groups: Vec<usize> = (0..work.faces.len()).collect();
+    // Per group, by its root, the copies of arcs its faces use.
+    let mut used = copies_used(work);
     let face = |index: usize| work.faces.get(index).and_then(Option::as_ref);
     for sides in uses(work).values() {
         let &[(f, ..), (g, ..)] = sides.as_slice() else {
@@ -99,8 +156,19 @@ fn merge_faces(
         } else {
             false
         };
-        if one {
-            unite(&mut groups, f, g);
+        if !one {
+            continue;
+        }
+        let (x, y) = (root(&mut groups, f), root(&mut groups, g));
+        if x == y || on_both_sides(&used, x, y) {
+            continue;
+        }
+        unite(&mut groups, f, g);
+        // The joined group's copies, under its root.
+        let mut both = used.remove(&x).unwrap_or_default();
+        both.extend(used.remove(&y).unwrap_or_default());
+        if !both.is_empty() {
+            used.insert(root(&mut groups, f), both);
         }
     }
 
@@ -441,5 +509,160 @@ mod tests {
         assert_eq!(loops, [vec![(0, false)]]);
         // An edge used once cannot be spliced out.
         assert!(splice_out(&mut loops, 0).is_err());
+    }
+
+    use super::super::FaceSource;
+    use super::super::sew::WorkFace;
+    use craft3d_geom::{Line, Plane};
+    use craft3d_math::{Frame, Vec3};
+    use craft3d_topo::{EdgeId, FaceId};
+
+    /// A face for [`work`]: its operand, its number there, whether it lies
+    /// on the level plane (else on an upright one), and its loops.
+    type Made = (Operand, u32, bool, Vec<Vec<(usize, bool)>>);
+
+    /// A body in the making for the face merge alone (its vertices and
+    /// curves play no part there): its faces, and per edge the arc it was
+    /// sewn from, edges of one arc being the sewing's copies of it.
+    fn work(faces: &[Made], arcs: &[usize]) -> Work {
+        let line = Curve3::Line(Line::new(Vec3::ZERO, Vec3::X).unwrap());
+        let level = Surface::Plane(Plane::new(Frame::WORLD));
+        let upright = Surface::Plane(Plane::new(Frame::from_z(Vec3::ZERO, Vec3::X).unwrap()));
+        Work {
+            vertices: Vec::new(),
+            edges: (0_u32..)
+                .zip(arcs)
+                .map(|(index, &arc)| {
+                    Some(WorkEdge {
+                        curve: line.clone(),
+                        range: (0.0, 1.0),
+                        start: 0,
+                        end: 1,
+                        source: EdgeSource::Kept {
+                            operand: Operand::A,
+                            edge: EdgeId(index),
+                        },
+                        arc,
+                    })
+                })
+                .collect(),
+            faces: faces
+                .iter()
+                .map(|(operand, face, on_level, loops)| {
+                    let source = FaceSource {
+                        operand: *operand,
+                        face: FaceId(*face),
+                    };
+                    Some(WorkFace {
+                        surface: if *on_level {
+                            level.clone()
+                        } else {
+                            upright.clone()
+                        },
+                        reversed: false,
+                        loops: loops.clone(),
+                        source,
+                        contributors: vec![source],
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    /// The faces left, by their numbers in the work.
+    fn left(work: &Work) -> Vec<usize> {
+        (0..work.faces.len())
+            .filter(|&f| work.faces.get(f).is_some_and(Option::is_some))
+            .collect()
+    }
+
+    /// Whether some face's loops use both edges.
+    fn one_face_uses(work: &Work, a: usize, b: usize) -> bool {
+        work.faces.iter().flatten().any(|face| {
+            let edges: Vec<usize> = face.loops.iter().flatten().map(|&(e, _)| e).collect();
+            edges.contains(&a) && edges.contains(&b)
+        })
+    }
+
+    #[test]
+    fn a_face_is_never_on_both_sides_of_an_edge() {
+        // The level tops of A (face 0) and B (face 2), coincident faces of
+        // both, share edge 0 (where the blocks share their side). Along the
+        // line where the blocks part, A's top and A's slanted side (face 1)
+        // use edge 1, B's top and B's side (face 3) edge 2: two copies of
+        // arc 9, the sewing's, one per fan.
+        let faces = [
+            (
+                Operand::A,
+                0,
+                true,
+                vec![vec![(0, false), (1, false), (3, false)]],
+            ),
+            (Operand::A, 1, false, vec![vec![(1, true), (5, false)]]),
+            (
+                Operand::B,
+                0,
+                true,
+                vec![vec![(0, true), (2, true), (4, false)]],
+            ),
+            (Operand::B, 1, false, vec![vec![(2, false), (6, false)]]),
+        ];
+        let coincident = BTreeMap::from([(0, vec![(0, true)])]);
+        let mut slit = work(&faces, &[0, 9, 9, 3, 4, 5, 6]);
+        merge_faces(&mut slit, &coincident).unwrap();
+        // Joined, one face would run along the line on both sides of it.
+        assert_eq!(left(&slit), [0, 1, 2, 3]);
+        assert!(!one_face_uses(&slit, 1, 2));
+        // The same faces where edges 1 and 2 are not copies of one arc
+        // (the line is two edges of the body, not one where its parts
+        // touch): the tops are one face, edge 0 gone.
+        let mut apart = work(&faces, &[0, 9, 10, 3, 4, 5, 6]);
+        merge_faces(&mut apart, &coincident).unwrap();
+        assert_eq!(left(&apart), [0, 1, 3]);
+        assert!(one_face_uses(&apart, 1, 2));
+        assert!(
+            !apart
+                .faces
+                .iter()
+                .flatten()
+                .any(|face| { face.loops.iter().flatten().any(|&(e, _)| e == 0) })
+        );
+    }
+
+    #[test]
+    fn a_group_carries_the_copies_of_its_faces_to_what_it_joins() {
+        // A's top in two pieces, 0 and 1 (one face of A, sharing edge 3);
+        // piece 1 shares edge 0 with B's top (face 2), coincident. Piece 0
+        // and B's top use copies 1 and 2 of arc 9 with faces 3 and 4. Edge
+        // 0 is taken first, so piece 1 and B's top are one group before
+        // piece 0 is asked about: the group must know B's copy.
+        let faces = [
+            (
+                Operand::A,
+                0,
+                true,
+                vec![vec![(3, false), (1, false), (5, false)]],
+            ),
+            (
+                Operand::A,
+                0,
+                true,
+                vec![vec![(3, true), (0, false), (6, false)]],
+            ),
+            (
+                Operand::B,
+                0,
+                true,
+                vec![vec![(0, true), (2, true), (7, false)]],
+            ),
+            (Operand::A, 1, false, vec![vec![(1, true), (8, false)]]),
+            (Operand::B, 1, false, vec![vec![(2, false), (9, false)]]),
+        ];
+        let coincident = BTreeMap::from([(0, vec![(0, true)])]);
+        let mut chain = work(&faces, &[0, 9, 9, 3, 4, 5, 6, 7, 8, 10]);
+        merge_faces(&mut chain, &coincident).unwrap();
+        // Piece 1 and B's top are one face; piece 0 stays apart.
+        assert_eq!(left(&chain), [0, 1, 3, 4]);
+        assert!(!one_face_uses(&chain, 1, 2));
     }
 }
