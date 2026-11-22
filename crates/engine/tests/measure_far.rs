@@ -680,3 +680,80 @@ fn a_far_ball_is_measured_with_its_torsion_level_and_floating() {
         }
     }
 }
+
+/// A block 1 × 1 × 1 at the origin cut by a cylinder of radius R (1e4 and
+/// 1e5) along z whose rim passes through (0.5, 0.3): a section small
+/// against the size of its curve, not against its distance from the
+/// origin, whose points carry the rounding of the cylinder's centre R
+/// away, as a far section's do: refused before 2026-11-22 (`craft3d-cli` on
+/// `main` 5305636e: "its edges take more panels than a section may";
+/// answered at R = 100, to 4e-15 of the closed form below). Its section
+/// at z = 0.4 is the square up to the arc, x ≤ 0.5 − u²/(R + √(R² − u²))
+/// with u = y − 0.3, so its area is 0.5 less the integral of that over u
+/// from −0.3 to 0.7, (0.7³ + 0.3³)/(6R) + (0.7⁵ + 0.3⁵)/(40R³) and terms
+/// 1e-14 of it smaller; the volume below 0.4 times that; and the level
+/// for 0.2 the height 0.2 over the area.
+#[test]
+fn a_block_cut_by_a_large_cylinder_is_measured() {
+    for radius in [1e4, 1e5] {
+        let mut s = Session::new(Workspace::none());
+        run(
+            &mut s,
+            "file.new",
+            json!({"units": "mm", "tolerance": TOLERANCE}),
+        );
+        for (command, params) in [
+            (
+                "feature.cylinder",
+                json!({"name": "Big", "radius": radius, "height": 4.0, "position": [0.5 - radius, 0.3, -2.0]}),
+            ),
+            (
+                "feature.block",
+                json!({"name": "Small", "size": [1.0, 1.0, 1.0]}),
+            ),
+            (
+                "feature.boolean",
+                json!({"op": "intersect", "target": "Small", "tool": "Big", "name": "Piece"}),
+            ),
+        ] {
+            let made = run(&mut s, command, params.clone());
+            assert_eq!(made["status"], "ok", "{command} {params}: {made}");
+        }
+        let area = 0.5
+            - (0.343 + 0.027) / (6.0 * radius)
+            - (0.16807 + 0.00243) / (40.0 * radius * radius * radius);
+        // 1e-9 of it and 64 units in the last place of the arc's centre's
+        // distance and radius, along the section's perimeter (under 4).
+        let rounding = 64.0 * f64::EPSILON * 2.0 * radius * 4.0;
+        let number = |v: &Value| v.as_f64().unwrap();
+        let below = run(
+            &mut s,
+            "measure.below",
+            json!({"of": "Piece", "offset": 0.4}),
+        );
+        println!("LARGE CYLINDER {radius:e} below: {below}");
+        let a = number(&below["section"]["area"]);
+        assert!(
+            within(a - area, 1e-9 * area + rounding),
+            "R {radius}: area {a}, want {area}"
+        );
+        let v = number(&below["volume"]);
+        assert!(
+            within(v - 0.4 * area, 1e-9 * area + rounding),
+            "R {radius}: volume {v}, want {}",
+            0.4 * area
+        );
+        let level = run(
+            &mut s,
+            "measure.levelFor",
+            json!({"of": "Piece", "volume": 0.2}),
+        );
+        println!("LARGE CYLINDER {radius:e} level: {level}");
+        let offset = number(&level["offset"]);
+        assert!(
+            within(offset - 0.2 / area, 1e-9 + rounding),
+            "R {radius}: the level for 0.2 is {offset}, want {}",
+            0.2 / area
+        );
+    }
+}
