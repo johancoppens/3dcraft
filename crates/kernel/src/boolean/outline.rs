@@ -2953,6 +2953,263 @@ mod tests {
         }
     }
 
+    /// A hole that touches the outline in two places, and the disc inside
+    /// it (the reread of 2026-11-22): in a corner of the plate, where the
+    /// circle touches the lower side and the left one, and in a slot as
+    /// high as the hole is wide, where it touches the lower side and the
+    /// upper one; the circle starting so that the touches fall on its
+    /// middle, on its ends and on the other places a point is stepped in
+    /// from. The point left of the hole's loop is in the plate and outside
+    /// the disc, the point left of the disc's loop is inside it.
+    ///
+    /// The disc is what holds, in this file, that a piece found touched is
+    /// stepped in from again: a step of the radius in from any place of
+    /// the circle is its centre, as near to both sides as to the circle.
+    /// With a touched piece left for good at that place (the first
+    /// review's trial, which `boolean_border_tangent.rs` alone refused,
+    /// and of its three scales the one at 1 only) the disc in the slot
+    /// whose circle starts at `PI - 0.7236 * TAU` is refused as a sliver
+    /// in the axes, and this test fails (Checks 44968548848, where 53 of
+    /// 4,356 such discs over six scales and four frames were refused,
+    /// and 44971122228).
+    #[test]
+    fn a_hole_that_touches_the_outline_in_two_places_and_its_disc_are_answered() {
+        let mut wrong = Vec::new();
+        let mut asked = 0;
+        for (name, frame) in frames_for_a_touch() {
+            let p = |x: f64, y: f64| frame.point(x, y, 0.0);
+            let plane = Surface::Plane(Plane::new(frame));
+            for (what, height, (cx, cy)) in [("corner", 2.0, (0.5, 0.5)), ("slot", 1.0, (1.5, 0.5))]
+            {
+                for start in [
+                    0.5 * PI,
+                    0.0,
+                    PI,
+                    1.5 * PI,
+                    1.5 * PI - 0.2764 * TAU,
+                    1.5 * PI - 0.7236 * TAU,
+                    PI - 0.2764 * TAU,
+                    PI - 0.7236 * TAU,
+                    0.5 * PI - 0.2764 * TAU,
+                    0.5 * PI - 0.7236 * TAU,
+                    0.3,
+                ] {
+                    let (sin, cos) = start.psin_cos();
+                    let about = Frame::new(p(cx, cy), frame.z(), frame.x() * cos + frame.y() * sin)
+                        .unwrap();
+                    let loops = vec![
+                        vec![
+                            line(p(0.0, 0.0), p(4.0, 0.0), false),
+                            line(p(4.0, 0.0), p(4.0, height), false),
+                            line(p(4.0, height), p(0.0, height), false),
+                            line(p(0.0, height), p(0.0, 0.0), false),
+                        ],
+                        vec![arc(about, 0.5, (0.0, TAU), true)],
+                        vec![arc(about, 0.5, (0.0, TAU), false)],
+                    ];
+                    let all = boxes(&loops);
+                    let sheet = Sheet::bare(&plane);
+                    asked += 2;
+                    match left_of(sheet, false, &loops, &all, &loops[1], 4e-6) {
+                        Ok(q) => {
+                            let (x, y, _) = frame.local(q);
+                            let off = (x - cx).phypot(y - cy);
+                            if !(x > 0.0 && x < 4.0 && y > 0.0 && y < height && off > 0.5) {
+                                wrong.push(format!(
+                                    "{name}, {what}, from {start}: the hole's point ({x}, {y})"
+                                ));
+                            }
+                        }
+                        Err(reason) => {
+                            wrong.push(format!("{name}, {what}, from {start}: the hole: {reason}"))
+                        }
+                    }
+                    match left_of(sheet, false, &loops, &all, &loops[2], 4e-6) {
+                        Ok(q) => {
+                            let (x, y, _) = frame.local(q);
+                            if (x - cx).phypot(y - cy) >= 0.5 {
+                                wrong.push(format!(
+                                    "{name}, {what}, from {start}: the disc's point ({x}, {y})"
+                                ));
+                            }
+                        }
+                        Err(reason) => {
+                            wrong.push(format!("{name}, {what}, from {start}: the disc: {reason}"))
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} of {asked}:\n{}",
+            wrong.len(),
+            wrong.join("\n")
+        );
+    }
+
+    /// Owed (found by the reread of 2026-11-22). Two holes that touch, the
+    /// middle of each circle at the touch, their radii the same, or one
+    /// twice the other. A point is stepped out from the middle of a circle
+    /// by its radius, then by half of it, and so on: with the radii the
+    /// same the first step is the centre of the other circle, with the
+    /// other half as wide the second is (the first lies on it). A centre
+    /// is as near to its circle everywhere, so the place where that circle
+    /// is nearest is no place in particular, it is not found to be the
+    /// place of the touch, no touch is told ([`touched_at`] asks for the
+    /// two nearest points to be the same place), and the centre is taken:
+    /// a point inside the other hole. In a plane cut both circles are
+    /// there twice, once as a hole and once around its disc, the hole is
+    /// given to the other circle's disc, and the boolean's own check
+    /// refuses the body: *two holes of one radius that touch are cut
+    /// across* (`crates/kernel/tests/halfspace.rs`) has the counts.
+    ///
+    /// What would tell it, measured (Check 44971122228, a switch on a
+    /// throwaway commit): the other piece's distance from the place where
+    /// the candidate's own piece is nearest, for the distance between the
+    /// two nearest points. This test then passes, the 168 cuts of the
+    /// kernel's probe are all built, and no test of `boolean::outline`,
+    /// `boolean::section`, `halfspace.rs`, `boolean_border_tangent.rs`
+    /// (its grid at three scales) or `plane_cut_found.rs` fails. It has
+    /// not had the gate, the corpus, the benchmark or the random designs.
+    /// Held when it is: the point of each hole is in the plate and outside
+    /// both discs.
+    #[test]
+    #[ignore = "owed: a step that lands on the centre of a circle that touches the loop is taken (two holes of one radius, or one twice the other)"]
+    fn a_point_left_of_a_loop_is_not_the_centre_of_a_circle_that_touches_it() {
+        let mut wrong = Vec::new();
+        let mut asked = 0;
+        for (name, frame) in frames_for_a_touch() {
+            let p = |x: f64, y: f64| frame.point(x, y, 0.0);
+            let plane = Surface::Plane(Plane::new(frame));
+            for (r, other) in [(0.5, 0.5), (0.5, 0.25), (0.25, 0.5)] {
+                // The first circle starts away from the second and the
+                // second away from the first: each has its middle at the
+                // touch.
+                let (ax, bx, cy) = (1.5, 1.5 + r + other, 1.0);
+                let first = Frame::new(p(ax, cy), frame.z(), -frame.x()).unwrap();
+                let second = Frame::new(p(bx, cy), frame.z(), frame.x()).unwrap();
+                let loops = vec![
+                    vec![
+                        line(p(0.0, 0.0), p(4.0, 0.0), false),
+                        line(p(4.0, 0.0), p(4.0, 2.0), false),
+                        line(p(4.0, 2.0), p(0.0, 2.0), false),
+                        line(p(0.0, 2.0), p(0.0, 0.0), false),
+                    ],
+                    vec![arc(first, r, (0.0, TAU), true)],
+                    vec![arc(first, r, (0.0, TAU), false)],
+                    vec![arc(second, other, (0.0, TAU), true)],
+                    vec![arc(second, other, (0.0, TAU), false)],
+                ];
+                let all = boxes(&loops);
+                for (which, what) in [(1, "first"), (3, "second")] {
+                    asked += 1;
+                    match left_of(
+                        Sheet::bare(&plane),
+                        false,
+                        &loops,
+                        &all,
+                        &loops[which],
+                        4e-6,
+                    ) {
+                        Ok(q) => {
+                            let (x, y, _) = frame.local(q);
+                            let in_plate = x > 0.0 && x < 4.0 && y > 0.0 && y < 2.0;
+                            let clear =
+                                (x - ax).phypot(y - cy) > r && (x - bx).phypot(y - cy) > other;
+                            if !(in_plate && clear) {
+                                wrong.push(format!(
+                                    "{name}, radii {r} and {other}, the {what} hole's point ({x}, {y})"
+                                ));
+                            }
+                        }
+                        Err(reason) => wrong.push(format!(
+                            "{name}, radii {r} and {other}, the {what} hole: {reason}"
+                        )),
+                    }
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} of {asked}:\n{}",
+            wrong.len(),
+            wrong.join("\n")
+        );
+    }
+
+    /// Owed (found by the reread of 2026-11-22). "To rounding" is a
+    /// billionth of the width of the piece stepped in from, whatever the
+    /// tolerance: on a circle of radius 5e5 at a tolerance of 1e-6 that
+    /// is a thousandth, a thousand tolerances, and a second circle up to
+    /// that far inside the first (a ring: the section of a tube's wall)
+    /// is told as touching it at every place and every step, so both
+    /// loops are refused as a sliver, *"too thin to find a point inside
+    /// it (at the edge of tolerance)"*, with a wall 500 tolerances thick.
+    /// Until the round after the review of 2026-11-21 the touch was told
+    /// by the step alone, and each of these was answered (Check
+    /// 44968548848; and through the commands: a tube of radius 5e5 with a
+    /// wall of 20, 100 and 500 tolerances and one of radius 5e4 with a
+    /// wall of 20 are refused at that round where the first repair built
+    /// all four, and `main` the third; before the repair the other three
+    /// were refused as *"a piece of a face is not closed off by its
+    /// boundary"*, the point of a loop taken beyond the other circle).
+    ///
+    /// What would keep it, measured (Check 44971122228, a switch on a
+    /// throwaway commit): rounding no wider than a sixteenth of the
+    /// margin, a quarter of the tolerance, which changes nothing for a
+    /// piece narrower than 2.5e8 tolerances. This test then passes, and no
+    /// test of the five files named above fails. It has not had the gate,
+    /// the corpus, the benchmark or the random designs. Held when it is:
+    /// the point of each loop is in the ring.
+    #[test]
+    #[ignore = "owed: rounding is a billionth of the piece's width whatever the tolerance, and a wall up to that thin is told as a touch"]
+    fn a_wall_far_thinner_than_its_circle_is_wide_is_not_a_touch() {
+        let mut wrong = Vec::new();
+        let mut asked = 0;
+        for (name, frame) in [("world", Frame::WORLD), ("tilted", tilted())] {
+            let plane = Surface::Plane(Plane::new(frame));
+            for (radius, tolerances) in [
+                (5.0, 20.0),
+                (5e4, 20.0),
+                (5e5, 20.0),
+                (5e5, 100.0),
+                (5e5, 500.0),
+                (5e5, 2000.0),
+            ] {
+                let wall = tolerances * 1e-6;
+                let loops = vec![
+                    vec![arc(frame, radius, (0.0, TAU), false)],
+                    vec![arc(frame, radius - wall, (0.0, TAU), true)],
+                ];
+                let all = boxes(&loops);
+                for (which, what) in [(0, "outer"), (1, "inner")] {
+                    asked += 1;
+                    match left_of(Sheet::bare(&plane), false, &loops, &all, &loops[which], 4e-6) {
+                        Ok(q) => {
+                            let (x, y, _) = frame.local(q);
+                            let off = x.phypot(y);
+                            if !(off > radius - wall && off < radius) {
+                                wrong.push(format!(
+                                    "{name}, radius {radius}, a wall of {tolerances} tolerances, the {what} loop's point {off} from the centre"
+                                ));
+                            }
+                        }
+                        Err(reason) => wrong.push(format!(
+                            "{name}, radius {radius}, a wall of {tolerances} tolerances, the {what} loop: {reason}"
+                        )),
+                    }
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} of {asked}:\n{}",
+            wrong.len(),
+            wrong.join("\n")
+        );
+    }
+
     #[test]
     fn the_nearest_point_of_a_long_ellipse_arc_is_the_nearest() {
         // 40 to 1: around its tips the curve doubles back on itself.

@@ -1048,3 +1048,111 @@ fn a_sheet_is_refused() {
         other => panic!("expected a refusal, got {other:?}"),
     }
 }
+
+/// A block of 2 × 10 × 10 in `frame` (times `k`) with two holes along its
+/// x, of radii `r1` and `r2`, whose walls touch along a line, cut across
+/// at x = 1. The circles about a hole's axis start on the side away from
+/// the other hole when its `middle` is set, so that the middle of the
+/// circle is at the touch, and on the side towards it otherwise, so that
+/// the circle begins and ends there. For each side of the cut, what is
+/// wrong with it, if anything (a body not to its closed form, or the
+/// refusal's first words).
+fn two_holes_cut_across(
+    frame: &Frame,
+    k: f64,
+    (r1, r2): (f64, f64),
+    (middle1, middle2): (bool, bool),
+) -> Vec<String> {
+    let tol = tolerance(k);
+    let mut holed = primitives::block(frame, 2.0 * k, 10.0 * k, 10.0 * k).unwrap();
+    let first = Frame::new(
+        frame.point(-2.0 * k, 3.0 * k, 5.0 * k),
+        frame.x(),
+        if middle1 { -frame.y() } else { frame.y() },
+    )
+    .unwrap();
+    let second = Frame::new(
+        frame.point(-2.0 * k, (3.0 + r1 + r2) * k, 5.0 * k),
+        frame.x(),
+        if middle2 { frame.y() } else { -frame.y() },
+    )
+    .unwrap();
+    for (axis, r) in [(first, r1), (second, r2)] {
+        let drill = primitives::cylinder(&axis, r * k, 6.0 * k).unwrap();
+        holed = match craft3d_kernel::boolean::boolean(&holed, &drill, BooleanOp::Subtract, &tol) {
+            Ok(result) => result.body,
+            Err(e) => return vec![format!("a hole: {e}")],
+        };
+    }
+    let across = Frame::from_z(frame.point(k, 0.0, 0.0), -frame.x()).unwrap();
+    let discs = PI * (r1 * r1 + r2 * r2);
+    let volume = (100.0 - discs) * k * k * k;
+    let area = (2.0 * (100.0 - discs) + 40.0 + 2.0 * PI * (r1 + r2)) * k * k;
+    let mut wrong = Vec::new();
+    for (side, which) in [(across, "x > 1"), (turned(&across), "x < 1")] {
+        match cut(&holed, &side, k) {
+            Ok(Kept::Cut(result)) => {
+                let m = mass(&result.body);
+                if !check(&result.body, &tol).is_empty()
+                    || (m.volume - volume).abs() > 1e-7 * volume
+                    || (m.area - area).abs() > 1e-7 * area
+                {
+                    wrong.push(format!("{which}: volume {}, area {}", m.volume, m.area));
+                }
+            }
+            Ok(Kept::Whole) => wrong.push(format!("{which}: left whole")),
+            Err(e) => wrong.push(format!(
+                "{which}: {}",
+                e.to_string().chars().take(100).collect::<String>()
+            )),
+        }
+    }
+    wrong
+}
+
+/// Owed (found by the reread of 2026-11-22). Two holes of one radius whose
+/// walls touch, cut across, the middle of a circle at the touch: a step
+/// of the radius out from there is the centre of the other circle, where
+/// that circle is as near at no place in particular, the touch is not
+/// told, and the hole's loop is given to the other circle's disc
+/// (`boolean/outline.rs` › *a point left of a loop is not the centre of a
+/// circle that touches it*). The cut is refused as *"boolean produced an
+/// invalid body"*, as before the repair of fuzz seed 115098.
+///
+/// Measured through the commands, on the programs of `main`, of the
+/// repair and of the round after its review: of 60 cuts (radii 1.5, 1
+/// and 1.7, five pairs of starts, four scales) 36, 23 and 23 are refused
+/// so, all twelve with both middles at the touch in each, and the 24
+/// that are built were built before the repair. In the kernel (Check
+/// 44971122228: seven pairs of radii, the four pairs of starts, three
+/// scales, in the axes and out of them) 75 of 168 cuts are refused so,
+/// every one with radii the same or one twice the other (1 and 1, 1.5
+/// and 1.5, 1.7 and 1.7, 2 and 1, 1 and 2, 1 and 0.5) and none with 1.5
+/// and 1, which is what *two holes that touch are cut across* holds
+/// (`crates/engine/tests/plane_cut_found.rs`): there the steps of
+/// neither circle land on the other's centre. Held when it is: both
+/// sides of every cut, to the closed form, at three scales.
+#[test]
+#[ignore = "owed: two holes of one radius that touch, cut across with the middle of a circle at the touch, are still refused as an invalid body"]
+fn two_holes_of_one_radius_that_touch_are_cut_across() {
+    let mut wrong = Vec::new();
+    let mut cuts = 0;
+    for k in SCALES {
+        for r in [1.5, 1.0, 1.7] {
+            for middles in [(true, true), (true, false), (false, true), (false, false)] {
+                cuts += 1;
+                for fault in two_holes_cut_across(&Frame::WORLD, k, (r, r), middles) {
+                    wrong.push(format!(
+                        "scale {k}, radius {r}, the middles at the touch {middles:?}, {fault}"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} sides of {cuts} cuts:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
