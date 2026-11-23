@@ -655,10 +655,14 @@ fn check_skin(taper: f64, lift: f64, slope: f64, k: f64) -> Result<usize, String
         }
         lines.push(points);
     }
-    // Where the sections cross the plane, in the box.
+    // Where the sections cross the plane, in the box: 199 sections (99
+    // until 2026-11-22, which held the curves of the wing tapered to 0.9
+    // under a bottom rising 0.003 to 40 crossings, fewer than the fifty
+    // asked below: that plane rises ten times as fast as the skin's
+    // lowest line and crosses the skin over a part of the span only).
     let mut crossings = 0;
-    for j in 1..100 {
-        let v = f64::from(j) / 100.0;
+    for j in 1..200 {
+        let v = f64::from(j) / 200.0;
         let mut before = (0.0, off(0.0, v));
         for i in 1..=1000 {
             let here = (f64::from(i) / 1000.0, off(f64::from(i) / 1000.0, v));
@@ -757,20 +761,22 @@ fn the_bottom_of_a_spar_meets_the_lofted_skin_it_all_but_lies_in() {
     ]);
 }
 
-/// Owed: the settings at which the same pair is still refused, and the
-/// spar's bottom 0.02 inside the lowest line rising 0.003: "an
+/// The settings at which the same pair was refused until 2026-11-22, and
+/// the spar's bottom 0.02 inside the lowest line rising 0.003: "an
 /// intersection curve could not be fitted within the tolerance". The
 /// section's spline rises to a shoulder beside its lowest line and dips
-/// again, so further along the span the plane crosses the skin in three
-/// curves side by side, a few millimetres apart, that turn into one
-/// another where the plane is level with the shoulder. A step of the
-/// march (up to a thirty-second of the box, 32 mm here) lands on the
-/// curve beside the one it follows, heading as before, and the fit's
-/// points between two such points are found on any of the three
-/// (docs/design/booleans.md › *A spar's face beside a rib's skin* ›
-/// *Still refused*).
+/// again, so further along the span the plane crosses the skin in
+/// stretches side by side, a few millimetres apart, that turn into one
+/// another where the plane is level with the shoulder: one curve that
+/// runs up the span, back and up again. A step of the march (up to a
+/// thirty-second of the box, 32 mm here) lands on the stretch beside the
+/// one it follows, which heads the same way: 4 mm aside, and half a
+/// metre further along the curve. The fit finds no points between two
+/// such points, and the march is now taken up again from the first of
+/// them in shorter steps (docs/design/booleans.md › *A step of the march
+/// onto the curve beside the one it follows*). Every curve on the
+/// crossing, every crossing on a curve, at three scales.
 #[test]
-#[ignore = "owed: a step of the march onto the curve beside the one it follows"]
 fn the_bottom_of_a_spar_meets_a_skin_it_crosses_in_curves_side_by_side() {
     all_skins(&[
         along_the_lowest_line(0.7, 1e-4, 0.3),

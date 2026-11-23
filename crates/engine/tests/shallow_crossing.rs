@@ -28,11 +28,13 @@
 //! Jig's own proportions, it went round the turn by luck). Five of the
 //! eight are answered since points are held to the curve; the other
 //! three, and the pair the finding was first made with (the spar's bottom
-//! 0.02 mm inside the lowest line and rising 0.003), are refused in the
-//! fit's words and owed, for another reason: the section's spline rises to
-//! a shoulder beside its lowest line, the plane crosses the skin in
-//! curves side by side there, and a step of the march lands on the one
-//! beside the one it follows.
+//! 0.02 mm inside the lowest line and rising 0.003), were then refused in
+//! the fit's words, for another reason: the section's spline rises to a
+//! shoulder beside its lowest line, the plane crosses the skin in
+//! stretches side by side there, a few millimetres apart, and a step of
+//! the march landed on the stretch beside the one it followed. They are
+//! answered since 2026-11-22: the march is taken up again, in shorter
+//! steps, from the point before a span the fit gives up on.
 
 #![allow(
     clippy::unwrap_used,
@@ -287,16 +289,15 @@ fn a_spar_whose_bottom_all_but_holds_a_ruling_of_the_skin_is_clear_of_the_rib() 
     ]));
 }
 
-/// Owed: three settings of the same pair, and the spar's bottom 0.02 mm
-/// inside the skin's lowest line rising 0.003 in a blank tapered to 0.7
-/// and to 0.9, are refused: "an intersection curve could not be fitted
-/// within the tolerance" (the first three stalled before). The plane
-/// crosses the skin in curves side by side where it is level with the
-/// shoulder of the section, and a step of the march lands on the one
-/// beside the one it follows (docs/design/booleans.md › *A spar's face
-/// beside a rib's skin* › *Still refused*).
+/// Three settings of the same pair, and the spar's bottom 0.02 mm inside
+/// the skin's lowest line rising 0.003 in a blank tapered to 0.7 and to
+/// 0.9, were refused until 2026-11-22: "an intersection curve could not
+/// be fitted within the tolerance" (the first three stalled before
+/// that). The plane crosses the skin in stretches side by side where it
+/// is level with the shoulder of the section, and a step of the march
+/// landed on the one beside the one it followed (docs/design/booleans.md
+/// › *A step of the march onto the curve beside the one it follows*).
 #[test]
-#[ignore = "owed: a step of the march onto the curve beside the one it follows"]
 fn a_spar_whose_bottom_crosses_the_skin_in_curves_side_by_side_is_clear_of_the_rib() {
     let mut cases = along_the_lowest_line(&[(0.7, 1e-4, 0.3), (0.7, 1e-4, 1.1), (0.7, 1e-4, 5.0)]);
     for taper in [0.7, 0.9] {

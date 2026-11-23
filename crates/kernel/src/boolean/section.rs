@@ -18,7 +18,7 @@ use super::{
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::certify::{CurveBound, Within, curve_on_surface};
 use craft3d_geom::intersect::CurveIntersection;
-use craft3d_geom::intersect::{MeetingCurve, SurfaceMeeting, meet_surfaces};
+use craft3d_geom::intersect::{MeetingCurve, SurfaceMeeting, meet_surfaces, meet_surfaces_once};
 use craft3d_geom::{Curve3, GeomError, Surface};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
@@ -277,6 +277,14 @@ pub(super) struct Sections {
     /// Per edge: the vertices to split it at.
     pub splits_a: BTreeMap<EdgeId, BTreeSet<usize>>,
     pub splits_b: BTreeMap<EdgeId, BTreeSet<usize>>,
+    /// The pairs of faces (of A, of B), in the order met, a curve of which
+    /// runs through a place where an edge meets the other face's surface,
+    /// and more than the tolerance from the end of the edge the place was
+    /// taken to: the curve has no cut there (`clip`). Where an imprint is
+    /// then left open at one of the two faces, the boolean is refused as
+    /// two points closer together than the tolerance can tell apart,
+    /// naming the pair, not as a lost imprint (`super::near_places`).
+    pub near: Vec<(usize, usize)>,
 }
 
 /// The outline of face `index` of `body`, as [`prepare`] makes it.
@@ -522,6 +530,9 @@ struct Cut {
     /// Where the curve itself starts or ends, rather than where an edge
     /// meets a surface.
     end: bool,
+    /// Where the edge meets the surface, when the cut was taken from there
+    /// to an end of the edge (`edge_cuts`): `point` is that end.
+    hit: Option<Vec3>,
 }
 
 /// Whether two places, each found where an edge meets a surface, are the
@@ -606,7 +617,7 @@ fn edge_cuts(
         let (Some(a), Some(b)) = (own.body.vertex(edge.start), own.body.vertex(edge.end)) else {
             return Err(Stop::of(LOST));
         };
-        let mut cut = |point: Vec3, on_edge: bool| {
+        let mut cut = |point: Vec3, on_edge: bool, hit: Option<Vec3>| {
             let edge = on_edge.then_some(id);
             cuts.push(match own.operand {
                 Operand::A => Cut {
@@ -615,6 +626,7 @@ fn edge_cuts(
                     a_edge: edge,
                     b_edge: None,
                     end: false,
+                    hit,
                 },
                 Operand::B => Cut {
                     t: 0.0,
@@ -622,6 +634,7 @@ fn edge_cuts(
                     a_edge: None,
                     b_edge: edge,
                     end: false,
+                    hit,
                 },
             });
         };
@@ -632,8 +645,8 @@ fn edge_cuts(
             surface_distance(surface, edge.curve.eval(t)) <= tol
         });
         if lies_on {
-            cut(a.point, false);
-            cut(b.point, false);
+            cut(a.point, false, None);
+            cut(b.point, false, None);
             continue;
         }
         // The edge's own curve with the other body's surface: a tolerant
@@ -686,11 +699,11 @@ fn edge_cuts(
                     // cone up to its apex, meets it there.)
                     let approximated = matches!(edge.curve, Curve3::Nurbs(_));
                     if approximated && surface_distance(surface, a.point) <= tol && hugs(t0) {
-                        cut(a.point, true);
+                        cut(a.point, true, Some(hit.point));
                         continue;
                     }
                     if approximated && surface_distance(surface, b.point) <= tol && hugs(t1) {
-                        cut(b.point, true);
+                        cut(b.point, true, Some(hit.point));
                         continue;
                     }
                     // A hit next to an end of the edge that lies on the
@@ -701,7 +714,9 @@ fn edge_cuts(
                     // and the end, which the other edges there share, is
                     // exact. Two such hits of edges that meet there would
                     // otherwise be two places closer together than the
-                    // tolerance can tell apart.
+                    // tolerance can tell apart. (Here and above the hit
+                    // is kept with the cut: a curve the hit is on and the
+                    // end is not cannot end at the end, `clip`.)
                     let end = [a.point, b.point].into_iter().find(|end| {
                         hit.point.distance(*end) <= 2.0 * tol
                             && surface_distance(surface, *end) <= tol
@@ -740,7 +755,7 @@ fn edge_cuts(
                     };
                     // A touch is a cut like any other: the stretches on
                     // either side of it are judged on their own.
-                    cut(point, true);
+                    cut(point, true, end.map(|_| hit.point));
                 }
             }
         }
@@ -882,22 +897,60 @@ fn clip(
         a_edge: None,
         b_edge: None,
         end: true,
+        hit: None,
+    };
+    // Where along the curve a point within the tolerance of it is.
+    let on_curve = |p: Vec3| -> Option<f64> {
+        if periodic {
+            curve
+                .project(p)
+                .ok()
+                .filter(|&t| curve.eval(t).distance(p) <= tol)
+        } else {
+            nearest(curve, (first, last), p).and_then(|(t, d)| (d <= tol).then_some(t))
+        }
     };
 
     // The cuts on this curve (the surfaces may meet in another one too),
     // in order along it, each place once.
     let mut along: Vec<Cut> = Vec::new();
     for &(mut cut) in found {
-        let t = if periodic {
-            match curve.project(cut.point) {
-                Ok(t) if curve.eval(t).distance(cut.point) <= tol => t,
-                _ => continue,
+        let Some(t) = on_curve(cut.point) else {
+            // A place where an edge meets the surface, taken to an end of
+            // the edge (`edge_cuts`), where this curve passes through the
+            // place and more than the tolerance from the end: the curve
+            // cannot end at the end, and the end and the place, further
+            // apart than points that are one and within the guard, are
+            // two points closer together than the tolerance can tell
+            // apart (a plane that passes a vertex by about half a
+            // tolerance, crossing the edge that leaves it at a shallow
+            // angle next to a face at a shallow angle to it:
+            // docs/design/booleans.md › *A plane that passes a vertex by
+            // less than a tolerance*). The curve has no cut there, as
+            // before, and the pair is noted: where that leaves the
+            // imprint open, the boolean is refused in those words, not as
+            // a lost imprint (`Sections::near`). Where the curve has no
+            // piece there (the place is outside either face, or the
+            // surfaces only touch along the curve, which divides nothing)
+            // nothing is noted.
+            let between = |hit: Vec3| {
+                let apart = hit.distance(cut.point);
+                apart > vertices.merge
+                    && apart <= vertices.guard
+                    && !meeting.tangent
+                    && on_curve(hit).is_some()
+                    && [oa, ob]
+                        .iter()
+                        .all(|o| matches!(o.side(hit, tol), Ok(Side::In | Side::On)))
+            };
+            #[cfg(test)]
+            if tests::END_ONLY.with(std::cell::Cell::get) {
+                continue;
             }
-        } else {
-            match nearest(curve, (first, last), cut.point) {
-                Some((t, d)) if d <= tol => t,
-                _ => continue,
+            if cut.hit.is_some_and(between) && !sections.near.contains(&(fa, fb)) {
+                sections.near.push((fa, fb));
             }
+            continue;
         };
         cut.t = t;
         along.push(cut);
@@ -1563,6 +1616,34 @@ fn meet_in(
     }
 }
 
+/// `meet_in` by the march as it is first made (`once`), and only where
+/// that refuses in every box, `meet_in` again by the march that takes a
+/// branch up where its fit gave up (`again`:
+/// `craft3d_geom::intersect::meet_surfaces`).
+///
+/// A march taken up again answers pairs that were refused (*A step of the
+/// march onto the curve beside the one it follows*, docs/design/
+/// booleans.md), and one of them may be a pair that a later box answered:
+/// asked with `again` at once, that pair would be answered in the earlier
+/// box, by other curves. So every box is asked the old way first, and
+/// what was met before is met the same. Where neither answers, the first
+/// refusal of the old way stands, as before.
+fn meet_once_then_again(
+    boxes: (&Bbox3, &Bbox3),
+    near: (Option<&Bbox3>, Option<&Bbox3>),
+    room: (&Bbox3, f64),
+    tol: f64,
+    once: impl Fn(&Bbox3) -> Result<SurfaceMeeting, GeomError>,
+    again: impl Fn(&Bbox3) -> Result<SurfaceMeeting, GeomError>,
+) -> Result<SurfaceMeeting, GeomError> {
+    match meet_in(boxes, near, room, tol, once) {
+        Err(first @ (GeomError::NoConvergence(_) | GeomError::Unsupported(_))) => {
+            meet_in(boxes, near, room, tol, again).map_err(|_| first)
+        }
+        met => met,
+    }
+}
+
 /// How far apart, in tolerances, two faces' covers must be for the pair
 /// to be passed over: beyond every distance a rule of the section reads
 /// (two tolerances for faces over each other or touching, the outline's
@@ -1677,20 +1758,37 @@ fn section_with(
             #[cfg(test)]
             tests::PAIRS_MET.with(|n| n.set(n.get() + 1));
             let near = (a.near.get(fa), b.near.get(fb));
-            let met = match meet_in((box_a, box_b), near, (&within, room), tol, |room| {
-                meet_surfaces(&oa.surface, &ob.surface, room, tolerance)
-            }) {
+            // As it always was first: every box by the march as it is
+            // first made, and where none answers, whether the faces lie
+            // on one another (`coincide`). Only a pair that neither
+            // settles, which was refused, is asked by the march that
+            // takes a branch up again (`meet_once_then_again`): a pair
+            // that a box or `coincide` answered is answered by it still.
+            let once = |room: &Bbox3| meet_surfaces_once(&oa.surface, &ob.surface, room, tolerance);
+            let again = |room: &Bbox3| meet_surfaces(&oa.surface, &ob.surface, room, tolerance);
+            let met = match meet_in((box_a, box_b), near, (&within, room), tol, once) {
                 Ok(met) => met,
                 // Surfaces that cannot be traced may be faces that lie on
                 // one another where one is over the other, though the
                 // surfaces part beyond them (`coincide`).
-                Err(error @ (GeomError::NoConvergence(_) | GeomError::Unsupported(_))) => {
+                Err(GeomError::NoConvergence(_) | GeomError::Unsupported(_)) => {
                     match coincide(a, fa, b, fb, tol).map_err(|s| s.at(&named))? {
                         Coincidence::Faces(same_normal) => {
                             SurfaceMeeting::Coincident { same_normal }
                         }
                         Coincidence::Partly => return Err(Stop::of(PARTLY).at(&named)),
-                        Coincidence::Unknown => return Err(geometry(error, &named)),
+                        // (The boxes asked the old way come from the
+                        // shelf; its first refusal stands where the march
+                        // taken up refuses too.)
+                        Coincidence::Unknown => meet_once_then_again(
+                            (box_a, box_b),
+                            near,
+                            (&within, room),
+                            tol,
+                            once,
+                            again,
+                        )
+                        .map_err(|first| geometry(first, &named))?,
                     }
                 }
                 Err(error) => return Err(geometry(error, &named)),
@@ -2156,8 +2254,9 @@ impl Ahead {
                         // Kept on the shelf; the section takes it from
                         // there, and its question is the one counted
                         // (`craft3d_geom::intersect::march_work`).
+                        // (As the section asks it first: `meet_once_then_again`.)
                         let _ = craft3d_geom::intersect::ahead_of_the_asker(|| {
-                            meet_surfaces(
+                            meet_surfaces_once(
                                 &pair.oa.surface,
                                 &pair.ob.surface,
                                 &pair.within,
@@ -2473,6 +2572,7 @@ fn edge_crossings(
                 a_edge,
                 b_edge,
                 end: false,
+                hit: None,
             });
         }
     }
@@ -2744,6 +2844,12 @@ pub(super) mod tests {
         /// the curve's pieces (`outline::nearest_on_spline`).
         pub(in crate::boolean) static NO_PIECES: std::cell::Cell<bool> =
             const { std::cell::Cell::new(false) };
+        /// Booleans on this thread note no pair of faces whose curve has
+        /// no cut at a place taken to an end of its edge (`clip`,
+        /// `Sections::near`), so an imprint left open there is refused as
+        /// lost, as all were before 2026-11-22.
+        pub(in crate::boolean) static END_ONLY: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
     }
 
     use super::*;
@@ -2969,6 +3075,7 @@ pub(super) mod tests {
             a_edge: Some(EdgeId(7)),
             b_edge: None,
             end: false,
+            hit: None,
         };
         (curve, (0.0, 1.0), place)
     }
@@ -3017,6 +3124,7 @@ pub(super) mod tests {
                         a_edge: None,
                         b_edge: None,
                         end: true,
+                        hit: None,
                     };
                     let d = seam.point.distance(place.point);
                     assert!(
@@ -3048,6 +3156,7 @@ pub(super) mod tests {
                 a_edge: Some(EdgeId(7)),
                 b_edge: None,
                 end: false,
+                hit: None,
             };
             let seam = Cut {
                 t: 0.0,
@@ -3055,6 +3164,7 @@ pub(super) mod tests {
                 a_edge: None,
                 b_edge: None,
                 end: true,
+                hit: None,
             };
             let found = ends_at_places(vec![seam, far], &curve, range, true, (0.5 * tol, guard));
             assert!(found[0].end, "at {k}: {:?}", found[0]);
@@ -3067,6 +3177,7 @@ pub(super) mod tests {
                 a_edge: None,
                 b_edge: None,
                 end: true,
+                hit: None,
             };
             let end = Cut {
                 t: 0.5,
@@ -3074,6 +3185,7 @@ pub(super) mod tests {
                 a_edge: None,
                 b_edge: None,
                 end: true,
+                hit: None,
             };
             let found = ends_at_places(
                 vec![start, place, end],
@@ -3161,6 +3273,115 @@ pub(super) mod tests {
             assert!(in_room(&terrain, &other, &within, room, tol, fails).is_err());
             assert_eq!(*count.borrow(), 1, "at {k}");
         }
+    }
+
+    /// The march that takes a branch up again is asked only where the
+    /// march as it is first made refuses in every box
+    /// (`meet_once_then_again`): a pair that a later box answered the old
+    /// way keeps that answer, though the taken-up march would answer in
+    /// the first box; where the old way refuses in both, the boxes are
+    /// asked again in the same order; where that refuses too, the old
+    /// way's first refusal stands; and a failure of another kind is not
+    /// asked again at all. (The boxes of the test above: a "lake" in the
+    /// larger room that the smaller leaves out.)
+    #[test]
+    fn the_march_taken_up_again_is_asked_only_where_the_first_refuses_in_every_box() {
+        use std::cell::RefCell;
+        let tol = 1e-6;
+        let at = |lo: [f64; 3], hi: [f64; 3]| {
+            Bbox3::from_points([
+                Vec3::new(lo[0], lo[1], lo[2]),
+                Vec3::new(hi[0], hi[1], hi[2]),
+            ])
+        };
+        let terrain = at([0.0, -500.0, 700.0], [1000.0, 500.0, 800.0]);
+        let pit = at([400.0, 112.0, 735.0], [430.0, 132.0, 735.0]);
+        let lake = Vec3::new(415.0, 100.0, 735.0);
+        let room = 16.0 * tol + 0.013 * terrain.diagonal().max(pit.diagonal());
+        let within = overlap(&terrain, &pit, room).unwrap();
+        // What was asked: how, and whether in the box that holds the lake.
+        let asked = RefCell::new(Vec::new());
+        let ask = |how: &'static str, b: &Bbox3| {
+            asked.borrow_mut().push((how, b.contains(lake, 0.0)));
+        };
+        let meet =
+            |once: &dyn Fn(&Bbox3) -> Result<SurfaceMeeting, GeomError>,
+             again: &dyn Fn(&Bbox3) -> Result<SurfaceMeeting, GeomError>| {
+                asked.borrow_mut().clear();
+                let met = meet_once_then_again(
+                    (&terrain, &pit),
+                    (None, None),
+                    (&within, room),
+                    tol,
+                    once,
+                    again,
+                );
+                (met, asked.borrow().clone())
+            };
+        let taken_up = SurfaceMeeting::Coincident { same_normal: true };
+        // Refused the old way in the larger room, answered in the smaller.
+        let (met, order) = meet(
+            &|b: &Bbox3| {
+                ask("once", b);
+                if b.contains(lake, 0.0) {
+                    Err(GeomError::NoConvergence("first"))
+                } else {
+                    Ok(SurfaceMeeting::None)
+                }
+            },
+            &|b: &Bbox3| {
+                ask("again", b);
+                Ok(taken_up.clone())
+            },
+        );
+        assert_eq!(met, Ok(SurfaceMeeting::None));
+        assert_eq!(order, vec![("once", true), ("once", false)]);
+        // Refused the old way in both: asked again, the larger room first.
+        let (met, order) = meet(
+            &|b: &Bbox3| {
+                ask("once", b);
+                Err(GeomError::NoConvergence("first"))
+            },
+            &|b: &Bbox3| {
+                ask("again", b);
+                Ok(taken_up.clone())
+            },
+        );
+        assert_eq!(met, Ok(taken_up.clone()));
+        assert_eq!(
+            order,
+            vec![("once", true), ("once", false), ("again", true)]
+        );
+        // Refused both ways: the old way's first refusal stands.
+        let (met, order) = meet(
+            &|b: &Bbox3| {
+                ask("once", b);
+                Err(GeomError::NoConvergence(if b.contains(lake, 0.0) {
+                    "first"
+                } else {
+                    "second"
+                }))
+            },
+            &|b: &Bbox3| {
+                ask("again", b);
+                Err(GeomError::NoConvergence("taken up"))
+            },
+        );
+        assert_eq!(met, Err(GeomError::NoConvergence("first")));
+        assert_eq!(order.len(), 4);
+        // A failure of another kind is not asked again.
+        let (met, order) = meet(
+            &|b: &Bbox3| {
+                ask("once", b);
+                Err(GeomError::InvalidParameter("other"))
+            },
+            &|b: &Bbox3| {
+                ask("again", b);
+                Ok(taken_up.clone())
+            },
+        );
+        assert_eq!(met, Err(GeomError::InvalidParameter("other")));
+        assert_eq!(order, vec![("once", true)]);
     }
     use craft3d_math::Frame;
 
@@ -3399,6 +3620,7 @@ pub(super) mod tests {
                     a_edge: None,
                     b_edge: None,
                     end: false,
+                    hit: None,
                 };
                 let cuts = [cut(FRAC_PI_2 - away), cut(FRAC_PI_2 + away)];
                 let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
@@ -3504,6 +3726,7 @@ pub(super) mod tests {
                 a_edge: None,
                 b_edge: None,
                 end: false,
+                hit: None,
             })
             .collect();
         let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
@@ -3666,5 +3889,137 @@ pub(super) mod tests {
         assert_eq!(cut.body.faces.len(), 4);
         assert_eq!(cut.body.edges.len(), 7);
         assert_eq!(cut.body.vertices.len(), 5);
+    }
+
+    /// Two planes of a hipped roof at a convex corner of its outline, at
+    /// scale `k` (`tests/boolean_plane_by_vertex.rs`, where the case is
+    /// told): the prism over the outline under the first plane, the vertex
+    /// V that plane made on the corner's upright edge, and the second
+    /// plane's normal.
+    fn roof_corner(k: f64) -> (craft3d_topo::Body, Vec3, Vec3, Tolerance) {
+        use crate::profile::{Curve2, SketchCurve, detect_profiles};
+        let tolerance = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+        let corners = [[50.4, 0.0], [50.464, 9.658], [0.0, 20.0], [44.727, -8.56]]
+            .map(|[x, y]: [f64; 2]| [x * k, y * k]);
+        let outline: Vec<SketchCurve> = (0..4)
+            .map(|i| SketchCurve {
+                id: 1 + i as u64,
+                curve: Curve2::Line {
+                    start: corners[i],
+                    end: corners[(i + 1) % 4],
+                },
+            })
+            .collect();
+        let profiles = detect_profiles(&outline, &tolerance).unwrap();
+        let prism = crate::extrude::extrude(&profiles, &Frame::WORLD, 0.0, 40.0 * k, &tolerance)
+            .unwrap()
+            .body;
+        let at = Vec3::new(50.4 * k, 0.0, 14.0 * k);
+        let first = crate::boolean::boolean(
+            &prism,
+            &under_plane(at, Vec3::new(0.615_648, -0.004_08, 0.788_011), k),
+            crate::boolean::BooleanOp::Intersect,
+            &tolerance,
+        )
+        .unwrap()
+        .body;
+        let vertex = first
+            .vertices
+            .iter()
+            .map(|v| v.point)
+            .min_by(|p, q| p.distance(at).total_cmp(&q.distance(at)))
+            .unwrap();
+        assert!(vertex.distance(at) <= 1e-6 * tolerance.linear);
+        let normal = Vec3::new(0.513_191, -0.340_109, 0.788_011)
+            .normalized()
+            .unwrap();
+        (first, vertex, normal, tolerance)
+    }
+
+    /// A block whose top is the plane through `at` square to `normal`,
+    /// reaching `150 k` to every side of `at` and down from it.
+    fn under_plane(at: Vec3, normal: Vec3, k: f64) -> craft3d_topo::Body {
+        let plane = Frame::from_z(at, normal).unwrap();
+        let reach = 150.0 * k;
+        let corner = at - plane.x() * reach - plane.y() * reach - plane.z() * reach;
+        crate::primitives::block(&plane.at(corner).unwrap(), 2.0 * reach, 2.0 * reach, reach)
+            .unwrap()
+    }
+
+    /// A place where an edge meets the other body's surface, taken to an
+    /// end of the edge (`edge_cuts`), on a curve that runs through the
+    /// place and more than the tolerance from the end, leaves that curve
+    /// without a cut there (`clip`); where that leaves the imprint open,
+    /// the boolean is refused as two points closer together than the
+    /// tolerance can tell apart, with the pair's two faces
+    /// (`Sections::near`, `super::near_places`). (Where it leaves nothing
+    /// open the body is built as before: `tests/boolean_level_touch.rs` ›
+    /// `what_lies_beside_it`, a block beside a slanted face moved by 0.45
+    /// tolerances, refused only as zero thickness.) The roof's corner, the
+    /// second plane at `t` tolerances from V: over it by 0.5, the place
+    /// where the edge that leaves V along the wall crosses the plane is 1.6
+    /// tolerances from V, on the curve in which the plane meets the roof's
+    /// first plane, and V is 1.45 tolerances from that curve (the two
+    /// planes are 20 degrees apart); under it by 0.5 the eaves' place is
+    /// so; under it by 0.95 the upright edge's place, 1.2 tolerances from
+    /// V, is on the curves in which the plane meets the two walls, and V
+    /// more than a tolerance from both. The curve loses its piece from the
+    /// place on, and the
+    /// imprint of the second block's top is left open: until 2026-11-22
+    /// (`END_ONLY`, which notes no pair) the boolean said "imprint lost",
+    /// with no place. Where V is within the tolerance of every curve (0.3
+    /// either side), or no place is taken to it (0.7 and beyond), the body
+    /// is what it was, bit for bit.
+    #[test]
+    fn a_place_taken_to_an_end_off_a_curve_through_it_is_two_points_too_near() {
+        use crate::boolean::{BooleanOp, IMPRINT_LOST, boolean};
+        let each_way =
+            |first: &craft3d_topo::Body, second: &craft3d_topo::Body, tol: &Tolerance| {
+                let now = boolean(first, second, BooleanOp::Intersect, tol);
+                END_ONLY.with(|only| only.set(true));
+                let before = boolean(first, second, BooleanOp::Intersect, tol);
+                END_ONLY.with(|only| only.set(false));
+                (now, before)
+            };
+        for k in [1e-3, 1.0, 1e6] {
+            let (first, vertex, normal, tolerance) = roof_corner(k);
+            let block = |t: f64| under_plane(vertex + normal * (t * tolerance.linear), normal, k);
+            for t in [0.5, -0.5, -0.95] {
+                let what = format!("{t} tolerances from V at {k}");
+                match each_way(&first, &block(t), &tolerance) {
+                    (
+                        Err(KernelError::Unsupported { reason, faces, .. }),
+                        Err(KernelError::Unsupported { reason: was, .. }),
+                    ) => {
+                        assert_eq!(reason, NEAR, "{what}");
+                        assert_eq!(faces.len(), 2, "{what}: {faces:?}");
+                        assert_eq!(faces[0].0, Operand::A, "{what}");
+                        assert_eq!(faces[1].0, Operand::B, "{what}");
+                        assert_eq!(was, IMPRINT_LOST, "{what}");
+                    }
+                    other => panic!("{what}: {other:?}"),
+                }
+            }
+            for (t, count) in [
+                (0.0, 11),
+                (0.3, 11),
+                (0.7, 12),
+                (2.1, 12),
+                (-0.3, 11),
+                (-0.7, 12),
+                (-1.9, 12),
+            ] {
+                let what = format!("{t} tolerances from V at {k}");
+                let (now, before) = each_way(&first, &block(t), &tolerance);
+                let (now, before) = (now.unwrap().body, before.unwrap().body);
+                assert_eq!(crate::boolean::checked(&now, &tolerance), [], "{what}");
+                assert_eq!(now.vertices.len(), count, "{what}");
+                assert_eq!(
+                    craft3d_math::bits_of(&now),
+                    craft3d_math::bits_of(&before),
+                    "{what}"
+                );
+            }
+        }
     }
 }
