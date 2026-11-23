@@ -27,8 +27,8 @@
 //!   tangency), in boxes far larger than it;
 //!
 //! and, with crossing points, where a fold may be read and must be
-//! mended: two cylinders of one radius whose axes cross at 30, 60 and 90
-//! degrees, in boxes about a crossing point.
+//! mended: two cylinders of one radius whose axes cross at 30, 45, 60 and
+//! 90 degrees, in boxes about a crossing point.
 //!
 //! Each at four scales (1e-3 to 1e6), upright and turned. Each is asked of
 //! the marcher alone as the march is first made and with branches taken up
@@ -36,8 +36,18 @@
 //! second is held to the crossing as known in closed form (every curve on
 //! both surfaces and in the box, every point of it on the crossing, the
 //! curves together as long as the crossing in the box, every place of the
-//! crossing in the box on a curve), and where the first answers the two
-//! are the same bit for bit.
+//! crossing in the box on a curve; where curves of the crossing cross or
+//! pass close, a ball about the place is left out of the lengths and of
+//! the places asked), and where the first answers the two are the same bit
+//! for bit. No fold was read on any pair whose curves run one way.
+//!
+//! The opened figures, held to the crossing, are not all the crossing:
+//! where the surfaces are a tenth of a tolerance apart at the place the
+//! curves crossed, the march reads a crossing point there and in some
+//! boxes gives a stretch twice, on `main` as here and with no fold read
+//! (`near_crossings_read_as_crossing_points_give_no_stretch_twice`, which
+//! fails: a wrong answer the fold does not touch). Their families hold the
+//! fold and the bits only.
 
 // Test code: a failure in a helper is a failed test.
 #![allow(
@@ -52,10 +62,10 @@
 mod common;
 
 use common::{cylinder, distance, normal_at, plane, sphere};
-use craft3d_geom::Surface;
 use craft3d_geom::intersect::{
-    Meeting, SurfaceMeeting, meet_surfaces_numeric, meet_surfaces_numeric_once,
+    Meeting, SurfaceMeeting, meet_surfaces, meet_surfaces_numeric, meet_surfaces_numeric_once,
 };
+use craft3d_geom::{GeomError, Surface};
 use craft3d_math::{Bbox3, Frame, Portable, Tolerance, Vec3};
 use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_4, FRAC_PI_6, PI};
@@ -953,12 +963,61 @@ fn steinmetz_ellipses_opened_at_their_crossings_read_no_fold() {
     run("two tubes opened", &steinmetz_opened(), true, false);
 }
 
-/// Viviani's and Steinmetz's opened, held to the crossing: every answer
-/// is the crossing.
+/// **A wrong answer, on `main` as here; not of the fold.** Where Viviani's
+/// and Steinmetz's are opened by a ten-thousandth of a radius, the
+/// surfaces are a tenth of a tolerance apart where the curves crossed,
+/// and the march reads a point where they cross there, a little apart;
+/// in some boxes it gives a stretch of the crossing twice. Found by this
+/// review (Check 45288306141: in the two families above, 54 and 128 pairs
+/// of 720, every one at `η = ±1e-4`, at every scale, upright and turned),
+/// with the march as first made giving the same answer bit for bit and
+/// no fold read, so the answer `main` gives. Three of them, upright at
+/// scale 1:
+///
+/// - the two tubes, `η = 1e-4`, in the cube of 2.1 radii: two curves that
+///   are the same half of a loop, from one of the two points to the other;
+/// - the same in the cube of 4.2 radii: two curves that each go once round
+///   a loop, from one point back to it, over the halves of the loops that
+///   are given besides;
+/// - the ball and tube, `η = −1e-4`, in the cube of 4.2 ball radii: one
+///   curve that goes twice round a loop, from the point back to it; and
+///   asked as a boolean asks it (`meet_surfaces`, which has no closed form
+///   for a ball and a cylinder), the same. (Two cylinders whose radii are
+///   within the tolerance of each other meet in closed form there.)
 #[test]
-fn vivianis_and_steinmetzs_opened_are_the_crossing() {
-    run("ball and tube opened, held", &vivianis_opened(), true, true);
-    run("two tubes opened, held", &steinmetz_opened(), true, true);
+fn near_crossings_read_as_crossing_points_give_no_stretch_twice() {
+    let placed = placings(1.0)[0].1;
+    let size = sizes(1.5, 18);
+    let mut failed = Vec::new();
+    let mut held_by = |by: &str, pair: &Pair, met: Result<SurfaceMeeting, GeomError>| {
+        let why = match met {
+            Ok(SurfaceMeeting::Meets(m)) => held(pair, &m).err(),
+            other => Some(format!("{other:?}")),
+        };
+        if let Some(why) = why {
+            failed.push(format!("{} ({by}): {why}", pair.what));
+        }
+    };
+    for pair in [
+        tubes_opened(placed, 1e-4, size[1], "upright"),
+        tubes_opened(placed, 1e-4, size[3], "upright"),
+        ball_and_tube_opened(placed, -1e-4, size[3], "upright"),
+    ] {
+        let met = meet_surfaces_numeric(&pair.a, &pair.b, &pair.within, &pair.tol);
+        held_by("the marcher", &pair, met);
+    }
+    let pair = ball_and_tube_opened(placed, -1e-4, size[3], "upright");
+    let met = meet_surfaces(&pair.a, &pair.b, &pair.within, &pair.tol);
+    held_by("as a boolean asks it", &pair, met);
+    for line in &failed {
+        say(&format!("REVIEW-TWICE {line}"));
+    }
+    assert!(
+        failed.is_empty(),
+        "{} answers are not the crossing:\n{}",
+        failed.len(),
+        failed.join("\n")
+    );
 }
 
 /// A small circle where a plane cuts a cap off a ball, the surfaces at
@@ -978,14 +1037,16 @@ fn a_small_circle_near_a_tangency_reads_no_fold() {
 }
 
 /// Two cylinders of one radius whose axes cross at 30, 45, 60 and 90
-/// degrees, in cubes of 1.5 to 270 radii about a point where their
-/// ellipses cross: a fold may be read there (a step through that point),
-/// and every answer taken up again is the crossing.
+/// degrees, in cubes of 1.5 to 1 090 radii (and of 400) about a point
+/// where their ellipses cross: a fold may be read there (a step through
+/// that point; at 30 degrees, turned, in the cube of 400 radii at every
+/// scale, Check 45287391492), and every answer taken up again is the
+/// crossing.
 #[test]
 fn tubes_crossing_at_an_angle_are_the_crossing_about_their_crossing_points() {
     let pairs = every(|placed, how, pairs| {
         for gamma in [FRAC_PI_6, FRAC_PI_4, FRAC_PI_3, FRAC_PI_2] {
-            for size in sizes(1.5, 16) {
+            for size in sizes(1.5, 20).into_iter().chain([400.0]) {
                 pairs.push(tubes_at(placed, gamma, size, how));
             }
         }
