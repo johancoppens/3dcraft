@@ -866,9 +866,11 @@ fn a_far_floating_cylinder_finds_its_angles_of_loll() {
         );
         println!("CYLINDER {ratio:e}: 0x{:016x} {found}", hash(&found));
         if ratio == 0.0 {
+            // `main`'s answer to the same input (the centre of gravity's x
+            // the sum −0.0 + 0.0, so +0.0; `round2/canfloat.py`).
             assert_eq!(
                 hash(&found),
-                0xe40e_5693_7ff0_fbd1,
+                0x26b4_ebdb_fd40_4451,
                 "main's answer: {found}"
             );
         }
