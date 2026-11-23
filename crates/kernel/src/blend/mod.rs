@@ -543,6 +543,18 @@ pub(crate) enum BlendError {
         /// Smaller sizes, tried, fail the same way.
         smaller_fails: bool,
     },
+    /// The boolean that cuts the tool of `edge` into the body, the first
+    /// of the blend, or the one that trims a tool where its edge ends,
+    /// built a body that fails its own check (`error`, an invalid body).
+    /// Said as [`BlendError::Boolean`], the boolean's refusal, unless the
+    /// search for what fits finds the largest size that fits where the
+    /// faces give it and the sizes past it fail too ([`fit`]). Until
+    /// 2026-11-23 it was passed on as the kernel's error, and no search
+    /// ran.
+    Invalid {
+        edge: EdgeId,
+        error: Box<KernelError>,
+    },
     /// A fade of the law of `edge`'s fillet that is not built: its radius
     /// changes too fast, or runs to less than the tolerance tells from
     /// nothing ([`law::FadeFault`], with what would be built).
@@ -1443,7 +1455,16 @@ fn trim(
         refuse_zero_thickness: false,
         loosest: None,
     };
-    let result = boolean_with(&tool.body, &block, BooleanOp::Subtract, tolerance, &options)?;
+    // What it builds that fails its own check is its fault at this size,
+    // as the boolean that cuts the tool in is (`combine`).
+    let result = boolean_with(&tool.body, &block, BooleanOp::Subtract, tolerance, &options)
+        .map_err(|error| match error {
+            KernelError::InvalidBody { .. } => BlendError::Invalid {
+                edge,
+                error: Box::new(error),
+            },
+            other => BlendError::Kernel(other),
+        })?;
     let mut slope = None;
     for (index, source) in result.faces.iter().enumerate() {
         if source.operand != Operand::A || source.face != tool.slope {
@@ -1743,7 +1764,21 @@ fn combine(
     let result =
         crate::loose_op::boolean_for_tool(&state.body, tool, op, &state.body, tolerance, &options)
             .map_err(|error| match error {
-                KernelError::InvalidBody { .. } if first => BlendError::Kernel(error),
+                // The body given fails the check (only the first boolean
+                // checks it): no size mends that.
+                KernelError::InvalidBody { operation, .. }
+                    if first && operation == crate::boolean::FIRST_OPERAND =>
+                {
+                    BlendError::Kernel(error)
+                }
+                // What the first boolean built (or the tool it was given)
+                // fails the check: the boolean's fault at this size, which
+                // the search for what fits takes up (`fit`); a later
+                // boolean's is a refusal of the boolean, as it was.
+                KernelError::InvalidBody { .. } if first => BlendError::Invalid {
+                    edge,
+                    error: Box::new(error),
+                },
                 other => BlendError::Boolean {
                     edge,
                     error: Box::new(other),
@@ -2639,6 +2674,10 @@ fn named_before(
             },
             None => BlendError::Kernel(*error),
         },
+        BlendError::Invalid { edge, error } => match edge_was(edge) {
+            Some(edge) => BlendError::Invalid { edge, error },
+            None => BlendError::Kernel(*error),
+        },
         BlendError::Pinched { edge, pinch } => match edge_was(edge) {
             Some(edge) => BlendError::Pinched { edge, pinch },
             None => lost(),
@@ -3095,6 +3134,7 @@ impl From<BlendError> for Failure {
         let edge = match &error {
             BlendError::Refused { edge, .. } => *edge,
             BlendError::Boolean { edge, .. }
+            | BlendError::Invalid { edge, .. }
             | BlendError::TooLarge { edge, .. }
             | BlendError::Spindle { edge, .. }
             | BlendError::Pinched { edge, .. }

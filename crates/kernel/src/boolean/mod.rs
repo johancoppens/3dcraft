@@ -291,6 +291,11 @@ enum Mode {
 pub(crate) type Reason = &'static str;
 
 const OPERATION: &str = "boolean";
+/// The operation an invalid body is said to come from when the first
+/// operand fails the check ([`BooleanOptions::trust_operands`] off): the
+/// body given, not the result. The blends tell the two apart
+/// (`blend::combine`).
+pub(crate) const FIRST_OPERAND: &str = "the first operand of a boolean";
 pub(crate) const NEAR: Reason =
     "two points closer together than the tolerance can tell apart (at the edge of tolerance)";
 const NEARLY_COINCIDENT: Reason = "two faces between half and twice the tolerance apart: neither the same surface nor safely two (at the edge of tolerance)";

@@ -106,6 +106,13 @@ fn said(error: BlendError) -> KernelError {
             error,
             smaller_fails,
         },
+        // The boolean's invalid body, where no size found fits: its
+        // refusal.
+        BlendError::Invalid { edge, error } => KernelError::FilletBoolean {
+            edge,
+            error,
+            smaller_fails: false,
+        },
         BlendError::Fade { edge, fault } => KernelError::FilletFade { edge, fault },
         BlendError::Pinched { edge, pinch } => KernelError::FilletPinched {
             edge,
