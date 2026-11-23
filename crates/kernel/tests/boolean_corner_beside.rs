@@ -18,11 +18,12 @@
 //! With `d` between one and two tolerances, H and W are two places closer
 //! together than the tolerance can tell apart, and the corner is further
 //! than the tolerance from the plane, so neither is taken to it. Until
-//! 2026-11-23 every boolean of the two was refused as "two points closer
-//! together than the tolerance can tell apart (at the edge of tolerance)",
-//! however far beyond the corner the block's face began (5 tolerances, 37
-//! as the wing's spar does, 300): `section.rs` › `clip` refused two cuts of
-//! a curve that close whether or not the curve there is in both faces.
+//! 2026-11-23 every boolean of the two and their interference were refused
+//! as "two points closer together than the tolerance can tell apart (at
+//! the edge of tolerance)", however far beyond the corner the block's face
+//! began (3 tolerances, 37 as the wing's spar does, 300; Check 45241997155):
+//! `section.rs` › `clip` refused two cuts of a curve that close whether or
+//! not the curve there is in both faces.
 //! There it is in neither: H and W are outside the block's face, and the
 //! two bodies are `beside` (times the cosine of 25 degrees) apart.
 //!
