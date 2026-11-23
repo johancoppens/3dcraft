@@ -24,8 +24,16 @@
 //!   its own strict sums at the origin (a rounding allowed far too widely
 //!   takes its first panel with its second moments some hundreds of units
 //!   off: `plan/measure-far/round2/wavy.py` in the workshop).
+//! - After the second review (2026-11-23): a body's face with an edge on
+//!   a conic of wide spread, summed as a body's section is (`faces_sums`
+//!   under `held_sums`, not this file's `loop_sums`, which makes the check
+//!   itself); and rational splines of spread 2 of degrees 16 to 32, beyond
+//!   the conic the bound on its poles was argued for, far away against
+//!   their own strict sums at the origin.
 
 use super::*;
+use craft3d_geom::Plane;
+use craft3d_topo::Coedge;
 use std::cell::RefCell;
 use std::f64::consts::{FRAC_1_SQRT_2, SQRT_2};
 
@@ -320,6 +328,66 @@ fn a_conic_of_wide_spread_keeps_the_strict_answer_or_refusal() {
     }
 }
 
+/// The conic of wide spread as a body's face in the plane (its chord and
+/// its arc, one loop), summed as `sums_about` sums a body's section:
+/// [`faces_sums`] under [`held_sums`]. Held to the rounding the face is
+/// [`WIDE_SPREAD`] before any panel, and its sums at the first offset and
+/// with the body's flag set are the strict pass's to the bit, its sums or
+/// its refusal in its words. `loop_sums` above makes the spread check
+/// itself, so without this no test held a body's section to it (the
+/// second review of 2026-11-23: the check in `faces_sums` and the one in
+/// `Reach::of` both taken out, every other test of this file passed,
+/// Check 45235939588).
+#[test]
+fn a_face_with_an_edge_of_wide_spread_keeps_the_strict_answer() {
+    let side = side();
+    let (s, h) = (1.0, 0.5);
+    let size = 0.5 * s.phypot(h);
+    let rule = (Rule::new(8), Rule::new(16));
+    let bits = |found: Result<Vec<[f64; 6]>, &'static str>| {
+        found.map(|faces| {
+            faces
+                .iter()
+                .map(|sums| sums.map(f64::to_bits))
+                .collect::<Vec<_>>()
+        })
+    };
+    for w in [3.0, 1e4, 1e10, 1.0 / 3.0] {
+        for ratio in [0.0, 1e3, 1e5] {
+            let what = format!("w {w:e} at {ratio:e} sizes");
+            let c = OUT * (ratio * size);
+            let net = conic_net(s, h);
+            let (a, b) = (at(c, net[0].0, net[0].1), at(c, net[2].0, net[2].1));
+            let chord = line(a, b);
+            let arc = bezier(c, &net, &[1.0, w, 1.0], false);
+            let mut body = Body::new(BodyKind::Sheet);
+            let (va, vb) = (body.add_vertex(a), body.add_vertex(b));
+            let along = body.add_edge(chord.curve, chord.range, va, vb);
+            let back = body.add_edge(arc.curve, arc.range, va, vb);
+            let lp = body.add_loop(vec![
+                Coedge {
+                    edge: along,
+                    reversed: false,
+                },
+                Coedge {
+                    edge: back,
+                    reversed: true,
+                },
+            ]);
+            let frame = Frame::new(c, side.normal, side.x_axis).unwrap();
+            body.add_face(Surface::Plane(Plane::new(frame)), false, vec![lp]);
+            let sum = |held: Held| faces_sums(&body, &[0], &side, (c, size), &rule, held);
+            assert_eq!(sum(Held::Rounding).err(), Some(WIDE_SPREAD), "{what}");
+            let strict = bits(sum(Held::Strict));
+            println!("WIDE FACE {what}: strict {strict:?}");
+            for flagged in [false, true] {
+                let found = held_sums(sum, true, Some(&Cell::new(flagged)));
+                assert_eq!(bits(found), strict, "{what}, flagged {flagged}");
+            }
+        }
+    }
+}
+
 // ----------------------------------------------------------- the choice
 
 /// What [`held_sums`] does with each answer of the two passes, by a stub
@@ -601,4 +669,115 @@ fn a_spline_of_high_degree_far_away_is_its_own_sums_at_the_origin() {
             );
         }
     }
+}
+
+/// Rational splines whose weights spread twofold, of degrees beyond the
+/// conic's (the second review of 2026-11-23): one span of degree 16, 24
+/// and 32, its weights 1, 2, 1, 2, … (a denominator whose zeros come
+/// nearest the span for that spread: outside the ellipse |t| + |1 − t| =
+/// 3^(1/n), `ρ` 1.30 at degree 32 against the conic's 3.15) or 1, 2, …, 2,
+/// 1, on a zigzag net and on a hairpin net, closed by its chord, held to
+/// the rounding 1e3 to 1e10 times its size from the origin: every integral
+/// within 64 units of `ε` times the distance along its perimeter (its
+/// control polygon and chord) times its size to the integral's power less
+/// two of its own strict sums at the origin. At these degrees the 16-node
+/// sum over the whole span is not always nearer the integral than the
+/// 8-node one (its error up to 2.5 times the 8-node one's at degree 24),
+/// so the pair does not tell the first panel's error as it does a
+/// conic's, and the error taken grows with the allowance: held to 16 units
+/// in the last place the panels are halved to 8 to 28 and the worst is
+/// 0.25 units (over the review's 1,620 such sums of degrees 2 to 32, 0.48
+/// out to 1e10 and 0.75 at 1e13); held to 64 units in the last place 1.3, to 1e3 12.6, and
+/// to 1e4 degree 24's area 72 units (2e-3 of itself) off 1e10 away, which
+/// this test refuses (Check 45235939588).
+#[test]
+fn a_rational_spline_of_spread_two_and_high_degree_far_away_is_its_own_sums_at_the_origin() {
+    let nets = |n: usize| -> [(&'static str, Vec<(f64, f64)>); 2] {
+        let nf = n as f64;
+        let zigzag: Vec<(f64, f64)> = (0..=n)
+            .map(|i| {
+                let mut u = -0.5 + i as f64 / nf;
+                let v = if i == 0 || i == n {
+                    -0.3
+                } else if i % 2 == 1 {
+                    u += 0.35 / nf;
+                    0.55
+                } else {
+                    u -= 0.35 / nf;
+                    0.05
+                };
+                (u, v)
+            })
+            .collect();
+        let hairpin: Vec<(f64, f64)> = (0..=n)
+            .map(|i| {
+                let s = i as f64 / nf;
+                if s <= 0.5 {
+                    (-0.5 + 2.0 * s, -0.05 - 0.8 * s)
+                } else {
+                    (1.5 - 2.0 * s, 0.85 - 0.8 * s)
+                }
+            })
+            .collect();
+        [("zigzag", zigzag), ("hairpin", hairpin)]
+    };
+    let mut worst = 0.0_f64;
+    for n in [16, 24, 32] {
+        let alternating: Vec<f64> = (0..=n)
+            .map(|i| if i % 2 == 0 { 1.0 } else { 2.0 })
+            .collect();
+        let mut middle = vec![2.0; n + 1];
+        middle[0] = 1.0;
+        middle[n] = 1.0;
+        for (name, net) in nets(n) {
+            let (mut lo, mut hi) = (
+                (f64::INFINITY, f64::INFINITY),
+                (-f64::INFINITY, -f64::INFINITY),
+            );
+            for &(u, v) in &net {
+                lo = (lo.0.min(u), lo.1.min(v));
+                hi = (hi.0.max(u), hi.1.max(v));
+            }
+            let size = 0.5 * (hi.0 - lo.0).phypot(hi.1 - lo.1);
+            let (first, last) = (net[0], net[n]);
+            let perimeter = net
+                .windows(2)
+                .map(|w| (w[1].0 - w[0].0).phypot(w[1].1 - w[0].1))
+                .sum::<f64>()
+                + (last.0 - first.0).phypot(last.1 - first.1);
+            for (weighting, weights) in [("1, 2, 1, …", &alternating), ("1, 2, …, 2, 1", &middle)]
+            {
+                let closed = |c: Vec3| {
+                    vec![
+                        bezier(c, &net, weights, false),
+                        line(at(c, last.0, last.1), at(c, first.0, first.1)),
+                    ]
+                };
+                let (reference, _) =
+                    loop_sums(&closed(Vec3::ZERO), Vec3::ZERO, size, Held::Strict).unwrap();
+                for far in [1e3, 1e5, 1e7, 1e10] {
+                    let what = format!("degree {n} {name} weights {weighting} at {far:e} sizes");
+                    let c = OUT * (far * size);
+                    let (sums, panels) = loop_sums(&closed(c), c, size, Held::Rounding)
+                        .unwrap_or_else(|e| panic!("{what}: {e}"));
+                    let mut most = 0.0_f64;
+                    for (k, power) in POWERS.into_iter().enumerate() {
+                        let unit = f64::EPSILON * far * size * perimeter * size.ppowi(power - 2);
+                        let gap = (sums[k] - reference[k]).abs();
+                        most = most.max(gap / unit);
+                        assert!(
+                            gap <= 1e-12 * size.ppowi(power) + 64.0 * unit,
+                            "{what}: integral {k} {:e}, at the origin {:e} ({:.1} units)",
+                            sums[k],
+                            reference[k],
+                            gap / unit
+                        );
+                    }
+                    worst = worst.max(most);
+                    println!("SPREAD TWO {what}: {panels} panels, {most:.3} units");
+                }
+            }
+        }
+    }
+    println!("SPREAD TWO worst {worst:.3} units");
 }
