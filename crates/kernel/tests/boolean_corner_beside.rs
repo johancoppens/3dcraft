@@ -23,12 +23,15 @@
 //! the edge of tolerance)", however far beyond the corner the block's face
 //! began (3 tolerances, 37 as the wing's spar does, 300; Check 45241997155):
 //! `section.rs` › `clip` refused two cuts of a curve that close whether or
-//! not the curve there is in both faces. Here H and W, the corner and the
-//! edges at it are outside the block's face and further than twice the
-//! tolerance from it, and the two bodies are `beside` (times the cosine of
-//! 25 degrees) apart. A corner whose edges lean away from the face can come
-//! nearer to it than H and W do (the review's case, and the last test
-//! here): there the two places are refused still.
+//! not the curve there is in both faces. Here H and W are outside the
+//! block's face, and the two bodies are `beside` (times the cosine of 25
+//! degrees) apart. Since round three (after the second review) the two
+//! places are told apart only where the whole block is further than 18
+//! tolerances from both (so that nothing within 16 tolerances of them is
+//! within twice the tolerance of it): a corner whose edges lean away from
+//! the face, an edge from beyond the corner, a round side beside the face
+//! can come nearer to the block than H and W do (the reviews' cases, and
+//! the last test here).
 //!
 //! In the Jig the slanting edge is the rib's skin, nearly level, a fitted
 //! spline that ends within the tolerance of the spar's plane (0.997
@@ -65,10 +68,13 @@ const SCALES: [f64; 4] = [1e-3, 1.0, 1e3, 1e6];
 const OVER: [f64; 3] = [1.06, 1.5, 1.9];
 
 /// How far beyond the corner the block's face begins, in tolerances,
-/// where the corner is clear of it: by a little (W is then 2.72
-/// tolerances from the face's edge, past twice the tolerance), as the
-/// wing's spar does (37), and by a lot.
-const CLEAR: [f64; 3] = [3.0, 37.0, 300.0];
+/// where the block is clear of the places: by a little (W is then 19.0
+/// tolerances from the face's edge, past the 18 the repair asks since
+/// round three: 16 about the places and twice the tolerance), as the
+/// wing's spar does (37), and by a lot. (Until round three, 3 tolerances
+/// as well, W 2.72 from the face's edge: refused again since, as on
+/// `main`, with 17, below.)
+const CLEAR: [f64; 3] = [21.0, 37.0, 300.0];
 
 /// The tolerance at scale `k`: the Jig's 0.01 mm at 1.
 fn tolerance(k: f64) -> Tolerance {
@@ -299,7 +305,7 @@ fn cases(
 
 /// The wing's state at four scales, as found and turned in space: the
 /// block's bottom one to two tolerances over the corner, its face
-/// beginning 3, 37 and 300 tolerances beyond it. The two bodies are told
+/// beginning 21, 37 and 300 tolerances beyond it. The two bodies are told
 /// apart. (Refused at every one of them until 2026-11-23.)
 #[test]
 fn a_spar_beside_a_corner_of_a_notch_is_told_apart() {
@@ -318,7 +324,8 @@ fn a_spar_beside_a_corner_of_a_notch_is_told_apart() {
 /// The same with a freeform neighbour, at 1 and 1e3: the block's bottom a
 /// spline surface on its plane (where the prism's edges meet it is then
 /// found numerically, and the curve it meets the prism's face in is
-/// traced), or the prism's face `z = 0` one.
+/// traced), or the prism's face `z = 0` one. (`main` answers the first
+/// already; the second is the repair's, the block's faces all flat.)
 #[test]
 fn a_spar_beside_a_corner_of_a_notch_is_told_apart_beside_a_spline_surface() {
     for spline in [Spline::Bottom, Spline::Side] {
@@ -326,7 +333,7 @@ fn a_spar_beside_a_corner_of_a_notch_is_told_apart_beside_a_spline_surface() {
             &[1.0, 1e3],
             &["as found"],
             &[1.06, 1.5],
-            &[3.0, 37.0],
+            &[21.0, 37.0],
             spline,
         );
         for (what, rib, spar, tol) in &all {
@@ -340,14 +347,18 @@ fn a_spar_beside_a_corner_of_a_notch_is_told_apart_beside_a_spline_surface() {
 /// or begins a tolerance beyond it, the corner is within twice the
 /// tolerance of the block's face and further than the tolerance from it,
 /// and every boolean of the two is refused at the edge of tolerance,
-/// naming a face of each body. As found and turned, at four scales.
+/// naming a face of each body. And where it begins 3 or 17 tolerances
+/// beyond it (W 2.72 and 15.4 tolerances from the face's edge), the block
+/// is within the 18 tolerances of the places the repair asks to be clear
+/// (round three; 3 was told apart before it): refused as on `main`. As
+/// found and turned, at four scales.
 #[test]
 fn a_corner_within_twice_the_tolerance_of_the_face_is_refused() {
     let all = cases(
         &SCALES,
         &["as found", "turned"],
         &[1.06, 1.5],
-        &[-5.0, 0.0, 1.0],
+        &[-5.0, 0.0, 1.0, 3.0, 17.0],
         Spline::Neither,
     );
     for (what, rib, spar, tol) in &all {
@@ -401,23 +412,24 @@ fn beside_for_gap(lean: f64, d: f64, gap: f64) -> f64 {
 }
 
 /// A corner whose edges lean away from the block's face (0.5 and 1.5 to the
-/// left per unit up), at the edges of the band: the block's bottom 1.06 or
-/// 1.5 tolerances over the corner, its face beginning where the least
-/// distance of the two bodies (the leaning edge's piece under the plane to
-/// the block's edge) is 1.95 or 1.99 tolerances, or 2.01 or 2.05. Both
-/// places where the plane crosses the triangle's edges are then clear of
-/// the face (2.14 to 3.61 tolerances from its edge), and so, at 1.5 over
-/// it, is the corner itself (2.09 to 2.17); what is within twice the
-/// tolerance is a stretch of the leaning edge between them. Under twice the
-/// tolerance every boolean is refused at the edge of tolerance, as on
-/// `main`; past it the bodies are told apart. As found and turned, at four
-/// scales (1.99 and 2.01 at 1, as found; 2.01 at 1.5 over the corner only:
-/// at 1.06, where the corner itself is 2.03 tolerances from the face, the
-/// union's own check of zero thickness refuses the union at the block's
-/// edge and the interference says touch, Check 45265103821, that check's
-/// margin and not this refusal's).
+/// left per unit up). The block's bottom 1.06 or 1.5 tolerances over the
+/// corner, its face beginning where the least distance of the two bodies
+/// (the leaning edge's piece under the plane to the block's edge) is 1.95
+/// or 1.99 tolerances, or 2.01 or 2.05: both places where the plane crosses
+/// the triangle's edges are then clear of the face (2.14 to 3.61
+/// tolerances from its edge), and so, at 1.5 over it, is the corner itself
+/// (2.09 to 2.17). Every boolean is refused at the edge of tolerance, as on
+/// `main`: the block is within the 18 tolerances of the places the repair
+/// asks to be clear (round three). Before round three the second repair
+/// told 2.01 and 2.05 apart, but for 2.01 at 1.06 over the corner, where
+/// the union was refused as zero thickness at the block's edge and the
+/// interference said touch (Check 45265103821; not traced); the first
+/// repair built the union at 1.95 and 1.99 (the first review's finding).
+/// With the face 21 and 37 tolerances beyond the corner, the bodies are
+/// told apart. As found and turned, at four scales (1.99 and 2.01 at 1, as
+/// found).
 #[test]
-fn a_corner_that_leans_away_from_the_face_is_told_apart_only_past_twice_the_tolerance() {
+fn a_corner_that_leans_away_from_the_face_is_refused_within_reach_of_the_places() {
     let lean = (0.5, 1.5);
     let mut refused = Vec::new();
     let mut apart = Vec::new();
@@ -431,7 +443,7 @@ fn a_corner_that_leans_away_from_the_face_is_told_apart_only_past_twice_the_tole
             let fine = k == 1.0 && name == "as found";
             for d in [1.06, 1.5] {
                 for gap in [1.95, 1.99, 2.01, 2.05] {
-                    if (!fine && (gap == 1.99 || gap == 2.01)) || (gap == 2.01 && d == 1.06) {
+                    if !fine && (gap == 1.99 || gap == 2.01) {
                         continue;
                     }
                     let beside = beside_for_gap(lean.0, d, gap);
@@ -442,11 +454,16 @@ fn a_corner_that_leans_away_from_the_face_is_told_apart_only_past_twice_the_tole
                     let (rib, spar, tol) =
                         leaning_pair(k, &frame, d, beside, lean, Spline::Neither);
                     println!("corner_beside: {what}: {}", said(&rib, &spar, &tol));
-                    if gap < 2.0 {
-                        refused.push((what, rib, spar, tol));
-                    } else {
-                        apart.push((what, rib, spar, tol));
-                    }
+                    refused.push((what, rib, spar, tol));
+                }
+                for beside in [21.0, 37.0] {
+                    let what = format!(
+                        "leaning, {d} tolerances over the corner, the face {beside} beyond the corner, at {k}, {name}"
+                    );
+                    let (rib, spar, tol) =
+                        leaning_pair(k, &frame, d, beside, lean, Spline::Neither);
+                    println!("corner_beside: {what}: {}", said(&rib, &spar, &tol));
+                    apart.push((what, rib, spar, tol));
                 }
             }
         }

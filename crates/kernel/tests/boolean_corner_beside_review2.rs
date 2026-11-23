@@ -15,7 +15,10 @@
 //! Two pairs whose union the repair builds with its parts closer together
 //! than twice the tolerance, where `main` refuses it (the developer's rule
 //! of 2026-10-22 refuses faces of exact bodies between half and twice the
-//! tolerance apart). Both tests fail on 96e14ddc: a wrong body each.
+//! tolerance apart). Both tests fail on 96e14ddc: a wrong body each. Since
+//! round three (`section.rs` › `clear_of_body`: every face of the first
+//! body further than 18 tolerances from both places) both pairs are
+//! refused at the two places, as on `main`, and both tests pass.
 //!
 //! - The proof measures X, not the body X bounds. A rod with a flat along
 //!   its underside, turned as the repair's block is, whose round side

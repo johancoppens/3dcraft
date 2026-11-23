@@ -13,15 +13,21 @@
 //! repair's prism has one edge upright.
 //!
 //! - Where the block's face begins: the nearer of the two places is 1.95
-//!   tolerances from the face's edge (refused, as on `main`) or 2.05 (told
-//!   apart).
+//!   or 2.05 tolerances from the face's edge (refused, as on `main`; 2.05
+//!   was told apart from the first repair until round three, after the
+//!   second review), or 17.9 (refused) or 18.1 (told apart): since round
+//!   three everything of the first body must be further than 18
+//!   tolerances from both places.
 //! - A corner whose edges lean away from the face is nearer the face than
 //!   the two places are: both can be clear of it while the corner is not.
 //!   On b77d1956 the union of such a pair was built with its two parts
 //!   1.90 tolerances apart, which `main` refused; refused again since.
 //! - A fillet and a chamfer of a body with a loose vertex, whose tool's
 //!   boolean is tried at four times the working tolerance first
-//!   (`loose_op::boolean_for_tool`) and meets the state there.
+//!   (`loose_op::boolean_for_tool`) and meets the state there: since round
+//!   three that try is refused as on `main` (the corner is within 18 of
+//!   those tolerances of the block), and what is built, or refused, is
+//!   `main`'s.
 
 #![allow(
     clippy::unwrap_used,
@@ -176,9 +182,12 @@ fn told_apart(rib: &Body, spar: &Body, tol: &Tolerance, what: &str) {
 /// Where the block's face may begin: the nearer place (W, where the plane
 /// crosses the upright edge) 1.95 tolerances from the face's edge, square
 /// to it, is within twice the tolerance of the face and every boolean is
-/// refused at the edge of tolerance, as on `main`; at 2.05 tolerances the
-/// two bodies (then 2.05 tolerances apart) are told apart. The repair's
-/// test has 1 tolerance beyond the corner (0.91 square) and 3 (2.72).
+/// refused at the edge of tolerance, as on `main`. At 2.05 tolerances the
+/// two bodies (then 2.05 tolerances apart) were told apart until round
+/// three; since, the first body must be further than 18 tolerances from
+/// both places (16 about them, and twice the tolerance), so 2.05 and 17.9
+/// are refused as on `main`, and 18.1 told apart. The repair's test has 1
+/// tolerance beyond the corner (0.91 square), 17 (15.4) and 21 (19.0).
 #[test]
 fn the_face_may_begin_twice_the_tolerance_from_the_nearer_place() {
     let c = cos_turn();
@@ -190,7 +199,7 @@ fn the_face_may_begin_twice_the_tolerance_from_the_nearer_place() {
                 Frame::WORLD
             };
             for d in [1.06, 1.5] {
-                for (gap, apart) in [(1.95, false), (2.05, true)] {
+                for (gap, apart) in [(1.95, false), (2.05, false), (17.9, false), (18.1, true)] {
                     let what = format!(
                         "{d} tolerances over the corner, W {gap} tolerances from the face's edge, at {k}, {name}"
                     );
@@ -231,9 +240,10 @@ fn the_face_may_begin_twice_the_tolerance_from_the_nearer_place() {
 /// 2026-10-22 refuses it, and `main` did ("two points closer together…").
 /// On b77d1956 the union was built, two shells 1.90 tolerances apart, with
 /// the check passing (`craft3d-cli`, the same pair 5 high at 1, as found);
-/// since the round after the review the edges that carry the two places
-/// and the corner between them must keep further than twice the tolerance
-/// from the face as well (`section.rs` › `beside_the_face`).
+/// refused since the round after the review (the edges that carry the two
+/// places and the corner proven clear of the face), and since round three
+/// by the block itself, within 18 tolerances of the places
+/// (`section.rs` › `clear_of_body`).
 #[test]
 fn a_corner_that_leans_away_from_the_face_within_twice_the_tolerance_of_it_is_not_united() {
     for &k in &[1.0, 1e3] {
@@ -337,9 +347,10 @@ fn notched(nudged: Nudged) -> (Body, EdgeId, Tolerance) {
 /// A fillet of radius 1 and a chamfer of 1 along the 800 long edge of a
 /// body with a loose vertex, where four times the working tolerance puts a
 /// corner of the rib's notch between one and two of those under the plane
-/// of the blended face's neighbour, 0.37 mm beyond it: each is built,
-/// valid with its table, and takes away what a straight edge's blend does,
-/// `(1 - π/4) r² L` and `d² L / 2`. On `main` (1f196da4) the tool's
+/// of the blended face's neighbour, 0.37 mm beyond it: on the first and
+/// second repairs each was built, valid with its table, taking away what a
+/// straight edge's blend does, `(1 - π/4) r² L` and `d² L / 2`, the tool's
+/// boolean built at its first try. On `main` (1f196da4) the tool's
 /// boolean is refused at four times the working tolerance ("two points
 /// closer together…"), and tried again at the working tolerance: with the
 /// edge's own far end nudged that is refused too ("two faces between half
@@ -347,11 +358,39 @@ fn notched(nudged: Nudged) -> (Body, EdgeId, Tolerance) {
 /// with a vertex elsewhere nudged it is built, and the body is the one
 /// built here bit for bit (`craft3d-cli` on both, the body written to STEP:
 /// the same file but for its name).
+///
+/// Since round three (after the second review) the first try is refused
+/// again, as on `main`: the corner is within 18 of those tolerances of the
+/// block. So with the edge's own far end nudged the fillet and the chamfer
+/// fail as on `main`, in the second try's words, and with a vertex
+/// elsewhere nudged they are built as on `main`, by the second try.
 #[test]
 fn a_fillet_and_a_chamfer_of_a_loose_body_beside_a_corner_of_a_notch() {
     for nudged in [Nudged::EndOfTheEdge, Nudged::Elsewhere] {
         let (body, edge, tol) = notched(nudged);
         let what = format!("{nudged:?}");
+        if let Nudged::EndOfTheEdge = nudged {
+            let refused = |e: &KernelError| {
+                e.to_string()
+                    .contains("between half and twice the tolerance apart")
+            };
+            match fillet(&body, &[FilletEdge { edge, radius: 1.0 }], &tol) {
+                Err(e) if refused(&e) => {}
+                Err(e) => panic!("{what}: the fillet is refused in other words: {e}"),
+                Ok(_) => panic!("{what}: the fillet is built, where main refuses it"),
+            }
+            let first = edge_faces(&body)[edge.0 as usize][0];
+            let size = ChamferSize::Distances {
+                first: 1.0,
+                second: 1.0,
+            };
+            match chamfer(&body, &[ChamferEdge { edge, first, size }], &tol) {
+                Err(e) if refused(&e) => {}
+                Err(e) => panic!("{what}: the chamfer is refused in other words: {e}"),
+                Ok(_) => panic!("{what}: the chamfer is built, where main refuses it"),
+            }
+            continue;
+        }
         let before = mass(&body).volume;
         let slack = 1e-9 * before;
         let cap = default_loosest(tol.linear);
