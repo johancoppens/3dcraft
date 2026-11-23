@@ -521,6 +521,165 @@ fn seeds_121649_and_128676_are_refused_by_the_boolean_in_the_fillets_words() {
     held(&wrong);
 }
 
+/// A cylinder of radius 5 about Z from z = 10 to 15 less a ball about
+/// (0, a, b) of radius `rho` (the ball clear of the top): the wall's lower
+/// border is highest at y = 5, z = b + sqrt(rho² - (a - 5)²).
+fn ball_rim_at(k: f64, t: Turn, r: f64, [a, b, rho]: [f64; 3]) -> Steps {
+    let mut steps = ball_rim(k, t, r);
+    steps[2] = (
+        "feature.sphere",
+        json!({"name": "Ball", "position": v(t, k, [0.0, a, b]), "radius": rho * k}),
+    );
+    steps
+}
+
+/// [`s103578`] with the torus's minor radius `minor`: the wall's lower
+/// border is highest at z = 22.5 - sqrt(minor² - 25).
+fn s103578_minor(k: f64, t: Turn, r: f64, minor: f64) -> Steps {
+    let mut steps = s103578(k, t, r);
+    steps[1] = (
+        "feature.torus",
+        json!({"name": "Tor", "position": v(t, k, [0.0, 0.0, 10.0]), "axis": axis(t, [0.0, 1.0, 0.0]), "major": 12.5 * k, "minor": minor * k}),
+    );
+    steps
+}
+
+/// [`s110541`] with the cone's base about (cx, cy) and its height `h`.
+fn s110541_at(k: f64, t: Turn, r: f64, [cx, cy, h]: [f64; 3]) -> Steps {
+    let mut steps = s110541(k, t, r);
+    steps[2] = (
+        "feature.cone",
+        json!({"name": "Cone", "position": v(t, k, [cx, cy, 3.75]), "axis": axis(t, [0.0, 0.0, 1.0]), "radius": 7.5 * k, "height": h * k, "angle": "0 deg"}),
+    );
+    steps
+}
+
+fn ball_rim_6_8_6(k: f64, t: Turn, r: f64) -> Steps {
+    ball_rim_at(k, t, r, [6.0, 8.0, 6.0])
+}
+
+fn torus_rim_9_5(k: f64, t: Turn, r: f64) -> Steps {
+    s103578_minor(k, t, r, 9.5)
+}
+
+fn cone_hole_off(k: f64, t: Turn, r: f64) -> Steps {
+    s110541_at(k, t, r, [-2.5, 0.5, 12.5])
+}
+
+fn cone_hole_short(k: f64, t: Turn, r: f64) -> Steps {
+    s110541_at(k, t, r, [-2.5, 0.02, 6.0])
+}
+
+/// What fits the hole's rim of [`cone_hole_short`]: the lowest point of
+/// the cone's meeting with the hole, h (1 - (|c| + 2.5) / 7.5), 1.999936
+/// (the base's circle leaves 2.49992).
+fn short_cone_limit() -> f64 {
+    let c = (2.5_f64 * 2.5 + 0.02 * 0.02).sqrt();
+    6.0 * (1.0 - (c + 2.5) / 7.5)
+}
+
+/// The configuration of group B made anew (the review of 2026-11-23):
+/// a rim whose wall ends below on a spline (a ball of another size and
+/// place, a torus of another minor radius), and a hole's rim in a cone's
+/// base where the cone is moved off the hole or so short that the wall's
+/// upper border (cone ∩ hole) is nearer than the base's circle. At these
+/// radii (multiples of the limit) the first tool's boolean built an invalid
+/// body at scale 1, unturned; each is too large, with what fits worked
+/// out by hand: the ball's 15 - b - sqrt(rho² - (a - 5)²), the torus's
+/// 15 - (22.5 - sqrt(minor² - 25)), the cone's least of 7.5 - |c| - 2.5
+/// (its base's circle) and h (1 - (|c| + 2.5) / 7.5) (the lowest point of
+/// its meeting with the hole); just under it (0.999 of it, the short cone
+/// 0.98: [`owed_a_short_cone_is_never_said_too_large_below_a_radius_that_builds`])
+/// builds and passes the deep check. At every scale and turn, whether or
+/// not the boolean's body is invalid there.
+#[test]
+fn rims_made_anew_whose_wall_ends_on_a_spline_are_too_large_past_what_the_faces_leave() {
+    let ball = 15.0 - 8.0 - (36.0_f64 - 1.0).sqrt();
+    let torus = 15.0 - (22.5 - (9.5_f64 * 9.5 - 25.0).sqrt());
+    let off = 7.5 - (2.5_f64 * 2.5 + 0.5 * 0.5).sqrt() - 2.5;
+    let short = short_cone_limit();
+    let cases: [(&str, Make, f64, &[u32], f64); 4] = [
+        (
+            "ball (0, 6, 8) r 6",
+            ball_rim_6_8_6,
+            ball,
+            &[51, 55, 65],
+            0.999,
+        ),
+        (
+            "torus minor 9.5",
+            torus_rim_9_5,
+            torus,
+            &[54, 57, 63],
+            0.999,
+        ),
+        (
+            "cone off (-2.5, 0.5)",
+            cone_hole_off,
+            off,
+            &[89, 90, 93],
+            0.999,
+        ),
+        ("cone of height 6", cone_hole_short, short, &[54, 61], 0.98),
+    ];
+    let mut wrong = Vec::new();
+    for (name, make, limit, factors, under) in cases {
+        for k in SCALES {
+            for t in TURNS {
+                for &i in factors {
+                    // As the review's sweep made them: the limit times i / 50.
+                    let r = limit * f64::from(i) * 0.02;
+                    let label = format!("{name} k={k:e} {t:?} r={r}");
+                    too_large(&mut wrong, &label, make, k, t, r, limit);
+                }
+                let label = format!("{name} k={k:e} {t:?} r={} (just under)", under * limit);
+                builds(&mut wrong, &label, make, k, t, under * limit);
+            }
+        }
+    }
+    // The release note's example: 103578's rim at 1.16, under 5 sqrt(3) -
+    // 7.5 = 1.160254, builds.
+    builds(
+        &mut wrong,
+        "103578 k=1 r=1.16",
+        s103578,
+        1.0,
+        Turn::None,
+        1.16,
+    );
+    held(&wrong);
+}
+
+/// Owed, found by the review of 2026-11-23: the short cone's rim
+/// ([`cone_hole_short`]) at 0.999 of what fits, unturned and turned X to Y
+/// to Z, at every scale, is said too large, *"below 1.99793"* (just under
+/// the radius asked), by the search on builds alone from the boolean's
+/// other refusal near the tangency, on `main` (its program, 1f196da4) as on
+/// the branch; turned 30 degrees about Z it builds, and so does the limit
+/// itself, 1.999936, which passes the deep check. The right answer is a
+/// body.
+#[test]
+#[ignore = "owed: the search's answer from the boolean's other refusals, where they lie below what fits"]
+fn owed_a_short_cone_is_never_said_too_large_below_a_radius_that_builds() {
+    let limit = short_cone_limit();
+    let mut wrong = Vec::new();
+    builds(
+        &mut wrong,
+        "short cone k=1 at the limit",
+        cone_hole_short,
+        1.0,
+        Turn::None,
+        limit,
+    );
+    for k in SCALES {
+        for t in [Turn::None, Turn::Cycle] {
+            let label = format!("short cone k={k:e} {t:?} r={}", 0.999 * limit);
+            builds(&mut wrong, &label, cone_hole_short, k, t, 0.999 * limit);
+        }
+    }
+    held(&wrong);
+}
+
 /// Owed: 124545 turned 30 degrees about Z, and at radii where the
 /// boolean refuses in other words (at the edge of tolerance), is said to be
 /// too large with a largest radius that fits found by builds alone, below
