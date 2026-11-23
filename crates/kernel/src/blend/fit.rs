@@ -23,10 +23,11 @@
 //! evidence of no room from the result ([`no_room`]); a refusal that is
 //! the same at every smaller size is reported as it is. Where the size
 //! asked failed with an invalid body from the boolean (its fault at that
-//! size, [`BlendError::Invalid`]), a largest size found is said only when
-//! the sizes between it and the size asked fail too ([`proven`]), and
-//! otherwise the boolean's refusal. Every search is bounded
-//! ([`MOST_BUILDS`]), and a spent budget proves nothing.
+//! size, [`BlendError::Invalid`]), a largest size is said only where an
+//! event gives it and the sizes between it and the size asked fail too
+//! ([`proven`]), never from builds alone; otherwise the boolean's
+//! refusal. Every search is bounded ([`MOST_BUILDS`]), and a spent budget
+//! proves nothing.
 
 use super::{
     BlendError, Failure, Path, Plan, Reason, Request, Size, Use, construct, face_edges, half_tan,
@@ -556,9 +557,9 @@ pub(super) fn explain(
     .unwrap_or(0);
     let tol = tolerance.linear;
     // An invalid body from the boolean is its fault at that size, not
-    // evidence of how much room the faces leave: a largest size found
-    // from it is said only when the sizes between it and the size asked
-    // fail too ([`proven`]).
+    // evidence of how much room the faces leave: a largest size is said
+    // from it only where an event gives it and the sizes between it and
+    // the size asked fail too ([`proven`]).
     let invalid = matches!(error, BlendError::Invalid { .. });
     let group = group(requests, index);
     // The smallest size the booleans still tell apart, as a multiple.
@@ -664,17 +665,18 @@ pub(super) fn explain(
             }
         }
     }
-    // No event explains it: bisect on the builds alone.
+    // No event explains it: bisect on the builds alone. Not where the size
+    // asked failed with an invalid body: a size found by builds alone, where
+    // the boolean fails at sizes that fit, is wherever its faults happen to
+    // lie ([`proven`]).
+    if invalid {
+        return error;
+    }
     let Some(fails) = bisect(fits, fails, 4.0 * tol / smallest, |at| search.attempt(at)) else {
         return error;
     };
     let size = own.distances.get(named).copied().unwrap_or(0.0) * per(own, named);
-    let found = too_large(own, named, fails * size);
-    if invalid {
-        proven(&mut search, fails, found, error)
-    } else {
-        found
-    }
+    too_large(own, named, fails * size)
 }
 
 /// Into how many parts the sizes between a largest size found and the
@@ -682,21 +684,24 @@ pub(super) fn explain(
 /// the seven sizes between the parts.
 const PROOFS: u32 = 8;
 
-/// `found`, the refusal as too large with `bound` (a multiple of the size
-/// asked) as the largest size that fits, when the sizes evenly between
-/// `bound` and the size asked ([`PROOFS`]) all fail as well; otherwise
-/// `error`, the boolean's invalid body at the size asked.
+/// `found`, the refusal as too large with the event at `bound` (a
+/// multiple of the size asked) as the largest size that fits, when the
+/// sizes evenly between `bound` and the size asked ([`PROOFS`]) all fail
+/// as well; otherwise `error`, the boolean's invalid body at the size
+/// asked.
 ///
 /// Where the build at the size asked failed with an invalid body, the
-/// failures the search meets may be the boolean's at some sizes and not a
-/// limit the faces set: in random design 124545 a fillet of a rim builds
-/// at radii of 0.9, 1.05 to 1.199 and 1.3 and fails at 0.7, 0.8, 1, 1.1,
-/// 1.2 and 1.5, and the search from 1 says "below 0.6528", which is not
-/// so (`docs/design/blends.md` › *A tool boolean's invalid body*). A size
-/// between that builds shows that the size found is not the largest that
-/// fits; where every size between fails, the failures go on from the
-/// size found up, as where a fillet runs past the narrowest part of its
-/// wall. A spent budget proves nothing.
+/// failures the search meets may be the boolean's at sizes that fit, not
+/// a limit the faces set: in random design 124545 a fillet of a rim
+/// builds at radii of 0.9, 1.05 to 1.199 and 1.3 and fails at 0.7, 0.8,
+/// 1, 1.1, 1.2 and 1.5, though the faces leave room up to 2.3965, and the
+/// search from 1 says "below 0.6528" (`docs/design/blends.md` › *A tool
+/// boolean's invalid body*). So a largest size is said there only where
+/// the faces give it, an event (the border reaches something of its face)
+/// with a build just before it, never from builds alone ([`explain`]),
+/// and only where no size between it and the size asked builds, which
+/// would show it is not the largest that fits. A spent budget proves
+/// nothing.
 fn proven(search: &mut Search<'_>, bound: f64, found: BlendError, error: BlendError) -> BlendError {
     if !bound.is_finite() || bound >= 1.0 {
         return error;

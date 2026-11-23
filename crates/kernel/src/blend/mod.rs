@@ -547,9 +547,10 @@ pub(crate) enum BlendError {
     /// of the blend, or the one that trims a tool where its edge ends,
     /// built a body that fails its own check (`error`, an invalid body).
     /// Said as [`BlendError::Boolean`], the boolean's refusal, unless the
-    /// search for what fits finds a size that fits and proves it
-    /// ([`fit`]). Until 2026-11-23 it was passed on as the kernel's
-    /// error, and no search ran.
+    /// search for what fits finds the largest size that fits where the
+    /// faces give it and the sizes past it fail too ([`fit`]). Until
+    /// 2026-11-23 it was passed on as the kernel's error, and no search
+    /// ran.
     Invalid {
         edge: EdgeId,
         error: Box<KernelError>,
