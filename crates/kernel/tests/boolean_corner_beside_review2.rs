@@ -12,10 +12,10 @@
 //! `clear_of_face`). `main` refuses every such pair: "two points closer
 //! together than the tolerance can tell apart (at the edge of tolerance)".
 //!
-//! Two pairs whose union, by the review's reading of the code, the repair
-//! builds with its parts closer together than twice the tolerance, where
-//! `main` refused it (the developer's rule of 2026-10-22 refuses faces of
-//! exact bodies between half and twice the tolerance apart):
+//! Two pairs whose union the repair builds with its parts closer together
+//! than twice the tolerance, where `main` refuses it (the developer's rule
+//! of 2026-10-22 refuses faces of exact bodies between half and twice the
+//! tolerance apart). Both tests fail on 96e14ddc: a wrong body each.
 //!
 //! - The proof measures X, not the body X bounds. A rod with a flat along
 //!   its underside, turned as the repair's block is, whose round side
@@ -28,14 +28,23 @@
 //!   carries one place (3.5 tolerances over the plane): the beak's edge
 //!   passes the block's edge 1.90 tolerances from it, under the plane, as
 //!   the first review's leaning corner did; the plane crosses it 2.45
-//!   tolerances from the nearer of the two places. On 96e14ddc the union
-//!   is built, two shells, the interference clear and both subtracts the
-//!   targets, at 1 and 1e3, as found and turned (Check 45287851413); the
-//!   beak without the notch is answered so too, there as on `main`.
+//!   tolerances from the nearer of the two places.
+//!
+//! Measured. On 96e14ddc each union is built, two shells, its check
+//! passing, with the interference clear and both subtracts the targets, at
+//! 1 and 1e3, as found and turned (Check 45288463969; the beak also on
+//! Check 45287851413). On `main` (1f196da4, `craft3d-cli`, the same pairs
+//! by commands at 1, as found) the interference is unknown and every
+//! boolean is refused, "two points closer together than the tolerance can
+//! tell apart", naming X and the rib's face `z = 0`. Where no two places
+//! are that close (the rod's flat 2.5 tolerances over the corner; the beak
+//! without the notch) `main` answers both, interference clear and the
+//! union built: a near approach `main` does not see either, hidden there by
+//! its refusal of the two places.
 //!
 //! Each test prints, before it asserts, every pair it builds and the same
 //! pair where no two places are that close (`main`'s path, which the repair
-//! leaves as it was): what is answered there is `main`'s answer as well.
+//! leaves as it was).
 
 #![allow(
     clippy::unwrap_used,
