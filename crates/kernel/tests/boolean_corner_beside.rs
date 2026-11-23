@@ -96,10 +96,27 @@ enum Spline {
 /// the block's bottom `d` tolerances over the corner and its face
 /// beginning `beside` tolerances beyond it.
 fn pair(k: f64, frame: &Frame, d: f64, beside: f64, spline: Spline) -> (Body, Body, Tolerance) {
+    leaning_pair(k, frame, d, beside, (0.0, 1.0), spline)
+}
+
+/// [`pair`] with the triangle's two edges leaning `lean.0` and `lean.1` to
+/// the left (x per unit of y), away from the block's face: the triangle
+/// (0, 0), (-5 lean.0, 5), (-5 lean.1, 5); [`pair`]'s has one edge upright
+/// and one at 45 degrees, (0, 1).
+fn leaning_pair(
+    k: f64,
+    frame: &Frame,
+    d: f64,
+    beside: f64,
+    lean: (f64, f64),
+    spline: Spline,
+) -> (Body, Body, Tolerance) {
     let tol = tolerance(k);
     let t = tol.linear;
     let h = 5.0 * k;
-    let outline = polygon(1, 1, &[[0.0, 0.0], [0.0, h], [-h, h]]);
+    // (0 - lean, not -lean: an upright edge at +0, as before.)
+    let left = |lean: f64| (0.0 - lean) * h;
+    let outline = polygon(1, 1, &[[0.0, 0.0], [left(lean.0), h], [left(lean.1), h]]);
     let profiles = detect_profiles(&outline, &tol).unwrap();
     let mut rib = extrude(&profiles, frame, 0.0, 1.5 * k, &tol).unwrap().body;
     let (s, c) = 25.0_f64.to_radians().psin_cos();
@@ -344,5 +361,105 @@ fn a_corner_within_twice_the_tolerance_of_the_face_is_refused() {
                 Ok(_) => panic!("{what}: {op:?} built"),
             }
         }
+    }
+}
+
+/// The least distance, in tolerances, between the leaning edge (the
+/// triangle's first, `lean` to the left per unit up) from the corner to
+/// where the block's bottom plane crosses it, `d` tolerances up, and the
+/// line of the block's edge on the corner's side, which begins `beside`
+/// tolerances to the right of the corner and runs 25 degrees off z: of the
+/// two bodies near the corner this edge's piece is the nearest to the
+/// block's face (the slanting edge leans further away, the corner's upright
+/// edge and the prism's faces meet the block's edge further off for larger
+/// z, and above the plane the block's side recedes), so it is the bodies'
+/// least distance. A point of the piece `u` up is `c (lean u + beside)`
+/// from the line along x and z (`c` the cosine of 25 degrees) and `d - u`
+/// along y.
+fn least_gap(lean: f64, d: f64, beside: f64) -> f64 {
+    let c = 25.0_f64.to_radians().psin_cos().1;
+    let u = ((d - c * c * lean * beside) / (1.0 + c * c * lean * lean)).clamp(0.0, d);
+    (c * (lean * u + beside)).phypot(d - u)
+}
+
+/// Where the block's face must begin, in tolerances beyond the corner, for
+/// the least distance of [`least_gap`] to be `gap`.
+fn beside_for_gap(lean: f64, d: f64, gap: f64) -> f64 {
+    let (mut lo, mut hi) = (0.0, 10.0);
+    for _ in 0..100 {
+        let middle = 0.5 * (lo + hi);
+        if least_gap(lean, d, middle) < gap {
+            lo = middle;
+        } else {
+            hi = middle;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// A corner whose edges lean away from the block's face (0.5 and 1.5 to the
+/// left per unit up), at the edges of the band: the block's bottom 1.06 or
+/// 1.5 tolerances over the corner, its face beginning where the least
+/// distance of the two bodies (the leaning edge's piece under the plane to
+/// the block's edge) is 1.95 or 1.99 tolerances, or 2.01 or 2.05. Both
+/// places where the plane crosses the triangle's edges are then clear of
+/// the face (2.14 to 3.61 tolerances from its edge), and so, at 1.5 over
+/// it, is the corner itself (2.09 to 2.17); what is within twice the
+/// tolerance is a stretch of the leaning edge between them. Under twice the
+/// tolerance every boolean is refused at the edge of tolerance, as on
+/// `main`; past it the bodies are told apart. As found and turned, at four
+/// scales (1.99 and 2.01 at 1, as found).
+#[test]
+fn a_corner_that_leans_away_from_the_face_is_told_apart_only_past_twice_the_tolerance() {
+    let lean = (0.5, 1.5);
+    let mut refused = Vec::new();
+    let mut apart = Vec::new();
+    for k in SCALES {
+        for name in ["as found", "turned"] {
+            let frame = if name == "turned" {
+                turned(k)
+            } else {
+                Frame::WORLD
+            };
+            let fine = k == 1.0 && name == "as found";
+            for d in [1.06, 1.5] {
+                for gap in [1.95, 1.99, 2.01, 2.05] {
+                    if !fine && (gap == 1.99 || gap == 2.01) {
+                        continue;
+                    }
+                    let beside = beside_for_gap(lean.0, d, gap);
+                    assert!((least_gap(lean.0, d, beside) - gap).abs() < 1e-9);
+                    let what = format!(
+                        "leaning, {d} tolerances over the corner, the bodies {gap} apart (the face {beside:.4} beyond the corner), at {k}, {name}"
+                    );
+                    let (rib, spar, tol) =
+                        leaning_pair(k, &frame, d, beside, lean, Spline::Neither);
+                    println!("corner_beside: {what}: {}", said(&rib, &spar, &tol));
+                    if gap < 2.0 {
+                        refused.push((what, rib, spar, tol));
+                    } else {
+                        apart.push((what, rib, spar, tol));
+                    }
+                }
+            }
+        }
+    }
+    for (what, rib, spar, tol) in &refused {
+        for (a, b, op) in [
+            (spar, rib, BooleanOp::Union),
+            (rib, spar, BooleanOp::Subtract),
+            (spar, rib, BooleanOp::Subtract),
+            (spar, rib, BooleanOp::Intersect),
+        ] {
+            match boolean(a, b, op, tol) {
+                Err(KernelError::Unsupported { reason, faces, .. })
+                    if reason.ends_with("(at the edge of tolerance)") && faces.len() == 2 => {}
+                Err(e) => panic!("{what}: {op:?}: {e}"),
+                Ok(_) => panic!("{what}: {op:?} built"),
+            }
+        }
+    }
+    for (what, rib, spar, tol) in &apart {
+        told_apart(rib, spar, tol, what);
     }
 }

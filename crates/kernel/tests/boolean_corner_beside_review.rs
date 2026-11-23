@@ -17,8 +17,8 @@
 //!   apart).
 //! - A corner whose edges lean away from the face is nearer the face than
 //!   the two places are: both can be clear of it while the corner is not.
-//!   Ignored: the union of such a pair is built with its two parts 1.90
-//!   tolerances apart, which `main` refused.
+//!   On b77d1956 the union of such a pair was built with its two parts
+//!   1.90 tolerances apart, which `main` refused; refused again since.
 //! - A fillet and a chamfer of a body with a loose vertex, whose tool's
 //!   boolean is tried at four times the working tolerance first
 //!   (`loose_op::boolean_for_tool`) and meets the state there.
@@ -229,10 +229,12 @@ fn the_face_may_begin_twice_the_tolerance_from_the_nearer_place() {
 /// convex bodies, edge to edge). The parts of their union would be closer
 /// together than the tolerance can tell apart: the developer's rule of
 /// 2026-10-22 refuses it, and `main` did ("two points closer together…").
-/// On b77d1956 the union is built, two shells 1.90 tolerances apart, with
-/// the check passing (`craft3d-cli`, the same pair 5 high at 1, as found).
+/// On b77d1956 the union was built, two shells 1.90 tolerances apart, with
+/// the check passing (`craft3d-cli`, the same pair 5 high at 1, as found);
+/// since the round after the review the edges that carry the two places
+/// and the corner between them must keep further than twice the tolerance
+/// from the face as well (`section.rs` › `beside_the_face`).
 #[test]
-#[ignore = "fails on b77d1956, the review's finding: the union is built with its parts 1.90 tolerances apart"]
 fn a_corner_that_leans_away_from_the_face_within_twice_the_tolerance_of_it_is_not_united() {
     for &k in &[1.0, 1e3] {
         for name in ["as found", "turned"] {
