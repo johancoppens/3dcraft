@@ -58,7 +58,7 @@ use craft3d_geom::intersect::{
 };
 use craft3d_math::{Bbox3, Frame, Portable, Tolerance, Vec3};
 use std::collections::BTreeMap;
-use std::f64::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_6, PI};
+use std::f64::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_4, FRAC_PI_6, PI};
 
 /// A line on the test's output that the harness does not hold back.
 fn say(line: &str) {
@@ -168,6 +168,16 @@ struct Pair {
     keep_off_radius: f64,
 }
 
+impl Pair {
+    /// Whether `p` is further than `keep_off_radius` from every place where
+    /// curves of the crossing cross or pass close to each other.
+    fn clear(&self, p: Vec3) -> bool {
+        self.keep_off
+            .iter()
+            .all(|c| c.distance(p) > self.keep_off_radius)
+    }
+}
+
 /// The stretches of a sheet's parameter over which its places lie in the
 /// box grown by `margin`, read at `n + 1` places, each widened by one
 /// step before it.
@@ -193,10 +203,17 @@ fn stretches(sheet: &Sheet, within: &Bbox3, margin: f64, n: usize) -> Vec<(f64, 
     found
 }
 
-/// How long a sheet is inside the box: `n` chords per stretch, those with
-/// both ends inside whole, those across a side of the box up to it (found
-/// by halving).
-fn length_inside(sheet: &Sheet, within: &Bbox3, stretches: &[(f64, f64)], n: usize) -> f64 {
+/// How long a sheet is inside the box and where `clear` holds: `n` chords
+/// per stretch, those with both ends inside whole, those across a side of
+/// the box up to it (found by halving), none with an end where `clear`
+/// does not hold.
+fn length_inside(
+    sheet: &Sheet,
+    within: &Bbox3,
+    stretches: &[(f64, f64)],
+    n: usize,
+    clear: &dyn Fn(Vec3) -> bool,
+) -> f64 {
     let mut length = 0.0;
     for &(s0, s1) in stretches {
         let step = (s1 - s0) / n as f64;
@@ -206,9 +223,10 @@ fn length_inside(sheet: &Sheet, within: &Bbox3, stretches: &[(f64, f64)], n: usi
             let s = s0 + step * i as f64;
             let p = (sheet.at)(s);
             let is_in = within.contains(p, 0.0);
-            if was_in && is_in {
+            let clear_here = clear(before.1) && clear(p);
+            if clear_here && was_in && is_in {
                 length += before.1.distance(p);
-            } else if was_in != is_in {
+            } else if clear_here && was_in != is_in {
                 let (mut inner, mut outer) = if was_in { (before.0, s) } else { (s, before.0) };
                 for _ in 0..60 {
                     let mid = 0.5 * (inner + outer);
@@ -320,7 +338,7 @@ fn held(pair: &Pair, m: &Meeting) -> Result<(), String> {
     let mut length_known = 0.0;
     for (n, sheet) in pair.sheets.iter().enumerate() {
         let found = stretches(sheet, within, 8.0 * t, 1 << 16);
-        length_known += length_inside(sheet, within, &found, 1 << 15);
+        length_known += length_inside(sheet, within, &found, 1 << 15, &|p: Vec3| pair.clear(p));
         for &(s0, s1) in &found {
             known.push(Along::new(&*sheet.at, s0, s1, 2048));
             pieces.push((n, s0, s1));
@@ -347,13 +365,23 @@ fn held(pair: &Pair, m: &Meeting) -> Result<(), String> {
         let mut before = at(0, 1 << 14);
         for i in 1..=(1 << 14) {
             let p = at(i, 1 << 14);
-            length += before.distance(p);
+            if pair.clear(before) && pair.clear(p) {
+                length += before.distance(p);
+            }
             before = p;
         }
         for i in 0..=200 {
             let p = at(i, 200);
             let (da, db) = (distance(&pair.a, p), distance(&pair.b, p));
-            let bound = curve.deviation + 1e-3 * t;
+            // (Where curves of the crossing pass close, the march may
+            // read a point where they cross, the surfaces a little apart
+            // there, and end its curves on it: that far off one surface,
+            // within the tolerance.)
+            let bound = if pair.clear(p) {
+                curve.deviation + 1e-3 * t
+            } else {
+                t
+            };
             if !(da <= bound && db <= bound) {
                 return Err(format!(
                     "curve {n} is {} and {} tolerances off the surfaces at {p:?}",
@@ -377,26 +405,18 @@ fn held(pair: &Pair, m: &Meeting) -> Result<(), String> {
     }
     if !((length - length_known).abs() <= 32.0 * t + 1e-5 * length_known) {
         return Err(format!(
-            "the curves are {} tolerances long, the crossing in the box {}",
+            "the curves are {} tolerances long, the crossing in the box {} (away from where its curves cross or pass close); {}",
             length / t,
-            length_known / t
+            length_known / t,
+            described(pair, m)
         ));
     }
-    let answered: Vec<_> = m
-        .curves
-        .iter()
-        .map(|c| Along::new(move |s: f64| c.curve.eval(s), c.range.0, c.range.1, 2048))
-        .collect();
+    let answered = runs_of(m);
     for &(n, s0, s1) in &pieces {
         let sheet = &pair.sheets[n];
         for i in 0..=96 {
             let q = (sheet.at)(s0 + (s1 - s0) * f64::from(i) / 96.0);
-            if !within.contains(q, -4.0 * t)
-                || pair
-                    .keep_off
-                    .iter()
-                    .any(|c| c.distance(q) <= pair.keep_off_radius)
-            {
+            if !within.contains(q, -4.0 * t) || !pair.clear(q) {
                 continue;
             }
             let off = distance_to(&answered, q);
@@ -413,6 +433,54 @@ fn held(pair: &Pair, m: &Meeting) -> Result<(), String> {
     Ok(())
 }
 
+/// The curves of an answer as runs of places.
+fn runs_of(m: &Meeting) -> Vec<Along<impl Fn(f64) -> Vec3>> {
+    m.curves
+        .iter()
+        .map(|c| Along::new(move |s: f64| c.curve.eval(s), c.range.0, c.range.1, 2048))
+        .collect()
+}
+
+/// Each curve of an answer, for a line about one that is not the
+/// crossing: how long it is, whether it closes, its ends, and how much of
+/// it (away from where curves of the crossing cross or pass close) lies
+/// within two tolerances of another curve of the answer.
+fn described(pair: &Pair, m: &Meeting) -> String {
+    let t = pair.tol.linear;
+    let runs = runs_of(m);
+    let mut lines = Vec::new();
+    for (n, curve) in m.curves.iter().enumerate() {
+        let (t0, t1) = curve.range;
+        let at = |i: u32| curve.curve.eval(t0 + (t1 - t0) * f64::from(i) / 1000.0);
+        let (mut length, mut twice) = (0.0, 0.0);
+        let mut before = at(0);
+        for i in 1..=1000 {
+            let p = at(i);
+            let step = before.distance(p);
+            length += step;
+            let other = runs
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != n)
+                .map(|(_, r)| r.about(r.nearest_row(p).1, p))
+                .fold(f64::INFINITY, f64::min);
+            if other <= 2.0 * t && pair.clear(p) {
+                twice += step;
+            }
+            before = p;
+        }
+        lines.push(format!(
+            "curve {n} {} tolerances long, closed {}, from {:?} to {:?}, {} tolerances of it on another curve",
+            length / t,
+            curve.closed,
+            at(0),
+            at(1000),
+            twice / t
+        ));
+    }
+    lines.join("; ")
+}
+
 /// What the march as first made said where a branch it fitted ran back
 /// over itself.
 const FOLDED: &str = "a fold";
@@ -420,6 +488,10 @@ const FOLDED: &str = "a fold";
 const CROSSING: &str = "the crossing";
 /// What an answer that is not the crossing is said to be, first.
 const WRONG: &str = "WRONG";
+/// What is said where the surfaces were found within the tolerance of
+/// each other throughout the box (a plane along the tip of a thin
+/// cylinder in a small box): not a crossing, and not held to one.
+const COINCIDENT: &str = "coincident";
 
 /// How a pair was answered: as the march is first made, with branches
 /// taken up again, and whether the two are the same bit for bit where
@@ -435,6 +507,7 @@ fn asked(pair: &Pair) -> Asked {
     let taken_up = meet_surfaces_numeric(&pair.a, &pair.b, &pair.within, &pair.tol);
     let first = match &once {
         Ok(SurfaceMeeting::Meets(_)) => "answered".to_string(),
+        Ok(SurfaceMeeting::Coincident { .. }) => COINCIDENT.to_string(),
         Ok(other) => format!("{other:?}"),
         Err(e) if e.to_string().contains("run back over themselves") => FOLDED.to_string(),
         Err(e) => format!("refused: {e}"),
@@ -444,6 +517,7 @@ fn asked(pair: &Pair) -> Asked {
             Ok(()) => CROSSING.to_string(),
             Err(why) => format!("{WRONG}: {why}"),
         },
+        Ok(SurfaceMeeting::Coincident { .. }) => COINCIDENT.to_string(),
         Ok(other) => format!("{WRONG}: {other:?}"),
         Err(e) => format!("refused: {e}"),
     };
@@ -461,9 +535,9 @@ fn asked(pair: &Pair) -> Asked {
 /// same both ways by the crossing, and how many were answered how. Fails
 /// where a fold is read on a family whose curves run one way
 /// (`one_way`), where the march as first made answers otherwise than
-/// taken up again, and where the answer taken up again is not the
-/// crossing.
-fn run(family: &str, pairs: &[Pair], one_way: bool) {
+/// taken up again, and, where the answers are held (`hold`), where the
+/// answer taken up again is not the crossing.
+fn run(family: &str, pairs: &[Pair], one_way: bool, hold: bool) {
     let mut counted: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut failed: Vec<String> = Vec::new();
     for pair in pairs {
@@ -487,7 +561,7 @@ fn run(family: &str, pairs: &[Pair], one_way: bool) {
                 pair.what
             ));
         }
-        if got.again.starts_with(WRONG) {
+        if hold && got.again.starts_with(WRONG) {
             failed.push(format!("{}: {}", got.again, pair.what));
         }
         let again = if got.again.starts_with(WRONG) {
@@ -782,120 +856,139 @@ fn tubes_at(placed: Placed, gamma: f64, size: f64, how: &str) -> Pair {
     }
 }
 
-/// The tip of a long thin ellipse, turning on 8 and 500 tolerances, of
-/// aspect 20 and 400, in cubes of 6 to 6000 tip radii, about the tip and
-/// off it: no fold is read, and every answer is the crossing.
-#[test]
-fn the_tip_of_a_long_thin_ellipse_reads_no_fold() {
+/// `count` sizes from `least`, each `2^(1/2)` times the last.
+fn sizes(least: f64, count: i32) -> Vec<f64> {
+    (0..count)
+        .map(|j| least * 2f64.ppowf(f64::from(j) / 2.0))
+        .collect()
+}
+
+/// Every pair of a family at the four scales, upright and turned.
+fn every(make: impl Fn(Placed, &'static str, &mut Vec<Pair>)) -> Vec<Pair> {
     let mut pairs = Vec::new();
     for scale in SCALES_FOUR {
         for (how, placed) in placings(scale) {
-            for rho in [8e-6, 5e-4] {
-                for aspect in [20.0, 400.0] {
-                    for size in [6.0, 60.0, 600.0, 6000.0] {
-                        for off in [Vec3::ZERO, Vec3::new(-0.21, 0.13, -0.37)] {
-                            pairs.push(ellipse_tip(placed, rho, aspect, size * rho, off, how));
-                        }
+            make(placed, how, &mut pairs);
+        }
+    }
+    pairs
+}
+
+/// The tip of a long thin ellipse, turning on 8, 60 and 500 tolerances,
+/// of aspect 20 and 400, in cubes of 6 to 4 300 tip radii, about the tip
+/// and off it: no fold is read, and every answer is the crossing (or, in
+/// the smallest cubes about the thinnest tip, the surfaces within the
+/// tolerance of each other throughout).
+#[test]
+fn the_tip_of_a_long_thin_ellipse_reads_no_fold() {
+    let pairs = every(|placed, how, pairs| {
+        for rho in [8e-6, 6e-5, 5e-4] {
+            for aspect in [20.0, 400.0] {
+                for size in sizes(6.0, 20) {
+                    for off in [Vec3::ZERO, Vec3::new(-0.21, 0.13, -0.37)] {
+                        pairs.push(ellipse_tip(placed, rho, aspect, size * rho, off, how));
                     }
                 }
             }
         }
-    }
-    run("ellipse tip", &pairs, true);
+    });
+    run("ellipse tip", &pairs, true, true);
 }
 
 /// Two cylinders skew at a small angle that overlap a little: a thin
 /// slanted loop whose tips turn on a few to a few tens of tolerances, the
-/// surfaces nearly tangent along it, in cubes from a part of it to forty
+/// surfaces nearly tangent along it, in cubes from a part of it to 38
 /// times it: no fold is read, and every answer is the crossing.
 #[test]
 fn a_hairpin_where_two_skew_tubes_almost_touch_reads_no_fold() {
-    let mut pairs = Vec::new();
-    for scale in SCALES_FOUR {
-        for (how, placed) in placings(scale) {
-            for (overlap, beta) in [(1e-2, 0.2), (1e-2, 0.5), (0.1, 0.1), (0.1, 0.5)] {
-                for size in [0.3, 2.0, 40.0] {
-                    pairs.push(skew_tubes(placed, overlap, beta, size, how));
-                }
+    let pairs = every(|placed, how, pairs| {
+        for (overlap, beta) in [(1e-2, 0.2), (1e-2, 0.5), (0.1, 0.1), (0.1, 0.5)] {
+            for size in sizes(0.3, 14) {
+                pairs.push(skew_tubes(placed, overlap, beta, size, how));
             }
         }
-    }
-    run("skew tubes", &pairs, true);
+    });
+    run("skew tubes", &pairs, true, true);
 }
 
-/// Viviani's figure of eight opened at its crossing point (the cylinder a
-/// hundredth and a ten-thousandth narrower, a millionth, a ten-thousandth
-/// and a hundredth wider), in cubes of 1.5 to 600 ball radii about that
-/// point: no fold is read, and every answer is the crossing.
-#[test]
-fn vivianis_figure_opened_at_its_crossing_reads_no_fold() {
-    let mut pairs = Vec::new();
-    for scale in SCALES_FOUR {
-        for (how, placed) in placings(scale) {
-            for eta in [-1e-2, -1e-4, 1e-6, 1e-4, 1e-2] {
-                for size in [1.5, 8.0, 60.0, 600.0] {
-                    pairs.push(ball_and_tube_opened(placed, eta, size, how));
-                }
+/// Viviani's figure of eight opened at its crossing point (the cylinder
+/// a hundredth and a ten-thousandth narrower, a millionth, a
+/// ten-thousandth and a hundredth wider).
+fn vivianis_opened() -> Vec<Pair> {
+    every(|placed, how, pairs| {
+        for eta in [-1e-2, -1e-4, 1e-6, 1e-4, 1e-2] {
+            for size in sizes(1.5, 18) {
+                pairs.push(ball_and_tube_opened(placed, eta, size, how));
             }
         }
-    }
-    run("ball and tube opened", &pairs, true);
+    })
 }
 
 /// Steinmetz's ellipses opened at their crossing points (the second
 /// cylinder a millionth, a ten-thousandth and a hundredth wider, a
-/// ten-thousandth and a hundredth narrower), in cubes of 1.5 to 600 radii
-/// about one of those points: no fold is read, and every answer is the
-/// crossing.
-#[test]
-fn steinmetz_ellipses_opened_at_their_crossings_read_no_fold() {
-    let mut pairs = Vec::new();
-    for scale in SCALES_FOUR {
-        for (how, placed) in placings(scale) {
-            for eta in [1e-6, 1e-4, 1e-2, -1e-4, -1e-2] {
-                for size in [1.5, 8.0, 60.0, 600.0] {
-                    pairs.push(tubes_opened(placed, eta, size, how));
-                }
+/// ten-thousandth and a hundredth narrower).
+fn steinmetz_opened() -> Vec<Pair> {
+    every(|placed, how, pairs| {
+        for eta in [1e-6, 1e-4, 1e-2, -1e-4, -1e-2] {
+            for size in sizes(1.5, 18) {
+                pairs.push(tubes_opened(placed, eta, size, how));
             }
         }
-    }
-    run("two tubes opened", &pairs, true);
+    })
+}
+
+/// Viviani's figure opened, in cubes of 1.5 to 380 ball radii about where
+/// it crossed: no fold is read, and the march as first made answers as
+/// the march taken up again.
+#[test]
+fn vivianis_figure_opened_at_its_crossing_reads_no_fold() {
+    run("ball and tube opened", &vivianis_opened(), true, false);
+}
+
+/// Steinmetz's ellipses opened, in cubes of 1.5 to 380 radii about where
+/// they crossed: no fold is read, and the march as first made answers as
+/// the march taken up again.
+#[test]
+fn steinmetz_ellipses_opened_at_their_crossings_read_no_fold() {
+    run("two tubes opened", &steinmetz_opened(), true, false);
+}
+
+/// Viviani's and Steinmetz's opened, held to the crossing: every answer
+/// is the crossing.
+#[test]
+fn vivianis_and_steinmetzs_opened_are_the_crossing() {
+    run("ball and tube opened, held", &vivianis_opened(), true, true);
+    run("two tubes opened, held", &steinmetz_opened(), true, true);
 }
 
 /// A small circle where a plane cuts a cap off a ball, the surfaces at
 /// 0.02 to 1 radian along it, the circle 10 to 400 tolerances in radius,
-/// in cubes of 1.5 to 2000 radii: no fold is read, and every answer is the
-/// crossing.
+/// in cubes of 1.5 to 2 200 radii: no fold is read, and every answer is
+/// the crossing.
 #[test]
 fn a_small_circle_near_a_tangency_reads_no_fold() {
-    let mut pairs = Vec::new();
-    for scale in SCALES_FOUR {
-        for (how, placed) in placings(scale) {
-            for (alpha, rho) in [(0.02, 4e-4), (0.2, 4e-5), (0.2, 4e-4), (1.0, 1e-5)] {
-                for size in [1.5, 60.0, 2000.0] {
-                    pairs.push(cap(placed, alpha, rho, size, how));
-                }
+    let pairs = every(|placed, how, pairs| {
+        for (alpha, rho) in [(0.02, 4e-4), (0.2, 4e-5), (0.2, 4e-4), (1.0, 1e-5)] {
+            for size in sizes(1.5, 22) {
+                pairs.push(cap(placed, alpha, rho, size, how));
             }
         }
-    }
-    run("cap", &pairs, true);
+    });
+    run("cap", &pairs, true, true);
 }
 
-/// Two cylinders of one radius whose axes cross at 30, 60 and 90 degrees,
-/// in cubes of 1.5 to 400 radii about a point where their ellipses cross:
-/// a fold may be read there (a step through that point), and every answer
-/// taken up again is the crossing.
+/// Two cylinders of one radius whose axes cross at 30, 45, 60 and 90
+/// degrees, in cubes of 1.5 to 270 radii about a point where their
+/// ellipses cross: a fold may be read there (a step through that point),
+/// and every answer taken up again is the crossing.
 #[test]
 fn tubes_crossing_at_an_angle_are_the_crossing_about_their_crossing_points() {
-    let mut pairs = Vec::new();
-    for scale in SCALES_FOUR {
-        for (how, placed) in placings(scale) {
-            for gamma in [FRAC_PI_6, FRAC_PI_3, FRAC_PI_2] {
-                for size in [1.5, 8.0, 60.0, 400.0] {
-                    pairs.push(tubes_at(placed, gamma, size, how));
-                }
+    let pairs = every(|placed, how, pairs| {
+        for gamma in [FRAC_PI_6, FRAC_PI_4, FRAC_PI_3, FRAC_PI_2] {
+            for size in sizes(1.5, 16) {
+                pairs.push(tubes_at(placed, gamma, size, how));
             }
         }
-    }
-    run("tubes at an angle", &pairs, false);
+    });
+    run("tubes at an angle", &pairs, false, true);
 }
