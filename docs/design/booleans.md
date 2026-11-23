@@ -1160,7 +1160,7 @@ Under every line the bit-for-bit test passes, and so do the torus, the ridge and
 | design 106507's, in its box | 4 scales (1e-3 to 1e6) × upright and turned | upright a fold at every scale; turned, answered, the same | 8 of 8 the crossing |
 | design 118868's, in its box | the same | upright a fold at every scale; turned, answered, the same | 8 of 8 |
 | 106507's in 48 boxes of 400 to 2 940 tube radii about the crossing | the same | turned 8 of 48 a fold at every scale, upright none | 384 of 384 |
-| 118868's in 28 boxes of 800 to 2 470 tube radii | the same | (below) | 224 of 224 |
+| 118868's in 28 boxes of 800 to 2 470 tube radii | the same | upright 8 of 28 a fold at every scale, turned 2 of 28 | 224 of 224 |
 | two cylinders of one radius crossing at right angles (Steinmetz's two ellipses), 48 boxes; the marcher alone, the pair having a closed form | the same | turned 6 of 48 a fold at every scale, upright none | 384 of 384 |
 | a ball and a cylinder of half its radius inside it, touching it (Viviani's figure of eight), 48 boxes | the same | answered, the same, in all | 384 of 384 |
 
