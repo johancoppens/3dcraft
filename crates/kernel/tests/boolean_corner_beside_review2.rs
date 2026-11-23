@@ -18,16 +18,20 @@
 //! exact bodies between half and twice the tolerance apart):
 //!
 //! - The proof measures X, not the body X bounds. A rod with a flat along
-//!   its underside, whose round side bulges a tolerance beyond the flat's
-//!   edge, beside the corner of the repair's rib: the rib's upright edge,
-//!   which carries one of the two places, passes the round side 1.9
-//!   tolerances from it and keeps 2.9 from X.
+//!   its underside, turned as the repair's block is, whose round side
+//!   bulges a tolerance beyond the flat's edge, beside the corner of the
+//!   repair's rib: the rib's upright edge, which carries one of the two
+//!   places, passes the round side 1.9 tolerances from it and keeps 2.9
+//!   from X.
 //! - The edges at an end further than twice the tolerance from X's plane
 //!   are left out. A beak of the rib, from the far end of the edge that
 //!   carries one place (3.5 tolerances over the plane): the beak's edge
 //!   passes the block's edge 1.90 tolerances from it, under the plane, as
 //!   the first review's leaning corner did; the plane crosses it 2.45
-//!   tolerances from the nearer of the two places.
+//!   tolerances from the nearer of the two places. On 96e14ddc the union
+//!   is built, two shells, the interference clear and both subtracts the
+//!   targets, at 1 and 1e3, as found and turned (Check 45287851413); the
+//!   beak without the notch is answered so too, there as on `main`.
 //!
 //! Each test prints, before it asserts, every pair it builds and the same
 //! pair where no two places are that close (`main`'s path, which the repair
@@ -139,14 +143,22 @@ fn bulge() -> f64 {
     200.0 - (200.0_f64 * 200.0 - 20.0 * 20.0).sqrt()
 }
 
-/// A rod of radius 2 along z, 20 long, with a flat along its underside in
-/// the plane `y = d` tolerances, 20 tolerances under its axis, at scale `k`
-/// in `frame`, beside [`prism_rib`]: its round side passes the rib's
-/// upright edge (and the rib's face along it) `gap` tolerances from it, at
-/// the height of the axis; the edge of the flat, X's boundary on that side,
-/// is `gap` and [`bulge`] tolerances from W.
+/// A rod of radius 2, 20 long, its axis turned 25 degrees about y as the
+/// repair's block is, with a flat along its underside in the plane `y = d`
+/// tolerances, 20 tolerances under its axis, at scale `k` in `frame`,
+/// beside [`prism_rib`]: its round side passes the rib's upright edge `gap`
+/// tolerances from it, at the height of the axis and `z = 0`, and recedes
+/// from the rib with z; the edge of the flat, X's boundary on that side, is
+/// `gap` and [`bulge`] tolerances from W, and meets the rib's face `z = 0`
+/// `(gap + bulge) / cos 25°` tolerances beside W. (Not turned, the flat's
+/// box keeps more than twice the tolerance from that face's box and the
+/// pair is never met, on `main` as here: Check 45287851413.)
 fn flat_rod(k: f64, frame: &Frame, tol: &Tolerance, d: f64, gap: f64) -> Body {
     let t = tol.linear;
+    let (s, c) = 25.0_f64.to_radians().psin_cos();
+    let along = frame.vector(s, 0.0, c);
+    let across = frame.vector(c, 0.0, -s);
+    let turned = Frame::new(frame.origin(), along, across).unwrap();
     let radius = 2.0 * k;
     let under = 20.0 * t;
     let half = (radius * radius - under * under).sqrt();
@@ -155,24 +167,25 @@ fn flat_rod(k: f64, frame: &Frame, tol: &Tolerance, d: f64, gap: f64) -> Body {
     let right = [centre[0] + half, d * t];
     let profile = [line(11, left, right), arc(12, centre, right, left)];
     let profiles = detect_profiles(&profile, tol).unwrap();
-    extrude(&profiles, frame, -10.0 * k, 10.0 * k, tol)
+    extrude(&profiles, &turned, -10.0 * k, 10.0 * k, tol)
         .unwrap()
         .body
 }
 
 /// The proof measures the flat face X, not the body X bounds. The rib's
-/// corner 1.5 tolerances under the plane of a rod's flat, the plane
-/// crossing the rib's upright edge at W and its slanting edge at H, 1.5
-/// tolerances apart: both places, the rib's edges and its corner are 2.9
-/// tolerances or more from the flat (proven so by `clear_of_face`), and the
-/// two cuts are let through; but the rod's round side, which bulges 1.0025
-/// tolerances beyond the flat's edge 20 tolerances over the flat, passes
-/// the rib's upright edge, and the rib's face along it, 1.9 tolerances from
-/// them. No vertex of either is near that place and no edge crosses a face
-/// of the other there, so the union's check of zero thickness has nothing
-/// to look at. `main` refused the pair (H and W too near). At 1 and 1e3, as
-/// found and turned; printed besides with the plane 2.5 tolerances over the
-/// corner, where H and W are not too near (`main`'s path).
+/// corner 1.5 tolerances under the plane of a rod's flat (the rod turned
+/// as the repair's block is), the plane crossing the rib's upright edge at
+/// W and its slanting edge at H, 1.5 tolerances apart: both places, the
+/// rib's edges and its corner are 2.9 tolerances or more from the flat
+/// (proven so by `clear_of_face`), and the two cuts are let through; but
+/// the rod's round side, which bulges 1.0025 tolerances beyond the flat's
+/// edge 20 tolerances over the flat, passes the rib's upright edge 1.9
+/// tolerances from it. No vertex of either is near that place and no edge
+/// crosses a face of the other there, so the union's check of zero
+/// thickness has nothing to look at. `main` refuses the pair (H and W too
+/// near). At 1 and 1e3, as found and turned; printed besides with the plane
+/// 2.5 tolerances over the corner, where H and W are not too near (`main`'s
+/// path).
 #[test]
 fn a_carrying_edge_beside_the_round_side_of_a_rod_with_a_flat_is_not_united() {
     let gap = 1.9;
