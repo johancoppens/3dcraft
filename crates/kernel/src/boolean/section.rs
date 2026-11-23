@@ -972,6 +972,12 @@ fn clip(
         closed,
         (vertices.merge, vertices.guard),
     );
+    // Outside a face and further than the guard from its boundary: no
+    // place of the face is within twice the tolerance of it.
+    let guard = vertices.guard;
+    let clear_outside = |outline: &Outline, p: Vec3| {
+        !outline.within(p, guard) && matches!(outline.side(p, tol), Ok(Side::Out))
+    };
     let mut cuts: Vec<Cut> = Vec::new();
     for cut in along {
         let same = |other: &Cut| -> Result<bool, Stop> {
@@ -984,6 +990,26 @@ fn clip(
                     tol,
                 ) {
                     return Ok(true);
+                }
+                // Two places closer together than the tolerance can tell
+                // apart, both clear outside one of the two faces: the
+                // curve there is no part of that face, nor within twice
+                // the tolerance of it, so neither place is where the
+                // bodies meet. They stay two cuts, and the stretches
+                // beside them are judged as any other: a stretch between
+                // cuts crosses no edge of either face, so one that ends
+                // at either is outside that face there. (Where kept
+                // stretches did end at both, the two vertices made of
+                // them would be refused as too near all the same,
+                // `Vertices`.) A spar's flat bottom whose plane passes a
+                // corner of a rib's notch by about a tolerance, 0.37 mm
+                // beyond the end of the spar's own face, was refused
+                // here: docs/design/booleans.md › *A spar's flat bottom
+                // beside a corner of a notch*.
+                let beside =
+                    |o: &Outline| clear_outside(o, cut.point) && clear_outside(o, other.point);
+                if beside(oa) || beside(ob) {
+                    return Ok(false);
                 }
                 return Err(Stop::of(NEAR).at(&named));
             }
