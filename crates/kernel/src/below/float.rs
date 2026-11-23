@@ -30,9 +30,11 @@
 //! (each eigenvalue by its size, at least the floor), each step accepted
 //! where the energy falls. So an unstable upright box finds its two angles
 //! of loll. Equilibria the search does not reach from there are not
-//! reported.
+//! reported. The searches from an unstable equilibrium hold a section
+//! whose panels do not settle strictly to the rounding of its coordinates
+//! only where the search from the start needed that too (`floating`).
 
-use super::{CutError, CutPlane, Level, extent, level_for};
+use super::{CutError, CutPlane, Level, extent, level_held};
 use craft3d_math::Portable;
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::Body;
@@ -204,6 +206,12 @@ struct Search<'a> {
     size: f64,
     floor: f64,
     levels: usize,
+    /// Whether a level search may sum a section that does not settle
+    /// strictly again with the rounding of its coordinates allowed for
+    /// (`level_held`).
+    may_round: bool,
+    /// Whether one did, in some level search so far.
+    rounded: bool,
 }
 
 impl Search<'_> {
@@ -216,7 +224,14 @@ impl Search<'_> {
                 normal: plane.normal,
             });
         }
-        let level = level_for(self.bodies, &plane, self.volume, self.tolerance)?;
+        let level = level_held(
+            self.bodies,
+            &plane,
+            self.volume,
+            self.tolerance,
+            self.may_round,
+            &mut self.rounded,
+        )?;
         let below = level.below;
         let b = below.centroid.ok_or(CutError::Section {
             body: 0,
@@ -387,9 +402,21 @@ pub fn floating(
         size,
         floor: tolerance.linear.max(1e-9 * size),
         levels: 0,
+        may_round: true,
+        rounded: false,
     };
     let first = search.measure(*start)?;
     let nearest = search.settle(first, false)?;
+    // A section that does not settle strictly refused the search from the
+    // start before 2026-11-22, and so the whole call (it ends that search:
+    // only a boolean's refusal and a level that does not converge are
+    // stepped around); one in a search from an unstable equilibrium was
+    // listed under `unfinished` in the strict pass's words, the call
+    // answered. So where every section of the search from the start
+    // settled strictly, the searches after it are held strictly too, and
+    // the call gives what it gave before to the bit; where one needed the
+    // rounding of its coordinates (the call was refused before), they may.
+    search.may_round = search.rounded;
     let mut equilibria = vec![nearest];
     let mut unfinished = Vec::new();
     // From an unstable equilibrium, each way along each direction in which

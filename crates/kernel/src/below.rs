@@ -22,7 +22,9 @@
 //! is integrated anywhere. A section whose panels cannot agree that
 //! closely because its points are rounded more than that (one small
 //! against its distance from the origin) is summed again with the
-//! rounding of its coordinates allowed for ([`ROUNDING_ULPS`]).
+//! rounding of its coordinates allowed for ([`ROUNDING_ULPS`]), unless
+//! an edge of it lies on a rational spline whose weights spread more than
+//! twofold (`held_sums`).
 //!
 //! The offset for a volume is where the volume below the plane is that
 //! volume. The volume grows with the offset and its derivative is the
@@ -110,14 +112,40 @@ const MAX_HALVINGS: u32 = 40;
 /// allowed for (`Held::Rounding`).
 pub const ROUNDING_ULPS: f64 = 16.0;
 
+/// The most a rational spline's heaviest weight may be of its lightest
+/// for a section with an edge on it to be summed with the rounding of its
+/// coordinates allowed for ([`held_sums`]). A panel's two sums tell its
+/// error only where the 16-node one is far nearer the integral than the
+/// 8-node one. A rational curve's integrands have the poles of its
+/// denominator, the sum of its weights, and where the weights spread
+/// widely those lie near the span (a conic of weights 1, w, 1 within
+/// about `1/(2w)` of its parameter beyond its ends, where it turns): both
+/// rules then miss alike, their sums agree on one with most of the
+/// integral missing, and the rounding's allowance, wider than the strict
+/// one, takes it (docs/design/sections-and-levels.md, 2026-11-23). Within
+/// a spread of 2 the poles of such a conic lie 0.37 of its span or more
+/// beyond it, so on every panel the 16-node sum's error is some 1e-8 of
+/// the 8-node one's, whatever the allowance: the sum taken is the
+/// integral to rounding at every distance from the origin (held to the
+/// closed form at degrees 2, 3 and 6 out to 1e10 times the size). A
+/// circle as a spline spreads 1.41, a hyperbola's arc the boolean builds
+/// at most 1.13.
+const ROUNDING_SPREAD: f64 = 2.0;
+
 /// The words of the two ways a section's panels fail to settle, by which
-/// [`sums_about`] tells them from every other refusal of the section.
+/// [`held_sums`] tells them from every other refusal of the section.
 const TOO_MANY_PANELS: &str = "its edges take more panels than a section may";
 const NOT_SETTLED: &str = "an edge along which the section's integrals do not settle";
 
 /// A section's panels that do not settle even with the rounding of their
 /// coordinates allowed for.
-const NOT_SETTLED_ROUNDED: &str = "its edges' integrals do not settle within the panels a section may take, even held only to the rounding of their coordinates (moving the bodies nearer the origin may let them settle)";
+const NOT_SETTLED_ROUNDED: &str = "its edges' integrals do not settle even when held only to the rounding of their coordinates (where the section is small against its distance from the origin, moving the bodies nearer it may let them settle)";
+
+/// What the second pass ([`Held::Rounding`]) says of an edge on a
+/// rational spline whose weights spread more than [`ROUNDING_SPREAD`]:
+/// never the answer, [`held_sums`] gives the strict pass's answer or its
+/// refusal in its own words for it.
+const WIDE_SPREAD: &str = "an edge on a rational spline whose weights spread too widely to be held only to the rounding of its coordinates";
 
 /// The widest first panel along a circle or an ellipse, in its angle:
 /// there the 8-node rule is within about 1e-15 of the 16-node one, so most
@@ -389,8 +417,13 @@ struct Prepared<'b> {
     /// refused the call before 2026-11-22 (a level search ends at such a
     /// refusal), so nothing this call gives was given before, and its
     /// later sections are held to the rounding of their coordinates at
-    /// once ([`sums_about`]) instead of spending every panel first.
+    /// once ([`held_sums`]) instead of spending every panel first.
     rounded: Cell<bool>,
+    /// Whether a section of this body that does not settle strictly may
+    /// be summed again with the rounding of its coordinates allowed for
+    /// (true but in a floating search after a first search that settled
+    /// strictly: [`level_held`]); where not, the strict refusal stands.
+    may_round: bool,
 }
 
 impl<'b> Prepared<'b> {
@@ -428,6 +461,7 @@ fn prepare<'b>(bodies: &[&'b Body], direction: Vec3) -> Result<Vec<Prepared<'b>>
                 whole: OnceCell::new(),
                 probe: OnceCell::new(),
                 rounded: Cell::new(false),
+                may_round: true,
             })
         })
         .collect()
@@ -585,14 +619,7 @@ enum Held {
 }
 
 /// The section's integrals over every part's section faces about `o`,
-/// held to the section's own size. A body whose panels do not settle
-/// strictly (`Held::Strict`: they run out of panels, or one is halved as
-/// far as it goes) is summed again, every face of it, with the rounding
-/// of its points allowed for (`Held::Rounding`), and from then on in
-/// this call at once (`Prepared::rounded`). The strict sums are what
-/// every section was summed as before 2026-11-22, added up in the same
-/// order, so every section that settled then is the same to the bit; one
-/// summed again refused before, as did the call it is part of.
+/// held to the section's own size, each body's as [`held_sums`] says.
 fn sums_about(
     bodies: &[Prepared<'_>],
     parts: &[Part],
@@ -606,33 +633,12 @@ fn sums_about(
         let Some((body, caps)) = &part.cut else {
             continue;
         };
-        let rounded = bodies.get(index).map(|one| &one.rounded);
-        let strict = if rounded.is_some_and(Cell::get) {
-            None
-        } else {
-            Some(faces_sums(body, caps, side, (o, size), &rule, Held::Strict))
-        };
-        let faces = match strict {
-            Some(Err(what)) if what == TOO_MANY_PANELS || what == NOT_SETTLED => {
-                if let Some(rounded) = rounded {
-                    rounded.set(true);
-                }
-                None
-            }
-            other => other,
-        };
-        let faces = match faces {
-            Some(found) => found,
-            None => {
-                faces_sums(body, caps, side, (o, size), &rule, Held::Rounding).map_err(|what| {
-                    if what == TOO_MANY_PANELS || what == NOT_SETTLED {
-                        NOT_SETTLED_ROUNDED
-                    } else {
-                        what
-                    }
-                })
-            }
-        }
+        let one = bodies.get(index);
+        let faces = held_sums(
+            |held| faces_sums(body, caps, side, (o, size), &rule, held),
+            one.is_none_or(|one| one.may_round),
+            one.map(|one| &one.rounded),
+        )
         .map_err(|what| CutError::Section { body: index, what })?;
         for sums in faces {
             for (sum, part) in total.iter_mut().zip(sums) {
@@ -643,8 +649,55 @@ fn sums_about(
     Ok(total)
 }
 
+/// Whether `what` is one of the two ways a section's panels fail to
+/// settle: they run out, or one is halved as far as it goes.
+fn unsettled(what: &str) -> bool {
+    what == TOO_MANY_PANELS || what == NOT_SETTLED
+}
+
+/// A body's section summed by `sum`: strictly first (`Held::Strict`, as
+/// every section was summed before 2026-11-22, operation for operation
+/// and in the same order, so every section that settled then is the same
+/// to the bit); only where its panels do not settle so ([`unsettled`]) and
+/// `may_round`, again with the rounding of its points allowed for
+/// (`Held::Rounding`), and from then on in the call at once (`rounded`,
+/// the body's [`Prepared::rounded`], set). A section summed again refused
+/// before, as did the call it is part of. Every other refusal of the
+/// strict pass, and every one where `may_round` is false, is the answer
+/// as it was, in its words. A section with an edge on a rational spline
+/// whose weights spread more than [`ROUNDING_SPREAD`] is not summed with
+/// the rounding allowed for ([`WIDE_SPREAD`]): the strict pass's sums,
+/// or its refusal in its words, stand.
+fn held_sums<T>(
+    sum: impl Fn(Held) -> Result<T, &'static str>,
+    may_round: bool,
+    rounded: Option<&Cell<bool>>,
+) -> Result<T, &'static str> {
+    let strict = if may_round && rounded.is_some_and(Cell::get) {
+        None
+    } else {
+        match sum(Held::Strict) {
+            Err(what) if may_round && unsettled(what) => Some(what),
+            other => return other,
+        }
+    };
+    if let Some(rounded) = rounded {
+        rounded.set(true);
+    }
+    match sum(Held::Rounding) {
+        Err(what) if unsettled(what) => Err(NOT_SETTLED_ROUNDED),
+        Err(what) if what == WIDE_SPREAD => match strict {
+            Some(what) => Err(what),
+            None => sum(Held::Strict),
+        },
+        other => other,
+    }
+}
+
 /// The six integrals of each of a body's section faces `caps`, in their
-/// order, all of them taking one budget of panels.
+/// order, all of them taking one budget of panels. Held to the rounding,
+/// a section with an edge on a rational spline of wide spread is
+/// [`WIDE_SPREAD`] before any panel is summed.
 fn faces_sums(
     body: &Body,
     caps: &[usize],
@@ -653,6 +706,18 @@ fn faces_sums(
     rule: &(Rule, Rule),
     held: Held,
 ) -> Result<Vec<[f64; 6]>, &'static str> {
+    if held == Held::Rounding
+        && caps
+            .iter()
+            .filter_map(|&face| body.faces.get(face))
+            .flat_map(|face| face.loops.iter())
+            .filter_map(|&id| body.loop_(id))
+            .flat_map(|lp| lp.coedges.iter())
+            .filter_map(|coedge| body.edge(coedge.edge))
+            .any(|edge| spreads_widely(&edge.curve))
+    {
+        return Err(WIDE_SPREAD);
+    }
     let mut budget = MAX_PANELS;
     caps.iter()
         .map(|&face| cap_sums(body, face, side, about, rule, &mut budget, held))
@@ -1345,9 +1410,27 @@ struct Reach {
     rational: f64,
 }
 
+/// Whether `curve` is a rational spline whose heaviest weight is more
+/// than [`ROUNDING_SPREAD`] times its lightest (or whose weights are not
+/// all positive): one whose section is not held to the rounding of its
+/// coordinates ([`held_sums`]).
+fn spreads_widely(curve: &Curve3) -> bool {
+    let Curve3::Nurbs(spline) = curve else {
+        return false;
+    };
+    let weights = spline.weights();
+    let light = weights.iter().copied().fold(f64::INFINITY, f64::min);
+    let heavy = weights.iter().copied().fold(0.0, f64::max);
+    !(light > 0.0 && heavy <= ROUNDING_SPREAD * light)
+}
+
 impl Reach {
-    /// `None` where it is not a finite number.
-    fn of(curve: &Curve3) -> Option<Reach> {
+    /// [`WIDE_SPREAD`] for a rational spline that [`spreads_widely`], and
+    /// an error where it is not a finite number.
+    fn of(curve: &Curve3) -> Result<Reach, &'static str> {
+        if spreads_widely(curve) {
+            return Err(WIDE_SPREAD);
+        }
         let reach = match curve {
             Curve3::Line(line) => Reach {
                 far: line.origin().length(),
@@ -1384,7 +1467,11 @@ impl Reach {
                 }
             }
         };
-        (reach.far.is_finite() && reach.rational.is_finite()).then_some(reach)
+        if reach.far.is_finite() && reach.rational.is_finite() {
+            Ok(reach)
+        } else {
+            Err("an edge whose coordinates are not finite")
+        }
     }
 
     /// How much rounding each of the six integrands of [`edge_sums`] may
@@ -1460,7 +1547,7 @@ fn edge_sums(
     // allowed for.
     let reach = match held {
         Held::Strict => None,
-        Held::Rounding => Some(Reach::of(curve).ok_or("an edge whose coordinates are not finite")?),
+        Held::Rounding => Some(Reach::of(curve)?),
     };
     let across = side.y_axis();
     // The six integrands at `t`, the speed there and, held to the
@@ -1708,10 +1795,31 @@ pub fn level_for(
     volume: f64,
     tolerance: &Tolerance,
 ) -> Result<Level, CutError> {
+    let mut rounded = false;
+    level_held(bodies, side, volume, tolerance, true, &mut rounded)
+}
+
+/// [`level_for`], a section that does not settle strictly summed again
+/// with the rounding of its coordinates allowed for only where
+/// `may_round` ([`held_sums`]; where not, its strict refusal ends the
+/// search as it did before 2026-11-22); `rounded` is set where some
+/// section was (so before 2026-11-22 the search was refused, whatever it
+/// ends in now). For the searches of [`floating`].
+fn level_held(
+    bodies: &[&Body],
+    side: &CutPlane,
+    volume: f64,
+    tolerance: &Tolerance,
+    may_round: bool,
+    rounded: &mut bool,
+) -> Result<Level, CutError> {
     if !volume.is_finite() {
         return Err(CutError::NotFinite("the volume"));
     }
-    let prepared = prepare(bodies, side.normal)?;
+    let mut prepared = prepare(bodies, side.normal)?;
+    for one in &mut prepared {
+        one.may_round = may_round;
+    }
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
     let mut most = 0.0;
     for one in &prepared {
@@ -1719,9 +1827,11 @@ pub fn level_for(
         hi = hi.max(one.hi);
         most += one.whole()?.0;
     }
-    search((lo, hi), most, volume, |offset| {
+    let found = search((lo, hi), most, volume, |offset| {
         below_in(&prepared, side, offset, tolerance)
-    })
+    });
+    *rounded |= prepared.iter().any(|one| one.rounded.get());
+    found
 }
 
 /// The search of [`level_for`] between the offsets `lo` and `hi` that
@@ -1825,3 +1935,6 @@ fn search(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod far_tests;

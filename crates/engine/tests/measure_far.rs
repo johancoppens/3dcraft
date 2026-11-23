@@ -757,3 +757,142 @@ fn a_block_cut_by_a_large_cylinder_is_measured() {
         );
     }
 }
+
+// ------------------------------------------- floating far from the origin
+
+/// A body made by `command` with `params` (named `Body`), floated with
+/// `volume` below the plane through `p` square to z and its centre of
+/// gravity moved from `p` by `across` in x and y and `rise` in z.
+fn floated(
+    command: &str,
+    params: Value,
+    p: [f64; 3],
+    volume: f64,
+    (across, rise): ([f64; 2], f64),
+) -> Value {
+    let mut s = Session::new(Workspace::none());
+    run(
+        &mut s,
+        "file.new",
+        json!({"units": "mm", "tolerance": TOLERANCE}),
+    );
+    let made = run(&mut s, command, params.clone());
+    assert_eq!(made["status"], "ok", "{command} {params}: {made}");
+    run(
+        &mut s,
+        "measure.floating",
+        json!({"of": "Body", "plane": {"point": p, "normal": [0, 0, 1]}, "volume": volume, "centerOfGravity": [p[0] + across[0], p[1] + across[1], p[2] + rise]}),
+    )
+}
+
+/// `ratio` times (−0.37, 0.81, 0.45): where a floating body lies.
+fn far_at(ratio: f64) -> [f64; 3] {
+    [-0.37 * ratio, 0.81 * ratio, 0.45 * ratio]
+}
+
+/// What `measure.floating` of the box gave on `main` (1f196da4, its
+/// `craft3d-cli` in release: `plan/measure-far/round2/boxfloat.py` in the
+/// workshop), hashed as [`hash`] hashes it, at 3e4 to 1e7 times (−0.37,
+/// 0.81, 0.45). The branch as first built changed the four from 1e5 on
+/// (the review of 2026-11-22: `floats` null → 1, `levels` 4 or 5 → 15 or
+/// 17, the two searches from the upright equilibrium answered).
+const BOX_PINS: [(f64, u64); 5] = [
+    (3e4, 0x1a68_7f55_2a54_4725),
+    (1e5, 0x5d31_44d0_fff3_bbd3),
+    (3e5, 0x9adf_f5af_7e02_99fd),
+    (1e6, 0x83c2_1289_3b05_5fb3),
+    (1e7, 0x2992_7c2b_2ee5_cd5e),
+];
+
+/// A box 2 × 1.3 × 0.7 floating with 0.91 below (a draft of 0.35) and its
+/// centre of gravity 0.6 above its floor, unstable upright (GM about
+/// −0.0226 across), 3e4 to 1e7 times from the origin: the search from the
+/// start, upright, settles strictly there, so `main` answered; from 1e5 on
+/// the sections of the two searches from it, turned 0.1 rad, do not
+/// settle strictly and were listed under `unfinished` in the strict
+/// words, the call answered with no stable equilibrium (`floats` null).
+/// Those searches are held strictly still where the search from the start
+/// was, so every answer is `main`'s to the bit: at 1e5 one equilibrium,
+/// `levels` 4, `floats` null and the two searches unfinished in the strict
+/// words; at 3e4 the two angles of loll, ±18.536°, as on `main`.
+#[test]
+fn a_far_floating_box_gives_what_main_gave() {
+    for (ratio, pin) in BOX_PINS {
+        let p = far_at(ratio);
+        let found = floated(
+            "feature.block",
+            json!({"name": "Body", "position": p, "size": [2, 1.3, 0.7]}),
+            p,
+            0.91,
+            ([1.0, 0.65], 0.6),
+        );
+        println!("BOX {ratio:e}: 0x{:016x} {found}", hash(&found));
+        assert_eq!(hash(&found), pin, "the box at {ratio:e}: {found}");
+        if ratio == 1e5 {
+            assert_eq!(found["floats"], Value::Null, "{found}");
+            assert_eq!(found["levels"], 4, "{found}");
+            assert_eq!(found["equilibria"].as_array().map(Vec::len), Some(1));
+            let words = "the section of body 0: its edges take more panels than a section may";
+            assert_eq!(found["unfinished"], json!([words, words]), "{found}");
+        }
+    }
+}
+
+/// An upright cylinder of radius 1 and height 3 floating at a draft of 1
+/// with its centre of gravity 0.85 above its floor (KB 0.5, BM r²/4T =
+/// 0.25, GM −0.1: unstable upright in every direction), at the origin and
+/// 1e5 times (−0.37, 0.81, 0.45) from it. At the origin `main`'s answer to
+/// the bit (its hash from `craft3d-cli` of `main` 1f196da4); 1e5 away
+/// refused by `main` (the search from the start: "the section of body 0:
+/// its edges take more panels than a section may"), so the searches after
+/// it may be held to the rounding as well. Both give the upright
+/// equilibrium, GM −0.1 both ways, and four angles of loll (one each way
+/// along each direction), each tilted by tan² φ = −2 GM / BM = 0.8
+/// (41.8103°: the waterline stays below the rim and the deck), neutral
+/// about the vertical (a loll turned about it is one) and stable across
+/// with GM −2 GM / cos φ = 0.2 √1.8; none unfinished.
+#[test]
+fn a_far_floating_cylinder_finds_its_angles_of_loll() {
+    use craft3d_math::Portable;
+    let loll = 0.8_f64.sqrt().patan().to_degrees();
+    for ratio in [0.0, 1e5] {
+        let p = far_at(ratio);
+        let found = floated(
+            "feature.cylinder",
+            json!({"name": "Body", "position": p, "radius": 1.0, "height": 3.0}),
+            p,
+            std::f64::consts::PI,
+            ([0.0, 0.0], 0.85),
+        );
+        println!("CYLINDER {ratio:e}: 0x{:016x} {found}", hash(&found));
+        if ratio == 0.0 {
+            assert_eq!(
+                hash(&found),
+                0xe40e_5693_7ff0_fbd1,
+                "main's answer: {found}"
+            );
+        }
+        assert_eq!(found["unfinished"], json!([]), "{found}");
+        let all = found["equilibria"].as_array().unwrap();
+        assert_eq!(all.len(), 5, "{found}");
+        let number = |v: &Value| v.as_f64().unwrap_or_else(|| panic!("{v}"));
+        for principal in all[0]["principal"].as_array().unwrap() {
+            assert_eq!(principal["stability"], "unstable", "{found}");
+            assert!((number(&principal["gm"]) + 0.1).abs() <= 1e-9, "{found}");
+        }
+        for e in &all[1..] {
+            assert!(
+                (number(&e["tilt"]) - loll).abs() <= 1e-6,
+                "a loll of {} deg, want {loll}",
+                e["tilt"]
+            );
+            let principal = e["principal"].as_array().unwrap();
+            assert_eq!(principal[0]["stability"], "neutral", "{e}");
+            assert_eq!(principal[1]["stability"], "stable", "{e}");
+            assert!(
+                (number(&principal[1]["gm"]) - 0.2 * 1.8_f64.sqrt()).abs() <= 1e-8,
+                "{e}"
+            );
+        }
+    }
+}
