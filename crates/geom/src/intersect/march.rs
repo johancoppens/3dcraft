@@ -87,6 +87,20 @@
 //! is marched once, as it was before branches were taken up again
 //! (docs/design/booleans.md › *A step of the march onto the curve beside
 //! the one it follows*).
+//!
+//! **A step through a crossing point.** Where two curves of the crossing
+//! cross each other the sense of travel flips, so a step through such a
+//! point that lands on the same curve beyond it can have a tangent there
+//! that agrees with the one it left with; the run then goes back towards
+//! the point, over the stretch the fit fills the step's span with, and
+//! the fit accepts the branch (it is within the tolerance of both
+//! surfaces all along). What the fit accepted is read for that, for no
+//! evaluation: two spans in a row that turn back on each other
+//! ([`Marcher::folds`]). The step the fold lies on is then taken up again
+//! as a span the fit gave up on is; asked as first made, the march
+//! refuses ([`folded`]). A branch that does not run back is the one it
+//! was, bit for bit (docs/design/booleans.md › *A step through a point
+//! where two curves of a crossing cross each other: traced and mended*).
 
 // `!(x > 0.0)` is deliberate throughout: unlike `x <= 0.0` it is also true
 // for NaN.
