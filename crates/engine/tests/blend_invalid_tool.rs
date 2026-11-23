@@ -304,6 +304,13 @@ enum Answer {
     Refused(String),
 }
 
+thread_local! {
+    /// What the last step of the last [`answer`] on this thread cost: the
+    /// kernel's booleans (counted for the whole process: exact with one
+    /// test thread) and the work units of this thread.
+    static COST: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
 fn answer(steps: &Steps) -> Answer {
     let mut s = Session::new(Workspace::unrestricted());
     let (last, before) = steps.split_last().unwrap();
@@ -311,7 +318,11 @@ fn answer(steps: &Steps) -> Answer {
         let made = s.execute(id, params).unwrap();
         assert_ne!(made["status"], "failed", "{id} {params}: {made}");
     }
-    let made = s.execute(last.0, &last.1).unwrap();
+    let booleans = craft3d_kernel::work::work().booleans;
+    let (made, work) = craft3d_geom::allowance::measured(|| s.execute(last.0, &last.1));
+    let booleans = craft3d_kernel::work::work().booleans - booleans;
+    COST.with(|cost| *cost.borrow_mut() = format!("[{booleans} booleans, {work} units]"));
+    let made = made.unwrap();
     if made["status"] == "failed" {
         return Answer::Refused(made["error"].as_str().unwrap().to_string());
     }
@@ -335,7 +346,8 @@ fn said(label: &str, answer: &Answer) {
         Answer::Built { deep } => format!("built, deep check ok: {deep}"),
         Answer::Refused(words) => words.chars().take(400).collect(),
     };
-    println!("{label}: {text}");
+    let cost = COST.with(|cost| cost.borrow().clone());
+    println!("{label}: {text} {cost}");
 }
 
 /// The radius `r` (at scale 1) is too large, with what fits said at
