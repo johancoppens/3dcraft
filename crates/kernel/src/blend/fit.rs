@@ -21,8 +21,12 @@
 //! When none explains the failure the size is bisected on the builds
 //! alone. Too large with nothing that fits only where every failure is
 //! evidence of no room from the result ([`no_room`]); a refusal that is
-//! the same at every smaller size is reported as it is. Every search is
-//! bounded ([`MOST_BUILDS`]), and a spent budget proves nothing.
+//! the same at every smaller size is reported as it is. Where the size
+//! asked failed with an invalid body from the boolean (its fault at that
+//! size, [`BlendError::Invalid`]), a largest size found is said only when
+//! the sizes between it and the size asked fail too ([`proven`]), and
+//! otherwise the boolean's refusal. Every search is bounded
+//! ([`MOST_BUILDS`]), and a spent budget proves nothing.
 
 use super::{
     BlendError, Failure, Path, Plan, Reason, Request, Size, Use, construct, face_edges, half_tan,
@@ -73,7 +77,7 @@ struct Event {
 /// Whether a smaller size could mend what a build failed with.
 fn sized(error: &BlendError) -> bool {
     match error {
-        BlendError::Boolean { .. } => true,
+        BlendError::Boolean { .. } | BlendError::Invalid { .. } => true,
         BlendError::Kernel(KernelError::InvalidBody { .. } | KernelError::InvalidSize { .. })
         | BlendError::TooLarge { .. }
         | BlendError::Spindle { .. }
@@ -134,6 +138,7 @@ fn same_way(a: &BlendError, b: &BlendError) -> bool {
                 edge: y, error: f, ..
             },
         ) => x == y && std::mem::discriminant(e.as_ref()) == std::mem::discriminant(f.as_ref()),
+        (BlendError::Invalid { edge: x, .. }, BlendError::Invalid { edge: y, .. }) => x == y,
         (BlendError::Kernel(x), BlendError::Kernel(y)) => {
             std::mem::discriminant(x) == std::mem::discriminant(y)
         }
@@ -145,11 +150,13 @@ fn same_way(a: &BlendError, b: &BlendError) -> bool {
 /// say so: a boolean's refusal).
 fn smaller_too(error: BlendError) -> BlendError {
     match error {
-        BlendError::Boolean { edge, error, .. } => BlendError::Boolean {
-            edge,
-            error,
-            smaller_fails: true,
-        },
+        BlendError::Boolean { edge, error, .. } | BlendError::Invalid { edge, error } => {
+            BlendError::Boolean {
+                edge,
+                error,
+                smaller_fails: true,
+            }
+        }
         other => other,
     }
 }
@@ -548,6 +555,11 @@ pub(super) fn explain(
     }
     .unwrap_or(0);
     let tol = tolerance.linear;
+    // An invalid body from the boolean is its fault at that size, not
+    // evidence of how much room the faces leave: a largest size found
+    // from it is said only when the sizes between it and the size asked
+    // fail too ([`proven`]).
+    let invalid = matches!(error, BlendError::Invalid { .. });
     let group = group(requests, index);
     // The smallest size the booleans still tell apart, as a multiple.
     let smallest = group
@@ -640,7 +652,12 @@ pub(super) fn explain(
             match search.attempt(at) {
                 Outcome::Built => {
                     let plan = plans.get(event.plan).unwrap_or(own);
-                    return too_large(plan, event.side, event.size);
+                    let found = too_large(plan, event.side, event.size);
+                    return if invalid {
+                        proven(&mut search, event.scale, found, error)
+                    } else {
+                        found
+                    };
                 }
                 Outcome::Failed(_) => fails = fails.min(at),
                 Outcome::Spent => return error,
@@ -652,7 +669,49 @@ pub(super) fn explain(
         return error;
     };
     let size = own.distances.get(named).copied().unwrap_or(0.0) * per(own, named);
-    too_large(own, named, fails * size)
+    let found = too_large(own, named, fails * size);
+    if invalid {
+        proven(&mut search, fails, found, error)
+    } else {
+        found
+    }
+}
+
+/// Into how many parts the sizes between a largest size found and the
+/// size asked are divided to prove it ([`proven`]): a build at each of
+/// the seven sizes between the parts.
+const PROOFS: u32 = 8;
+
+/// `found`, the refusal as too large with `bound` (a multiple of the size
+/// asked) as the largest size that fits, when the sizes evenly between
+/// `bound` and the size asked ([`PROOFS`]) all fail as well; otherwise
+/// `error`, the boolean's invalid body at the size asked.
+///
+/// Where the build at the size asked failed with an invalid body, the
+/// failures the search meets may be the boolean's at some sizes and not a
+/// limit the faces set: in random design 124545 a fillet of a rim builds
+/// at radii of 0.9, 1.05 to 1.199 and 1.3 and fails at 0.7, 0.8, 1, 1.1,
+/// 1.2 and 1.5, and the search from 1 says "below 0.6528", which is not
+/// so (`docs/design/blends.md` › *A tool boolean's invalid body*). A size
+/// between that builds shows that the size found is not the largest that
+/// fits; where every size between fails, the failures go on from the
+/// size found up, as where a fillet runs past the narrowest part of its
+/// wall. A spent budget proves nothing.
+fn proven(search: &mut Search<'_>, bound: f64, found: BlendError, error: BlendError) -> BlendError {
+    if !bound.is_finite() || bound >= 1.0 {
+        return error;
+    }
+    for step in 1..PROOFS {
+        let at = bound + (1.0 - bound) * f64::from(step) / f64::from(PROOFS);
+        if at <= bound || at >= 1.0 {
+            continue;
+        }
+        match search.attempt(at) {
+            Outcome::Failed(_) => {}
+            Outcome::Built | Outcome::Spent => return error,
+        }
+    }
+    found
 }
 
 /// Bisects between `fits` (built) and `fails` (failed) with `attempt`

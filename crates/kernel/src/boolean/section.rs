@@ -327,7 +327,7 @@ pub(super) fn prepare<'a>(
         defects.truncate(MAX_REPORTED);
         return Err(Stop::Error(KernelError::InvalidBody {
             operation: match operand {
-                Operand::A => "the first operand of a boolean",
+                Operand::A => super::FIRST_OPERAND,
                 Operand::B => "the second operand of a boolean",
             },
             defects,

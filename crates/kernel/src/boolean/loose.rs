@@ -79,7 +79,7 @@ pub(crate) fn operands_valid(
     cap: f64,
 ) -> Result<(), KernelError> {
     for (body, operation) in [
-        (a, "the first operand of a boolean"),
+        (a, super::FIRST_OPERAND),
         (b, "the second operand of a boolean"),
     ] {
         let mut defects = craft3d_topo::check_remembered_capped(body, tolerance, cap);

@@ -100,6 +100,13 @@ pub(crate) fn said(error: BlendError) -> KernelError {
             error,
             smaller_fails,
         },
+        // The boolean's invalid body, where no size found fits: its
+        // refusal.
+        BlendError::Invalid { edge, error } => KernelError::ChamferBoolean {
+            edge,
+            error,
+            smaller_fails: false,
+        },
         // A chamfer meets it only for the middle of its edge.
         BlendError::Pinched { edge, .. } => KernelError::Chamfer {
             edge: Some(edge),
