@@ -682,23 +682,24 @@ fn a_tube_through_a_ring_of_its_own_radius_is_marched_once_along_each_curve() {
 
 /// The pair of random design 118868 in boxes of many sizes about the
 /// middle between the tori, each holding both places where the tori
-/// cross (800 to 4 400 tube radii a side): every answer is the crossing,
+/// cross (800 to 2 470 tube radii a side): every answer is the crossing,
 /// the same as first made where that answers. Not larger: in a box of
-/// 5 870 tube radii a side the arms of a crossing point are seeded a
-/// hundredth of the march's longest step from it, 31 021 tolerances, more
-/// than three tube radii, and a seed within half that of a crossing point
-/// is left to the arms; every place of the ovals in the plane between the
-/// tori is that near the top or the bottom of the tubes, and neither the
-/// march as first made nor the one taken up again finds them (the probe of
-/// Check 45264346266: four curves of eight, the same both ways; *Owed* in
-/// docs/design/booleans.md).
+/// 5 870 tube radii a side upright, and of 4 150 turned (the box along the
+/// world's axes about a turned cube is wider), the arms of a crossing
+/// point are seeded a hundredth of the march's longest step from it (in
+/// the first 31 021 tolerances, more than three tube radii), and a seed
+/// within half that of a crossing point is left to the arms; every place
+/// of the ovals in the plane between the tori is that near the top or the
+/// bottom of the tubes, and they are not found (the probe of Check
+/// 45264346266, upright: four curves of eight, the same as first made and
+/// taken up again; *Owed* in docs/design/booleans.md).
 #[test]
 fn two_rings_side_by_side_are_marched_once_along_each_curve() {
     let centre = Vec3::new(0.0, 0.00125, 0.002_509_765_625);
     family(
         "two rings",
         1e-3,
-        &boxes(9.765_625e-6, 400.0, 22, centre),
+        &boxes(9.765_625e-6, 400.0, 14, centre),
         By::Boolean,
         two_rings,
     );
