@@ -19,7 +19,12 @@
 //! panels between the points where its curve is not smooth (the knots of a
 //! spline), each summed with the 8- and the 16-node Gauss–Legendre rule
 //! and halved until the two agree ([`PANEL_ALLOWANCE`]); no tessellation
-//! is integrated anywhere.
+//! is integrated anywhere. A section whose panels cannot agree that
+//! closely because its points are rounded more than that (one small
+//! against its distance from the origin) is summed again with the
+//! rounding of its coordinates allowed for ([`ROUNDING_ULPS`]), unless
+//! an edge of it lies on a rational spline whose weights spread more than
+//! twofold (`held_sums`).
 //!
 //! The offset for a volume is where the volume below the plane is that
 //! volume. The volume grows with the offset and its derivative is the
@@ -39,7 +44,7 @@ use craft3d_math::Portable;
 use craft3d_math::quadrature::Rule;
 use craft3d_math::{Bbox3, Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, BodyKind, FaceId, MassError, TransformError, mass_properties};
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 use std::collections::BinaryHeap;
 use std::f64::consts::PI;
 use std::fmt;
@@ -92,6 +97,58 @@ pub const PANEL_ALLOWANCE: f64 = 1e-13;
 /// an error, not a number.
 const MAX_PANELS: usize = 1 << 16;
 const MAX_HALVINGS: u32 = 40;
+
+/// How many units in the last place a point of an edge, as it is
+/// computed, is taken to be off by, of the numbers it is made from: the
+/// coordinates of its circle's or ellipse's centre and its radius, of its
+/// line's origin, of its spline's control points (by the spread of its
+/// weights), and its parameter times its speed. Each of those is a few
+/// roundings, so this is a bound with room. The rounding a panel's two
+/// sums take on from their points is far below [`PANEL_ALLOWANCE`] of the
+/// section's size for a section near the origin, and more than that for
+/// one about a thousand times smaller than its distance from the origin
+/// and beyond (halving a panel halves both): there the sums never agree
+/// to that alone, and the section is summed again with this rounding
+/// allowed for (`Held::Rounding`).
+pub const ROUNDING_ULPS: f64 = 16.0;
+
+/// The most a rational spline's heaviest weight may be of its lightest
+/// for a section with an edge on it to be summed with the rounding of its
+/// coordinates allowed for ([`held_sums`]). A panel's two sums tell its
+/// error only where the 16-node one is far nearer the integral than the
+/// 8-node one. A rational curve's integrands have the poles of its
+/// denominator, the sum of its weights, and where the weights spread
+/// widely those lie near the span (a conic of weights 1, w, 1 within
+/// about `1/(2w)` of its parameter beyond its ends, where it turns): both
+/// rules then miss alike, their sums agree on one with most of the
+/// integral missing, and the rounding's allowance, wider than the strict
+/// one, takes it (docs/design/sections-and-levels.md, 2026-11-23). Within
+/// a spread of 2 the poles of such a conic lie 0.37 of its span or more
+/// beyond it, so on every panel the 16-node sum's error is some 1e-8 of
+/// the 8-node one's, whatever the allowance: the sum taken is the
+/// integral to rounding at every distance from the origin (held to the
+/// closed form out to 1e10 times the size, as it is and raised to
+/// degrees 3 and 6, which keeps its poles). A rational span of degree n
+/// of that spread has them only outside |t| + |1 - t| = 3^(1/n) (rho 1.30
+/// at degree 32), where the pair does not bound the error: there the rule
+/// rests on measurement (`far_tests.rs`). A circle as a spline spreads
+/// 1.41, a hyperbola's arc the boolean builds at most 1.13.
+const ROUNDING_SPREAD: f64 = 2.0;
+
+/// The words of the two ways a section's panels fail to settle, by which
+/// [`held_sums`] tells them from every other refusal of the section.
+const TOO_MANY_PANELS: &str = "its edges take more panels than a section may";
+const NOT_SETTLED: &str = "an edge along which the section's integrals do not settle";
+
+/// A section's panels that do not settle even with the rounding of their
+/// coordinates allowed for.
+const NOT_SETTLED_ROUNDED: &str = "its edges' integrals do not settle even when held only to the rounding of their coordinates (where the section is small against its distance from the origin, moving the bodies nearer it may let them settle)";
+
+/// What the second pass ([`Held::Rounding`]) says of an edge on a
+/// rational spline whose weights spread more than [`ROUNDING_SPREAD`]:
+/// never the answer, [`held_sums`] gives the strict pass's answer or its
+/// refusal in its own words for it.
+const WIDE_SPREAD: &str = "an edge on a rational spline whose weights spread too widely to be held only to the rounding of its coordinates";
 
 /// The widest first panel along a circle or an ellipse, in its angle:
 /// there the 8-node rule is within about 1e-15 of the 16-node one, so most
@@ -358,6 +415,18 @@ struct Prepared<'b> {
     /// The body made ready to tell whether a point of a face's surface is
     /// in the face (made when first needed: `None` where it cannot be).
     probe: OnceCell<Option<Probe<'b>>>,
+    /// Whether the panels of this body's section did not settle to
+    /// [`PANEL_ALLOWANCE`] at some offset of this call. That section
+    /// refused the call before 2026-11-22 (a level search ends at such a
+    /// refusal), so nothing this call gives was given before, and its
+    /// later sections are held to the rounding of their coordinates at
+    /// once ([`held_sums`]) instead of spending every panel first.
+    rounded: Cell<bool>,
+    /// Whether a section of this body that does not settle strictly may
+    /// be summed again with the rounding of its coordinates allowed for
+    /// (true but in a floating search after a first search that settled
+    /// strictly: [`level_held`]); where not, the strict refusal stands.
+    may_round: bool,
 }
 
 impl<'b> Prepared<'b> {
@@ -394,6 +463,8 @@ fn prepare<'b>(bodies: &[&'b Body], direction: Vec3) -> Result<Vec<Prepared<'b>>
                 bbox,
                 whole: OnceCell::new(),
                 probe: OnceCell::new(),
+                rounded: Cell::new(false),
+                may_round: true,
             })
         })
         .collect()
@@ -525,7 +596,7 @@ fn below_parts(
         }
     }
     let centroid = (volume > 0.0).then(|| moment * (1.0 / volume));
-    let section = section_of(&parts, side, offset, &extent)?;
+    let section = section_of(bodies, &parts, side, offset, &extent)?;
     Ok((
         BelowPlane {
             offset,
@@ -538,19 +609,41 @@ fn below_parts(
     ))
 }
 
+/// How a panel's two sums are held to each other ([`edge_sums`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Held {
+    /// To [`PANEL_ALLOWANCE`] of the section's size and 64 ulps of their
+    /// terms, as every section was until 2026-11-22.
+    Strict,
+    /// To that and to the rounding of the points they are made of
+    /// ([`ROUNDING_ULPS`]), for a section whose panels do not settle
+    /// strictly.
+    Rounding,
+}
+
 /// The section's integrals over every part's section faces about `o`,
-/// held to the section's own size.
-fn sums_about(parts: &[Part], side: &CutPlane, o: Vec3, size: f64) -> Result<[f64; 6], CutError> {
+/// held to the section's own size, each body's as [`held_sums`] says.
+fn sums_about(
+    bodies: &[Prepared<'_>],
+    parts: &[Part],
+    side: &CutPlane,
+    o: Vec3,
+    size: f64,
+) -> Result<[f64; 6], CutError> {
     let rule = (Rule::new(8), Rule::new(16));
     let mut total = [0.0; 6];
     for (index, part) in parts.iter().enumerate() {
         let Some((body, caps)) = &part.cut else {
             continue;
         };
-        let mut budget = MAX_PANELS;
-        for &face in caps {
-            let sums = cap_sums(body, face, side, (o, size), &rule, &mut budget)
-                .map_err(|what| CutError::Section { body: index, what })?;
+        let one = bodies.get(index);
+        let faces = held_sums(
+            |held| faces_sums(body, caps, side, (o, size), &rule, held),
+            one.is_none_or(|one| one.may_round),
+            one.map(|one| &one.rounded),
+        )
+        .map_err(|what| CutError::Section { body: index, what })?;
+        for sums in faces {
             for (sum, part) in total.iter_mut().zip(sums) {
                 *sum += part;
             }
@@ -559,12 +652,88 @@ fn sums_about(parts: &[Part], side: &CutPlane, o: Vec3, size: f64) -> Result<[f6
     Ok(total)
 }
 
+/// Whether `what` is one of the two ways a section's panels fail to
+/// settle: they run out, or one is halved as far as it goes.
+fn unsettled(what: &str) -> bool {
+    what == TOO_MANY_PANELS || what == NOT_SETTLED
+}
+
+/// A body's section summed by `sum`: strictly first (`Held::Strict`, as
+/// every section was summed before 2026-11-22, operation for operation
+/// and in the same order, so every section that settled then is the same
+/// to the bit); only where its panels do not settle so ([`unsettled`]) and
+/// `may_round`, again with the rounding of its points allowed for
+/// (`Held::Rounding`), and from then on in the call at once (`rounded`,
+/// the body's [`Prepared::rounded`], set). A section summed again refused
+/// before, as did the call it is part of. Every other refusal of the
+/// strict pass, and every one where `may_round` is false, is the answer
+/// as it was, in its words. A section with an edge on a rational spline
+/// whose weights spread more than [`ROUNDING_SPREAD`] is not summed with
+/// the rounding allowed for ([`WIDE_SPREAD`]): the strict pass's sums,
+/// or its refusal in its words, stand.
+fn held_sums<T>(
+    sum: impl Fn(Held) -> Result<T, &'static str>,
+    may_round: bool,
+    rounded: Option<&Cell<bool>>,
+) -> Result<T, &'static str> {
+    let strict = if may_round && rounded.is_some_and(Cell::get) {
+        None
+    } else {
+        match sum(Held::Strict) {
+            Err(what) if may_round && unsettled(what) => Some(what),
+            other => return other,
+        }
+    };
+    if let Some(rounded) = rounded {
+        rounded.set(true);
+    }
+    match sum(Held::Rounding) {
+        Err(what) if unsettled(what) => Err(NOT_SETTLED_ROUNDED),
+        Err(what) if what == WIDE_SPREAD => match strict {
+            Some(what) => Err(what),
+            None => sum(Held::Strict),
+        },
+        other => other,
+    }
+}
+
+/// The six integrals of each of a body's section faces `caps`, in their
+/// order, all of them taking one budget of panels. Held to the rounding,
+/// a section with an edge on a rational spline of wide spread is
+/// [`WIDE_SPREAD`] before any panel is summed.
+fn faces_sums(
+    body: &Body,
+    caps: &[usize],
+    side: &CutPlane,
+    about: (Vec3, f64),
+    rule: &(Rule, Rule),
+    held: Held,
+) -> Result<Vec<[f64; 6]>, &'static str> {
+    if held == Held::Rounding
+        && caps
+            .iter()
+            .filter_map(|&face| body.faces.get(face))
+            .flat_map(|face| face.loops.iter())
+            .filter_map(|&id| body.loop_(id))
+            .flat_map(|lp| lp.coedges.iter())
+            .filter_map(|coedge| body.edge(coedge.edge))
+            .any(|edge| spreads_widely(&edge.curve))
+    {
+        return Err(WIDE_SPREAD);
+    }
+    let mut budget = MAX_PANELS;
+    caps.iter()
+        .map(|&face| cap_sums(body, face, side, about, rule, &mut budget, held))
+        .collect()
+}
+
 /// The section in two passes, each about a point near what it sums so
 /// that nothing is lost to cancellation: the area and the first moments
 /// about the middle of the section's box, which give the centroid; then
 /// the second moments about the centroid itself. Both are held to the
 /// section's own size (its box), not to the bodies'.
 fn section_of(
+    bodies: &[Prepared<'_>],
     parts: &[Part],
     side: &CutPlane,
     offset: f64,
@@ -583,12 +752,12 @@ fn section_of(
     let size = (0.5 * extent.diagonal()).max(f64::MIN_POSITIVE);
     let onto = |p: Vec3| p + side.normal * (offset - p.dot(side.normal));
     let o = onto(middle);
-    let [area, sa, sb, ..] = sums_about(parts, side, o, size)?;
+    let [area, sa, sb, ..] = sums_about(bodies, parts, side, o, size)?;
     if area.is_nan() || area <= 0.0 {
         return Ok(empty);
     }
     let centroid = o + side.x_axis * (sa / area) + side.y_axis() * (sb / area);
-    let [_, sa, sb, iaa, iab, ibb] = sums_about(parts, side, centroid, size)?;
+    let [_, sa, sb, iaa, iab, ibb] = sums_about(bodies, parts, side, centroid, size)?;
     // What is left of the first moments about the centroid is rounding;
     // the parallel-axis rule takes it out of the second.
     let (ca, cb) = (sa / area, sb / area);
@@ -1178,6 +1347,7 @@ fn cap_sums(
     (o, size): (Vec3, f64),
     rule: &(Rule, Rule),
     budget: &mut usize,
+    held: Held,
 ) -> Result<[f64; 6], &'static str> {
     let face = body
         .faces
@@ -1211,7 +1381,7 @@ fn cap_sums(
             let edge = body
                 .edge(coedge.edge)
                 .ok_or("an edge that is not in the body")?;
-            let along = edge_sums(&edge.curve, edge.range, side, (o, size), rule, budget)?;
+            let along = edge_sums(&edge.curve, edge.range, side, (o, size), rule, budget, held)?;
             let sign = if coedge.reversed { -1.0 } else { 1.0 };
             for (sum, part) in sums.iter_mut().zip(along) {
                 *sum += sign * part;
@@ -1228,8 +1398,118 @@ fn cap_sums(
 /// The powers of the length in each plane integral.
 const POWERS: [i32; 6] = [2, 3, 3, 4, 4, 4];
 
+/// What the points of a curve are computed from, for the rounding they
+/// carry ([`ROUNDING_ULPS`]): `far`, the size of the numbers a point is
+/// made from (its centre's distance from the origin and its radius, its
+/// line's origin's distance, its spline's farthest control point times
+/// the spread of its weights), and `rational`, the degree of a spline with
+/// weights other than 1, whose derivative is made from weighted control
+/// points and so carries their rounding over its parameter's stretch
+/// (zero for every other curve, whose derivative is rounded as a share of
+/// itself).
+#[derive(Clone, Copy, Debug)]
+struct Reach {
+    far: f64,
+    rational: f64,
+}
+
+/// Whether `curve` is a rational spline whose heaviest weight is more
+/// than [`ROUNDING_SPREAD`] times its lightest (or whose weights are not
+/// all positive): one whose section is not held to the rounding of its
+/// coordinates ([`held_sums`]).
+fn spreads_widely(curve: &Curve3) -> bool {
+    let Curve3::Nurbs(spline) = curve else {
+        return false;
+    };
+    let weights = spline.weights();
+    let light = weights.iter().copied().fold(f64::INFINITY, f64::min);
+    let heavy = weights.iter().copied().fold(0.0, f64::max);
+    !(light > 0.0 && heavy <= ROUNDING_SPREAD * light)
+}
+
+impl Reach {
+    /// [`WIDE_SPREAD`] for a rational spline that [`spreads_widely`], and
+    /// an error where it is not a finite number.
+    fn of(curve: &Curve3) -> Result<Reach, &'static str> {
+        if spreads_widely(curve) {
+            return Err(WIDE_SPREAD);
+        }
+        let reach = match curve {
+            Curve3::Line(line) => Reach {
+                far: line.origin().length(),
+                rational: 0.0,
+            },
+            Curve3::Circle(circle) => Reach {
+                far: circle.frame().origin().length() + circle.radius(),
+                rational: 0.0,
+            },
+            Curve3::Ellipse(ellipse) => {
+                let (a, b) = ellipse.semi_axes();
+                Reach {
+                    far: ellipse.frame().origin().length() + a.max(b),
+                    rational: 0.0,
+                }
+            }
+            Curve3::Nurbs(spline) => {
+                let weights = spline.weights();
+                let light = weights.iter().copied().fold(f64::INFINITY, f64::min);
+                let heavy = weights.iter().copied().fold(0.0, f64::max);
+                let far = spline
+                    .control_points()
+                    .iter()
+                    .map(|p| p.length())
+                    .fold(0.0, f64::max);
+                let rational = if weights.iter().all(|&w| w == 1.0) {
+                    0.0
+                } else {
+                    spline.degree() as f64
+                };
+                Reach {
+                    far: far * (heavy / light),
+                    rational,
+                }
+            }
+        };
+        if reach.far.is_finite() && reach.rational.is_finite() {
+            Ok(reach)
+        } else {
+            Err("an edge whose coordinates are not finite")
+        }
+    }
+
+    /// How much rounding each of the six integrands of [`edge_sums`] may
+    /// carry at the point at `t` (moving at `speed`, in a stretch of the
+    /// parameter `span` long between two breaks) whose offsets are `a`
+    /// and `b` and whose derivative's components are `da` and `db`: their
+    /// first-order change when the point moves by `u` along each axis and
+    /// the derivative by `ud`, each [`ROUNDING_ULPS`] of what it is made
+    /// from (the point: the curve's `far` and its parameter times its
+    /// speed; the derivative: itself, and a rational spline's `far` over
+    /// the stretch).
+    fn carried(
+        &self,
+        t: f64,
+        speed: f64,
+        span: f64,
+        (a, b, da, db): (f64, f64, f64, f64),
+    ) -> [f64; 6] {
+        let ulps = ROUNDING_ULPS * f64::EPSILON;
+        let u = ulps * (self.far + t.abs() * speed);
+        let ud = ulps * (speed + self.far * self.rational / span);
+        let (a, b, da, db) = (a.abs(), b.abs(), da.abs(), db.abs());
+        [
+            u * db + a * ud,
+            a * u * db + 0.5 * a * a * ud,
+            b * u * da + 0.5 * b * b * ud,
+            a * a * u * db + a * a * a / 3.0 * ud,
+            (a * b + 0.5 * a * a) * u * db + 0.5 * a * a * b * ud,
+            b * b * u * da + b * b * b / 3.0 * ud,
+        ]
+    }
+}
+
 /// The six line integrals of [`cap_sums`] along `curve` from `range.0` to
-/// `range.1`.
+/// `range.1`, each panel's two sums held to each other as `held` says.
 fn edge_sums(
     curve: &Curve3,
     (t0, t1): (f64, f64),
@@ -1237,6 +1517,7 @@ fn edge_sums(
     (o, size): (Vec3, f64),
     rule: &(Rule, Rule),
     budget: &mut usize,
+    held: Held,
 ) -> Result<[f64; 6], &'static str> {
     if !(t0.is_finite() && t1.is_finite() && t0 <= t1) {
         return Err("an edge whose parameter range is not finite");
@@ -1265,12 +1546,25 @@ fn edge_sums(
     if breaks.len() > MAX_PANELS {
         return Err("an edge with more knot spans than a section takes");
     }
+    // What the curve's points are made from, where their rounding is
+    // allowed for.
+    let reach = match held {
+        Held::Strict => None,
+        Held::Rounding => Some(Reach::of(curve)?),
+    };
     let across = side.y_axis();
-    let integrand = |t: f64| -> ([f64; 6], f64) {
+    // The six integrands at `t`, the speed there and, held to the
+    // rounding, how much rounding each may carry (`span`: the stretch of
+    // the parameter between the two breaks the point lies between).
+    let integrand = |t: f64, span: f64| -> ([f64; 6], f64, [f64; 6]) {
         let (p, d) = curve.derivatives(t);
         let r = p - o;
         let (a, b) = (r.dot(side.x_axis), r.dot(across));
         let (da, db) = (d.dot(side.x_axis), d.dot(across));
+        let speed = d.length();
+        let carried = reach.map_or([0.0; 6], |reach| {
+            reach.carried(t, speed, span, (a, b, da, db))
+        });
         (
             [
                 a * db,
@@ -1280,15 +1574,18 @@ fn edge_sums(
                 0.5 * a * a * b * db,
                 -b * b * b / 3.0 * da,
             ],
-            d.length(),
+            speed,
+            carried,
         )
     };
-    let sum_on = |rule: &Rule, a: f64, b: f64| -> ([f64; 6], [f64; 6], f64) {
+    type Summed = ([f64; 6], [f64; 6], f64, [f64; 6]);
+    let sum_on = |rule: &Rule, a: f64, b: f64, span: f64| -> Summed {
         let mut sums = [0.0; 6];
         let mut magnitude = [0.0; 6];
+        let mut rounding = [0.0; 6];
         let mut length = 0.0;
         for (t, w) in rule.points(a, b) {
-            let (f, speed) = integrand(t);
+            let (f, speed, carried) = integrand(t, span);
             for k in 0..6 {
                 let (Some(s), Some(m), Some(v)) = (sums.get_mut(k), magnitude.get_mut(k), f.get(k))
                 else {
@@ -1297,33 +1594,46 @@ fn edge_sums(
                 *s += w * v;
                 *m += (w * v).abs();
             }
+            for (sum, c) in rounding.iter_mut().zip(carried) {
+                *sum += w * c;
+            }
             length += w * speed;
         }
-        (sums, magnitude, length)
+        (sums, magnitude, length, rounding)
     };
     let mut total = [0.0; 6];
-    let mut open: Vec<(f64, f64, u32)> = breaks
+    let mut open: Vec<(f64, f64, u32, f64)> = breaks
         .windows(2)
         .filter_map(|w| match w {
-            [a, b] if b > a => Some((*a, *b, 0)),
+            [a, b] if b > a => Some((*a, *b, 0, *b - *a)),
             _ => None,
         })
         .rev()
         .collect();
-    while let Some((a, b, halvings)) = open.pop() {
-        *budget = budget
-            .checked_sub(1)
-            .ok_or("its edges take more panels than a section may")?;
-        let (coarse, _, _) = sum_on(&rule.0, a, b);
-        let (fine, magnitude, length) = sum_on(&rule.1, a, b);
+    while let Some((a, b, halvings, span)) = open.pop() {
+        *budget = budget.checked_sub(1).ok_or(TOO_MANY_PANELS)?;
+        let (coarse, _, _, coarse_rounding) = sum_on(&rule.0, a, b, span);
+        let (fine, magnitude, length, fine_rounding) = sum_on(&rule.1, a, b, span);
         let share = (length / size).max(1e-9);
         let settled = (0..6).all(|k| {
-            let (Some(c), Some(f), Some(m), Some(p)) =
-                (coarse.get(k), fine.get(k), magnitude.get(k), POWERS.get(k))
-            else {
+            let (Some(c), Some(f), Some(m), Some(p), Some(rc), Some(rf)) = (
+                coarse.get(k),
+                fine.get(k),
+                magnitude.get(k),
+                POWERS.get(k),
+                coarse_rounding.get(k),
+                fine_rounding.get(k),
+            ) else {
                 return false;
             };
             let allowed = PANEL_ALLOWANCE * size.ppowi(*p) * share + 64.0 * f64::EPSILON * m;
+            // The rounding each of the two sums may carry, on top: none
+            // when held strictly, so the test is the one of before
+            // 2026-11-22 to the bit.
+            let allowed = match held {
+                Held::Strict => allowed,
+                Held::Rounding => allowed + rc + rf,
+            };
             (f - c).abs() <= allowed
         });
         if settled {
@@ -1333,14 +1643,14 @@ fn edge_sums(
             continue;
         }
         if halvings >= MAX_HALVINGS {
-            return Err("an edge along which the section's integrals do not settle");
+            return Err(NOT_SETTLED);
         }
         let mid = 0.5 * (a + b);
         if !(mid > a && mid < b) {
-            return Err("an edge along which the section's integrals do not settle");
+            return Err(NOT_SETTLED);
         }
-        open.push((mid, b, halvings + 1));
-        open.push((a, mid, halvings + 1));
+        open.push((mid, b, halvings + 1, span));
+        open.push((a, mid, halvings + 1, span));
     }
     if !total.iter().all(|x| x.is_finite()) {
         return Err("an edge whose integrals are not finite");
@@ -1488,10 +1798,31 @@ pub fn level_for(
     volume: f64,
     tolerance: &Tolerance,
 ) -> Result<Level, CutError> {
+    let mut rounded = false;
+    level_held(bodies, side, volume, tolerance, true, &mut rounded)
+}
+
+/// [`level_for`], a section that does not settle strictly summed again
+/// with the rounding of its coordinates allowed for only where
+/// `may_round` ([`held_sums`]; where not, its strict refusal ends the
+/// search as it did before 2026-11-22); `rounded` is set where some
+/// section was (so before 2026-11-22 the search was refused, whatever it
+/// ends in now). For the searches of [`floating`].
+fn level_held(
+    bodies: &[&Body],
+    side: &CutPlane,
+    volume: f64,
+    tolerance: &Tolerance,
+    may_round: bool,
+    rounded: &mut bool,
+) -> Result<Level, CutError> {
     if !volume.is_finite() {
         return Err(CutError::NotFinite("the volume"));
     }
-    let prepared = prepare(bodies, side.normal)?;
+    let mut prepared = prepare(bodies, side.normal)?;
+    for one in &mut prepared {
+        one.may_round = may_round;
+    }
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
     let mut most = 0.0;
     for one in &prepared {
@@ -1499,9 +1830,11 @@ pub fn level_for(
         hi = hi.max(one.hi);
         most += one.whole()?.0;
     }
-    search((lo, hi), most, volume, |offset| {
+    let found = search((lo, hi), most, volume, |offset| {
         below_in(&prepared, side, offset, tolerance)
-    })
+    });
+    *rounded |= prepared.iter().any(|one| one.rounded.get());
+    found
 }
 
 /// The search of [`level_for`] between the offsets `lo` and `hi` that
@@ -1605,3 +1938,6 @@ fn search(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod far_tests;

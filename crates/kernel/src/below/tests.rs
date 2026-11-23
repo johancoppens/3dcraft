@@ -1693,3 +1693,78 @@ fn a_section_of_a_turned_over_face_beside_a_cut_alone_sums_both() {
         );
     }
 }
+
+// ------------------------------------------- a section far from the origin
+
+/// A circle of radius r in a slanted plane, its centre 1e5 r and 1e7 r
+/// from the origin (fault M, fuzz seed 138822, 2026-11-22): its points are
+/// computed from coordinates that large, so they carry a unit in the last
+/// place of them, and the two sums of each panel differ by that, more
+/// than the strict allowance of 1e-13 of the circle's size: the panels
+/// never settle and every one is spent. Held to that rounding too, they
+/// settle on the panels the circle starts with (a sixteenth of a turn),
+/// to πr² and πr⁴/4 within 64 units of the rounding the coordinates
+/// allow along its perimeter. Near the origin (0 and 10 r away) both
+/// holds settle on those same panels and give the same sums to the bit.
+#[test]
+fn a_far_circle_settles_only_with_its_rounding_allowed_for() {
+    let rule = (Rule::new(8), Rule::new(16));
+    let normal = Vec3::new(0.3, -0.5, 0.8).normalized().unwrap();
+    let side = CutPlane::new(normal, normal.cross(Vec3::Z)).unwrap();
+    for r in [1e-3, 0.5, 1e6] {
+        for (far, strict_settles) in [(0.0, true), (10.0, true), (1e5, false), (1e7, false)] {
+            let what = format!("radius {r} at {far} radii");
+            let centre = Vec3::new(0.6, -0.48, 0.64) * (far * r);
+            let frame = Frame::new(centre, side.normal, side.x_axis).unwrap();
+            let circle = Curve3::Circle(craft3d_geom::Circle::new(frame, r).unwrap());
+            let size = r * std::f64::consts::SQRT_2;
+            let sums = |held: Held| {
+                let mut budget = MAX_PANELS;
+                edge_sums(
+                    &circle,
+                    (0.0, 2.0 * PI),
+                    &side,
+                    (centre, size),
+                    &rule,
+                    &mut budget,
+                    held,
+                )
+                .map(|s| (s, MAX_PANELS - budget))
+            };
+            let rounded = sums(Held::Rounding).unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert_eq!(rounded.1, 32, "{what}: the panels a circle starts with");
+            let allowed = |power: i32| {
+                1e-12 * r.ppowi(power)
+                    + 64.0 * f64::EPSILON * far * r * 2.0 * PI * r * r.ppowi(power - 2)
+            };
+            let [area, _, _, aa, _, bb] = rounded.0;
+            for (got, want, power, name) in [
+                (area, PI * r * r, 2, "area"),
+                (aa, PI * r.ppowi(4) / 4.0, 4, "∫a²"),
+                (bb, PI * r.ppowi(4) / 4.0, 4, "∫b²"),
+            ] {
+                assert!(
+                    (got - want).abs() <= allowed(power),
+                    "{what}: {name} {got:e}, want {want:e} (allowed {:e})",
+                    allowed(power)
+                );
+            }
+            match sums(Held::Strict) {
+                Ok(strict) => {
+                    assert!(
+                        strict_settles,
+                        "{what}: settled strictly in {} panels",
+                        strict.1
+                    );
+                    let bits = |s: [f64; 6]| s.map(f64::to_bits);
+                    assert_eq!(strict.1, 32, "{what}");
+                    assert_eq!(bits(strict.0), bits(rounded.0), "{what}: the same sums");
+                }
+                Err(e) => {
+                    assert!(!strict_settles, "{what}: {e}");
+                    assert_eq!(e, TOO_MANY_PANELS, "{what}");
+                }
+            }
+        }
+    }
+}
