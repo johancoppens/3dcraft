@@ -127,9 +127,12 @@ pub const ROUNDING_ULPS: f64 = 16.0;
 /// beyond it, so on every panel the 16-node sum's error is some 1e-8 of
 /// the 8-node one's, whatever the allowance: the sum taken is the
 /// integral to rounding at every distance from the origin (held to the
-/// closed form at degrees 2, 3 and 6 out to 1e10 times the size). A
-/// circle as a spline spreads 1.41, a hyperbola's arc the boolean builds
-/// at most 1.13.
+/// closed form out to 1e10 times the size, as it is and raised to
+/// degrees 3 and 6, which keeps its poles). A rational span of degree n
+/// of that spread has them only outside |t| + |1 - t| = 3^(1/n) (rho 1.30
+/// at degree 32), where the pair does not bound the error: there the rule
+/// rests on measurement (`far_tests.rs`). A circle as a spline spreads
+/// 1.41, a hyperbola's arc the boolean builds at most 1.13.
 const ROUNDING_SPREAD: f64 = 2.0;
 
 /// The words of the two ways a section's panels fail to settle, by which
