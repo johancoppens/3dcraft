@@ -87,6 +87,20 @@
 //! is marched once, as it was before branches were taken up again
 //! (docs/design/booleans.md › *A step of the march onto the curve beside
 //! the one it follows*).
+//!
+//! **A step through a crossing point.** Where two curves of the crossing
+//! cross each other the sense of travel flips, so a step through such a
+//! point that lands on the same curve beyond it can have a tangent there
+//! that agrees with the one it left with; the run then goes back towards
+//! the point, over the stretch the fit fills the step's span with, and
+//! the fit accepts the branch (it is within the tolerance of both
+//! surfaces all along). What the fit accepted is read for that, for no
+//! evaluation: two spans in a row that turn back on each other
+//! ([`Marcher::folds`]). The step the fold lies on is then taken up again
+//! as a span the fit gave up on is; asked as first made, the march
+//! refuses ([`folded`]). A branch that does not run back is the one it
+//! was, bit for bit (docs/design/booleans.md › *A step through a point
+//! where two curves of a crossing cross each other: traced and mended*).
 
 // `!(x > 0.0)` is deliberate throughout: unlike `x <= 0.0` it is also true
 // for NaN.
@@ -168,6 +182,14 @@ const SHORTER: f64 = 0.25;
 /// the span: a step ends no further than twice what it was asked, so what
 /// the step that made the span passed over lies within that of its start.
 const HELD_OVER: f64 = 2.0;
+/// The cosine of the turn between two spans in a row of a fitted branch
+/// below which the branch runs back over itself there (a turn of more
+/// than 120 degrees: [`Marcher::folds`]).
+const FOLD: f64 = -0.5;
+/// How long, in tolerances, each of the two spans about a fold must be
+/// at least (and 64 `on`): two points a few tolerances apart say nothing
+/// of which way the curve runs.
+const FOLD_SPAN: f64 = 4.0;
 
 fn stalled() -> GeomError {
     GeomError::NoConvergence(
@@ -203,6 +225,15 @@ fn halved(h: f64, hmin: f64) -> Result<f64, GeomError> {
 /// tolerance.
 pub(super) fn not_fitted() -> GeomError {
     GeomError::NoConvergence("an intersection curve could not be fitted within the tolerance")
+}
+
+/// The refusal of a branch whose fitted points run back over themselves
+/// ([`Marcher::folds`]): what the fit accepted is not one pass along a
+/// curve, and no step of the march could be put right.
+pub(super) fn folded() -> GeomError {
+    GeomError::NoConvergence(
+        "an intersection curve could not be followed: the points marched along it run back over themselves",
+    )
 }
 
 pub(super) fn too_many() -> GeomError {
@@ -2750,12 +2781,22 @@ impl Marcher {
             };
             self.unfitted = None;
             let refused = match self.refine_pieces(pts.clone(), closed) {
-                Ok(pieces) => {
-                    return Ok(pieces
-                        .into_iter()
-                        .map(|(pts, closed)| Branch { pts, closed })
-                        .collect());
-                }
+                // What the fit accepted, unless its points run back over
+                // themselves: then the step the fold lies on stands for a
+                // span the fit gave up on (`folded_step`).
+                Ok(pieces) => match self.folded_step(&pts, at, &pieces) {
+                    None => {
+                        return Ok(pieces
+                            .into_iter()
+                            .map(|(pts, closed)| Branch { pts, closed })
+                            .collect());
+                    }
+                    Some(step) => {
+                        self.unfitted =
+                            step.and_then(|k| pts.get(k).copied().zip(pts.get(k + 1).copied()));
+                        folded()
+                    }
+                },
                 Err(e) => e,
             };
             if !self.takes_up {
@@ -2766,12 +2807,14 @@ impl Marcher {
             // followed (onto a curve beside it that heads the same way:
             // nothing a step is held to tells the two apart, and the fit
             // then looks for points between two points that are not
-            // neighbours on one curve). The run is taken up again from
-            // the point before it, in shorter steps, and what it had
-            // marched beyond is dropped: where that was another curve,
-            // its own seeds find it. What the fit brings within the
-            // tolerance is never marched again, so every curve fitted
-            // before is the curve it was.
+            // neighbours on one curve; or through a point where two
+            // curves cross, onto this curve beyond it, the step a fold
+            // lies on). The run is taken up again from the point before
+            // it, in shorter steps, and what it had marched beyond is
+            // dropped: where that was another curve, its own seeds find
+            // it. What the fit brings within the tolerance and does not
+            // run back over itself is never marched again, so every such
+            // curve fitted before is the curve it was.
             let Some((a, b)) = self.unfitted.take() else {
                 return Err(refused);
             };
@@ -2866,6 +2909,110 @@ impl Marcher {
         pts.iter()
             .zip(pts.iter().skip(1))
             .position(|(p, q)| same(p, a) && same(q, b))
+    }
+
+    /// Where in `pts` the point `q` is, told by its parameters.
+    fn place_of(pts: &[Pt], q: &Pt) -> Option<usize> {
+        pts.iter().position(|p| p.u == q.u && p.v == q.v)
+    }
+
+    /// The places where the points of a fitted branch run back over
+    /// themselves: a point with a tangent of its own (a crossing point or
+    /// an apex has none, and a branch ends there) between two spans each
+    /// longer than [`FOLD_SPAN`] tolerances and 64 `on` whose chords turn
+    /// by more than 120 degrees (a cosine below [`FOLD`]). Read from the
+    /// places of the points alone, for no evaluation.
+    ///
+    /// The fit does not see it: a curve that runs one way along the
+    /// crossing and then back along it is within the tolerance of both
+    /// surfaces all its length, and a cubic span whose ends' tangents
+    /// point against each other along a stretch is a hairpin whose control
+    /// points lie on the stretch's line. A true corner of a branch (a
+    /// run's last step put on a border at right angles to the step before
+    /// it) turns by a right angle, not back.
+    fn folds(&self, pts: &[Pt]) -> Vec<usize> {
+        let least = (64.0 * self.on).max(FOLD_SPAN * self.tol.linear);
+        let mut found = Vec::new();
+        for (i, w) in pts.windows(3).enumerate() {
+            let [p0, p1, p2] = w else {
+                continue;
+            };
+            if p1.du == 0.0 && p1.dv == 0.0 {
+                continue;
+            }
+            let (d1, d2) = (p1.p - p0.p, p2.p - p1.p);
+            let (l1, l2) = (d1.length(), d2.length());
+            if !(l1 > least && l2 > least) {
+                continue;
+            }
+            if d1.dot(d2) / (l1 * l2) < FOLD {
+                found.push(i + 1);
+            }
+        }
+        found
+    }
+
+    /// The step of the march to put right where what the fit made of a
+    /// branch (`pieces`, from `pts`, the points as marched, `at` the start
+    /// among them) runs back over itself ([`Marcher::folds`]): `None`
+    /// where it does not; `Some(None)` where it does and no step of the
+    /// march can be named for a fold; else the step nearest the start
+    /// among those named (the index in `pts` of its first point, the step
+    /// going on to the next).
+    ///
+    /// A step through a point where two curves of a crossing cross each
+    /// other can land on the same curve beyond it: the sense of travel
+    /// flips at such a point, so the tangent where the step lands can
+    /// agree with the one it left with, and the step is taken. The run
+    /// then goes on from there back towards the crossing point, over the
+    /// stretch the fit fills the step's span with. So a fold lies at a
+    /// point the march came to, or between the two points of a step: one
+    /// at a marched point is put on the step that came to it (for the
+    /// forward run the step from the point before it, for the backward
+    /// run the step from the point after it, in the order of the points),
+    /// one between two marched points on the step between them. The
+    /// points are told by their parameters, which no two points of a
+    /// march share.
+    fn folded_step(
+        &self,
+        pts: &[Pt],
+        at: usize,
+        pieces: &[(Vec<Pt>, bool)],
+    ) -> Option<Option<usize>> {
+        let mut folded = false;
+        // (How many steps from the start, the step.)
+        let mut nearest: Option<(usize, usize)> = None;
+        for (piece, _) in pieces {
+            for i in self.folds(piece) {
+                folded = true;
+                let step = match piece.get(i).and_then(|q| Self::place_of(pts, q)) {
+                    Some(m) if m > at => Some(m - 1),
+                    Some(m) if m < at => Some(m),
+                    // The start: no step came to it.
+                    Some(_) => None,
+                    // A point the fit put between two marched points.
+                    None => {
+                        let before = piece
+                            .get(..i)
+                            .and_then(|s| s.iter().rev().find_map(|q| Self::place_of(pts, q)));
+                        let after = piece
+                            .get(i + 1..)
+                            .and_then(|s| s.iter().find_map(|q| Self::place_of(pts, q)));
+                        match (before, after) {
+                            (Some(a), Some(b)) if b == a + 1 => Some(a),
+                            _ => None,
+                        }
+                    }
+                };
+                if let Some(k) = step {
+                    let from_start = if k >= at { k - at } else { at - k - 1 };
+                    if nearest.is_none_or(|(d, _)| from_start < d) {
+                        nearest = Some((from_start, k));
+                    }
+                }
+            }
+        }
+        folded.then_some(nearest.map(|(_, k)| k))
     }
 
     /// The points of a branch in the order of travel, from what was
@@ -5171,6 +5318,199 @@ mod tests {
             let (plain, _) = m.run(&start, 1.0, &[], true).unwrap();
             assert!(plain[0].p.distance(start.p) > 2.0 * cap, "{k}");
         }
+    }
+
+    /// A point of a branch at `p` heading along `t`, with a tangent of its
+    /// own; `u` tells it from the others.
+    fn placed_at(u: f64, p: Vec3, t: Vec3) -> Pt {
+        Pt {
+            u,
+            v: 0.0,
+            p,
+            t,
+            du: 1.0,
+            dv: 0.0,
+        }
+    }
+
+    /// Points along a path of places given in tolerances in the plane
+    /// z = 0, each heading to the next, `u` counting from `first`.
+    fn path(places: &[(f64, f64)], tol: f64, first: f64) -> Vec<Pt> {
+        let p: Vec<Vec3> = places
+            .iter()
+            .map(|&(x, y)| Vec3::new(x, y, 0.0) * tol)
+            .collect();
+        (0..p.len())
+            .map(|i| {
+                let next = if i + 1 < p.len() {
+                    p[i + 1] - p[i]
+                } else {
+                    p[i] - p[i - 1]
+                };
+                placed_at(first + i as f64, p[i], next.normalized().unwrap())
+            })
+            .collect()
+    }
+
+    /// What runs back over itself and what does not: two spans in a row
+    /// whose chords turn by more than 120 degrees, each longer than four
+    /// tolerances, at a point with a tangent of its own. Not a right
+    /// angle, nor the corners of random design 102900 that the probe of
+    /// 2026-11-22 flagged as turning (a run's last step put on the border
+    /// of a fillet's surface, at a cosine of −0.0023 and −0.0009 to the
+    /// step before it, with a span of a few hundredths of a tolerance),
+    /// nor a turn back over a span of three tolerances.
+    #[test]
+    fn a_branch_runs_back_over_itself_where_two_spans_turn_back_not_at_a_corner() {
+        for k in [1e-3, 1.0, 1e6] {
+            let m = marcher(k);
+            let t = m.tol.linear;
+            // On along x, then back: at the third point.
+            let back = path(&[(0.0, 0.0), (10.0, 0.0), (20.0, 0.0), (8.0, 0.0)], t, 0.0);
+            assert_eq!(m.folds(&back), vec![2], "{k}");
+            // A turn of a cosine of −0.6 is one; a right angle is not, nor
+            // one a hair past it (−0.002, as 102900's corners).
+            let (c, s) = (-0.6, 0.8);
+            let turn = path(
+                &[(0.0, 0.0), (10.0, 0.0), (10.0 + 9.0 * c, 9.0 * s)],
+                t,
+                0.0,
+            );
+            assert_eq!(m.folds(&turn), vec![1], "{k}");
+            let right = path(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)], t, 0.0);
+            assert!(m.folds(&right).is_empty(), "{k}");
+            let (c, s) = (-0.002_f64, (1.0 - 0.002_f64 * 0.002).sqrt());
+            let corner = path(
+                &[(0.0, 0.0), (9.36, 0.0), (9.36 + 9.2 * c, 9.2 * s)],
+                t,
+                0.0,
+            );
+            assert!(m.folds(&corner).is_empty(), "{k}");
+            // Back over three tolerances: too short to say.
+            let short = path(&[(0.0, 0.0), (10.0, 0.0), (7.0, 0.0)], t, 0.0);
+            assert!(m.folds(&short).is_empty(), "{k}");
+            // At a point without a tangent of its own (a crossing point).
+            let mut through = back.clone();
+            through[2].du = 0.0;
+            assert!(m.folds(&through).is_empty(), "{k}");
+        }
+        // 102900's first corner as the probe printed it (tolerance 1e-6):
+        // the five points from the border on.
+        let m = marcher(1.0);
+        let corner: Vec<Pt> = [
+            (
+                0.041_823_836_433_878_48,
+                [
+                    -2.837_369_248_835_125,
+                    -4.321_401_397_486_659,
+                    -2.477_816_771_524_89,
+                ],
+            ),
+            (
+                0.041_823_788_061_226_96,
+                [
+                    -2.837_369_645_527_925,
+                    -4.321_410_714_629_835,
+                    -2.477_815_953_588_798,
+                ],
+            ),
+            (
+                0.041_823_792_256_133_07,
+                [
+                    -2.837_369_608_418_528_7,
+                    -4.321_410_716_237_321,
+                    -2.477_815_954_893_619,
+                ],
+            ),
+            (
+                0.041_823_800_645_040_744,
+                [
+                    -2.837_369_534_207_343_5,
+                    -4.321_410_719_569_461,
+                    -2.477_815_957_492_874_4,
+                ],
+            ),
+            (
+                0.041_823_817_422_585_43,
+                [
+                    -2.837_369_385_787_716_7,
+                    -4.321_410_726_129_645_5,
+                    -2.477_815_962_700_242_7,
+                ],
+            ),
+        ]
+        .into_iter()
+        .map(|(u, [x, y, z])| placed_at(u, Vec3::new(x, y, z), Vec3::X))
+        .collect();
+        assert!(m.folds(&corner).is_empty());
+    }
+
+    /// The step a fold is put on: the step that came to the marched point
+    /// it is at (the forward run's from the point before, the backward
+    /// run's from the point after), or the step it lies inside; none at
+    /// the start, where no step came; none where nothing runs back. And of
+    /// two, the one nearest the start.
+    #[test]
+    fn a_fold_is_put_on_the_step_that_came_to_it_or_that_holds_it() {
+        let m = marcher(1.0);
+        let t = m.tol.linear;
+        let one = |pts: &[Pt]| vec![(pts.to_vec(), false)];
+        // The forward run (from the third point) steps from 30 to 60 and
+        // goes back: the fold at 60 is put on the step from 30.
+        let forward = path(
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (20.0, 0.0),
+                (30.0, 0.0),
+                (60.0, 0.0),
+                (50.0, 0.0),
+            ],
+            t,
+            0.0,
+        );
+        assert_eq!(m.folded_step(&forward, 2, &one(&forward)), Some(Some(3)));
+        // The backward run (from 10, the fourth point) steps to −40 and
+        // goes back: the fold at −40 is put on the step from 10, the
+        // points' third span.
+        let backward = path(
+            &[
+                (-20.0, 0.0),
+                (-30.0, 0.0),
+                (-40.0, 0.0),
+                (10.0, 0.0),
+                (20.0, 0.0),
+            ],
+            t,
+            0.0,
+        );
+        assert_eq!(m.folded_step(&backward, 3, &one(&backward)), Some(Some(2)));
+        // A fold at a point the fit put inside the step from 20 to 40.
+        let marched = path(&[(0.0, 0.0), (10.0, 0.0), (20.0, 0.0), (40.0, 0.0)], t, 0.0);
+        let mut fitted = marched.clone();
+        fitted.insert(3, placed_at(2.5, Vec3::new(50.0, 0.0, 0.0) * t, Vec3::X));
+        assert_eq!(m.folded_step(&marched, 0, &one(&fitted)), Some(Some(2)));
+        // At the start: no step came to it.
+        let start = path(&[(0.0, 0.0), (10.0, 0.0), (20.0, 0.0), (8.0, 0.0)], t, 0.0);
+        assert_eq!(m.folded_step(&start, 2, &one(&start)), Some(None));
+        // Nothing runs back.
+        let straight = path(&[(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)], t, 0.0);
+        assert_eq!(m.folded_step(&straight, 1, &one(&straight)), None);
+        // Two folds of the forward run: the step nearer the start.
+        let twice = path(
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (40.0, 0.0),
+                (30.0, 0.0),
+                (20.0, 0.0),
+                (60.0, 0.0),
+            ],
+            t,
+            0.0,
+        );
+        assert_eq!(m.folds(&twice), vec![2, 4]);
+        assert_eq!(m.folded_step(&twice, 0, &one(&twice)), Some(Some(1)));
     }
 
     /// A run taken up again closes on its start as the run it is part of
