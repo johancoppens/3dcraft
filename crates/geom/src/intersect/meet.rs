@@ -384,13 +384,17 @@ pub fn meet_surfaces(
     match exact::closed_form(a, b, tolerance)? {
         Some(closed) => finish(closed, within, tolerance),
         // Marched as it always was first. Only where the fit gives up on
-        // a branch of that march is the pair marched again, with the
-        // branch taken up from the step the fit could not span
-        // (`march.rs` › `trace`): so a pair that was answered is answered
-        // by the march it was answered by, bit for bit, and found on the
-        // shelf under the question it was kept by.
+        // a branch of that march, or what it accepted runs back over
+        // itself, is the pair marched again, with the branch taken up
+        // from the step the fit could not span or the fold lies on
+        // (`march.rs` › `trace`): so a pair that was answered by a curve
+        // that is one pass along the crossing is answered by the march it
+        // was answered by, bit for bit, and found on the shelf under the
+        // question it was kept by.
         None => match remembered(a, b, within, tolerance, false) {
-            Err(refused) if refused == super::march::not_fitted() => {
+            Err(refused)
+                if refused == super::march::not_fitted() || refused == super::march::folded() =>
+            {
                 remembered(a, b, within, tolerance, true)
             }
             other => other,
@@ -399,7 +403,8 @@ pub fn meet_surfaces(
 }
 
 /// [`meet_surfaces`] by the march as it is first made alone: where the
-/// fit gives up on a branch, the refusal, with no branch taken up again.
+/// fit gives up on a branch, or what it accepted runs back over itself,
+/// the refusal, with no branch taken up again.
 ///
 /// For a caller that asks a pair in more than one box (a boolean asks it
 /// again in a smaller one where the first refuses): asked so in every box
@@ -664,6 +669,22 @@ pub fn meet_surfaces_numeric(
     check(within, tolerance)?;
     let (a, b) = ordered(a, b);
     numeric(a, b, within, tolerance, true)
+}
+
+/// [`meet_surfaces_numeric`] by the march as it is first made alone, as
+/// [`meet_surfaces_once`] asks it: where the fit gives up on a branch, or
+/// what it accepted runs back over itself, the refusal. For tests that
+/// hold what the marcher does before a branch is taken up again.
+#[doc(hidden)]
+pub fn meet_surfaces_numeric_once(
+    a: &Surface,
+    b: &Surface,
+    within: &Bbox3,
+    tolerance: &Tolerance,
+) -> Result<SurfaceMeeting, GeomError> {
+    check(within, tolerance)?;
+    let (a, b) = ordered(a, b);
+    numeric(a, b, within, tolerance, false)
 }
 
 #[cfg(test)]
