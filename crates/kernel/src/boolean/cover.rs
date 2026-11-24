@@ -837,7 +837,7 @@ fn boundary_within(outline: &Outline, p: Vec3, r: f64) -> bool {
 /// the nearer of its ends less half its length (the curve's speed bound),
 /// until each is proven far or one end is that near; a curve that would
 /// take more than [`STRETCHES`] is said to come near.
-fn may_come_within(curve: &Curve3, range: (f64, f64), p: Vec3, r: f64) -> bool {
+pub(super) fn may_come_within(curve: &Curve3, range: (f64, f64), p: Vec3, r: f64) -> bool {
     // (The nearest point of a line or a circle is exact to rounding.)
     let room = r * (1.0 + 1e-9) + 1e-300;
     if matches!(curve, Curve3::Line(_) | Curve3::Circle(_)) {

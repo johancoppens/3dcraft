@@ -3,7 +3,7 @@
 //! both faces.
 
 use super::coincide::{Coincidence, PARTLY, coincide};
-use super::cover::{Cover, Face as CoverFace, clear_of_surface};
+use super::cover::{Cover, Face as CoverFace, clear_of_surface, may_come_within};
 use super::facetree::FaceTree;
 use super::freeform::is_freeform;
 use super::hits::{curve_hits, signed_distance};
@@ -872,6 +872,92 @@ fn ends_at_places(
     kept
 }
 
+/// How far from two places closer together than the tolerance can tell
+/// apart, in tolerances, everything is proven further than twice the
+/// tolerance from the body they lie outside before they are two places and
+/// not a refusal ([`clear_of_body`]): the distance at which the section
+/// passes over two faces as not meeting ([`APART`]).
+const NEAR_PLACES: f64 = APART;
+
+/// Whether every face of `solid` is proven further than `r` from `p`. A
+/// face whose box does not come within `r` of `p` (along any axis) is; so
+/// is a face whose surface keeps clear of the cube of half side `r` about
+/// `p` (`clear_of_surface`), a flat face by its plane and its boundary
+/// ([`flat_face_clear_of`]), and a face whose cover holds no leaf within
+/// `r` of `p` (`Cover::holds`). Any other face, and a face without a
+/// finite box, is not proven.
+fn clear_of_body(solid: &Solid, p: Vec3, r: f64, tol: f64) -> bool {
+    if !(p.is_finite() && r.is_finite()) {
+        return false;
+    }
+    let reach = Vec3::new(r, r, r);
+    let around = Bbox3::from_points([p - reach, p + reach]);
+    for (face, bbox) in solid.boxes.iter().enumerate() {
+        if bbox.corners().is_none() {
+            return false;
+        }
+        if !boxes_meet(bbox, &around, 0.0) {
+            continue;
+        }
+        let Some(of) = solid.body.faces.get(face) else {
+            return false;
+        };
+        let clear = match &of.surface {
+            Surface::Plane(plane) => {
+                let (origin, normal) = (plane.frame().origin(), plane.frame().z());
+                solid
+                    .outline(face)
+                    .is_ok_and(|outline| flat_face_clear_of((origin, normal), outline, p, r, tol))
+            }
+            surface => {
+                clear_of_surface(surface, &around, 0.0)
+                    || solid
+                        .cover(face, tol)
+                        .is_some_and(|(cover, at)| !cover.holds(at, p, r))
+            }
+        };
+        if !clear {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether the flat face through `origin` square to `normal`, bounded by
+/// `outline`, is proven further than `r` from `p`: further from its plane,
+/// or with `p`'s foot on the plane outside the face (where the face's
+/// nearest point to `p` is on its boundary) and every piece of the
+/// boundary proven further than `r` from `p` (`may_come_within`: a line or
+/// a circle in closed form, any other curve by halving with its speed
+/// bound, which holds for a spline only within its knots, so a piece of a
+/// spline beyond them is not proven).
+fn flat_face_clear_of(
+    (origin, normal): (Vec3, Vec3),
+    outline: &Outline,
+    p: Vec3,
+    r: f64,
+    tol: f64,
+) -> bool {
+    let height = (p - origin).dot(normal);
+    if height.abs() > r {
+        return true;
+    }
+    let foot = p - normal * height;
+    if !matches!(outline.side(foot, tol), Ok(Side::Out)) {
+        return false;
+    }
+    outline.loops.iter().flatten().all(|seg| {
+        let within_knots = match &seg.curve {
+            Curve3::Nurbs(spline) => {
+                let (lo, hi) = spline.domain();
+                seg.range.0 >= lo && seg.range.1 <= hi
+            }
+            _ => true,
+        };
+        within_knots && !may_come_within(&seg.curve, seg.range, p, r)
+    })
+}
+
 /// The stretches of `meeting`, a curve in which the surfaces of face `fa`
 /// of A and `fb` of B meet, that are within both faces. `found` are the
 /// places where an edge of either face meets the other's surface.
@@ -993,6 +1079,12 @@ fn clip(
         closed,
         (vertices.merge, vertices.guard),
     );
+    // Outside a face and further than the guard from its boundary: no
+    // place of the face is within twice the tolerance of it.
+    let guard = vertices.guard;
+    let clear_outside = |outline: &Outline, p: Vec3| {
+        !outline.within(p, guard) && matches!(outline.side(p, tol), Ok(Side::Out))
+    };
     let mut cuts: Vec<Cut> = Vec::new();
     for cut in along {
         let same = |other: &Cut| -> Result<bool, Stop> {
@@ -1005,6 +1097,40 @@ fn clip(
                     tol,
                 ) {
                     return Ok(true);
+                }
+                // Two places closer together than the tolerance can tell
+                // apart, both clear outside one of the two faces, with
+                // every face of that face's body proven further than
+                // twice the tolerance and `NEAR_PLACES` tolerances from
+                // both ([`clear_of_body`]): nothing within `NEAR_PLACES`
+                // tolerances of the places, of either body, comes within
+                // twice the tolerance of that body there, so neither
+                // place, nor the corner between them, nor anything near
+                // them is where the bodies meet. They stay two cuts, and
+                // the stretches beside them are judged as any other: a
+                // stretch between cuts crosses no edge of either face, so
+                // one that ends at either is outside that face there.
+                // (Where kept stretches did end at both, the two vertices
+                // made of them would be refused as too near all the same,
+                // `Vertices`.) A spar's flat bottom whose plane passes a
+                // corner of a rib's notch by about a tolerance, 0.37 mm
+                // (34 tolerances) beyond the end of the spar's own face,
+                // was refused here: docs/design/booleans.md › *A spar's
+                // flat bottom beside a corner of a notch*. Less than all
+                // of the first body near the places does not say it: a
+                // corner of the other whose edges lean away from the
+                // face, an edge from beyond the corner, a round side of
+                // the first body beside the face, can come within twice
+                // the tolerance there while both places are clear.
+                let reach = NEAR_PLACES * tol + guard;
+                let beside = |face: &Outline, body: &Solid| {
+                    clear_outside(face, cut.point)
+                        && clear_outside(face, other.point)
+                        && clear_of_body(body, cut.point, reach, tol)
+                        && clear_of_body(body, other.point, reach, tol)
+                };
+                if beside(oa, a) || beside(ob, b) {
+                    return Ok(false);
                 }
                 return Err(Stop::of(NEAR).at(&named));
             }
