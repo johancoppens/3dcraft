@@ -15,15 +15,19 @@
 //!   boss lies on the slope, so it is as near the other face of the wedge
 //!   as the slope is there, but it is not joined to that face by an edge.
 //!   The look refuses the union as too near to tell apart, though every
-//!   point of the rim is a point of the wedge's own slope.
+//!   point of the rim is a point of the wedge's own slope; `main` builds
+//!   it. A wrong refusal: the test fails on the branch.
 //! - A web one and a half tolerances thick between a plate's bottom and a
 //!   channel cut across the whole plate (a large cylinder): the channel's
 //!   face and the bottom are joined at the plate's sides by edges 65
 //!   tolerances long, so the pair hops and the web is built, five units
-//!   from any vertex. The same web under a hole that does not reach the
-//!   sides is refused. The developer's rule of 2026-10-22 refuses both.
+//!   from any vertex, as on `main`. The same web under a hole that does not
+//!   reach the sides is refused by the section, on `main` as here. The
+//!   developer's rule of 2026-10-22 refuses both. A wrong body, `main`'s
+//!   too: the test fails on the branch and on `main`.
 //!
-//! And one that holds: far from the origin the band is read as near it.
+//! And one that holds: far from the origin the band is read as near it
+//! (on `main` every union in the band there is built).
 
 #![allow(
     clippy::unwrap_used,
@@ -150,7 +154,13 @@ fn boss(k: f64, frame: &Frame, d: f64, block: bool) -> Body {
 /// for `2 t / sin 5°`, 0.23 units at 1 (`wedged` reads them joined for
 /// twice that); the rim begins 0.15 units (at 1.3 tolerances) along the
 /// slope. The union is the wedge and the boss, one shell, as `main`
-/// builds it; at 3 tolerances it is built in any case.
+/// builds it (at 1.3 and 1.9 tolerances, a block and a rod, at 1 and
+/// 1e3, as found, turned and turned 1e5 away: one shell, checked, its
+/// volume the sum; the look left out, Check 45340056874); at 3
+/// tolerances it is built in any case. With the look, each of the 24 in
+/// the band is refused as two points closer together than the tolerance
+/// can tell apart (the same Check), with the sliver exception off too
+/// (Check 45341002287): the rim is not joined to the bottom by an edge.
 #[test]
 fn a_boss_on_a_wedges_slope_beside_its_knife_edge_is_united() {
     let mut faults = Vec::new();
@@ -206,11 +216,15 @@ fn web(k: f64, frame: &Frame, tol: &Tolerance, gap: f64, channel: bool) -> (Body
 /// A web `gap` tolerances thick between the plate's bottom and the
 /// cylinder cut from it (see [`web`]). Within twice the tolerance it is
 /// two walls of one shell in the band, five units from any vertex: refused
-/// (the developer's rule of 2026-10-22, as the look refuses it under the
-/// hole). Under the channel the look reads the pair as a sliver beside a
-/// vertex, the channel's face and the bottom being joined by the plate's
-/// upright edges at its sides (0.65 long), and the web is built, as on
-/// `main`. At 3 tolerances both are built.
+/// (the developer's rule of 2026-10-22). Under the hole the section
+/// refuses it already, on `main` as here ("a piece of a face lies within
+/// tolerance of a face it is not coincident with"). Under the channel the
+/// look finds it and reads the pair as a sliver beside a vertex, the
+/// channel's face and the bottom being joined by the plate's upright edges
+/// at its sides (0.65 long), and the web is built, as on `main` (Check
+/// 45340056874, at 1 and 1e3, as found, turned and turned 1e5 away); with
+/// the sliver exception off it is refused as too near to tell apart
+/// (Check 45341002287). At 3 tolerances both are built.
 #[test]
 fn a_web_in_the_band_under_a_channel_is_refused_as_under_a_hole() {
     let mut faults = Vec::new();
