@@ -59,18 +59,24 @@
 //! evidence): two parts that come that near touch (zero thickness, the
 //! developer's rule of 2026-10-15). Two walls of one shell are read at the
 //! place between the two points as `within_a_shell` reads two faces at a
-//! place (2026-10-18): where a face around the one and a face around the
-//! other have a vertex in common within four times the tolerance of it, an
-//! edge in common that passes that near, or an edge in common whose wedge
-//! reaches it (`wedged`: within twice the tolerance over the sine of half
-//! the faces' angle at the edge, up to a tenth of the smaller face, and
-//! beyond it where the gap is at least half what the faces' angle leaves
-//! there), they are joined there (a sliver of a face, a wedge, a wall that
-//! thins to a knife edge) and left as they are ([`Approach::joined`]);
-//! otherwise, between half and twice the tolerance apart, they are refused
-//! as too near to tell apart (2026-10-22). Measured on the benchmark's
-//! models on 2026-11-24: about a hundredth of the booleans' own time
-//! (docs/design/booleans.md › *Near approaches inside an edge or a face*).
+//! place (2026-10-18): the walls are the faces around each entity but a
+//! face around both (the strip of a face the approach runs across, joined
+//! to its neighbours by the entities' own edges whatever the walls do);
+//! where a wall around the one and a wall around the other have a vertex in
+//! common within four times the tolerance of the place, an edge in common
+//! that passes that near, or an edge in common whose wedge reaches it
+//! (`wedged`: within twice the tolerance over the sine of half the faces'
+//! angle at the edge, up to a tenth of the smaller face, and beyond it
+//! where the gap is at least half what the faces' angle leaves there), they
+//! are joined there (a wedge, a wall that thins to a knife edge, a corner
+//! of a face sharper than the tolerance resolves) and left as they are
+//! ([`Approach::joined`]); otherwise, between half and twice the tolerance
+//! apart, they are refused as too near to tell apart (2026-10-22): a web
+//! that thin, a strip of a face that narrow. `walls_apart` and the reading
+//! through a third face of `within_a_shell` are not asked. Measured on the
+//! benchmark's models on 2026-11-24: about a hundredth of the booleans' own
+//! time (docs/design/booleans.md › *Near approaches inside an edge or a
+//! face*).
 
 use super::cover::Cover;
 use super::facetree::FaceTree;

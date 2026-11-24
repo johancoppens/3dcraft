@@ -917,12 +917,13 @@ fn run(
 /// 2026-10-15; where that finds nothing at a place, refused here in its
 /// words, the two points being measured that near); two walls of one
 /// shell joined at the place between the two points by the readings of
-/// `within_a_shell` (a sliver of a face, a wedge, a wall that thins to a
-/// knife edge: accepted, 2026-10-18; `near::Approach::joined`) are left as
-/// they were; other walls of one shell between half and twice the
-/// tolerance apart (as near as the look found them) are refused as two
-/// points closer together than the tolerance can tell apart, naming a face
-/// of each (2026-10-22). Two walls of one shell within half the tolerance
+/// `within_a_shell` (a wedge, a wall that thins to a knife edge, a corner
+/// sharper than the tolerance resolves: accepted, 2026-10-18;
+/// `near::Approach::joined`) are left as they were; other walls of one
+/// shell between half and twice the tolerance apart (as near as the look
+/// found them) are refused as two points closer together than the
+/// tolerance can tell apart, naming a face of each (2026-10-22). Two walls
+/// of one shell within half the tolerance
 /// are left as they were (whether the shell touches itself there is owed:
 /// docs/design/booleans.md).
 fn near_approaches(
