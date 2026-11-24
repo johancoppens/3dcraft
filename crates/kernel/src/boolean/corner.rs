@@ -91,6 +91,11 @@ const SPAN: f64 = 1e-10;
 /// The most Newton steps.
 const STEPS: usize = 32;
 
+/// The most looks either way from a touch for where the slope of its
+/// distance changes sign ([`touch`]): from [`MOVE`] tolerances, doubling,
+/// to [`CAP`], 2^18 times as far, the 19th look being the last within it.
+const LOOKS: usize = 19;
+
 pub(super) const SHALLOW: Reason = "an edge on a spline meets a surface at an angle so shallow that where it meets it cannot be placed within the tolerance (the surfaces it lies between are nearly tangent to that surface there)";
 
 /// The point near `start`, no further than `reach`, where the three
@@ -296,10 +301,18 @@ const REACHES: f64 = 1e-3;
 /// its faces' surfaces; `None` when the hit stands.
 ///
 /// The slope changes sign where the distance is least, and where it is
-/// most: the change nearest the hit is taken, stepping out from it either
-/// way, from [`MOVE`] tolerances (a change within them leaves the hit
-/// where it is, after three looks), doubling, up to [`CAP`] tolerances and
-/// the hits on either side.
+/// most. The search looks at the slope on either side of the hit, from
+/// [`MOVE`] tolerances out (a change within them leaves the hit where it
+/// is, after three looks), doubling, up to [`CAP`] tolerances and the hits
+/// on either side, at most [`LOOKS`] times; the first look that finds the
+/// sign changed against the hit's brackets a change, which halving then
+/// finds. That is the change nearest the hit among those the looks tell
+/// apart, not always the nearest there is: two changes between one look
+/// and the next leave the sign as it was and are not seen, and a farther
+/// one may be taken. Whatever is found is taken only on the conditions
+/// above (it reaches the surface, lies on the edge between its
+/// neighbouring hits, on its faces' surfaces, away from the hit), and the
+/// section takes it only on the touched face's border.
 pub(super) fn touch(
     own: &Solid,
     id: EdgeId,
@@ -342,7 +355,19 @@ pub(super) fn touch(
     let here = slope(at)? > 0.0;
     let mut step = MOVE * tol / speed;
     let mut bracket = None;
-    while bracket.is_none() && step * speed <= CAP * tol {
+    // Bounded by the count as well as by the cap. Doubling is exact, so
+    // `step * speed` is `MOVE * tol` times a power of two to rounding, and
+    // stays within `CAP * tol` for the first 19 looks at most ([`LOOKS`]):
+    // the count never stops a search the cap would let go on, and changes
+    // no answer. It bounds only a step that has underflowed to zero (or below
+    // the normal numbers, where doubling no longer scales the product
+    // exactly: a tolerance under about 1e-308 of the edge's parametric
+    // speed, which the engine never makes), which would otherwise never
+    // grow.
+    for _ in 0..LOOKS {
+        if bracket.is_some() || step * speed > CAP * tol {
+            break;
+        }
         for s in [at - step, at + step] {
             if s > lo && s < hi && (slope(s)? > 0.0) != here {
                 bracket = Some(if s < at { (s, at) } else { (at, s) });
@@ -453,5 +478,25 @@ mod tests {
         let tilted = plane(target, Vec3::new(1.0, 1e-11, 0.0));
         let sheets = [Sheet::bare(a), Sheet::bare(&tilted), Sheet::bare(c)];
         assert!(meet(sheets, target + Vec3::new(0.0, 0.5, 0.0), 1.0, tol).is_none());
+    }
+
+    /// The count of a touch's looks is the cap's: doubling from a quarter of
+    /// the tolerance, the last look it allows is the last within the cap,
+    /// so the count changes nothing the cap allows.
+    #[test]
+    fn a_touch_looks_as_far_as_the_cap_and_no_further() {
+        let mut reach = MOVE;
+        for _ in 1..LOOKS {
+            reach *= 2.0;
+        }
+        assert!(
+            reach <= CAP,
+            "the {LOOKS}th look, {reach}, lies past the cap"
+        );
+        assert!(
+            reach * 2.0 > CAP,
+            "a look after the {LOOKS}th, {}, is within the cap",
+            reach * 2.0
+        );
     }
 }

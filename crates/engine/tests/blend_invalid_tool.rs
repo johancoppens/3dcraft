@@ -467,25 +467,34 @@ fn seeds_103578_and_110541_are_too_large_with_what_their_faces_leave() {
 /// fillet would take the whole cap (a chamfer of the rim, whose tool has no
 /// tangent edge, finds it: *"below 2.39654"*). Before 2026-11-24 the first
 /// tool's boolean built an invalid body at 1.25 to 3 and the fillet was
-/// refused in the boolean's words, also at radii that fit. Now radii that
-/// fit build and pass the deep check (0.9 to 2.39), and past the cap
-/// (2.45, 2.5 and 3; at every scale and turned at 2.5) the fillet is said
-/// too large, with what fits said no lower than a radius that builds
-/// (2.39) and no higher than the cap. (It says 2.39436 where the cap leaves
-/// 2.39655: between them the tool's cut is the boolean's invalid body, from
-/// 2.394360 to 2.3963, and refused at the edge of tolerance from 2.3964;
-/// 2.394358 builds. So 2.39436 is true of what builds, not of what the faces
-/// leave, which `owed_seed_124545_is_never_said_too_large_below_what_fits`
+/// refused in the boolean's words, also at radii that fit.
+///
+/// A regression test of today's answer, not of the right one. Radii build
+/// and pass the deep check up to 2.394358 (held here at 0.9 to 2.39435);
+/// from 2.394360 the tool's cut is the boolean's invalid body (2.39437 is
+/// refused here), to 2.3963, and refused at the edge of tolerance from
+/// 2.3964 (the review of 2026-11-24, which swept 2.3943 to 2.397). Past the
+/// cap (2.45, 2.5 and 3; at every scale and turned at 2.5) the fillet is
+/// said too large with what fits said where the builds stop, *"below
+/// 2.39435"* or *"below 2.39436"*, held to 2.39435 to 2.39437. That is true
+/// of what builds and not of what the faces leave (2.39655): the right
+/// answer there is the one `owed_seed_124545_is_never_said_too_large_below_what_fits`
 /// holds to; docs/design/booleans.md › *A tangent edge across a spline
-/// border* › *Owed*.)
+/// border* › *Owed*.
 #[test]
 fn seed_124545_builds_what_fits_and_is_too_large_past_its_cap() {
     let cap = 7.5 - ((1.25_f64 * 1.25 + 7.5 * 7.5).sqrt() - 2.5);
-    let builds_up_to = 2.39;
+    let (builds_up_to, refused_from) = (2.39435, 2.39437);
     let mut wrong = Vec::new();
     for r in [0.9, 1.25, 1.3, builds_up_to] {
         let label = format!("124545 k=1 r={r}");
         builds(&mut wrong, &label, s124545, 1.0, Turn::None, r);
+    }
+    let label = format!("124545 k=1 r={refused_from}");
+    let got = answer(&s124545(1.0, Turn::None, refused_from));
+    said(&label, &got);
+    if !matches!(got, Answer::Refused(_)) {
+        wrong.push(format!("{label}: not refused: {got:?}"));
     }
     let mut past = vec![(1.0, Turn::None, 2.45), (1.0, Turn::None, 3.0)];
     for k in SCALES {
@@ -502,10 +511,13 @@ fn seed_124545_builds_what_fits_and_is_too_large_past_its_cap() {
             }
             _ => None,
         };
+        // A message keeps six digits; the slack is for the scale's rounding.
         match fits {
-            Some(x) if x >= builds_up_to * k && x <= cap * k * (1.0 + 1e-4) => {}
+            Some(x)
+                if x >= builds_up_to * k * (1.0 - 1e-9) && x <= refused_from * k * (1.0 + 1e-9) => {
+            }
             _ => wrong.push(format!(
-                "{label}: not too large between {builds_up_to} and {cap}: {got:?}"
+                "{label}: not too large between {builds_up_to} and {refused_from}: {got:?}"
             )),
         }
     }
@@ -529,7 +541,10 @@ fn seed_124545_builds_what_fits_and_is_too_large_past_its_cap() {
 /// building the tool's cut. 121649: the cone's base circle passes through
 /// the rim's one vertex, and the fillet reaches the cone's face; 128676: a
 /// fillet by the hole's own radius (a piece of a ball) does not end
-/// cleanly.
+/// cleanly. A regression test of wording: the words have no oracle of
+/// their own; the cuts the boolean now builds are held in the kernel's
+/// tests (`boolean_tangent_edge_border.rs`: 121649 to a volume written
+/// without the kernel, 128676 by the identity of sets).
 #[test]
 fn seeds_121649_and_128676_are_refused_in_the_fillets_own_words() {
     const REACHES: &str =
