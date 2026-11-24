@@ -10,27 +10,39 @@
 //! here asks one thing of it:
 //!
 //! - The first review's boss on a wedge's slope beside its knife edge, at
-//!   other slopes (2, 10 and 30 degrees) and in other places (near the end
-//!   of the knife edge, a block turned with its corner to the edge, a hole
-//!   through the wedge beside it): the place is the wedge's, accepted, as
-//!   `main` builds them.
+//!   another slope (10 degrees) and in other places (near the end of the
+//!   knife edge, a block turned with its corner to the edge, a hole through
+//!   the wedge beside it): the place is the wedge's, accepted, as `main`
+//!   builds them. Measured with the look and without it (Check
+//!   45362576161, a throwaway with a kernel feature that leaves the look
+//!   out, as `main`): every answer of this file the same both ways but the
+//!   dimple at the plate's middle (below). At 2 and 30 degrees the boss is
+//!   not built on `main` either, for reasons not the look's, so those
+//!   slopes are not asked here: at 2 degrees, as found, the section refuses
+//!   the union (*"two faces between half and twice the tolerance apart"*)
+//!   and builds it turned; at 30 degrees, the foot 2.6 to 3.8 tolerances
+//!   from the knife edge, `zero_thickness` refuses it (every block, and the
+//!   rod as found), its reading through a third face asking the place to be
+//!   further than four tolerances from the edge.
 //! - A boss whose foot comes within twice the tolerance of the knife edge
 //!   itself (a wedge of 60 degrees): a strip of the slope that narrow
-//!   between the foot and the edge, refused (the changelog's "whatever
-//!   stands on it there" is wider than this).
+//!   between the foot and the edge, refused, on `main` as on the branch
+//!   (the block by the section, as two points too near; the rod as zero
+//!   thickness).
 //! - A web in the band under a wide dimple (a ball of radius 20 cut from a
 //!   plate, its lowest point 1.5 tolerances over the bottom): two faces
 //!   only the search between two faces can find, by alternating
 //!   projections from three seeds. Where a seed lies under the ball's
 //!   centre (the dimple at the plate's middle) the search lands on the
-//!   lowest point and the web is refused. Off the middle the projections
-//!   between a ball of that size and a plane 1.5 tolerances from it close
-//!   in on the lowest point by a factor of `1 − 1.5 t / 20` a step, so
-//!   after their forty steps they stop about 0.22 units over the plane,
-//!   further than twice the tolerance, and the golden-section polish, which
-//!   starts only from a pair within twice the tolerance, is not tried: the
-//!   web is built, as on `main`. A wrong body by the rule of 2026-10-22:
-//!   that test fails on the branch.
+//!   lowest point and the web is refused (`main` built it). Off the middle
+//!   the projections between a ball of that size and a plane 1.5
+//!   tolerances from it close in on the lowest point by a factor of
+//!   `1 − 1.5 t / 20` a step, so after their forty steps they stop about
+//!   0.22 units over the plane, further than twice the tolerance, and the
+//!   golden-section polish, which starts only from a pair within twice the
+//!   tolerance, is not tried: the web is built, as on `main`. A wrong body
+//!   by the rule of 2026-10-22: that test fails on the branch (4 of 4 in
+//!   the band, Check 45362576161).
 
 #![allow(
     clippy::unwrap_used,
@@ -172,39 +184,40 @@ fn boss(k: f64, frame: &Frame, d: f64, kind: Boss, slope: f64, z: f64) -> Body {
 }
 
 /// The first review's boss on a wedge's slope beside its knife edge
-/// (`boolean_near_approach_review.rs`, 5 degrees), at 2, 10 and 30
-/// degrees: the foot's rim 1.3 or 1.9 tolerances over the bottom, which is
+/// (`boolean_near_approach_review.rs`, 5 degrees), at 10 degrees: the
+/// foot's rim 1.3 or 1.9 tolerances over the bottom, which is
 /// `1.3 t / sin(slope)` to `1.9 t / sin(slope)` along the slope from the
-/// knife edge (0.37 to 0.54 units at 2 degrees, 2.6 to 3.8 tolerances at
-/// 30). The rim lies on the slope, so the place is the wedge's: within its
-/// margin `2 t / sin(slope / 2)` of the knife edge (or within four
-/// tolerances of it), which the slope and the bottom share; accepted by
-/// the readings of 2026-10-18, and `main` builds every one. One shell,
-/// checked, its volume the sum. A block and a rod, at 1 and 1e3, as found
-/// and turned.
+/// knife edge (7.5 to 10.9 tolerances). The rim lies on the slope, so the
+/// place is the wedge's: within its margin `2 t / sin(slope / 2)` (22.9
+/// tolerances) of the knife edge, which the slope and the bottom share;
+/// accepted by the readings of 2026-10-18 (the look finds the foot's
+/// corners and rim 1.3 and 1.9 tolerances over the bottom and reads them
+/// joined), and `main` builds every one. One shell, checked, its volume
+/// the sum. A block and a rod, at 1 and 1e3, as found and turned. (At 2
+/// and 30 degrees `main` refuses some of these for reasons not the look's:
+/// see the module.)
 #[test]
-fn a_boss_on_a_wedges_slope_beside_its_knife_edge_is_united_at_other_slopes() {
+fn a_boss_on_a_wedges_slope_beside_its_knife_edge_is_united_at_ten_degrees() {
     let mut faults = Vec::new();
     for k in [1.0, 1e3] {
         let tol = tolerance(k);
         let t = tol.linear;
         for (name, frame) in frames(k) {
-            for slope in [2.0_f64, 10.0, 30.0] {
-                for kind in [Boss::Block, Boss::Rod] {
-                    for gap in [1.3, 1.9] {
-                        let d = gap * t / slope.to_radians().psin();
-                        let a = wedge(k, &frame, &tol, slope);
-                        let z = if matches!(kind, Boss::Rod) { 5.0 } else { 4.0 };
-                        let b = boss(k, &frame, d, kind, slope, z * k);
-                        let want = volume(&a) + volume(&b);
-                        let r = boolean(&a, &b, BooleanOp::Union, &tol);
-                        let what = format!(
-                            "a {kind:?} on a slope of {slope} degrees, its foot {gap} tolerances over the bottom, at {k}, {name}"
-                        );
-                        println!("near_review2: {what}: the union {}", said(&r));
-                        if !one_body(&r, Some(want), &tol) {
-                            faults.push(format!("{what}: the union {}", said(&r)));
-                        }
+            let slope = 10.0_f64;
+            for kind in [Boss::Block, Boss::Rod] {
+                for gap in [1.3, 1.9] {
+                    let d = gap * t / slope.to_radians().psin();
+                    let a = wedge(k, &frame, &tol, slope);
+                    let z = if matches!(kind, Boss::Rod) { 5.0 } else { 4.0 };
+                    let b = boss(k, &frame, d, kind, slope, z * k);
+                    let want = volume(&a) + volume(&b);
+                    let r = boolean(&a, &b, BooleanOp::Union, &tol);
+                    let what = format!(
+                        "a {kind:?} on a slope of {slope} degrees, its foot {gap} tolerances over the bottom, at {k}, {name}"
+                    );
+                    println!("near_review2: {what}: the union {}", said(&r));
+                    if !one_body(&r, Some(want), &tol) {
+                        faults.push(format!("{what}: the union {}", said(&r)));
                     }
                 }
             }
@@ -297,9 +310,11 @@ fn a_boss_or_a_hole_elsewhere_beside_the_knife_edge_is_built() {
 /// edge are two points of one shell 1.5 tolerances apart, a strip of the
 /// slope that narrow between them, which nothing joins there but the slope
 /// itself; refused (2026-10-22), as a corner that near the middle of an
-/// edge is. With the rim 3 tolerances over the bottom (the foot 3.5 along
-/// the slope from the edge) it is built, one shell, checked, its volume
-/// the sum. A block and a rod, at 1 and 1e3, as found and turned.
+/// edge is: on `main` as on the branch, the block by the section (two
+/// points too near), the rod as zero thickness (Check 45362576161). With
+/// the rim 3 tolerances over the bottom (the foot 3.5 along the slope from
+/// the edge) it is built, one shell, checked, its volume the sum. A block
+/// and a rod, at 1 and 1e3, as found and turned.
 #[test]
 fn a_boss_whose_foot_comes_that_near_the_knife_edge_itself_is_refused() {
     let mut faults = Vec::new();
