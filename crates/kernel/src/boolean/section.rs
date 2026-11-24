@@ -721,36 +721,43 @@ fn edge_cuts(
                         hit.point.distance(*end) <= 2.0 * tol
                             && surface_distance(surface, *end) <= tol
                     });
-                    // A spline's hit at a shallow angle is taken to where
-                    // the surfaces meet (`corner`).
+                    // Halfway to the hits on either side, so that no two
+                    // hits become one place or swap.
+                    let between = || {
+                        let before = ats
+                            .iter()
+                            .copied()
+                            .filter(|&t| t < at)
+                            .reduce(f64::max)
+                            .map_or(t0, |t| 0.5 * (t + at));
+                        let after = ats
+                            .iter()
+                            .copied()
+                            .filter(|&t| t > at)
+                            .reduce(f64::min)
+                            .map_or(t1, |t| 0.5 * (t + at));
+                        (before, after)
+                    };
+                    // A touch is taken to where the curve the edge stands
+                    // for comes nearest the surface, and a spline's hit at
+                    // a shallow angle to where the surfaces meet
+                    // (`corner`).
                     let point = match end {
                         Some(end) => end,
-                        None if approximated => {
-                            // Halfway to the hits on either side, so that
-                            // no two hits become one place or swap.
-                            let before = ats
-                                .iter()
-                                .copied()
-                                .filter(|&t| t < at)
-                                .reduce(f64::max)
-                                .map_or(t0, |t| 0.5 * (t + at));
-                            let after = ats
-                                .iter()
-                                .copied()
-                                .filter(|&t| t > at)
-                                .reduce(f64::min)
-                                .map_or(t1, |t| 0.5 * (t + at));
-                            super::corner::refine(
-                                own,
-                                id,
-                                surface,
-                                (hit.point, at, hit.tangent),
-                                (before, after),
-                                tol,
-                            )
-                            .map_err(|r| Stop::of(r).at(named))?
-                            .unwrap_or(hit.point)
+                        None if hit.tangent => {
+                            super::corner::touch(own, id, surface, (hit.point, at), between(), tol)
+                                .unwrap_or(hit.point)
                         }
+                        None if approximated => super::corner::refine(
+                            own,
+                            id,
+                            surface,
+                            (hit.point, at, hit.tangent),
+                            between(),
+                            tol,
+                        )
+                        .map_err(|r| Stop::of(r).at(named))?
+                        .unwrap_or(hit.point),
                         None => hit.point,
                     };
                     // A touch is a cut like any other: the stretches on
@@ -911,10 +918,31 @@ fn clip(
         }
     };
 
+    // Along a curve on which the surfaces only touch, where it crosses an
+    // edge of either face (`tangent_crossings`).
+    let (crossed, superseded) = if meeting.tangent {
+        tangent_crossings(
+            meeting,
+            found,
+            (a, fa),
+            (b, fb),
+            &on_curve,
+            vertices.guard,
+            tolerance,
+        )?
+    } else {
+        (Vec::new(), BTreeSet::new())
+    };
     // The cuts on this curve (the surfaces may meet in another one too),
     // in order along it, each place once.
     let mut along: Vec<Cut> = Vec::new();
-    for &(mut cut) in found {
+    for &(mut cut) in found
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !superseded.contains(index))
+        .map(|(_, cut)| cut)
+        .chain(&crossed)
+    {
         let Some(t) = on_curve(cut.point) else {
             // A place where an edge meets the surface, taken to an end of
             // the edge (`edge_cuts`), where this curve passes through the
@@ -1391,6 +1419,104 @@ fn clip(
         });
     }
     Ok(())
+}
+
+/// The places where `meeting`, a curve along which the surfaces of face
+/// `fa` of A and `fb` of B only touch, crosses an edge of either face, and
+/// which of the cuts in `found` they stand for.
+///
+/// Such an edge lies between its face and another face of its body, so
+/// the curve meets that other face's surface where it crosses the edge,
+/// in closed form where there is one; the edge's own hit on the touching
+/// surface is a touch, which `corner::touch` places on the curve the edge
+/// stands for, but where the edge stays within the tolerance of the
+/// touching surface over both of its crossings (a border that rises a
+/// thousandth above the circle a tool touches the wall along) it is one
+/// touch for two places. A hit of the curve on the other face's surface
+/// that crosses it (no touch), within the tolerance of the edge and on the
+/// curve, is a cut where no cut on the curve is within `guard` of it
+/// already (then that cut is the place, as before); a cut of `found` of
+/// the same edge on the curve, with the curve within the tolerance of the
+/// edge all the way from it to such a place, is the same meeting read as
+/// a touch, and is superseded.
+fn tangent_crossings(
+    meeting: &MeetingCurve,
+    found: &[Cut],
+    (a, fa): (&Solid, usize),
+    (b, fb): (&Solid, usize),
+    on_curve: &dyn Fn(Vec3) -> Option<f64>,
+    guard: f64,
+    tolerance: &Tolerance,
+) -> Result<(Vec<Cut>, BTreeSet<usize>), Stop> {
+    let tol = tolerance.linear;
+    let curve = &meeting.curve;
+    let (first, last) = meeting.range;
+    let reach = piece_box(curve, curve.eval(first), curve.eval(last));
+    let mut crossed: Vec<Cut> = Vec::new();
+    let mut superseded = BTreeSet::new();
+    for (own, face, operand) in [(a, fa, Operand::A), (b, fb, Operand::B)] {
+        for id in own.edges_near(face, |bx| boxes_meet(bx, &reach, 2.0 * tol)) {
+            let Some(faces) = super::corner::faces_of(own, id, tol) else {
+                continue;
+            };
+            let Some(&other) = faces.iter().find(|&&f| f != face) else {
+                continue;
+            };
+            let edge = own.body.edge(id).ok_or(Stop::of(LOST))?;
+            let sheet = own.outline(other)?.sheet();
+            // What cannot be told adds nothing: the touch's own cut stands.
+            let Ok(CurveIntersection::Hits(hits)) =
+                curve_hits(curve, meeting.range, sheet, tolerance)
+            else {
+                continue;
+            };
+            let mine = |cut: &Cut| match operand {
+                Operand::A => cut.a_edge == Some(id),
+                Operand::B => cut.b_edge == Some(id),
+            };
+            for hit in hits {
+                if hit.tangent || locate(&edge.curve, edge.range, hit.point, tol).is_none() {
+                    continue;
+                }
+                let Some(t) = on_curve(hit.point) else {
+                    continue;
+                };
+                if found.iter().chain(&crossed).any(|cut| {
+                    cut.point.distance(hit.point) < guard && on_curve(cut.point).is_some()
+                }) {
+                    continue;
+                }
+                for (index, cut) in found.iter().enumerate() {
+                    if !mine(cut) {
+                        continue;
+                    }
+                    let Some(from) = on_curve(cut.point) else {
+                        continue;
+                    };
+                    let banded = (1..8).all(|k| {
+                        let u = from + (t - from) * f64::from(k) / 8.0;
+                        locate(&edge.curve, edge.range, curve.eval(u), tol).is_some()
+                    });
+                    if banded {
+                        superseded.insert(index);
+                    }
+                }
+                let (a_edge, b_edge) = match operand {
+                    Operand::A => (Some(id), None),
+                    Operand::B => (None, Some(id)),
+                };
+                crossed.push(Cut {
+                    t: 0.0,
+                    point: hit.point,
+                    a_edge,
+                    b_edge,
+                    end: false,
+                    hit: None,
+                });
+            }
+        }
+    }
+    Ok((crossed, superseded))
 }
 
 /// The parameters along a curve that the end of a stretch at a cut may be
