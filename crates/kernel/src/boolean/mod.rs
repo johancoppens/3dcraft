@@ -904,7 +904,7 @@ fn run(
         // Where the places above see nothing: an edge or a face passing an
         // edge or a face of the other operand (or one the boolean made)
         // within twice the tolerance, no surfaces meeting nearby.
-        let approaches = near::in_result(&result, &a, &b, &sections.met, tol);
+        let approaches = near::in_result(&result, &a, &b, &sections, tol);
         near_approaches(&result, tolerance, &approaches)?;
     }
     Ok(result)
@@ -915,14 +915,16 @@ fn run(
 /// of each other touch, so their nearest points are places for
 /// [`zero_thickness`] (refused as zero thickness, the developer's rule of
 /// 2026-10-15; where that finds nothing at a place, refused here in its
-/// words, the two points being measured that near); an approach beside a
-/// vertex, where an edge joins a vertex of one to a vertex of the other,
-/// is a sliver or a wedge, which the wedge readings accept (2026-10-18)
-/// and is left as it was; two walls of one shell between half and twice
-/// the tolerance apart are refused as two points closer together than the
-/// tolerance can tell apart, naming a face of each (2026-10-22). Two walls
-/// of one shell within half the tolerance are left as they were (whether
-/// the shell touches itself there is owed: docs/design/booleans.md).
+/// words, the two points being measured that near); two walls of one
+/// shell joined at the place between the two points by the readings of
+/// `within_a_shell` (a sliver of a face, a wedge, a wall that thins to a
+/// knife edge: accepted, 2026-10-18; `near::Approach::joined`) are left as
+/// they were; other walls of one shell between half and twice the
+/// tolerance apart (as near as the look found them) are refused as two
+/// points closer together than the tolerance can tell apart, naming a face
+/// of each (2026-10-22). Two walls of one shell within half the tolerance
+/// are left as they were (whether the shell touches itself there is owed:
+/// docs/design/booleans.md).
 fn near_approaches(
     result: &BooleanResult,
     tolerance: &Tolerance,
@@ -943,7 +945,7 @@ fn near_approaches(
     }
     let walls = approaches
         .iter()
-        .find(|a| !a.parts && !a.hop && a.distance > 0.5 * tol);
+        .find(|a| !a.parts && !a.joined && a.distance > 0.5 * tol);
     match walls {
         Some(found) => Err(Stop::of(NEAR).at(&found.faces)),
         None => Ok(()),

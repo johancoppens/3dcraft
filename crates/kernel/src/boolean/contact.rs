@@ -367,7 +367,7 @@ fn evidence(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<Evidence, Stop>
     // further apart than the tolerance can tell, at the point between the
     // two nearest points found.
     if found.kind.is_none() {
-        for approach in near::between(&sa, &sb, &sections.met, tol) {
+        for approach in near::between(&sa, &sb, &sections, tol) {
             found.raise(ContactKind::Point);
             found.point(approach.p.lerp(approach.q, 0.5), tol);
             for (operand, face) in approach.faces {

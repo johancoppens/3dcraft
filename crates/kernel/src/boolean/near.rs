@@ -16,47 +16,69 @@
 //!
 //! - The section met every pair of faces (one of A, one of B) that it did
 //!   not prove further apart than twice the tolerance (boxes, hulls, covers:
-//!   `section::to_meet`). An entity lies on the faces around it, and a face
-//!   of the result on the faces of the operands it is a piece of, so two
-//!   entities come that near only where a face of A around one and a face
-//!   of B around the other were met, or where both lie on faces of one
-//!   operand: an approach that operand had already, not looked at. This is
-//!   read from the sources before any geometry.
+//!   `section::to_meet`), and keeps them (`Sections::met`), with the pairs
+//!   its hulls proved apart by twice the tolerance but not by that and the
+//!   merging distance more (`Sections::beside`: an entity of the result may
+//!   lie that far off the face it is a piece of). An entity lies on the faces
+//!   around it, and a face of the result on the faces of the operands it is
+//!   a piece of, so two entities come that near only where a face of A
+//!   around one and a face of B around the other are such a pair, or where
+//!   both lie on faces of one operand: an approach that operand had already,
+//!   not looked at. This is read from the sources before any geometry.
 //! - Their boxes, grown by twice the tolerance, meet: a tree of the boxes of
-//!   one side, asked with each box of the other.
-//! - They share no vertex: joined there (a face and its own edge, a wedge).
+//!   the larger side, asked with each box of the other in turn, each answer
+//!   measured as it comes.
+//! - They share no vertex: joined there (a face and its own edge).
 //! - Not two vertices: every vertex of a result is a point the section
 //!   registered, and two of those in the band are refused there.
+//!
+//! At most [`MOST_PAIRS`] pairs are measured and [`MOST_LOOKED`] looked at in
+//! one look; what is left past either is not looked at, as before this look
+//! existed, and counted (`crate::work::near_left`): a pair never measured is
+//! never taken for one that is clear, only not refused.
 //!
 //! **How near.** A vertex to an edge or a face by its nearest point; an edge
 //! to an edge or a face by its distance sampled along the edge, each stretch
 //! between samples bounded below by the edge's speed, and only the stretches
 //! that may come within twice the tolerance searched closer (golden
-//! sections); two faces by alternating projections from three seeds. A
-//! straight edge over a plane and two planes come nearest at a boundary,
-//! which is looked at as its own edges and vertices. Before any of that,
-//! a pair is passed over where the other surface is far from the box of an
-//! analytic entity, or where the covers of the operands' faces prove a
-//! freeform face that far. An approach counts only where two points of the
-//! two entities, each evaluated exactly, are less than twice the tolerance
-//! apart, inside both: a search that misses misses, it never finds an
-//! approach that is not there.
+//! sections); two faces by alternating projections from three seeds, then,
+//! where that comes within twice the tolerance, by golden sections across
+//! the first face from the point found (alternating projections crawl where
+//! two faces touch tangentially). A straight edge over a plane and two
+//! planes come nearest at a boundary, which is looked at as its own edges
+//! and vertices. Before any of that, a pair is passed over where the other
+//! surface is far from the box of an analytic entity, or where the covers of
+//! the operands' faces prove a freeform face that far. An approach counts
+//! only where two points of the two entities, each evaluated exactly, are
+//! less than twice the tolerance apart, inside both: a search that misses
+//! misses, it never finds an approach that is not there. The distance it
+//! gives is the least the search found, a bound from above of the least
+//! there is.
 //!
 //! **What is done with one** ([`super::near_approaches`], and `contact`'s
 //! evidence): two parts that come that near touch (zero thickness, the
-//! developer's rule of 2026-10-15); a sliver beside a vertex is left to the
-//! wedge readings (2026-10-18); two walls of one shell between half and
-//! twice the tolerance apart are refused as too near to tell apart
-//! (2026-10-22). Measured on the benchmark's models on 2026-11-24: about a
-//! hundredth of the booleans' own time (docs/design/booleans.md › *Near
-//! approaches inside an edge or a face*).
+//! developer's rule of 2026-10-15). Two walls of one shell are read at the
+//! place between the two points as `within_a_shell` reads two faces at a
+//! place (2026-10-18): where a face around the one and a face around the
+//! other have a vertex in common within four times the tolerance of it, an
+//! edge in common that passes that near, or an edge in common whose wedge
+//! reaches it (`wedged`: within twice the tolerance over the sine of half
+//! the faces' angle at the edge, up to a tenth of the smaller face, and
+//! beyond it where the gap is at least half what the faces' angle leaves
+//! there), they are joined there (a sliver of a face, a wedge, a wall that
+//! thins to a knife edge) and left as they are ([`Approach::joined`]);
+//! otherwise, between half and twice the tolerance apart, they are refused
+//! as too near to tell apart (2026-10-22). Measured on the benchmark's
+//! models on 2026-11-24: about a hundredth of the booleans' own time
+//! (docs/design/booleans.md › *Near approaches inside an edge or a face*).
 
 use super::cover::Cover;
 use super::facetree::FaceTree;
 use super::freeform::is_freeform;
 use super::hits::speed_bound;
 use super::outline::{self, Outline, Sheet, Side, boxes_meet};
-use super::section::{self, Solid};
+use super::regions::ANGLE_GUARD;
+use super::section::{self, Sections, Solid};
 use super::{BooleanResult, Operand};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::{Bbox3, Vec3};
@@ -76,8 +98,12 @@ const ALTERNATE: usize = 40;
 /// range) is at that end: the vertex, looked at as one.
 const END: f64 = 1e-7;
 /// Pairs measured in one look, at most: past that the rest are not looked
-/// at, as before this look existed (a miss, never a refusal).
+/// at, as before this look existed (a miss, never a refusal), and counted
+/// (`crate::work::near_left`).
 const MOST_PAIRS: usize = 1 << 16;
+/// Pairs whose grown boxes meet looked at in one look (each read against
+/// the filters before any geometry), at most: as [`MOST_PAIRS`].
+const MOST_LOOKED: usize = 1 << 20;
 /// One over the golden ratio.
 const INVERSE_GOLDEN: f64 = 0.618_033_988_749_894_9;
 
@@ -105,9 +131,11 @@ pub(super) struct Approach {
     pub distance: f64,
     /// In different shells of the result: two parts.
     pub parts: bool,
-    /// A vertex of one and a vertex of the other joined by an edge: a
-    /// sliver or a wedge beside a vertex.
-    pub hop: bool,
+    /// In one shell, joined at the place between the two points by a face
+    /// around each: a vertex or an edge in common there, or an edge in
+    /// common whose wedge reaches it (the readings of `within_a_shell`,
+    /// 2026-10-18; see the module). Left as it is.
+    pub joined: bool,
     /// A face of the operands at each, for naming the pair: one of A and
     /// one of B where there are.
     pub faces: [(Operand, FaceId); 2],
@@ -115,16 +143,22 @@ pub(super) struct Approach {
 
 /// The approaches in a boolean's result (one body): pairs of its entities
 /// of which one lies on a face of A and the other on a face of B (see the
-/// module), with `met` the pairs of faces the section met. In a fixed
-/// order.
+/// module), with `sections` what the section met. In a fixed order.
 pub(super) fn in_result<'r, 'x>(
     result: &'r BooleanResult,
     a: &'r Solid<'x>,
     b: &'r Solid<'x>,
-    met: &[(usize, usize)],
+    sections: &Sections,
     tol: f64,
 ) -> Vec<Approach> {
-    look(Bodies::Result(result), vec![&result.body], a, b, met, tol)
+    look(
+        Bodies::Result(result),
+        vec![&result.body],
+        a,
+        b,
+        sections,
+        tol,
+    )
 }
 
 /// The approaches between the two operands themselves: pairs of an entity
@@ -132,10 +166,10 @@ pub(super) fn in_result<'r, 'x>(
 pub(super) fn between<'r, 'x>(
     a: &'r Solid<'x>,
     b: &'r Solid<'x>,
-    met: &[(usize, usize)],
+    sections: &Sections,
     tol: f64,
 ) -> Vec<Approach> {
-    look(Bodies::Operands, vec![a.body, b.body], a, b, met, tol)
+    look(Bodies::Operands, vec![a.body, b.body], a, b, sections, tol)
 }
 
 /// Where the bodies looked at come from.
@@ -200,6 +234,8 @@ struct Topo<'r> {
     face_shell: Vec<usize>,
     /// Per face, its vertices, made when first asked for.
     face_vertices: Vec<Option<Vec<u32>>>,
+    /// Per face, its edges, made when first asked for.
+    face_edges: Vec<Option<Vec<u32>>>,
     /// Per face, its outline, made when first asked for.
     outlines: Vec<Option<Option<Outline>>>,
     /// Per face, the box of what it holds (`Body::held_face_bbox`), made
@@ -240,6 +276,7 @@ impl<'r> Topo<'r> {
             vertex_edges,
             face_shell,
             face_vertices: vec![None; body.faces.len()],
+            face_edges: vec![None; body.faces.len()],
             outlines: (0..body.faces.len()).map(|_| None).collect(),
             held: vec![None; body.faces.len()],
         }
@@ -315,6 +352,129 @@ impl<'r> Topo<'r> {
         }
     }
 
+    /// Makes the list of face `f`'s edges if it is not made yet.
+    fn ensure_edges(&mut self, f: u32) {
+        let body = self.body;
+        let Some(slot) = self.face_edges.get_mut(f as usize) else {
+            return;
+        };
+        if slot.is_some() {
+            return;
+        }
+        let mut out: Vec<u32> = body
+            .faces
+            .get(f as usize)
+            .into_iter()
+            .flat_map(|face| &face.loops)
+            .filter_map(|l| body.loop_(*l))
+            .flat_map(|lp| lp.coedges.iter().map(|c| c.edge.0))
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        *slot = Some(out);
+    }
+
+    /// The vertices of face `f`, once [`Topo::ensure_vertices`] made them.
+    fn face_vertex_list(&self, f: u32) -> &[u32] {
+        self.face_vertices
+            .get(f as usize)
+            .and_then(|list| list.as_deref())
+            .unwrap_or(&[])
+    }
+
+    /// The edges of face `f`, once [`Topo::ensure_edges`] made them.
+    fn face_edge_list(&self, f: u32) -> &[u32] {
+        self.face_edges
+            .get(f as usize)
+            .and_then(|list| list.as_deref())
+            .unwrap_or(&[])
+    }
+
+    /// Whether two entities of one shell are joined at `place`, `gap`
+    /// apart, as `within_a_shell` reads two faces at a place (2026-10-18):
+    /// a face around the one and another face around the other with a
+    /// vertex in common within four times the tolerance of the place, an
+    /// edge in common that passes that near, or an edge in common whose
+    /// wedge reaches it ([`Topo::wedged`]).
+    fn joined_at(&mut self, x: Ent, y: Ent, place: Vec3, gap: f64, near: f64) -> bool {
+        let (fx, fy) = (self.faces(x), self.faces(y));
+        for &f in fx.iter().chain(&fy) {
+            self.ensure_vertices(f);
+            self.ensure_edges(f);
+        }
+        fx.iter().any(|&f| {
+            fy.iter()
+                .any(|&g| f != g && self.faces_joined(f, g, place, gap, near))
+        })
+    }
+
+    /// [`Topo::joined_at`] for faces `f` and `g`.
+    fn faces_joined(&self, f: u32, g: u32, place: Vec3, gap: f64, near: f64) -> bool {
+        let body = self.body;
+        let reach = 2.0 * near;
+        let by_vertex = common(self.face_vertex_list(f), self.face_vertex_list(g))
+            .iter()
+            .any(|&v| {
+                body.vertices
+                    .get(v as usize)
+                    .is_some_and(|vertex| vertex.point.distance(place) <= reach)
+            });
+        if by_vertex {
+            return true;
+        }
+        let edges = common(self.face_edge_list(f), self.face_edge_list(g));
+        !edges.is_empty() && self.wedged(f, g, &edges, place, gap, near)
+    }
+
+    /// Whether an edge `f` and `g` have in common joins them at `place`:
+    /// passing within four times the tolerance of it, or with `place` in
+    /// the wedge the two faces make at it, as `within_a_shell` › `wedged`
+    /// reads it: within `2t / sin(θ/2)` of the edge (θ the angle between
+    /// the faces, from their outward normals at the edge's point nearest the
+    /// place, which is its foot or its nearer end) up to a tenth of the
+    /// smaller face, and beyond that where the faces open (`sin(θ/2)` above
+    /// `ANGLE_GUARD`), the place is further from the edge than four times
+    /// the tolerance and the gap there is at least half of what two planes
+    /// leaving the edge at θ have (`gap ≥ d sin(θ/2)`).
+    fn wedged(&self, f: u32, g: u32, edges: &[u32], place: Vec3, gap: f64, near: f64) -> bool {
+        let body = self.body;
+        let reach = 2.0 * near;
+        let size = |h: u32| body.face_bbox(FaceId(h)).map_or(0.0, |b| b.diagonal());
+        let most = (0.1 * size(f).min(size(g))).max(reach);
+        let (Some(sf), Some(sg)) = (body.faces.get(f as usize), body.faces.get(g as usize)) else {
+            return false;
+        };
+        edges.iter().any(|&e| {
+            let Some(edge) = body.edges.get(e as usize) else {
+                return false;
+            };
+            let Some((t, _)) = outline::nearest(&edge.curve, edge.range, place) else {
+                return false;
+            };
+            let q = edge.curve.eval(t);
+            let d = q.distance(place);
+            let boxed = body.edge_bbox(EdgeId(e)).ok();
+            if boxed.is_some_and(|b| b.contains(place, reach)) && d <= reach {
+                return true;
+            }
+            let within = boxed.is_some_and(|b| b.contains(place, most));
+            match (sf.outward(q), sg.outward(q)) {
+                (Some(nf), Some(ng)) => {
+                    let half = (0.5 * (1.0 + nf.dot(ng))).max(0.0).sqrt();
+                    let margin = if half > 0.0 {
+                        near / half
+                    } else {
+                        f64::INFINITY
+                    };
+                    (within && d <= margin.max(reach).min(most))
+                        || (half > ANGLE_GUARD && d > reach && d <= margin && gap >= d * half)
+                }
+                // No normal there (an apex): the widest margin, no further.
+                _ => within && d <= most,
+            }
+        })
+    }
+
     /// Whether two entities share a vertex: the shorter list of vertices
     /// looked up in the longer.
     fn share_vertex(&mut self, x: Ent, y: Ent) -> bool {
@@ -379,7 +539,8 @@ struct Look<'r, 'x> {
     topos: Vec<Topo<'r>>,
     a: &'r Solid<'x>,
     b: &'r Solid<'x>,
-    /// The pairs of faces (of A, of B) the section met.
+    /// The pairs of faces (of A, of B) the section met, and those beside
+    /// them (`Sections::beside`).
     met: BTreeSet<(u32, u32)>,
     tol: f64,
     near: f64,
@@ -390,14 +551,20 @@ fn look<'r, 'x>(
     bodies: Vec<&'r Body>,
     a: &'r Solid<'x>,
     b: &'r Solid<'x>,
-    met: &[(usize, usize)],
+    sections: &Sections,
     tol: f64,
 ) -> Vec<Approach> {
     let near = 2.0 * tol;
-    if met.is_empty() || !(near.is_finite() && near > 0.0) {
+    if (sections.met.is_empty() && sections.beside.is_empty()) || !(near.is_finite() && near > 0.0)
+    {
         return Vec::new();
     }
-    let met: BTreeSet<(u32, u32)> = met.iter().map(|&(fa, fb)| (index(fa), index(fb))).collect();
+    let met: BTreeSet<(u32, u32)> = sections
+        .met
+        .iter()
+        .chain(&sections.beside)
+        .map(|&(fa, fb)| (index(fa), index(fb)))
+        .collect();
     let mut look = Look {
         whence,
         topos: bodies.into_iter().map(Topo::new).collect(),
@@ -407,8 +574,7 @@ fn look<'r, 'x>(
         tol,
         near,
     };
-    let pairs = look.pairs();
-    look.measure(pairs)
+    look.run()
 }
 
 /// The rank of an entity's kind: vertices, edges, faces.
@@ -481,10 +647,9 @@ impl<'r, 'x> Look<'r, 'x> {
         any(xa.as_slice(), yb.as_slice()) || any(ya.as_slice(), xb.as_slice())
     }
 
-    /// The candidate pairs: entities on a face of A some pair of `met`
-    /// holds, against entities on a face of B some pair holds, whose boxes
-    /// grown by twice the tolerance meet; each pair once, ascending.
-    fn pairs(&mut self) -> Vec<(Who, Who)> {
+    /// The two sides: the entities on a face of A some pair of `met` holds,
+    /// and those on a face of B some pair holds, with their boxes.
+    fn items(&self) -> (Vec<Item>, Vec<Item>) {
         let (mut on_a, mut on_b) = (BTreeSet::new(), BTreeSet::new());
         for &(fa, fb) in &self.met {
             on_a.insert(fa);
@@ -551,20 +716,35 @@ impl<'r, 'x> Look<'r, 'x> {
                 }
             }
         }
+        (left, right)
+    }
+
+    /// The approaches: each entity of the smaller side against those of the
+    /// larger side's tree whose grown boxes meet its own, measured as the
+    /// tree gives them; in that order, which is fixed. Past [`MOST_LOOKED`]
+    /// pairs looked at or [`MOST_PAIRS`] measured the rest are left, and the
+    /// entities of the smaller side not finished are counted
+    /// (`crate::work::near_left`).
+    fn run(&mut self) -> Vec<Approach> {
+        let (left, right) = self.items();
         if left.is_empty() || right.is_empty() {
             return Vec::new();
         }
-        // A tree of the larger side's boxes, asked with each of the other's.
         let (few, many) = if left.len() <= right.len() {
-            (&left, &right)
+            (left, right)
         } else {
-            (&right, &left)
+            (right, left)
         };
+        // An entity on both sides (one the boolean made) meets another such
+        // from either side: measured from the lower of the two only.
+        let in_few: BTreeSet<Who> = few.iter().map(|it| it.who).collect();
+        let in_many: BTreeSet<Who> = many.iter().map(|it| it.who).collect();
         let boxes: Vec<Bbox3> = many.iter().map(|it| it.bbox).collect();
         let tree = FaceTree::new(&boxes);
         let near = self.near;
-        let mut pairs: Vec<(Who, Who)> = Vec::new();
-        for it in few {
+        let mut found = Vec::new();
+        let (mut looked, mut measured) = (0usize, 0usize);
+        for (done, it) in few.iter().enumerate() {
             for k in tree.candidates(|bx| boxes_meet(bx, &it.bbox, near)) {
                 let Some(other) = many.get(k) else {
                     continue;
@@ -572,62 +752,53 @@ impl<'r, 'x> Look<'r, 'x> {
                 if other.who == it.who || !boxes_meet(&other.bbox, &it.bbox, near) {
                     continue;
                 }
-                pairs.push(if it.who < other.who {
-                    (it.who, other.who)
-                } else {
-                    (other.who, it.who)
-                });
-            }
-        }
-        pairs.sort_unstable();
-        pairs.dedup();
-        pairs
-    }
-
-    /// Measures each candidate pair that may be an approach.
-    fn measure(&mut self, pairs: Vec<(Who, Who)>) -> Vec<Approach> {
-        let mut found = Vec::new();
-        let mut measured = 0usize;
-        for (x, y) in pairs {
-            let (x, y) = if rank(x.1) > rank(y.1) {
-                (y, x)
-            } else {
-                (x, y)
-            };
-            if let (Ent::Vertex(_), Ent::Vertex(_)) = (x.1, y.1) {
-                continue;
-            }
-            if x.0 == y.0 {
-                let Some(topo) = self.topos.get_mut(x.0) else {
-                    continue;
-                };
-                if topo.share_vertex(x.1, y.1) {
+                if in_many.contains(&it.who) && in_few.contains(&other.who) && other.who < it.who {
                     continue;
                 }
-            }
-            if !self.met_across(x, y) {
-                continue;
-            }
-            measured += 1;
-            if measured > MOST_PAIRS {
-                break;
-            }
-            let approach = match (x.1, y.1) {
-                (Ent::Vertex(_), Ent::Edge(_)) => self.vertex_edge(x, y),
-                (Ent::Vertex(_), Ent::Face(_)) => self.vertex_face(x, y),
-                (Ent::Edge(_), Ent::Edge(_)) => self.edge_edge(x, y),
-                (Ent::Edge(_), Ent::Face(_)) => self.edge_face(x, y),
-                (Ent::Face(_), Ent::Face(_)) => self.face_face(x, y),
-                _ => None,
-            };
-            if let Some(found_one) = approach {
-                found.push(self.read(found_one));
+                looked += 1;
+                if looked > MOST_LOOKED || measured >= MOST_PAIRS {
+                    crate::work::near_left_over(few.len().saturating_sub(done));
+                    return found;
+                }
+                if let Some(approach) = self.pair(it.who, other.who, &mut measured) {
+                    found.push(approach);
+                }
             }
         }
         found
     }
 
-    /// `approach` with its shells, whether it hops, and its faces read.
+    /// One pair whose grown boxes meet: the filters (two vertices, a
+    /// vertex in common, no face of A and face of B met across), then its
+    /// measure, counted in `measured`.
+    fn pair(&mut self, x: Who, y: Who, measured: &mut usize) -> Option<Approach> {
+        let (x, y) = if (rank(x.1), x) > (rank(y.1), y) {
+            (y, x)
+        } else {
+            (x, y)
+        };
+        if let (Ent::Vertex(_), Ent::Vertex(_)) = (x.1, y.1) {
+            return None;
+        }
+        if x.0 == y.0 && self.topos.get_mut(x.0)?.share_vertex(x.1, y.1) {
+            return None;
+        }
+        if !self.met_across(x, y) {
+            return None;
+        }
+        *measured += 1;
+        let approach = match (x.1, y.1) {
+            (Ent::Vertex(_), Ent::Edge(_)) => self.vertex_edge(x, y),
+            (Ent::Vertex(_), Ent::Face(_)) => self.vertex_face(x, y),
+            (Ent::Edge(_), Ent::Edge(_)) => self.edge_edge(x, y),
+            (Ent::Edge(_), Ent::Face(_)) => self.edge_face(x, y),
+            (Ent::Face(_), Ent::Face(_)) => self.face_face(x, y),
+            _ => None,
+        }?;
+        Some(self.read(approach))
+    }
+
+    /// `approach` with its shells, whether it is joined, and its faces read.
     fn read(&mut self, mut approach: Approach) -> Approach {
         let (x, y) = (approach.x, approach.y);
         let (first, mut second) = (self.named(x), self.named(y));
@@ -654,28 +825,15 @@ impl<'r, 'x> Look<'r, 'x> {
             approach.parts = true;
             return approach;
         }
+        let near = self.near;
         let Some(topo) = self.topos.get_mut(x.0) else {
             return approach;
         };
         approach.parts = topo.shell(x.1) != topo.shell(y.1);
-        for ent in [x.1, y.1] {
-            if let Ent::Face(f) = ent {
-                topo.ensure_vertices(f);
-            }
+        if !approach.parts {
+            let place = approach.p.lerp(approach.q, 0.5);
+            approach.joined = topo.joined_at(x.1, y.1, place, approach.distance, near);
         }
-        let (vx, vy) = (topo.vertices(x.1), topo.vertices(y.1));
-        approach.hop = vx.iter().any(|&v| {
-            topo.vertex_edges.of(v).iter().any(|&e| {
-                topo.body.edges.get(e as usize).is_some_and(|edge| {
-                    let w = if edge.start.0 == v {
-                        edge.end.0
-                    } else {
-                        edge.start.0
-                    };
-                    vy.binary_search(&w).is_ok()
-                })
-            })
-        });
         approach
     }
 
@@ -719,7 +877,7 @@ impl<'r, 'x> Look<'r, 'x> {
             q,
             distance: p.distance(q),
             parts: false,
-            hop: false,
+            joined: false,
             faces: [(Operand::A, FaceId(u32::MAX)); 2],
         }
     }
@@ -1006,8 +1164,77 @@ impl<'r, 'x> Look<'r, 'x> {
                 best = Some(Self::approach(x, y, p, q));
             }
         }
-        best
+        // Where two faces touch tangentially the projections crawl towards
+        // the place of touch and stop short of it: across the first face
+        // from the point found, to the least distance there.
+        let found = best?;
+        let reach = 0.25 * box_f.diagonal().min(box_g.diagonal());
+        let (p, q) = polish(o1, o2, found.p, found.q, reach);
+        if p.distance(q) < found.distance && inside(o1, p, tol) && inside(o2, q, tol) {
+            return Some(Self::approach(x, y, p, q));
+        }
+        Some(found)
     }
+}
+
+/// The ids both ascending lists hold.
+fn common(a: &[u32], b: &[u32]) -> Vec<u32> {
+    let (mut i, mut j, mut out) = (0, 0, Vec::new());
+    while let (Some(&x), Some(&y)) = (a.get(i), b.get(j)) {
+        match x.cmp(&y) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                out.push(x);
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    out
+}
+
+/// The points of two faces' surfaces nearest each other about `p` on the
+/// first (and `q` on the second): golden sections along two directions
+/// across the first surface at `p`, `reach` either way, twice over, each
+/// keeping only a pair nearer than the last.
+fn polish(o1: &Outline, o2: &Outline, p: Vec3, q: Vec3, reach: f64) -> (Vec3, Vec3) {
+    let mut best = (p, q, p.distance(q));
+    if !(reach.is_finite() && reach > 0.0) {
+        return (p, q);
+    }
+    let Some(normal) = outline::outward_normal(o1.sheet(), false, p) else {
+        return (p, q);
+    };
+    let aside = if normal.x.abs() < 0.9 {
+        Vec3::X
+    } else {
+        Vec3::Y
+    };
+    let Some(e1) = normal.cross(aside).normalized() else {
+        return (p, q);
+    };
+    let e2 = normal.cross(e1);
+    let at = |from: Vec3, dir: Vec3, s: f64| -> Option<(Vec3, Vec3, f64)> {
+        let a = outline::onto(o1.sheet(), from + dir * s)?;
+        let b = outline::onto(o2.sheet(), a)?;
+        let d = a.distance(b);
+        d.is_finite().then_some((a, b, d))
+    };
+    for _ in 0..2 {
+        for dir in [e1, e2] {
+            let from = best.0;
+            let s = golden(-reach, reach, |s| {
+                at(from, dir, s).map_or(f64::INFINITY, |found| found.2)
+            });
+            if let Some(found) = at(from, dir, s)
+                && found.2 < best.2
+            {
+                best = found;
+            }
+        }
+    }
+    (best.0, best.1)
 }
 
 /// Inside the face, or within the tolerance of its boundary and inside by
