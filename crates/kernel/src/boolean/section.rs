@@ -285,6 +285,11 @@ pub(super) struct Sections {
     /// two points closer together than the tolerance can tell apart,
     /// naming the pair, not as a lost imprint (`super::near_places`).
     pub near: Vec<(usize, usize)>,
+    /// Every pair of faces (of A, of B) whose surfaces were met, in the
+    /// order met: every pair the section did not prove further apart than
+    /// twice the tolerance (`to_meet`). Where else the operands can come
+    /// that near is read from it (`near`).
+    pub met: Vec<(usize, usize)>,
 }
 
 /// The outline of face `index` of `body`, as [`prepare`] makes it.
@@ -1753,6 +1758,7 @@ fn section_with(
             else {
                 continue;
             };
+            sections.met.push((fa, fb));
             let named = [a.name(fa), b.name(fb)];
             crate::work::face_pairs(1);
             #[cfg(test)]
