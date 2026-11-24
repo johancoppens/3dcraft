@@ -28,14 +28,18 @@
 //! - Their boxes, grown by twice the tolerance, meet: a tree of the boxes of
 //!   the larger side, asked with each box of the other in turn, each answer
 //!   measured as it comes.
-//! - They share no vertex: joined there (a face and its own edge).
+//! - They share no vertex: two entities that share one anywhere are not
+//!   measured, however near they come away from it (a face and its own edge;
+//!   read from the topology alone, owed in the roadmap).
 //! - Not two vertices: every vertex of a result is a point the section
 //!   registered, and two of those in the band are refused there.
 //!
 //! At most [`MOST_PAIRS`] pairs are measured and [`MOST_LOOKED`] looked at in
 //! one look; what is left past either is not looked at, as before this look
-//! existed, and counted (`crate::work::near_left`): a pair never measured is
-//! never taken for one that is clear, only not refused.
+//! existed, and counted (`crate::work::near_left`, which nothing reads yet):
+//! a pair never measured is not refused, and interference (`contact.rs` ›
+//! `evidence`) then says clear where the look found nothing, a look cut
+//! short included (owed in the roadmap).
 //!
 //! **How near.** A vertex to an edge or a face by its nearest point; an edge
 //! to an edge or a face by its distance sampled along the edge, each stretch
