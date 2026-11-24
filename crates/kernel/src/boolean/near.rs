@@ -392,18 +392,32 @@ impl<'r> Topo<'r> {
 
     /// Whether two entities of one shell are joined at `place`, `gap`
     /// apart, as `within_a_shell` reads two faces at a place (2026-10-18):
-    /// a face around the one and another face around the other with a
-    /// vertex in common within four times the tolerance of the place, an
-    /// edge in common that passes that near, or an edge in common whose
-    /// wedge reaches it ([`Topo::wedged`]).
+    /// a wall around the one and a wall around the other with a vertex in
+    /// common within four times the tolerance of the place, an edge in
+    /// common that passes that near, or an edge in common whose wedge
+    /// reaches it ([`Topo::wedged`]). The walls are the faces around each
+    /// but those around both: a face whose boundary holds both entities is
+    /// the one the approach runs across (a strip of it that narrow), and is
+    /// joined to the faces on either side of it by the entities' own edges
+    /// whatever the walls beside the strip do.
     fn joined_at(&mut self, x: Ent, y: Ent, place: Vec3, gap: f64, near: f64) -> bool {
         let (fx, fy) = (self.faces(x), self.faces(y));
         for &f in fx.iter().chain(&fy) {
             self.ensure_vertices(f);
             self.ensure_edges(f);
         }
-        fx.iter().any(|&f| {
-            fy.iter()
+        let walls = |own: &[u32], other: &[u32]| -> Vec<u32> {
+            own.iter()
+                .copied()
+                .filter(|f| other.binary_search(f).is_err())
+                .collect()
+        };
+        let (wx, wy) = (
+            walls(fx.as_slice(), fy.as_slice()),
+            walls(fy.as_slice(), fx.as_slice()),
+        );
+        wx.iter().any(|&f| {
+            wy.iter()
                 .any(|&g| f != g && self.faces_joined(f, g, place, gap, near))
         })
     }
