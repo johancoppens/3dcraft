@@ -50,7 +50,16 @@
 //! sign, found to rounding by halving ([`touch`]), when the curve reaches
 //! the surface there (within a thousandth of the tolerance: a meeting, not
 //! a curve passing within the tolerance of a surface it misses), and more
-//! than [`MOVE`] tolerances from the hit. Every other touch stands.
+//! than [`MOVE`] tolerances from the hit; and the section takes it only
+//! where it lies on the boundary of the face it touches (where the edge
+//! crosses that face's edge: a vertex of the result). A touch inside that
+//! face divides nothing, and where it lies along the edge changes nothing
+//! the result needs: there, as everywhere else, the hit stands. (Moved
+//! there too, the touch made the circle along which a plane is tangent to
+//! a torus a stretch of its own, which the torus's chart then refused,
+//! *"a face on a torus whose boundary crosses every circle around its axis
+//! and every circle around its tube"*: random designs 20791237 and
+//! 20812686, built on `main`.)
 
 use super::Reason;
 use super::outline::{Sheet, boxes_meet, locate, surface_distance};

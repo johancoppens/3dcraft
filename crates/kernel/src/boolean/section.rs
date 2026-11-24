@@ -588,13 +588,14 @@ const LYING_PIECES: usize = 1 << 12;
 fn edge_cuts(
     own: &Solid,
     face: usize,
-    surface: Sheet,
+    against: &Outline,
     near: &Bbox3,
     other: Option<(&Cover, CoverFace)>,
     named: &[(Operand, FaceId)],
     tolerance: &Tolerance,
     cuts: &mut Vec<Cut>,
 ) -> Result<(), Stop> {
+    let surface = against.sheet();
     let tol = tolerance.linear;
     let reach = EDGE_REACH * tol;
     let mut asked = crate::work::Tally::edges();
@@ -739,12 +740,15 @@ fn edge_cuts(
                         (before, after)
                     };
                     // A spline's touch is taken to where the curve it
-                    // stands for reaches the surface, and its hit at a
+                    // stands for reaches the surface, where that is on the
+                    // boundary of the other face (where the edge crosses
+                    // it: a vertex of the result), and its hit at a
                     // shallow angle to where the surfaces meet (`corner`).
                     let point = match end {
                         Some(end) => end,
                         None if approximated && hit.tangent => {
                             super::corner::touch(own, id, surface, (hit.point, at), between(), tol)
+                                .filter(|&p| matches!(against.side(p, tol), Ok(Side::On)))
                                 .unwrap_or(hit.point)
                         }
                         None if approximated => super::corner::refine(
@@ -1872,8 +1876,8 @@ fn section_with(
                     // (Some: the boxes meet within twice the tolerance.)
                     let near = overlap(box_a, box_b, 2.0 * tol).unwrap_or(within);
                     let (ca, cb) = (a.cover(fa, tol), b.cover(fb, tol));
-                    edge_cuts(a, fa, ob.sheet(), &near, cb, &named, tolerance, &mut found)?;
-                    edge_cuts(b, fb, oa.sheet(), &near, ca, &named, tolerance, &mut found)?;
+                    edge_cuts(a, fa, ob, &near, cb, &named, tolerance, &mut found)?;
+                    edge_cuts(b, fb, oa, &near, ca, &named, tolerance, &mut found)?;
                     sections
                         .edge_meets
                         .extend(found.iter().map(|cut| cut.point));
@@ -2671,26 +2675,8 @@ fn lying_edges(
         return Ok(());
     }
     let mut found = Vec::new();
-    edge_cuts(
-        a,
-        fa,
-        ob.sheet(),
-        &near,
-        None,
-        &named,
-        tolerance,
-        &mut found,
-    )?;
-    edge_cuts(
-        b,
-        fb,
-        oa.sheet(),
-        &near,
-        None,
-        &named,
-        tolerance,
-        &mut found,
-    )?;
+    edge_cuts(a, fa, ob, &near, None, &named, tolerance, &mut found)?;
+    edge_cuts(b, fb, oa, &near, None, &named, tolerance, &mut found)?;
     // A boundary edge lies on the other face's surface, and so do that
     // face's own edges: no edge meets the other's surface where the two
     // cross, so where the boundary edge enters or leaves the other face
