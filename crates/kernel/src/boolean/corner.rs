@@ -246,7 +246,8 @@ fn onto_both([a, b]: [Sheet; 2], start: Vec3, tol: f64) -> Option<(Vec3, Vec3)> 
         }
         let [n0, n1] = normals;
         let along = n0.cross(n1);
-        if !(along.length() > CROSS) {
+        let sine = along.length();
+        if sine.is_nan() || sine <= CROSS {
             return None;
         }
         if offsets.iter().all(|o| o.abs() <= 1e-6 * tol) {
