@@ -117,9 +117,19 @@ const AGREEING_FLOOR: usize = 11591;
 /// (`on_parts`), and one shell (`contact/cone-spline/005`) touching
 /// itself by `touches_itself_at`; the digest and the sum are unchanged.
 /// The outright agreement goes from 10717 to 10559, the zero-thick count
-/// from 865 to 1023; 10568 since the slivers of 2026-10-18.
-const MATCHED_FLOOR: usize = 10568;
-const ZERO_THICK_CEILING: usize = 1023;
+/// from 865 to 1023; 10568 since the slivers of 2026-10-18. Changed on
+/// 2026-11-24 (near approaches inside an edge or a face, `boolean::near`):
+/// 37 unions that were a `match` are refused as two shells that touch,
+/// each with a point on two parts of the body made without the refusal
+/// (`on_parts`): the 20 of `near` whose parts are one tolerance apart
+/// (`/003`, `/010`, `/017`: "within it, that of the exact contact is as
+/// good"), and 17 of `contact` whose parts touch where a cone or a torus
+/// rests on the other body without a place the section makes (a touch of
+/// two faces no point of the section shows); the digest and the sum are
+/// unchanged. The outright agreement goes from 10571 to 10534, the
+/// zero-thick count from 1023 to 1060.
+const MATCHED_FLOOR: usize = 10534;
+const ZERO_THICK_CEILING: usize = 1060;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and

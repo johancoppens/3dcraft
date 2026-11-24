@@ -5,8 +5,8 @@
 
 use super::section::{self, Solid};
 use super::{
-    BooleanOp, BooleanOptions, BooleanResult, Operand, Stop, Vertices, boolean_with, on_the_other,
-    outline,
+    BooleanOp, BooleanOptions, BooleanResult, Operand, Stop, Vertices, boolean_with, near,
+    on_the_other, outline,
 };
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
@@ -360,6 +360,23 @@ fn evidence(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<Evidence, Stop>
     // has this place among its places.
     for &p in &sections.edge_meets {
         meet_at(&mut found, p);
+    }
+    // Where none of those places is a contact: an edge or a face of one
+    // passing an edge or a face of the other within twice the tolerance,
+    // no surfaces meeting nearby (`near`, 2026-11-24). They touch: no
+    // further apart than the tolerance can tell, at the point between the
+    // two nearest points found.
+    if found.kind.is_none() {
+        for approach in near::between(&sa, &sb, &sections, tol) {
+            found.raise(ContactKind::Point);
+            found.point(approach.p.lerp(approach.q, 0.5), tol);
+            for (operand, face) in approach.faces {
+                match operand {
+                    Operand::A => found.faces_a.insert(face),
+                    Operand::B => found.faces_b.insert(face),
+                };
+            }
+        }
     }
     Ok(found)
 }

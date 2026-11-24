@@ -17,6 +17,21 @@ static EDGE_CANDIDATES: AtomicU64 = AtomicU64::new(0);
 static PATCH_TREES: AtomicU64 = AtomicU64::new(0);
 static BLEND_SECTIONS: AtomicU64 = AtomicU64::new(0);
 static HELPER_PANICS: AtomicU64 = AtomicU64::new(0);
+static NEAR_LEFT: AtomicU64 = AtomicU64::new(0);
+
+/// Entities a boolean's look for near approaches (`boolean/near.rs`) left
+/// with pairs not measured, at its caps on the pairs it measures and looks
+/// at in one boolean: what was left is not refused, as before the look
+/// existed, and is counted here, so that it is not silent. Zero in a
+/// process whose every look finished. Not part of [`KernelWork`] (the
+/// benchmark's counts).
+pub fn near_left() -> u64 {
+    NEAR_LEFT.load(Ordering::Relaxed)
+}
+
+pub(crate) fn near_left_over(count: usize) {
+    NEAR_LEFT.fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
+}
 
 /// Helper threads of the kernel that panicked (a boolean section's
 /// helpers, `boolean/section.rs` › `Ahead`): the work goes on without

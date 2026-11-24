@@ -285,6 +285,17 @@ pub(super) struct Sections {
     /// two points closer together than the tolerance can tell apart,
     /// naming the pair, not as a lost imprint (`super::near_places`).
     pub near: Vec<(usize, usize)>,
+    /// Every pair of faces (of A, of B) whose surfaces were met, in the
+    /// order met: every pair the section did not prove further apart than
+    /// twice the tolerance (`to_meet`). Where else the operands can come
+    /// that near is read from it (`near`).
+    pub met: Vec<(usize, usize)>,
+    /// The pairs of faces (of A, of B) the section did not meet whose
+    /// hulls prove them apart by twice the tolerance but not by that and
+    /// the merging distance more ([`beside`]): an entity of the result may
+    /// lie that far off the face it is a piece of, so `near` reads these
+    /// too.
+    pub beside: Vec<(usize, usize)>,
 }
 
 /// The outline of face `index` of `body`, as [`prepare`] makes it.
@@ -1761,8 +1772,12 @@ fn section_with(
                 ob,
             }) = to_meet((a, fa, box_a), (b, fb), covers, Outlines::Make, tol)?
             else {
+                if beside((a, fa, box_a), (b, fb), tol) {
+                    sections.beside.push((fa, fb));
+                }
                 continue;
             };
+            sections.met.push((fa, fb));
             let named = [a.name(fa), b.name(fb)];
             crate::work::face_pairs(1);
             #[cfg(test)]
@@ -1946,6 +1961,29 @@ struct Pair<'s> {
     room: f64,
     oa: &'s Outline,
     ob: &'s Outline,
+}
+
+/// Whether face `fa` of A and face `fb` of B, which [`to_meet`] did not
+/// meet, were proven apart by their hulls at twice the tolerance but are
+/// not at that and the merging distance (half the tolerance) more, where
+/// both outlines are made (`Sections::beside`). Pairs the covers proved
+/// apart (by sixteen tolerances) and pairs whose boxes are further apart
+/// than twice the tolerance are not.
+fn beside((a, fa, box_a): (&Solid, usize, &Bbox3), (b, fb): (&Solid, usize), tol: f64) -> bool {
+    let (Some(box_b), Some(hull_a), Some(hull_b)) =
+        (b.boxes.get(fb), a.hulls.get(fa), b.hulls.get(fb))
+    else {
+        return false;
+    };
+    let (Some(oa), Some(ob)) = (a.outline_made(fa), b.outline_made(fb)) else {
+        return false;
+    };
+    if !boxes_meet(box_a, box_b, 2.0 * tol) {
+        return false;
+    }
+    let apart =
+        |margin: f64| clear_of(oa.sheet(), hull_b, margin) || clear_of(ob.sheet(), hull_a, margin);
+    apart(2.0 * tol) && !apart(2.5 * tol)
 }
 
 /// The outlines [`to_meet`] takes: made when asked (the section), or only

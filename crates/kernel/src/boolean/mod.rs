@@ -61,6 +61,7 @@ mod hits;
 mod knit;
 mod loose;
 mod merge;
+mod near;
 mod outline;
 mod poly;
 pub mod probe;
@@ -900,8 +901,56 @@ fn run(
         if result.body.kind == BodyKind::Sheet {
             touching_itself(&result, tol)?;
         }
+        // Where the places above see nothing: an edge or a face passing an
+        // edge or a face of the other operand (or one the boolean made)
+        // within twice the tolerance, no surfaces meeting nearby.
+        let approaches = near::in_result(&result, &a, &b, &sections, tol);
+        near_approaches(&result, tolerance, &approaches)?;
     }
     Ok(result)
+}
+
+/// What the boolean does with the approaches [`near::in_result`] found in
+/// `result` (2026-11-24): two parts that come within twice the tolerance
+/// of each other touch, so their nearest points are places for
+/// [`zero_thickness`] (refused as zero thickness, the developer's rule of
+/// 2026-10-15; where that finds nothing at a place, refused here in its
+/// words, the two points being measured that near); two walls of one
+/// shell joined at the place between the two points by the readings of
+/// `within_a_shell` (a wedge, a wall that thins to a knife edge, a corner
+/// sharper than the tolerance resolves: accepted, 2026-10-18;
+/// `near::Approach::joined`) are left as they were; other walls of one
+/// shell between half and twice the tolerance apart (as near as the look
+/// found them) are refused as two points closer together than the
+/// tolerance can tell apart, naming a face of each (2026-10-22). Two walls
+/// of one shell within half the tolerance
+/// are left as they were (whether the shell touches itself there is owed:
+/// docs/design/booleans.md).
+fn near_approaches(
+    result: &BooleanResult,
+    tolerance: &Tolerance,
+    approaches: &[near::Approach],
+) -> Result<(), Stop> {
+    let tol = tolerance.linear;
+    let parts: Vec<&near::Approach> = approaches.iter().filter(|a| a.parts).collect();
+    if !parts.is_empty() {
+        let places: Vec<Vec3> = parts.iter().map(|a| a.p.lerp(a.q, 0.5)).collect();
+        zero_thickness(result, tolerance, &distinct(places))?;
+        if let Some(first) = parts.first() {
+            return Err(Stop::Error(KernelError::ZeroThickness {
+                operation: OPERATION,
+                at: first.p.lerp(first.q, 0.5),
+                faces: first.faces,
+            }));
+        }
+    }
+    let walls = approaches
+        .iter()
+        .find(|a| !a.parts && !a.joined && a.distance > 0.5 * tol);
+    match walls {
+        Some(found) => Err(Stop::of(NEAR).at(&found.faces)),
+        None => Ok(()),
+    }
 }
 
 /// `stop`, except a lost imprint at a face of a pair whose curve has no cut
