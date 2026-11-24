@@ -150,10 +150,10 @@ fn turning_volume(heights: &[f64], solid: &dyn About) -> f64 {
         let at = |k: u32| TAU * f64::from(k) / f64::from(PLACES);
         let values: Vec<Vec<f64>> = (0..=PLACES).map(|k| solid.kinks(at(k), s)).collect();
         let mut stops = vec![0.0, TAU];
-        for j in 0..values[0].len() {
-            for k in 0..PLACES {
-                let positive = values[k as usize][j] > 0.0;
-                if (values[k as usize + 1][j] > 0.0) == positive {
+        for (k, pair) in (0..PLACES).zip(values.windows(2)) {
+            for (j, (&before, &after)) in pair[0].iter().zip(&pair[1]).enumerate() {
+                let positive = before > 0.0;
+                if (after > 0.0) == positive {
                     continue;
                 }
                 let (mut a, mut b) = (at(k), at(k + 1));
