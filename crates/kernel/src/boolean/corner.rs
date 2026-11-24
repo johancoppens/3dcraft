@@ -50,22 +50,31 @@
 //! sign, found to rounding by halving ([`touch`]), when the curve reaches
 //! the surface there (within a thousandth of the tolerance: a meeting, not
 //! a curve passing within the tolerance of a surface it misses), and more
-//! than [`MOVE`] tolerances from the hit; and the section takes it only
-//! where it lies on the boundary of the face it touches (where the edge
-//! crosses that face's edge: a vertex of the result). A touch inside that
-//! face divides nothing, and where it lies along the edge changes nothing
-//! the result needs: there, as everywhere else, the hit stands. (Moved
+//! than [`MOVE`] tolerances from the hit; and the section takes it where it
+//! lies on the boundary of the face it touches (where the edge crosses
+//! that face's edge: a vertex of the result), and inside that face only
+//! where the result keeps both that face and the edge's face tangent to it
+//! ([`kept_both`]). Inside the face, a touch whose curve the result keeps
+//! one face of, or neither, divides nothing, and where it lies along the
+//! edge changes nothing the result needs: there the hit stands. (Moved
 //! there too, the touch made the circle along which a plane is tangent to
 //! a torus a stretch of its own, which the torus's chart then refused,
 //! *"a face on a torus whose boundary crosses every circle around its axis
 //! and every circle around its tube"*: random designs 20791237 and
-//! 20812686, built on `main`.)
+//! 20812686, built on `main`, where the torus lies wholly on the side
+//! taken away.) Where the result keeps both, the curve along which they
+//! touch is an edge of the result, the place ends it, and with the hit
+//! standing the curve went uncut and the faces undivided, touching inside
+//! both: random design 20781906, three parts that touch along two arcs of
+//! a circle built as one shell (docs/design/booleans.md › *A pinch along a
+//! curve*).
 
+use super::Operand;
 use super::Reason;
-use super::outline::{Sheet, boxes_meet, locate, surface_distance};
-use super::section::Solid;
+use super::outline::{Outline, Sheet, boxes_meet, locate, onto, outward_normal, surface_distance};
+use super::section::{Kept, Solid};
 use craft3d_geom::Curve3;
-use craft3d_math::Vec3;
+use craft3d_math::{Frame, Vec3};
 use craft3d_topo::EdgeId;
 
 /// How far a hit must be from where the three surfaces meet, in
@@ -312,7 +321,9 @@ const REACHES: f64 = 1e-3;
 /// one may be taken. Whatever is found is taken only on the conditions
 /// above (it reaches the surface, lies on the edge between its
 /// neighbouring hits, on its faces' surfaces, away from the hit), and the
-/// section takes it only on the touched face's border.
+/// section takes it on the touched face's border, and inside that face
+/// where the result keeps it and the edge's face tangent to it
+/// ([`kept_both`]).
 pub(super) fn touch(
     own: &Solid,
     id: EdgeId,
@@ -407,6 +418,144 @@ pub(super) fn touch(
         return None;
     }
     Some(point)
+}
+
+/// How near parallel (the sine of the angle between them) the normals of
+/// an edge's face and of the surface the edge touches must be at the touch
+/// for the face to be read as tangent to that surface there
+/// ([`kept_both`]). The place [`touch`] finds is where the curve the edge
+/// stands for reaches the surface, so a face tangent along a curve the
+/// edge crosses is tangent there to rounding; a face that crosses the
+/// surface is turned away by the walks of [`side_of`] as well.
+const TANGENT: f64 = 1e-3;
+
+/// The most steps of one walk of [`side_of`].
+const WALK: usize = 160;
+
+/// Whether, at `p`, where spline edge `id` of `own` only touches the
+/// surface of `against` (a face of the other operand, `p` inside it), one
+/// of the edge's two faces is tangent to that surface and keeps to one
+/// side of it about `p` ([`side_of`]), and the boolean keeps both that face
+/// and `against` there (`kept`, by which side of the other operand each
+/// lies on). The two surfaces then touch along a curve that the edge
+/// crosses at `p`, and the result has both faces on both sides of that
+/// curve: its material between them on both sides (two walls that thin to
+/// nothing at the curve from either side), or beyond them on both (two
+/// parts that rest on each other along it). The curve is an edge of the
+/// result where four faces meet, and `p` is where it ends on the edge: the
+/// place has to be a vertex, or the curve is not cut there, goes uncut as
+/// a touch that runs over a face's boundary, and the faces stay undivided,
+/// touching along it inside both, where nothing looks for zero thickness
+/// (random design 20781906: three parts that touch along two arcs of a
+/// circle, built as one shell). Where the result keeps one of the two
+/// faces or neither, the curve divides nothing.
+pub(super) fn kept_both(
+    own: &Solid,
+    id: EdgeId,
+    against: &Outline,
+    p: Vec3,
+    kept: Kept,
+    tol: f64,
+) -> bool {
+    let Some(faces) = faces_of(own, id, tol) else {
+        return false;
+    };
+    let other = against.sheet();
+    let Some(n_other) = outward_normal(other, against.reversed, p).and_then(Vec3::normalized)
+    else {
+        return false;
+    };
+    let other_operand = match own.operand {
+        Operand::A => Operand::B,
+        Operand::B => Operand::A,
+    };
+    faces.into_iter().any(|face| {
+        let Ok(outline) = own.outline(face) else {
+            return false;
+        };
+        let sheet = outline.sheet();
+        let Some(n_own) = outward_normal(sheet, outline.reversed, p).and_then(Vec3::normalized)
+        else {
+            return false;
+        };
+        let sine = n_own.cross(n_other).length();
+        if sine.is_nan() || sine > TANGENT {
+            return false;
+        }
+        // The face beyond `against` (on its outward side) is outside the
+        // other operand. Then `against` is on the face's inner side,
+        // inside `own`, where their outward normals agree, and outside it
+        // where they are opposed; and the other way round.
+        let Some(beyond) = side_of(sheet, (other, against.reversed), p, n_other, tol) else {
+            return false;
+        };
+        let against_outside = beyond != (n_own.dot(n_other) > 0.0);
+        kept.outside(own.operand) == beyond && kept.outside(other_operand) == against_outside
+    })
+}
+
+/// Which side of `other` (by its outward normal, `reversed` as its face
+/// has it) `surface` keeps to about `p`, where the two are tangent with
+/// the normal `normal`: walked away from `p` in eight directions square to
+/// `normal`, each until `surface` is twice the tolerance from `other`
+/// (steps of a quarter of the way walked, two tolerances at least, up to
+/// [`CAP`] tolerances), `Some(true)` where every walk that got that far
+/// found it on the outward side, `Some(false)` where every one found it on
+/// the inner side; `None` where none got that far, or where they disagree
+/// (the surfaces cross there).
+fn side_of(
+    surface: Sheet,
+    (other, reversed): (Sheet, bool),
+    p: Vec3,
+    normal: Vec3,
+    tol: f64,
+) -> Option<bool> {
+    let frame = Frame::from_z(p, normal)?;
+    let (x, y) = (frame.x(), frame.y());
+    let diagonal = std::f64::consts::FRAC_1_SQRT_2;
+    let directions = [
+        x,
+        (x + y) * diagonal,
+        y,
+        (y - x) * diagonal,
+        -x,
+        -(x + y) * diagonal,
+        -y,
+        (x - y) * diagonal,
+    ];
+    let mut found = None;
+    for direction in directions {
+        let mut s = 0.0;
+        for _ in 0..WALK {
+            s += (2.0 * tol).max(0.25 * s);
+            if s > CAP * tol {
+                break;
+            }
+            let Some(q) = onto(surface, p + direction * s) else {
+                break;
+            };
+            let Some(foot) = onto(other, q) else {
+                break;
+            };
+            let Some(outward) = outward_normal(other, reversed, foot).and_then(Vec3::normalized)
+            else {
+                break;
+            };
+            let d = (q - foot).dot(outward);
+            if !d.is_finite() {
+                break;
+            }
+            if d.abs() >= 2.0 * tol {
+                let side = d > 0.0;
+                if found.is_some_and(|known| known != side) {
+                    return None;
+                }
+                found = Some(side);
+                break;
+            }
+        }
+    }
+    found
 }
 
 /// `off` over the sine of the angle at which the curve, at `t`, meets the

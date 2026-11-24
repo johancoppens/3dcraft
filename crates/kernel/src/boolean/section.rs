@@ -298,6 +298,49 @@ pub(super) struct Sections {
     pub beside: Vec<(usize, usize)>,
 }
 
+/// Which faces of each operand a boolean of two solids keeps, by where
+/// they lie (the table of `classify::solids`): a face of A where it is
+/// outside B (union, difference) or inside it (intersection), a face of B
+/// where it is outside A (union) or inside it (difference, intersection).
+/// The section reads it in one place only, a spline edge's touch inside
+/// the face it touches ([`super::corner::kept_both`]); without it (a sheet
+/// among the operands, contact's evidence) such a touch stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Kept {
+    /// A's faces are kept where they are outside B.
+    pub a_outside: bool,
+    /// B's faces are kept where they are outside A.
+    pub b_outside: bool,
+}
+
+impl Kept {
+    pub fn of(op: super::BooleanOp) -> Kept {
+        use super::BooleanOp::{Intersect, Subtract, Union};
+        match op {
+            Union => Kept {
+                a_outside: true,
+                b_outside: true,
+            },
+            Subtract => Kept {
+                a_outside: true,
+                b_outside: false,
+            },
+            Intersect => Kept {
+                a_outside: false,
+                b_outside: false,
+            },
+        }
+    }
+
+    /// Whether `operand`'s faces are kept where they are outside the other.
+    pub fn outside(self, operand: Operand) -> bool {
+        match operand {
+            Operand::A => self.a_outside,
+            Operand::B => self.b_outside,
+        }
+    }
+}
+
 /// The outline of face `index` of `body`, as [`prepare`] makes it.
 pub(super) fn face_outline(body: &Body, index: usize, tol: f64) -> Result<Outline, Stop> {
     let face = body.faces.get(index).ok_or(Stop::of(LOST))?;
@@ -583,7 +626,9 @@ const LYING_PIECES: usize = 1 << 12;
 
 /// Adds to `cuts` where the edges of `face` of `own` meet `surface`, of
 /// the edges whose boxes come within [`EDGE_REACH`] tolerances of `near`,
-/// the overlap of the two faces' boxes.
+/// the overlap of the two faces' boxes. `kept` is which faces the boolean
+/// keeps, where it is a boolean of two solids: it decides whether a spline
+/// edge's touch inside the other face is moved (below).
 ///
 /// A cut further away bounds only stretches that [`clip`] leaves out
 /// without looking at them: a stretch is kept only when its middle and its
@@ -604,6 +649,7 @@ fn edge_cuts(
     other: Option<(&Cover, CoverFace)>,
     named: &[(Operand, FaceId)],
     tolerance: &Tolerance,
+    kept: Option<Kept>,
     cuts: &mut Vec<Cut>,
 ) -> Result<(), Stop> {
     let surface = against.sheet();
@@ -753,13 +799,23 @@ fn edge_cuts(
                     // A spline's touch is taken to where the curve it
                     // stands for reaches the surface, where that is on the
                     // boundary of the other face (where the edge crosses
-                    // it: a vertex of the result), and its hit at a
+                    // it: a vertex of the result), or inside it where the
+                    // edge crosses a curve along which one of its faces
+                    // touches the other face and the result keeps both
+                    // (`corner::kept_both`: that curve is an edge of the
+                    // result, and the place ends it); and its hit at a
                     // shallow angle to where the surfaces meet (`corner`).
                     let point = match end {
                         Some(end) => end,
                         None if approximated && hit.tangent => {
                             super::corner::touch(own, id, surface, (hit.point, at), between(), tol)
-                                .filter(|&p| matches!(against.side(p, tol), Ok(Side::On)))
+                                .filter(|&p| match against.side(p, tol) {
+                                    Ok(Side::On) => true,
+                                    Ok(Side::In) => kept.is_some_and(|kept| {
+                                        super::corner::kept_both(own, id, against, p, kept, tol)
+                                    }),
+                                    _ => false,
+                                })
                                 .unwrap_or(hit.point)
                         }
                         None if approximated => super::corner::refine(
@@ -1802,6 +1858,7 @@ pub(super) fn section(
     b: &Solid,
     vertices: &mut Vertices,
     tolerance: &Tolerance,
+    kept: Option<Kept>,
 ) -> Result<Sections, Stop> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(leases) = ahead_lease(a, b) {
@@ -1827,7 +1884,7 @@ pub(super) fn section(
             let made = {
                 // The helpers stop when the section does, however it ends.
                 let _ending = Ending(&ahead.done);
-                section_with(a, b, vertices, tolerance, Some(&ahead))
+                section_with(a, b, vertices, tolerance, kept, Some(&ahead))
             };
             // Joined here, a helper that panicked is a pair the section
             // met itself, nothing more: its panic does not reach the
@@ -1851,7 +1908,7 @@ pub(super) fn section(
         let _ = warmed;
         return made;
     }
-    section_with(a, b, vertices, tolerance, None)
+    section_with(a, b, vertices, tolerance, kept, None)
 }
 
 /// [`section`], with the pairs ahead of it met on helper threads when
@@ -1861,6 +1918,7 @@ fn section_with(
     b: &Solid,
     vertices: &mut Vertices,
     tolerance: &Tolerance,
+    kept: Option<Kept>,
     ahead: Option<&Ahead>,
 ) -> Result<Sections, Stop> {
     let tol = tolerance.linear;
@@ -2017,8 +2075,8 @@ fn section_with(
                     // (Some: the boxes meet within twice the tolerance.)
                     let near = overlap(box_a, box_b, 2.0 * tol).unwrap_or(within);
                     let (ca, cb) = (a.cover(fa, tol), b.cover(fb, tol));
-                    edge_cuts(a, fa, ob, &near, cb, &named, tolerance, &mut found)?;
-                    edge_cuts(b, fb, oa, &near, ca, &named, tolerance, &mut found)?;
+                    edge_cuts(a, fa, ob, &near, cb, &named, tolerance, kept, &mut found)?;
+                    edge_cuts(b, fb, oa, &near, ca, &named, tolerance, kept, &mut found)?;
                     sections
                         .edge_meets
                         .extend(found.iter().map(|cut| cut.point));
@@ -2048,6 +2106,7 @@ fn section_with(
             Lying::Near,
             vertices,
             tolerance,
+            kept,
             &mut sections,
         )?;
     }
@@ -2065,6 +2124,7 @@ fn section_with(
                     Lying::Boundary(&boundary_a, &boundary_b),
                     vertices,
                     tolerance,
+                    kept,
                     &mut sections,
                 )?;
             }
@@ -2792,6 +2852,7 @@ fn lying_edges(
     which: Lying,
     vertices: &mut Vertices,
     tolerance: &Tolerance,
+    kept: Option<Kept>,
     sections: &mut Sections,
 ) -> Result<(), Stop> {
     let tol = tolerance.linear;
@@ -2839,8 +2900,8 @@ fn lying_edges(
         return Ok(());
     }
     let mut found = Vec::new();
-    edge_cuts(a, fa, ob, &near, None, &named, tolerance, &mut found)?;
-    edge_cuts(b, fb, oa, &near, None, &named, tolerance, &mut found)?;
+    edge_cuts(a, fa, ob, &near, None, &named, tolerance, kept, &mut found)?;
+    edge_cuts(b, fb, oa, &near, None, &named, tolerance, kept, &mut found)?;
     // A boundary edge lies on the other face's surface, and so do that
     // face's own edges: no edge meets the other's surface where the two
     // cross, so where the boundary edge enters or leaves the other face
@@ -3155,7 +3216,7 @@ pub(super) mod tests {
                     let mut vertices = Vertices::new(0.5e-6 * k, 2e-6 * k);
                     let a = prepare(&outer, Operand::A, &mut vertices, &tolerance, true).unwrap();
                     let b = prepare(&inner, Operand::B, &mut vertices, &tolerance, true).unwrap();
-                    let made = section(&a, &b, &mut vertices, &tolerance)
+                    let made = section(&a, &b, &mut vertices, &tolerance, None)
                         .map(|s| (s.touches.len(), s.edge_meets.len()))
                         .map_err(|_| ());
                     TEST_HELPERS.with(|c| c.set(None));

@@ -286,7 +286,9 @@ fn evidence(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<Evidence, Stop>
     // Both passed the check in the intersection just made.
     let sa = section::prepare(a, Operand::A, &mut vertices, tolerance, true)?;
     let sb = section::prepare(b, Operand::B, &mut vertices, tolerance, true)?;
-    let sections = section::section(&sa, &sb, &mut vertices, tolerance)?;
+    // No operation, so nothing kept: a spline edge's touch inside a face
+    // stands where its hit is (`corner::kept_both`).
+    let sections = section::section(&sa, &sb, &mut vertices, tolerance, None)?;
     let mut found = Evidence::default();
     let mut points: Vec<Vec3> = Vec::new();
     for stretch in &sections.stretches {
