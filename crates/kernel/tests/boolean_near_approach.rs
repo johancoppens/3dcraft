@@ -633,15 +633,18 @@ fn two_balls_a_little_apart_are_not_united() {
 }
 
 /// Seed 20784442, reduced: a ball sunk into the top of a block, the circle
-/// in which it meets the top `gap` tolerances inside the top's edge, the
-/// ball bulging out past the block's side above the top (as the seed's
+/// in which it meets the top `gap` tolerances inside an edge of the top,
+/// the ball bulging out past the block's side above the top (as the seed's
 /// sphere does past the side of its turned block): one shell, the circle
-/// that near the edge and the side with no surfaces crossing there, which
-/// `main` built. Refused in the band (where the boolean makes a vertex of
-/// the circle next to the edge, `zero_thickness` refuses it at that place;
-/// elsewhere, the look, as two points closer together than the tolerance
-/// can tell apart, naming a face of each: the run prints which); one shell
-/// at 2.5. At three scales, turned.
+/// that near the edge and the side with no surfaces crossing there. Where
+/// the circle comes nearest the edge decides whether a place of the
+/// boolean is there: by the right edge (`+x`) the middle of the circle the
+/// section makes is, and `zero_thickness` refuses the union at it, the
+/// shell touching itself, as `main` did; by the back and the front edges no
+/// place is (the seed's case, which `main` built), and the look refuses it
+/// as two points closer together than the tolerance can tell apart (the run
+/// prints which). Refused in the band either way; one shell at 2.5. At
+/// three scales, turned.
 #[test]
 fn a_ball_whose_foot_runs_just_inside_an_edge_is_refused() {
     let mut faults = Vec::new();
@@ -649,30 +652,36 @@ fn a_ball_whose_foot_runs_just_inside_an_edge_is_refused() {
         let tol = tolerance(k);
         for turn in [false, true] {
             let frame = if turn { turned(k) } else { Frame::WORLD };
-            for gap in [1.0806, 1.5, 2.5] {
-                let a = primitives::block(&frame, 10.0 * k, 10.0 * k, 10.0 * k).unwrap();
-                // A ball of radius 3 whose centre is 1 over the top meets it
-                // in a circle of radius √8.
-                let foot = 8.0_f64.sqrt() * k;
-                let centre = frame.point(10.0 * k - gap * tol.linear - foot, 5.0 * k, 11.0 * k);
-                // Its frame turned so that nothing of the ball's own parts
-                // (the vertex of the circle the boolean makes) falls next
-                // to the edge, as in the seed.
-                let turned_ball = Frame::new(centre, frame.y(), -frame.x()).unwrap();
-                let b = primitives::sphere(&turned_ball, 3.0 * k).unwrap();
-                let what =
-                    format!("a ball's foot {gap} tolerances inside the edge at {k}, turned {turn}");
-                println!("near_approach: {what}: {}", said(&a, &b, &tol));
-                match boolean(&a, &b, BooleanOp::Union, &tol) {
-                    Err(e) if gap < 2.0 && refused(&e) => {}
-                    Ok(r)
-                        if gap >= 2.0
-                            && r.body.shells.len() == 1
-                            && check(&r.body, &tol).is_empty() => {}
-                    other => faults.push(format!(
-                        "{what}: the union: {:?}",
-                        other.map(|r| r.body.shells.len())
-                    )),
+            // The edges the foot comes near: right, back, front (the
+            // direction from the top's middle).
+            for (side, out) in [
+                ("right", [1.0, 0.0]),
+                ("back", [0.0, 1.0]),
+                ("front", [0.0, -1.0]),
+            ] {
+                for gap in [1.0806, 1.5, 2.5] {
+                    let a = primitives::block(&frame, 10.0 * k, 10.0 * k, 10.0 * k).unwrap();
+                    // A ball of radius 3 whose centre is 1 over the top meets
+                    // it in a circle of radius √8.
+                    let reach = 5.0 * k - gap * tol.linear - 8.0_f64.sqrt() * k;
+                    let centre =
+                        frame.point(5.0 * k + out[0] * reach, 5.0 * k + out[1] * reach, 11.0 * k);
+                    let b = primitives::sphere(&frame.at(centre).unwrap(), 3.0 * k).unwrap();
+                    let what = format!(
+                        "a ball's foot {gap} tolerances inside the {side} edge at {k}, turned {turn}"
+                    );
+                    println!("near_approach: {what}: {}", said(&a, &b, &tol));
+                    match boolean(&a, &b, BooleanOp::Union, &tol) {
+                        Err(e) if gap < 2.0 && refused(&e) => {}
+                        Ok(r)
+                            if gap >= 2.0
+                                && r.body.shells.len() == 1
+                                && check(&r.body, &tol).is_empty() => {}
+                        other => faults.push(format!(
+                            "{what}: the union: {:?}",
+                            other.map(|r| r.body.shells.len())
+                        )),
+                    }
                 }
             }
         }
