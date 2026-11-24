@@ -472,9 +472,12 @@ fn seeds_103578_and_110541_are_too_large_with_what_their_faces_leave() {
 /// (2.45, 2.5 and 3; at every scale and turned at 2.5) the fillet is said
 /// too large, with what fits said no lower than a radius that builds
 /// (2.39) and no higher than the cap. (It says 2.39436 where the cap leaves
-/// 2.39655: between them the boolean is refused at the edge of tolerance;
-/// docs/design/booleans.md › *A tangent edge across a spline border* ›
-/// *Owed*.)
+/// 2.39655: between them the tool's cut is the boolean's invalid body, from
+/// 2.394360 to 2.3963, and refused at the edge of tolerance from 2.3964;
+/// 2.394358 builds. So 2.39436 is true of what builds, not of what the faces
+/// leave, which `owed_seed_124545_is_never_said_too_large_below_what_fits`
+/// holds to; docs/design/booleans.md › *A tangent edge across a spline
+/// border* › *Owed*.)
 #[test]
 fn seed_124545_builds_what_fits_and_is_too_large_past_its_cap() {
     let cap = 7.5 - ((1.25_f64 * 1.25 + 7.5 * 7.5).sqrt() - 2.5);
