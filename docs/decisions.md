@@ -1,12 +1,20 @@
 # Decisions
 
-> **Last updated:** 2026-11-20
+> **Last updated:** 2026-11-24
 
 This is the record of the decisions taken while 3DCraft was built, written at the time and kept as it was. "The developer" is the project's maintainer; "an agent" and "the coordinator" are the AI agents that built it (the coordinator plans the others' work and merges it). A decision made by an agent "for the developer to overturn" (some of them overnight, while nobody could be asked) stood unless it was overturned, and a later entry says so where it was; dates are when a decision was taken, ids of runs and commits are the workshop's evidence of the day. From outside the project, an open decision is raised in an issue.
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-11-24: Near approaches: slivers beside a vertex stay accepted, an approach outside the result is not refused; a fillet says "too large" only where it is shown (decided by the developer)
+
+The look for near approaches (2026-11-24, [`design/booleans.md`](design/booleans.md) › *Near approaches inside an edge or a face*) applies the rules of 2026-10-15 (parts that touch have zero thickness) and 2026-10-22 (points or faces between half and twice the tolerance apart are refused) to approaches inside an edge or a face, where no surfaces meet. Its investigation and reviews left the developer three questions; his answers ("rest zoals je aanraadt", to the coordinator's recommendations):
+
+- **A sliver or a wedge of one shell in the band, beside a vertex or along an edge, stays accepted** where the wedge readings of 2026-10-18 join its walls at the place. Refusing them would turn bodies people build every day (a cylinder at a plate's edge, a corner cut a few tolerances from a vertex) into refusals; 33 such bodies in the tests and the corpus are pinned as built.
+- **An approach that is not in the result is not refused**: A less B where B passes A outside it is A, and nothing thin is made.
+- **A fillet's "too large … below X"** is said only where it is shown (an event with a build just before it, and the sizes between failing, as for an invalid body since 2026-11-23); from the boolean's other refusals it was said below radii that build (found by the review of 2026-11-23). Mending it changes the words of some refusals, not a body. In the same answer: `measure.floating` far from the origin keeps its strict later searches (its answers as they are).
 
 ### 2026-11-20: The cut by planes is `feature.planeCut` (decided by the developer)
 
