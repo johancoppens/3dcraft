@@ -41,6 +41,7 @@
 mod common;
 
 use common::{arc, circle, line};
+use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::BooleanOp::{Intersect, Subtract};
 use craft3d_kernel::boolean::{BooleanOp, VerifyOptions, boolean, verify};
 use craft3d_kernel::fillet::{FilletEdge, fillet};
@@ -857,7 +858,8 @@ fn seed_124545_the_rim_of_a_cylinder_cut_by_a_torus() {
 /// *"an imprinted curve that does not fit the edges it should coincide
 /// with"*. Held to the boolean's full check (its volumes and seeded
 /// points) and to the identity of sets: the union and the intersection of
-/// the two add up to both, the cup's volume in closed form (π r³ (1 −
+/// the two add up to both (the cup lies in the hole: they only touch, and
+/// the intersection is empty), the cup's volume in closed form (π r³ (1 −
 /// 2/3)).
 #[test]
 fn seed_128676_a_cup_in_a_hole_through_a_ring() {
@@ -923,13 +925,14 @@ fn seed_128676_a_cup_in_a_hole_through_a_ring() {
         if !problems.is_empty() {
             return Some(format!("{label}: built, but {problems:?}"));
         }
-        let common = op(&holed, &cup, Intersect, k);
         let volume = |b: &Body| mass_properties(b).unwrap().volume;
+        let common = match boolean(&holed, &cup, Intersect, &tol) {
+            Ok(result) => volume(&result.body),
+            Err(KernelError::EmptyResult { .. }) => 0.0,
+            Err(e) => return Some(format!("{label}: the intersection refused: {e}")),
+        };
         let cup_volume = PI * 125.0 * k * k * k / 3.0;
-        let (sum, parts) = (
-            volume(&joined) + volume(&common),
-            volume(&holed) + cup_volume,
-        );
+        let (sum, parts) = (volume(&joined) + common, volume(&holed) + cup_volume);
         let allowed = 1e-6 * k * mass_properties(&joined).unwrap().area;
         println!("{label}: union and intersection {sum}, the two {parts}");
         ((sum - parts).abs() > allowed).then(|| {
