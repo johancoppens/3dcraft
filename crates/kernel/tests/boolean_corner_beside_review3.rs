@@ -30,7 +30,10 @@
 //! and the rib's face `z = 0`; without the notch, the interference is clear
 //! and every boolean is built (`main`'s blind spot, as in the second
 //! review). The first test fails where the union is built: a wrong body
-//! that `main` does not give for this pair.
+//! that `main` does not give for this pair. With the look for near
+//! approaches (`boolean/near.rs`, merged with this repair) the union is
+//! refused as zero thickness, so the test passes (Check 45339516563 in the
+//! workshop, at 1 and 1e3, as found and turned, both orders).
 //!
 //! The second test takes a face of the first body that is not flat to a
 //! told-apart answer (the second review's rod, its round side 37
