@@ -636,14 +636,14 @@ fn two_balls_a_little_apart_are_not_united() {
 /// in which it meets the top `gap` tolerances inside an edge of the top,
 /// the ball bulging out past the block's side above the top (as the seed's
 /// sphere does past the side of its turned block): one shell, the circle
-/// that near the edge and the side with no surfaces crossing there. Where
-/// the circle comes nearest the edge decides whether a place of the
-/// boolean is there: by the right edge (`+x`) the middle of the circle the
-/// section makes is, and `zero_thickness` refuses the union at it, the
-/// shell touching itself, as `main` did; by the back and the front edges no
-/// place is (the seed's case, which `main` built), and the look refuses it
-/// as two points closer together than the tolerance can tell apart (the run
-/// prints which). Refused in the band either way; one shell at 2.5. At
+/// that near the edge and the side with no surfaces crossing there, which
+/// `main` built in the seed. Where the circle comes nearest the edge
+/// decides whether a place of the boolean is there: by the right edge
+/// (`+x`) the middle of the circle the section makes is, and
+/// `zero_thickness` refuses the union at it, the shell touching itself, as
+/// `main` does (Check 45327254375); elsewhere the look does, as two points
+/// closer together than the tolerance can tell apart (the run prints which
+/// refused each). Refused in the band either way; one shell at 2.5. At
 /// three scales, turned.
 #[test]
 fn a_ball_whose_foot_runs_just_inside_an_edge_is_refused() {
