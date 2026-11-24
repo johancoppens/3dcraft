@@ -12,23 +12,23 @@
 //! round face must end there. Both places were taken from the spline's own
 //! hit on the round face: a touch, placed where the spline comes nearest
 //! the round face, which is anywhere in the valley over which it stays
-//! within its fit of it, seven tolerances along the border from the
-//! crossing in the seed. The circle went uncut and the wall undivided, so
-//! the boolean's own check refused what it built (*"edge … is used 1
-//! times"*), or the spline was split where nothing ends (*"an imprinted
-//! curve that does not fit the edges it should coincide with"*). An
-//! ellipse lies on the wall to rounding, and its touch is at the crossing,
-//! but where it crosses at a degree or so its touch is one for both
-//! crossings.
+//! within its fit of it (31 and 6.6 tolerances along the border from the
+//! crossing in the seed, and off the circle). The circle went uncut and the
+//! wall undivided, so the boolean's own check refused what it built
+//! (*"edge … is used 1 times"*), or the spline was split where nothing
+//! ends (*"an imprinted curve that does not fit the edges it should
+//! coincide with"*). The touch is now taken to where the curve the spline
+//! stands for reaches the round face (`corner::touch`).
 //!
 //! Every body here is held to `topo::check`, to the boolean's full check
 //! and to its volume: written without the kernel where the radial set is
 //! a quadratic's ([`turning_volume`]: the radial integral in closed form,
 //! the angle in stretches between the places where the set changes form,
-//! the height adaptively; the same in Python, `plan/tangent-edge-border`
-//! in the workshop, agrees to 1e-12), and for the torus by the identity
-//! that cutting the rim first gives the same body. At scales 1e-3 to 1e6,
-//! turned out of the axes, and with the tool's seam in several places.
+//! the height adaptively; the same in Python in the workshop,
+//! `plan/tangent-edge-border/tools/quad_kinks.py`), and for the torus by
+//! the identity that cutting the rim first gives the same body. At scales
+//! 1e-3 to 1e6, turned out of the axes, and with the tool's seam in several
+//! places.
 
 #![allow(
     clippy::unwrap_used,
@@ -123,51 +123,56 @@ fn at_most_zero(a: f64, b: f64, c: f64, (lo, hi): (f64, f64)) -> Vec<(f64, f64)>
         .collect()
 }
 
-/// `∫ r dr` over `pieces`, and their form: how many, and which of their
-/// ends are `lo` or `hi` (where the integrand changes form as the angle
-/// moves, it has a kink).
-fn radial(pieces: &[(f64, f64)], (lo, hi): (f64, f64)) -> (f64, u64) {
-    let mut form = pieces.len() as u64;
-    let mut sum = 0.0;
-    for &(a, b) in pieces {
-        sum += 0.5 * (b * b - a * a);
-        form = form * 4 + u64::from(a == lo) * 2 + u64::from(b == hi);
-    }
-    (sum, form)
+/// `∫ r dr` over `pieces`.
+fn radial(pieces: &[(f64, f64)]) -> f64 {
+    pieces.iter().map(|&(a, b)| 0.5 * (b * b - a * a)).sum()
 }
 
-/// The volume of a solid described about an axis: `∫∫ section(θ, s) dθ
-/// ds`, `s` along the axis over the stretches between `heights`, `θ` round
-/// a whole turn, where `section` gives `∫ r dr` over the solid's points on
-/// the ray at `θ` and `s`, and the form of that set. Round the turn, the
-/// angle is cut where the form changes (found among 512 places and
-/// halved), so that each stretch is smooth.
-fn turning_volume(heights: &[f64], section: &(dyn Fn(f64, f64) -> (f64, u64) + Sync)) -> f64 {
-    const PLACES: u32 = 512;
+/// What a solid described about an axis is, along the ray at angle `θ` and
+/// height `s`: `∫ r dr` over its points there, and functions of `θ`, each
+/// continuous, whose zeros are where that set changes form (a root of
+/// its quadratic appears, or meets a bound): there the integrand has a
+/// kink.
+trait About: Sync {
+    fn section(&self, theta: f64, s: f64) -> f64;
+    fn kinks(&self, theta: f64, s: f64) -> Vec<f64>;
+}
+
+/// The volume of `solid`: `∫∫ section(θ, s) dθ ds`, `s` along the axis over
+/// the stretches between `heights`, `θ` round a whole turn, cut where a
+/// kink function changes sign (found among 2048 places, and halved), so
+/// that each stretch is smooth. (Cut where the set's form changes, read at
+/// 512 places, two changes a thousandth of a radian apart were one, and
+/// the halves agreed by chance across the other: 8e-3 off at one height.)
+fn turning_volume(heights: &[f64], solid: &dyn About) -> f64 {
+    const PLACES: u32 = 2048;
     let around = |s: f64| {
         let at = |k: u32| TAU * f64::from(k) / f64::from(PLACES);
-        let mut stops = vec![0.0];
-        for k in 0..PLACES {
-            let (mut a, mut b) = (at(k), at(k + 1));
-            let form = section(a, s).1;
-            if section(b, s).1 == form {
-                continue;
-            }
-            for _ in 0..60 {
-                let m = 0.5 * (a + b);
-                if section(m, s).1 == form {
-                    a = m;
-                } else {
-                    b = m;
+        let values: Vec<Vec<f64>> = (0..=PLACES).map(|k| solid.kinks(at(k), s)).collect();
+        let mut stops = vec![0.0, TAU];
+        for j in 0..values[0].len() {
+            for k in 0..PLACES {
+                let positive = values[k as usize][j] > 0.0;
+                if (values[k as usize + 1][j] > 0.0) == positive {
+                    continue;
                 }
+                let (mut a, mut b) = (at(k), at(k + 1));
+                for _ in 0..60 {
+                    let m = 0.5 * (a + b);
+                    if (solid.kinks(m, s)[j] > 0.0) == positive {
+                        a = m;
+                    } else {
+                        b = m;
+                    }
+                }
+                stops.push(0.5 * (a + b));
             }
-            stops.push(0.5 * (a + b));
         }
-        stops.push(TAU);
+        stops.sort_by(f64::total_cmp);
         stops
             .windows(2)
             .filter(|w| w[1] > w[0])
-            .map(|w| integral(&|t| section(t, s).0, w[0], w[1], (1e-13, 1e-13), 0))
+            .map(|w| integral(&|t| solid.section(t, s), w[0], w[1], (1e-13, 1e-13), 0))
             .sum::<f64>()
     };
     let mut heights = heights.to_vec();
@@ -192,84 +197,157 @@ fn arc_offset(rf: f64, d: f64) -> f64 {
 /// lower border, a spline) or, `exact`, less the half-space below the plane
 /// z = y + top − 5 (an ellipse as high there), less the corner of the top
 /// rim a fillet of radius `rf` cuts away.
-fn seed_volume(top: f64, rf: f64, exact: bool) -> f64 {
-    let r2 = 9.0 + (top - 8.0) * (top - 8.0);
-    let section = |theta: f64, z: f64| {
-        let m = if z <= 15.0 - rf {
+struct Seed {
+    top: f64,
+    rf: f64,
+    exact: bool,
+}
+
+impl Seed {
+    fn wall(&self, z: f64) -> f64 {
+        if z <= 15.0 - self.rf {
             5.0
         } else {
-            5.0 - arc_offset(rf, 15.0 - z)
-        };
-        let gone = if exact {
+            5.0 - arc_offset(self.rf, 15.0 - z)
+        }
+    }
+
+    /// `64 + (z − 8)² − r²`: the ray meets the ball where `ρ² − 16 ρ sin θ`
+    /// plus this is negative.
+    fn ball(&self, z: f64) -> f64 {
+        64.0 + (z - 8.0) * (z - 8.0) - (9.0 + (self.top - 8.0) * (self.top - 8.0))
+    }
+
+    fn volume(&self) -> f64 {
+        turning_volume(
+            &[10.0, 15.0 - self.rf, self.top.clamp(10.0, 15.0), 15.0],
+            self,
+        )
+    }
+}
+
+impl About for Seed {
+    fn section(&self, theta: f64, z: f64) -> f64 {
+        let m = self.wall(z);
+        let gone = if self.exact {
             // Gone where z − top + 5 − ρ sin θ < 0.
-            at_most_zero(0.0, -theta.psin(), z - top + 5.0, (0.0, m))
+            at_most_zero(0.0, -theta.psin(), z - self.top + 5.0, (0.0, m))
         } else {
-            // |(ρ cos θ, ρ sin θ, z) − (0, 8, 8)|² < r².
-            at_most_zero(
-                1.0,
-                -16.0 * theta.psin(),
-                64.0 + (z - 8.0) * (z - 8.0) - r2,
-                (0.0, m),
-            )
+            at_most_zero(1.0, -16.0 * theta.psin(), self.ball(z), (0.0, m))
         };
-        let (out, form) = radial(&gone, (0.0, m));
-        (0.5 * m * m - out, form)
-    };
-    turning_volume(&[10.0, 15.0 - rf, top.clamp(10.0, 15.0), 15.0], &section)
+        0.5 * m * m - radial(&gone)
+    }
+
+    fn kinks(&self, theta: f64, z: f64) -> Vec<f64> {
+        let (m, s) = (self.wall(z), theta.psin());
+        if self.exact {
+            vec![s, z - self.top + 5.0 - m * s]
+        } else {
+            let c = self.ball(z);
+            // The ray tangent to the ball; the ball's surface on the wall.
+            vec![64.0 * s * s - c, m * m - 16.0 * m * s + c]
+        }
+    }
+}
+
+fn seed_volume(top: f64, rf: f64, exact: bool) -> f64 {
+    Seed { top, rf, exact }.volume()
 }
 
 /// Random design 110541 as reduced (scale 1): the cone of base radius 7.5
 /// at z = 3.75 about (−2.5, c), apex at z = 16.25, less the hole of
 /// radius 2.5 about the z axis, less the corner of the hole's rim in the
-/// base a fillet of radius `rf` cuts away.
-fn cone_hole_volume(rf: f64, c: f64) -> f64 {
-    let section = |theta: f64, z: f64| {
-        let rc = 7.5 * (16.25 - z) / 12.5;
-        let lo = if z >= 3.75 + rf {
+/// base a fillet of radius `rf` cuts away. Along a ray the cone is where
+/// `ρ² + 2 b ρ + d ≤ 0`.
+struct ConeHole {
+    rf: f64,
+    c: f64,
+}
+
+impl ConeHole {
+    fn hole(&self, z: f64) -> f64 {
+        if z >= 3.75 + self.rf {
             2.5
         } else {
-            2.5 + arc_offset(rf, z - 3.75)
-        };
-        // |(ρ cos θ + 2.5, ρ sin θ − c)| ≤ rc, beyond the hole and the tool.
-        let kept = at_most_zero(
-            1.0,
-            2.0 * (2.5 * theta.pcos() - c * theta.psin()),
-            6.25 + c * c - rc * rc,
-            (lo, 1e3),
-        );
-        radial(&kept, (lo, 1e3))
-    };
-    turning_volume(&[3.75, 3.75 + rf, 16.25], &section)
+            2.5 + arc_offset(self.rf, z - 3.75)
+        }
+    }
+
+    fn cone(&self, theta: f64, z: f64) -> (f64, f64) {
+        let rc = 7.5 * (16.25 - z) / 12.5;
+        (
+            2.5 * theta.pcos() - self.c * theta.psin(),
+            6.25 + self.c * self.c - rc * rc,
+        )
+    }
+}
+
+impl About for ConeHole {
+    fn section(&self, theta: f64, z: f64) -> f64 {
+        let (b, d) = self.cone(theta, z);
+        radial(&at_most_zero(1.0, 2.0 * b, d, (self.hole(z), 1e3)))
+    }
+
+    fn kinks(&self, theta: f64, z: f64) -> Vec<f64> {
+        let ((b, d), lo) = (self.cone(theta, z), self.hole(z));
+        vec![b * b - d, lo * lo + 2.0 * b * lo + d]
+    }
+}
+
+fn cone_hole_volume(rf: f64, c: f64) -> f64 {
+    turning_volume(&[3.75, 3.75 + rf, 16.25], &ConeHole { rf, c })
 }
 
 /// Random design 121649 as reduced (scale 1): the cylinder of radius 2.5
 /// about the x axis from x = −10 to −7.5, less the cone of base radius 2.5
 /// in z = 0 about (−7.5, 2.5) with its apex at z = 10, less the corner of
 /// the rim x = −10 a fillet of radius `rf` cuts away. About the x axis,
-/// y = ρ cos θ and z = ρ sin θ.
-fn cylinder_cone_volume(rf: f64) -> f64 {
-    let section = |theta: f64, x: f64| {
-        let m = if x >= -10.0 + rf {
+/// y = ρ cos θ and z = ρ sin θ; the cone is where `(x + 7.5)² + (ρ cos θ −
+/// 2.5)² ≤ (2.5 (1 − ρ sin θ / 10))²` and z ≥ 0, a quadratic `a ρ² + b ρ +
+/// c ≤ 0`.
+struct CylinderCone {
+    rf: f64,
+}
+
+impl CylinderCone {
+    fn wall(&self, x: f64) -> f64 {
+        if x >= -10.0 + self.rf {
             2.5
         } else {
-            2.5 - arc_offset(rf, x + 10.0)
-        };
-        let (s, c) = (theta.psin(), theta.pcos());
-        if s < 0.0 {
-            // Below the cone's base.
-            return (0.5 * m * m, u64::MAX);
+            2.5 - arc_offset(self.rf, x + 10.0)
         }
-        // (x + 7.5)² + (ρ c − 2.5)² ≤ (2.5 (1 − ρ s / 10))².
-        let gone = at_most_zero(
+    }
+
+    fn cone(theta: f64, x: f64) -> (f64, f64, f64) {
+        let (s, c) = (theta.psin(), theta.pcos());
+        (
             c * c - s * s / 16.0,
             -5.0 * c + 1.25 * s,
             (x + 7.5) * (x + 7.5),
-            (0.0, m),
-        );
-        let (out, form) = radial(&gone, (0.0, m));
-        (0.5 * m * m - out, form)
-    };
-    turning_volume(&[-10.0, -10.0 + rf, -7.5], &section)
+        )
+    }
+}
+
+impl About for CylinderCone {
+    fn section(&self, theta: f64, x: f64) -> f64 {
+        let m = self.wall(x);
+        if theta.psin() < 0.0 {
+            // Below the cone's base.
+            return 0.5 * m * m;
+        }
+        let (a, b, c) = Self::cone(theta, x);
+        0.5 * m * m - radial(&at_most_zero(a, b, c, (0.0, m)))
+    }
+
+    fn kinks(&self, theta: f64, x: f64) -> Vec<f64> {
+        let m = self.wall(x);
+        let (a, b, c) = Self::cone(theta, x);
+        vec![theta.psin(), a * m * m + b * m + c, b * b - 4.0 * a * c, a]
+    }
+}
+
+fn cylinder_cone_volume(rf: f64) -> f64 {
+    turning_volume(&[-10.0, -10.0 + rf, -7.5], &CylinderCone { rf })
 }
 
 // ---------------------------------------------------------------------
@@ -583,14 +661,15 @@ fn the_same_tool_across_an_exact_border_divides_the_wall_as_before() {
 }
 
 /// Where the border rises above the circle by no more than a few
-/// thousandths, the circle crosses it at a degree or less and the curve in
-/// which the ball meets the round face runs within the tolerance of the
-/// border all the way between the crossings: the round face's piece
-/// there is a sliver a few tolerances tall. Such a cut is built and right,
-/// or refused in words that say the edge of the tolerance; never an
-/// invalid body. (On `main`: refused in the edge's words at every one,
-/// spline or ellipse; since this finding the ellipse at 13.751 and the
-/// spline at 13.751 and 13.755 build.)
+/// thousandths, the circle crosses it at a degree or less, the border stays
+/// within the tolerance of the round face over both crossings (one touch
+/// for two places), and the curve in which the ball meets the round face
+/// runs within the tolerance of the border all the way between them: the
+/// round face's piece there is a sliver a few tolerances tall. Such a cut
+/// is built and right, or refused in words that say the edge of the
+/// tolerance; never an invalid body (on `main` too, spline or ellipse;
+/// building them is owed: docs/design/booleans.md › *A tangent edge across
+/// a spline border* › *Owed*).
 #[test]
 fn a_border_barely_above_the_circle_is_built_right_or_at_the_edge_of_tolerance() {
     let rf = 1.25;

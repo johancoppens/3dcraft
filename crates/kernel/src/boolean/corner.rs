@@ -28,24 +28,29 @@
 //! ([`SHALLOW`]). Every face pair that asks where the edge meets the
 //! surface asks it of the same edge and surface, and gets the same point.
 //!
-//! Where an edge only touches the surface (its distance from it has a
-//! least value within the tolerance, and does not change sign), the three
-//! surfaces meet in no point of their own, and the hit is the place where
-//! the edge comes nearest the surface. That place is told by the distance
-//! only within the band over which it stays within the fit or rounding of
-//! its least: near a touch the distance grows with the square of the way
-//! along the edge, so a spline a tenth of the tolerance off the curve it
-//! stands for comes nearest a surface tangent to one of its faces' (the
-//! round face of a fillet's tool, which touches the wall along a circle
-//! the wall's spline border crosses at a dozen degrees) seven tolerances
-//! along the border from where the circle crosses it, and off the circle.
-//! So a touch is taken to where the slope of the distance along the curve
-//! the edge stands for changes sign ([`touch`]): on the edge's own curve
-//! for an exact edge, and for a spline on the curve in which its two
-//! faces' surfaces meet, each of its places taken to the nearest point of
-//! both. The slope is the surface's normal at the foot against the curve's
-//! direction, which crosses zero at a rate set by how the curve bends away
-//! from the surface: found to rounding by halving.
+//! Where a spline edge only touches the surface (its distance from it
+//! has a least value within the tolerance and does not change sign), the
+//! three surfaces meet in no point of their own, and the hit is where the
+//! spline comes nearest the surface. Where the surface is tangent to one of
+//! the edge's own faces along a curve that the edge crosses (the round face
+//! of a fillet's tool against the wall it rounds, along the circle where
+//! the round begins, and the wall's border a spline that crosses that
+//! circle), the curve the spline stands for reaches the surface exactly
+//! where it crosses that circle, and that place is a vertex: the circle
+//! leaves the wall there, and the curve in which the edge's other face
+//! meets the round face ends there. But near it the distance grows only
+//! with the square of the way along the edge, so the spline, a fit within
+//! the tolerance of its curve, comes nearest the surface wherever its fit
+//! puts it in that valley: in random design 103578, 31 and 6.6 tolerances
+//! along the border from the crossing, 7.2 and 1.5 tolerances off the
+//! circle. Such a touch is taken to where the curve the spline stands for
+//! (its places taken to the nearest point of both its faces' surfaces)
+//! comes nearest the surface: where the slope of its distance from it (the
+//! surface's normal at the foot against the curve's direction) changes
+//! sign, found to rounding by halving ([`touch`]), when the curve reaches
+//! the surface there (within a thousandth of the tolerance: a meeting, not
+//! a curve passing within the tolerance of a surface it misses), and more
+//! than [`MOVE`] tolerances from the hit. Every other touch stands.
 
 use super::Reason;
 use super::outline::{Sheet, boxes_meet, locate, surface_distance};
@@ -154,7 +159,7 @@ pub(super) fn refine(
     // band along the edge is as near all three, and Newton creeps along
     // it to wherever it stops (48.0 or 48.7 tolerances from the hit by
     // two stopping rules, at a rolling fillet's end on a cone,
-    // `fillet_contact.rs`). A touch is placed by [`touch`] instead.
+    // `fillet_contact.rs`). A spline's touch is placed by [`touch`].
     if touch {
         return Ok(None);
     }
@@ -194,7 +199,7 @@ pub(super) fn refine(
 
 /// The two faces of `own` on either side of edge `id`, in the order of
 /// the body's faces; `None` where there are not two.
-pub(super) fn faces_of(own: &Solid, id: EdgeId, tol: f64) -> Option<[usize; 2]> {
+fn faces_of(own: &Solid, id: EdgeId, tol: f64) -> Option<[usize; 2]> {
     let edge_box = own.edge_box(id);
     let mut faces = Vec::with_capacity(2);
     for face in own.candidates(|b| boxes_meet(b, &edge_box, tol)) {
@@ -266,19 +271,26 @@ fn onto_both([a, b]: [Sheet; 2], start: Vec3, tol: f64) -> Option<(Vec3, Vec3)> 
     None
 }
 
-/// Where edge `id` of `own` only touches `surface`, given `hit`, where it
-/// comes nearest it, at parameter `at` of the edge, and `between`, the
-/// parameters of the edge's hits on the surface on either side of it (or
-/// its ends): the place where the curve the edge stands for comes nearest
-/// the surface (see the module's text), when that is more than [`MOVE`]
-/// tolerances from the hit, within the tolerance of the surface, of the
-/// edge (strictly between those parameters) and, for a spline, a quarter
-/// of it of its faces' surfaces; `None` when the hit stands.
+/// How near the surface, as a share of the tolerance, the curve a spline
+/// edge stands for must come where it is nearest for a touch to be moved
+/// there ([`touch`]): it reaches the surface.
+const REACHES: f64 = 1e-3;
+
+/// Where spline edge `id` of `own` only touches `surface`, given `hit`,
+/// where the spline comes nearest it, at parameter `at` of the edge, and
+/// `between`, the parameters of the edge's hits on the surface on either
+/// side of it (or its ends): the place where the curve the edge stands for
+/// comes nearest the surface (see the module's text), when it reaches the
+/// surface there (within [`REACHES`] of the tolerance) and that place is
+/// more than [`MOVE`] tolerances from the hit, within the tolerance of the
+/// edge strictly between those parameters and within a quarter of it of
+/// its faces' surfaces; `None` when the hit stands.
 ///
 /// The slope changes sign where the distance is least, and where it is
 /// most: the change nearest the hit is taken, stepping out from it either
-/// way from a quarter of the tolerance, doubling, up to [`CAP`]
-/// tolerances and the hits on either side.
+/// way, from [`MOVE`] tolerances (a change within them leaves the hit
+/// where it is, after three looks), doubling, up to [`CAP`] tolerances and
+/// the hits on either side.
 pub(super) fn touch(
     own: &Solid,
     id: EdgeId,
@@ -288,21 +300,16 @@ pub(super) fn touch(
     tol: f64,
 ) -> Option<Vec3> {
     let edge = own.body.edge(id)?;
-    let both = match edge.curve {
-        Curve3::Nurbs(_) => Some(sides(own, id, tol)?),
-        _ => None,
-    };
+    if !matches!(edge.curve, Curve3::Nurbs(_)) {
+        return None;
+    }
+    let both = sides(own, id, tol)?;
     // The place of the curve the edge stands for at parameter `s` of the
     // edge, and its direction there (the edge's way).
     let place = |s: f64| -> Option<(Vec3, Vec3)> {
         let (p, d) = edge.curve.derivatives(s);
-        match both {
-            Some(both) => {
-                let (q, along) = onto_both(both, p, tol)?;
-                Some((q, if along.dot(d) < 0.0 { -along } else { along }))
-            }
-            None => Some((p, d.normalized()?)),
-        }
+        let (q, along) = onto_both(both, p, tol)?;
+        Some((q, if along.dot(d) < 0.0 { -along } else { along }))
     };
     // The slope of the distance from the surface along the curve: the
     // normal at the foot, pointing to the place, against the direction.
@@ -324,7 +331,7 @@ pub(super) fn touch(
         return None;
     }
     let here = slope(at)? > 0.0;
-    let mut step = 0.25 * tol / speed;
+    let mut step = MOVE * tol / speed;
     let mut bracket = None;
     while bracket.is_none() && step * speed <= CAP * tol {
         for s in [at - step, at + step] {
@@ -332,6 +339,11 @@ pub(super) fn touch(
                 bracket = Some(if s < at { (s, at) } else { (at, s) });
                 break;
             }
+        }
+        if bracket.is_some() && step * speed <= MOVE * tol {
+            // Where it is nearest is within a quarter of the tolerance of
+            // the hit.
+            return None;
         }
         step *= 2.0;
     }
@@ -349,11 +361,10 @@ pub(super) fn touch(
         }
     }
     let (point, _) = place(0.5 * (a + b))?;
-    if surface_distance(surface, point) > tol
-        || both.is_some_and(|both| {
-            both.iter()
-                .any(|&sheet| surface_distance(sheet, point) > 0.25 * tol)
-        })
+    if surface_distance(surface, point) > REACHES * tol
+        || both
+            .iter()
+            .any(|&sheet| surface_distance(sheet, point) > 0.25 * tol)
     {
         return None;
     }
