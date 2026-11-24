@@ -1,5 +1,5 @@
 //! A tool's tangent edge that crosses the spline border of the face it
-//! lies on (random designs 103578, 110541, 121649 and 124545, group B of
+//! lies on (random designs 103578, 110541, 121649, 124545 and 128676, group B of
 //! the invalid bodies; docs/design/booleans.md › *A tangent edge across a
 //! spline border*).
 //!
@@ -844,6 +844,97 @@ fn seed_124545_the_rim_of_a_cylinder_cut_by_a_torus() {
         let other = op(&op(&cylinder, &tool, Subtract, k), &torus, Intersect, k);
         let expected = mass_properties(&other).unwrap().volume / (k * k * k);
         wrong(&format!("124545 rf {rf} {place:?}"), &came, expected, k)
+    }));
+}
+
+/// Random design 128676 as reduced: a ring (R 15, r 2.5, its axis along
+/// (1, 1, 0)) with a hole of radius 5 cut through its tube, joined with
+/// the cup a fillet of the hole's rim by the hole's own radius leaves (a
+/// cylinder of radius 5 in the hole, less the ball of radius 5 about the
+/// middle of its floor): the cup's wall lies on the hole's wall, and the
+/// ball touches it along the floor's rim, which crosses the hole wall's
+/// border (the spline in which it meets the ring). Refused on `main` as
+/// *"an imprinted curve that does not fit the edges it should coincide
+/// with"*. Held to the boolean's full check (its volumes and seeded
+/// points) and to the identity of sets: the union and the intersection of
+/// the two add up to both, the cup's volume in closed form (π r³ (1 −
+/// 2/3)).
+#[test]
+fn seed_128676_a_cup_in_a_hole_through_a_ring() {
+    let mut cases = Vec::new();
+    for k in SCALES {
+        for turned in [false, true] {
+            cases.push(Place { k, turned });
+        }
+    }
+    held(map_parallel(cases, |place| {
+        let k = place.k;
+        let tol = tolerance(k);
+        let axis = Vec3::new(1.0, 1.0, 0.0).normalized().unwrap();
+        let ring = place.put(
+            primitives::torus(
+                &place.frame([5.0, 0.0, 10.0], axis, Vec3::Z),
+                15.0 * k,
+                2.5 * k,
+            )
+            .unwrap(),
+        );
+        let hole = place.put(
+            primitives::cylinder(
+                &place.frame([-5.0, 5.0, -100.0], Vec3::Z, Vec3::X),
+                5.0 * k,
+                200.0 * k,
+            )
+            .unwrap(),
+        );
+        let holed = op(&ring, &hole, Subtract, k);
+        let wall = place.put(
+            primitives::cylinder(
+                &place.frame([-5.0, 5.0, -5.0], Vec3::Z, Vec3::X),
+                5.0 * k,
+                5.0 * k,
+            )
+            .unwrap(),
+        );
+        let ball = place.put(
+            primitives::sphere(&place.frame([-5.0, 5.0, -5.0], Vec3::Z, Vec3::X), 5.0 * k).unwrap(),
+        );
+        let cup = op(&wall, &ball, Subtract, k);
+        let label = format!("128676 {place:?}");
+        let joined = match boolean(&holed, &cup, BooleanOp::Union, &tol) {
+            Ok(result) => result.body,
+            Err(e) => return Some(format!("{label}: refused: {e}")),
+        };
+        let mut problems: Vec<String> = check(&joined, &tol)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        match verify(
+            &holed,
+            &cup,
+            BooleanOp::Union,
+            &joined,
+            &tol,
+            &VerifyOptions::default(),
+        ) {
+            Ok(found) => problems.extend(found.violations.iter().map(ToString::to_string)),
+            Err(e) => problems.push(format!("the boolean's check cannot run: {e}")),
+        }
+        if !problems.is_empty() {
+            return Some(format!("{label}: built, but {problems:?}"));
+        }
+        let common = op(&holed, &cup, Intersect, k);
+        let volume = |b: &Body| mass_properties(b).unwrap().volume;
+        let cup_volume = PI * 125.0 * k * k * k / 3.0;
+        let (sum, parts) = (
+            volume(&joined) + volume(&common),
+            volume(&holed) + cup_volume,
+        );
+        let allowed = 1e-6 * k * mass_properties(&joined).unwrap().area;
+        println!("{label}: union and intersection {sum}, the two {parts}");
+        ((sum - parts).abs() > allowed).then(|| {
+            format!("{label}: the union and the intersection {sum} where the two are {parts}")
+        })
     }));
 }
 
