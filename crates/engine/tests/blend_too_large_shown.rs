@@ -1,7 +1,9 @@
-//! A fillet or a chamfer says *"too large … the largest radius (distance)
-//! that fits there is below X"* only where it is shown (the developer,
-//! 2026-11-24; `docs/design/blends.md` › *Too large only where it is
-//! shown*): where an event of the faces (the border reaching something of
+//! A fillet or a chamfer says it is too large below a size X only where it
+//! is shown (the developer, 2026-11-24; `docs/design/blends.md` › *Too
+//! large only where it is shown*), and says what is shown: *"no radius
+//! (distance) from X up to the … asked fits …; one fits just below X"*
+//! (since 2026-11-25, the review's F1: nothing larger than the size asked
+//! is tried). It is shown where an event of the faces (the border reaching something of
 //! its face) gives X, a build just before it succeeds and the seven sizes
 //! evenly between X and the size asked fail too; or, where no event
 //! explains the failure, where the result itself shows no room (the blend
@@ -231,14 +233,22 @@ impl Answer {
         matches!(self, Answer::Built { .. })
     }
 
-    /// The largest size a too-large refusal says fits.
+    /// The size a too-large refusal says is the least that does not fit
+    /// (*"… no radius from X mm up to the … asked fits …; one fits just
+    /// below X mm"*).
     fn below(&self) -> Option<f64> {
         let Answer::Refused(words) = self else {
             return None;
         };
-        let at = words.find("that fits there is below ")?;
-        let rest = words.get(at + "that fits there is below ".len()..)?;
-        rest.split(' ').next()?.parse().ok()
+        if !words.contains(": too large for edges") {
+            return None;
+        }
+        words
+            .rsplit("below ")
+            .next()?
+            .strip_suffix(" mm")?
+            .parse()
+            .ok()
     }
 
     fn words(&self) -> &str {
@@ -331,6 +341,10 @@ fn the_size_said_is_true(rim: &Rim, factors: &[f64], scales: &[f64], turns: &[Tu
                     wrong.push(format!("{label}: not too large with a size: {got:?}"));
                     continue;
                 };
+                // Said as shown: from X up to the size asked.
+                if !got.words().contains(" asked fits") {
+                    wrong.push(format!("{label}: not said up to the size asked: {got:?}"));
+                }
                 if !(limit * (1.0 - 1e-5)..=limit * (1.0 + 1e-4)).contains(&x) {
                     wrong.push(format!("{label}: below {x}, not the faces' {limit}"));
                 }

@@ -308,6 +308,7 @@ fn a_distance_too_large_names_the_edge_the_face_and_what_fits() {
                 face,
                 distance,
                 largest,
+                ..
             }) => {
                 assert_eq!((e, face), (edge, narrow));
                 assert_close(distance, 3.5 * k, "distance");

@@ -716,7 +716,7 @@ fn a_chamfer_by_name_along_the_pipe_is_the_closed_form_while_its_chord_stays_out
         assert!(
             reason.contains("edges.0")
                 && reason.contains("too large")
-                && reason.contains("largest distance that fits"),
+                && reason.contains("asked fits; one fits just below"),
             "{reason}"
         );
     }

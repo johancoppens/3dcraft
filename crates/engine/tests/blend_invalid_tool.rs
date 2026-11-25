@@ -333,11 +333,19 @@ fn answer(steps: &Steps) -> Answer {
     }
 }
 
-/// The largest size a too-large refusal says fits.
+/// The size a too-large refusal says is the least that does not fit:
+/// worked out (*"… the largest radius that fits there is below X mm"*) or
+/// shown by builds up to the size asked (*"no radius from X mm up to the
+/// … asked fits …; one fits just below X mm"*, since 2026-11-25).
 fn below(text: &str) -> Option<f64> {
-    let at = text.find("that fits there is below ")?;
-    let rest = text.get(at + "that fits there is below ".len()..)?;
-    rest.split(' ').next()?.parse().ok()
+    if !text.contains(": too large for edges") {
+        return None;
+    }
+    text.rsplit("below ")
+        .next()?
+        .strip_suffix(" mm")?
+        .parse()
+        .ok()
 }
 
 /// Every case is answered before any is held, so that one run shows them

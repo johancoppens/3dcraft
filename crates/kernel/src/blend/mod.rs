@@ -226,6 +226,14 @@ pub(crate) enum Reason {
     FreeJoint,
     FreeChainSize,
     FreeRunsOver,
+    /// The border is carried across a smooth edge of a face beside the
+    /// edge, and the blend on the faces beyond it is not found within the
+    /// tolerance (no ball rolls against them, the fit misses, the faces
+    /// there have no normal or meet only within the angular tolerance):
+    /// the construction's limit, not evidence of how much room the faces
+    /// leave (`fit` does not read it as no room; until 2026-11-25 it was
+    /// said as [`Reason::FreeRunsOver`]).
+    FreeCarry,
     /// The blend face would fold through itself.
     FreeFolds,
     /// A chamfer face would pass through a face beside its edge: a face's
@@ -365,6 +373,9 @@ impl Reason {
             Reason::FreeRunsOver => {
                 "the chamfer's border runs off a face beside the edge across one of its other edges along the way: the distance is too large for that face, or the chamfer would have to carry on onto the next face, which is not built yet"
             }
+            Reason::FreeCarry => {
+                "the chamfer's cut line runs over a smooth edge of a face beside the edge, and it could not be carried on onto the face beyond within the tolerance: give another distance"
+            }
             Reason::MiddleTangent => {
                 "the two faces are tangent at the middle of this edge, though not all along it: whether a chamfer cuts the edge away or fills it is read at its middle, where this edge has no corner; a chamfer of such an edge is not built yet"
             }
@@ -496,6 +507,9 @@ impl Reason {
             Reason::FreeRunsOver => {
                 "the fillet's border runs off a face beside the edge across one of its other edges along the way (where the ball would roll on over a smooth edge onto the next face, or the face is too narrow for the radius); a fillet that carries on onto the next face in the middle of an edge is not built yet: give a smaller radius"
             }
+            Reason::FreeCarry => {
+                "the fillet's border runs over a smooth edge of a face beside the edge, and the ball could not be rolled on against the faces beyond it within the tolerance: give another radius"
+            }
             Reason::MiddleTangent => {
                 "the two faces are tangent at the middle of this edge, though not all along it: the rolling ball has no corner to round there"
             }
@@ -513,12 +527,16 @@ impl Reason {
 pub(crate) enum BlendError {
     /// A size that is not one, a body that is not valid, geometry.
     Kernel(KernelError),
-    /// A size for which the cut or tangent line would leave `face`.
+    /// A size that does not fit beside `face`: none from `largest` on, as
+    /// `shown` says (the cut or tangent line leaves the face from it on,
+    /// worked out; or every size tried from it up to the size asked
+    /// failed, [`fit`]).
     TooLarge {
         edge: EdgeId,
         face: FaceId,
         size: f64,
         largest: f64,
+        shown: crate::Shown,
     },
     Refused {
         edge: Option<EdgeId>,
@@ -2613,6 +2631,7 @@ fn named_before(
             face,
             size,
             largest,
+            shown,
         } => {
             let Some(edge) = edge_was(edge) else {
                 return lost();
@@ -2635,6 +2654,7 @@ fn named_before(
                     face,
                     size,
                     largest,
+                    shown,
                 },
                 None => lost(),
             }
@@ -3080,11 +3100,14 @@ fn on_axis(
         return None;
     }
     Some(if past.own < asked {
+        // Worked out from the faces: every radius between the one that
+        // puts the centre on the axis and the one asked is past the axis.
         BlendError::TooLarge {
             edge: plan.edge,
             face: past.face,
             size: asked,
             largest: past.own,
+            shown: crate::Shown::Faces,
         }
     } else {
         match &plan.path {

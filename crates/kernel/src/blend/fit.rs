@@ -41,12 +41,15 @@
 //! same way where every one tried does. Every search is bounded
 //! ([`MOST_BUILDS`]), and a spent budget proves nothing.
 //!
-//! **Up to the size asked.** No size above the one asked is built (but an
-//! event's builds where it lies within 64 tolerances past it), so what is
-//! shown is that no size from the one said up to the one asked fits. Where
-//! the faces leave room again above the size asked (a shallow pocket near
-//! the edge that a larger blend takes whole), larger sizes build
-//! (`crates/engine/tests/blend_too_large_shown_review.rs`).
+//! **Up to the size asked.** No size at or above the one asked is built,
+//! so what is shown is that no size from the one said up to the one asked
+//! fits, and one just below it does: so the refusal says
+//! ([`crate::Shown::Builds`]), not that nothing larger fits. Where the
+//! faces leave room again above the size asked (a shallow pocket near the
+//! edge that a larger blend takes whole), larger sizes build
+//! (`crates/engine/tests/blend_too_large_shown_review.rs`). An event is
+//! taken at the size asked only to a tolerance, the rounding of its
+//! measure (`Proof::slack`).
 
 use super::{
     BlendError, Failure, Path, Plan, Reason, Request, Size, Use, construct, face_edges, half_tan,
@@ -117,6 +120,7 @@ fn sized(error: &BlendError) -> bool {
                 | Reason::MeetsWithinAngle
                 | Reason::FreeTooLarge
                 | Reason::FreeRunsOver
+                | Reason::FreeCarry
                 | Reason::FreeFolds
                 | Reason::Through
         ),
@@ -321,6 +325,7 @@ fn too_large(plan: &Plan, side: usize, largest: f64) -> BlendError {
         face: plan.faces.get(side).copied().unwrap_or(first),
         size: distance * per(plan, side),
         largest: largest.max(0.0),
+        shown: crate::Shown::Builds,
     }
 }
 
@@ -648,13 +653,18 @@ pub(super) fn explain(
             if at <= fits {
                 break;
             }
+            // A size at or above the one asked that builds would show the
+            // size asked is not too large: not tried.
+            if at >= 1.0 {
+                continue;
+            }
             match search.attempt(at) {
                 Outcome::Built => {
                     let plan = plans.get(event.plan).unwrap_or(own);
                     let found = too_large(plan, event.side, event.size);
                     let proof = Proof {
                         bound: event.scale,
-                        slack: PAST * event.unit,
+                        slack: event.unit,
                         room: false,
                     };
                     return proven(&mut search, proof, found, error);
@@ -738,7 +748,9 @@ struct Proof {
     /// The size found, as a multiple of the size asked.
     bound: f64,
     /// How far past the size asked it may lie, as a multiple of it: an
-    /// event the builds do not tell from the size asked, which failed.
+    /// event one tolerance from the size asked (which failed) is at it, to
+    /// the rounding of the measure (a chamfer exactly as large as its wall
+    /// is high).
     slack: f64,
     /// Whether every failure between has to show no room ([`no_room`]),
     /// or any failure will do.
@@ -772,8 +784,8 @@ fn proven(
     error: BlendError,
 ) -> BlendError {
     let Proof { bound, slack, room } = proof;
-    // Past the size asked by no more than the builds tell apart, the size
-    // asked, which failed, is all there is between.
+    // At the size asked, to a tolerance, the size asked, which failed, is
+    // all there is between.
     if !(bound.is_finite() && bound <= 1.0 + slack) {
         return error;
     }

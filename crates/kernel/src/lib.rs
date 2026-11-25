@@ -74,6 +74,20 @@ pub enum FilletPinch {
     Flips,
 }
 
+/// What shows a blend's largest size that fits
+/// ([`KernelError::FilletTooLarge`], [`KernelError::ChamferTooLarge`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    /// The faces, worked out: from that size on, at every larger one, the
+    /// line along which the blend touches the face leaves it.
+    Faces,
+    /// Builds: one just below that size built, and every size tried from
+    /// it up to the size asked failed. Nothing larger than the size asked
+    /// was tried: a larger one may fit (a blend that takes a pocket near
+    /// its edge whole).
+    Builds,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum KernelError {
     /// A size that must be positive and finite is not.
@@ -265,14 +279,16 @@ pub enum KernelError {
     EmptyResult {
         operation: &'static str,
     },
-    /// A chamfer distance for which the cut line would leave `face`, one
-    /// of the two faces of `edge`: `largest` is the distance at which it
-    /// does.
+    /// A chamfer `distance` along `face`, one of the two faces of `edge`,
+    /// that does not fit: `largest` is the distance from which none fits,
+    /// as `shown` says (from it on the cut line leaves the face, or every
+    /// distance tried from it up to the one asked failed).
     ChamferTooLarge {
         edge: craft3d_topo::EdgeId,
         face: craft3d_topo::FaceId,
         distance: f64,
         largest: f64,
+        shown: Shown,
     },
     /// An edge that cannot be chamfered, or is not built yet, or a chamfer
     /// that did not come out as one: the edge and the face it is about,
@@ -289,14 +305,17 @@ pub enum KernelError {
         error: Box<KernelError>,
         smaller_fails: bool,
     },
-    /// A fillet radius for which the line along which the ball touches
-    /// `face`, one of the two faces of `edge`, would leave that face:
-    /// `largest` is the radius at which it does.
+    /// A fillet `radius` that does not fit beside `face`, one of the two
+    /// faces of `edge`: `largest` is the radius from which none fits, as
+    /// `shown` says (from it on the line along which the ball touches the
+    /// face leaves it, or every radius tried from it up to the one asked
+    /// failed).
     FilletTooLarge {
         edge: craft3d_topo::EdgeId,
         face: craft3d_topo::FaceId,
         radius: f64,
         largest: f64,
+        shown: Shown,
     },
     /// A fillet `radius` along a rim for which the fillet face would be a
     /// torus that reaches its own axis (not built yet): radii below
@@ -660,12 +679,28 @@ impl fmt::Display for KernelError {
                 face,
                 distance,
                 largest,
+                shown: Shown::Faces,
             } => write!(
                 f,
                 "the chamfer of edge {} is too large for face {}: the cut line at {distance} \
                  leaves the face; the distance has to stay below {}",
                 edge.0,
                 face.0,
+                fits_number(*largest)
+            ),
+            KernelError::ChamferTooLarge {
+                edge,
+                face,
+                distance,
+                largest,
+                shown: Shown::Builds,
+            } => write!(
+                f,
+                "the chamfer of edge {} is too large for face {}: no distance along it from {} \
+                 up to the {distance} asked fits, and one fits just below {}",
+                edge.0,
+                face.0,
+                fits_number(*largest),
                 fits_number(*largest)
             ),
             KernelError::Chamfer { edge, face, reason } => {
@@ -694,6 +729,7 @@ impl fmt::Display for KernelError {
                 face,
                 radius,
                 largest,
+                shown: Shown::Faces,
             } => write!(
                 f,
                 "the fillet of edge {} is too large for face {}: with a radius of {radius} the \
@@ -701,6 +737,21 @@ impl fmt::Display for KernelError {
                  {}",
                 edge.0,
                 face.0,
+                fits_number(*largest)
+            ),
+            KernelError::FilletTooLarge {
+                edge,
+                face,
+                radius,
+                largest,
+                shown: Shown::Builds,
+            } => write!(
+                f,
+                "the fillet of edge {} is too large for face {}: no radius from {} up to the \
+                 {radius} asked fits, and one fits just below {}",
+                edge.0,
+                face.0,
+                fits_number(*largest),
                 fits_number(*largest)
             ),
             KernelError::FilletSpindle {

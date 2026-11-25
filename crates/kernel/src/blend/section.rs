@@ -287,6 +287,7 @@ pub(super) fn section(
         face: faces.get(side).copied().unwrap_or(faces[0]),
         size,
         largest: largest.max(0.0),
+        shown: crate::Shown::Faces,
     };
     // How far round its circle a trace may go.
     let most = |trace: &Trace| trace.circle().map_or(f64::INFINITY, |(_, r)| MOST_TURN * r);
@@ -400,6 +401,7 @@ fn chord(
         face: faces.get(side).copied().unwrap_or(faces[0]),
         size,
         largest: largest.max(0.0),
+        shown: crate::Shown::Faces,
     };
     // How far round its circle a trace may go.
     let most = |trace: &Trace| trace.circle().map_or(f64::INFINITY, |(_, r)| MOST_TURN * r);

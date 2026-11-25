@@ -9,10 +9,10 @@ use crate::derive::source_body;
 use crate::{FadeReport, FeatureResult, Names, length};
 use craft3d_doc::{Document, FeatureId, Fillet, NameRole, identity};
 use craft3d_expr::Evaluation;
-use craft3d_kernel::KernelError;
 use craft3d_kernel::fillet::{
     self as kernel, Fade, FadeFault, FilletEdge, FilletFace, FilletLawEdge, RadiusLaw,
 };
+use craft3d_kernel::{KernelError, Shown};
 use craft3d_math::Tolerance;
 use craft3d_topo::{Body, EdgeId, FaceId};
 
@@ -48,6 +48,7 @@ fn explain(
             face,
             radius,
             largest,
+            shown: Shown::Faces,
         } => format!(
             "radius: too large for {}: with a radius of {} {unit} the line along which the fillet touches the face {} leaves that face; the largest radius that fits there is below {} {unit}",
             role(edge),
@@ -55,6 +56,33 @@ fn explain(
             face_name(face),
             craft3d_kernel::fits_number(largest)
         ),
+        // Shown by builds up to the radius asked, and no further: a larger
+        // one is not tried (it may fit, where it takes away whatever was in
+        // the way).
+        KernelError::FilletTooLarge {
+            edge,
+            face,
+            radius,
+            largest,
+            shown: Shown::Builds,
+        } => {
+            let below = craft3d_kernel::fits_number(largest);
+            if craft3d_kernel::fits_shown(largest) >= radius {
+                format!(
+                    "radius: too large for {}: a radius of {} {unit} does not fit beside the face {}; one fits just below {below} {unit}",
+                    role(edge),
+                    craft3d_kernel::short_number(radius),
+                    face_name(face),
+                )
+            } else {
+                format!(
+                    "radius: too large for {}: no radius from {below} {unit} up to the {} {unit} asked fits beside the face {}; one fits just below {below} {unit}",
+                    role(edge),
+                    craft3d_kernel::short_number(radius),
+                    face_name(face),
+                )
+            }
+        }
         KernelError::FilletSpindle {
             edge,
             radius,

@@ -3,7 +3,12 @@
 //! that fits there is below X"* is true only where no size at or above X
 //! builds a right body. The search for what fits builds sizes up to the
 //! one asked and never above it, so where the faces leave room again above
-//! the size asked, X is said below sizes that build.
+//! the size asked, X was said below sizes that build (on `main` 22f0bb13,
+//! and on the branch until the review's F1 was mended). Since then the
+//! search says what it shows, *"no radius (distance) from X up to the R
+//! asked fits …; one fits just below X"*, and this test holds those words
+//! true: no size from X up to R builds, and the unbounded claim is not
+//! made.
 //!
 //! The case: a block 10 × 10 × 10 with a shallow pocket in its top near its
 //! front top edge (x 4 to 6, y 1 to 1.5, 0.05 deep), and that edge (y = 0,
@@ -79,15 +84,24 @@ enum Answer {
 }
 
 impl Answer {
-    /// The largest size a too-large refusal says fits, at the scale of the
-    /// document.
-    fn below(&self) -> Option<f64> {
+    /// The sizes a too-large refusal says do not fit, *"from X mm up to
+    /// the R mm asked"*, at the scale of the document.
+    fn range(&self) -> Option<(f64, f64)> {
         let Answer::Refused(words) = self else {
             return None;
         };
-        let at = words.find("that fits there is below ")?;
-        let rest = words.get(at + "that fits there is below ".len()..)?;
-        rest.split(' ').next()?.parse().ok()
+        let at = words.find(" from ")?;
+        let (x, rest) = words
+            .get(at + " from ".len()..)?
+            .split_once(" mm up to the ")?;
+        let (r, _) = rest.split_once(" mm asked")?;
+        Some((x.parse().ok()?, r.parse().ok()?))
+    }
+
+    /// Whether the refusal claims a largest size that fits, with no bound
+    /// above (the words until the review's F1 was mended).
+    fn unbounded(&self) -> bool {
+        matches!(self, Answer::Refused(words) if words.contains("that fits there is below"))
     }
 }
 
@@ -132,8 +146,10 @@ fn swallowed(chamfer: bool, size: f64) -> f64 {
     }
 }
 
-/// Each size `asked` is refused or said too large below an X that no
-/// size of `larger` (each at least X) builds the closed form's body of.
+/// Each size `asked` is refused: where a size is said, as *"from X up to
+/// the R asked"*, no size of `larger` from X up to R builds the closed
+/// form's body (each of them lies above R, and builds), and the words
+/// claim nothing above R.
 fn never_below_a_size_that_builds(chamfer: bool, asked: &[f64], larger: &[f64]) {
     let kind = if chamfer { "chamfer" } else { "fillet" };
     let mut wrong = Vec::new();
@@ -151,15 +167,30 @@ fn never_below_a_size_that_builds(chamfer: bool, asked: &[f64], larger: &[f64]) 
                 }
             }
         }
+        // The sizes above the ones asked build the closed form's body:
+        // what the words must leave open.
+        if built.len() != larger.len() {
+            wrong.push(format!(
+                "{kind} k={k:e}: of {larger:?} only {built:?} build the closed form's body"
+            ));
+        }
         for &size in asked {
             let got = blend(k, chamfer, size);
             println!("{kind} k={k:e} at {size}: {got:?}");
-            let Some(x) = got.below().map(|x| x / k) else {
+            if !matches!(got, Answer::Refused(_)) {
+                wrong.push(format!("{kind} k={k:e} at {size}: not refused: {got:?}"));
+            }
+            if got.unbounded() {
+                wrong.push(format!(
+                    "{kind} k={k:e} at {size}: claims what fits with no bound above: {got:?}"
+                ));
+            }
+            let Some((x, r)) = got.range().map(|(x, r)| (x / k, r / k)) else {
                 continue;
             };
-            for &above in built.iter().filter(|&&b| b >= x) {
+            for &within in built.iter().filter(|&&b| b >= x && b <= r) {
                 wrong.push(format!(
-                    "{kind} k={k:e} at {size}: said below {x}, but {above} builds the closed form's body and passes the deep check"
+                    "{kind} k={k:e} at {size}: said none from {x} up to {r} fits, but {within} builds the closed form's body and passes the deep check"
                 ));
             }
         }

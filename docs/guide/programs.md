@@ -164,8 +164,8 @@ says so.
   steps before it stay applied: a batch is not atomic, and `edit.undo` takes back one step at a time.
 - **A feature that fails** is different: the command succeeded (the feature is in the history), but the
   feature could not be built. Its result has `"status": "failed"` and an `error` that names the
-  parameter, the entities and often the largest value that would fit ("the largest radius that fits there
-  is below 26 mm"). Features built from it fail too, each with `causedBy`: the one to fix
+  parameter, the entities and often the sizes that do not fit and one that does ("no radius from 26 mm up
+  to the 30 mm asked fits beside the face …; one fits just below 26 mm"). Features built from it fail too, each with `causedBy`: the one to fix
   ([How 3DCraft thinks › Failed features](concepts.md#failed-features)).
 - **A batch is judged at the end.** `command_batch` (and the method `batch`) lists under `featuresFailed`
   the features that still fail when the batch ends and that one of its steps broke. Over MCP the tool
