@@ -649,7 +649,11 @@ fn run(
         tolerance,
         options.trust_operands,
     )?;
-    let sections = section::section(&a, &b, &mut vertices, tolerance)?;
+    // Which faces are kept by where they lie, for two solids (the table of
+    // `classify::solids`): the section reads it where a spline edge only
+    // touches a face (`corner::kept_both`).
+    let kept = (mode == Mode::Solids).then(|| section::Kept::of(op));
+    let sections = section::section(&a, &b, &mut vertices, tolerance, kept)?;
 
     let mut arcs = Arcs::default();
     let pieces_a = split_edges(&a, &sections.splits_a, &vertices, &mut arcs, tol)?;
