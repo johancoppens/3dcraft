@@ -27,8 +27,10 @@
 //! that the faces leave no room ([`no_room`]: the blend reaches a face it
 //! should not, takes a neighbour away, comes out in pieces) at the size
 //! asked, at the size a bisection between a build and such a failure ends
-//! on (or a few tolerances past it, nothing building between), and at the
-//! sizes evenly between those two. A failure of the boolean
+//! on (or 4 or 64 tolerances past it, the build at 4 failing too: the size
+//! said may then be where the boolean's refusals of a sliver begin, up to
+//! 64 tolerances below the first size tried that shows no room), and at
+//! the sizes evenly between those two. A failure of the boolean
 //! (a refusal at the edge of tolerance, an invalid body,
 //! [`BlendError::Invalid`]) is no such evidence: it may come at a size that
 //! fits, with sizes on either side of it that build, so where builds that
@@ -38,6 +40,13 @@
 //! boolean's in the blend's words), saying that smaller sizes fail the
 //! same way where every one tried does. Every search is bounded
 //! ([`MOST_BUILDS`]), and a spent budget proves nothing.
+//!
+//! **Up to the size asked.** No size above the one asked is built (but an
+//! event's builds where it lies within 64 tolerances past it), so what is
+//! shown is that no size from the one said up to the one asked fits. Where
+//! the faces leave room again above the size asked (a shallow pocket near
+//! the edge that a larger blend takes whole), larger sizes build
+//! (`crates/engine/tests/blend_too_large_shown_review.rs`).
 
 use super::{
     BlendError, Failure, Path, Plan, Reason, Request, Size, Use, construct, face_edges, half_tan,
@@ -657,9 +666,10 @@ pub(super) fn explain(
     }
     // No event explains it: bisect on the builds, only where the result
     // at the size asked shows no room, and say what it finds only where the
-    // result shows no room at it or a few tolerances past it (nothing
-    // building between: where a face is about to be taken whole, the
-    // boolean may refuse the sliver left of it) and at the sizes between it
+    // result shows no room at it or 4 or 64 tolerances past it (the build
+    // at 4 failing too, the sizes between it and 64 not built: where a face
+    // is about to be taken whole, the boolean may refuse the sliver left of
+    // it) and at the sizes between it
     // and the size asked. A size found where builds fail at the boolean is
     // wherever its faults happen to lie ([`proven`]).
     if !no_room(&error) {
@@ -699,9 +709,10 @@ pub(super) fn explain(
 const ABOVE: [f64; 2] = [4.0, 64.0];
 
 /// Whether the result shows no room ([`no_room`]) at `found` (a multiple
-/// of the size asked, where a bisection ended), or a few tolerances past
-/// it (`unit`, a tolerance as a multiple) with nothing building between;
-/// the size asked, which failed so, where `found` is no smaller.
+/// of the size asked, where a bisection ended), or 4 or 64 tolerances
+/// past it (`unit`, a tolerance as a multiple) with the build at 4 failing
+/// too (the sizes between are not built); the size asked, which failed so,
+/// where it lies no further past `found`.
 fn shows_no_room(search: &mut Search<'_>, found: f64, unit: f64) -> bool {
     for past in std::iter::once(0.0).chain(ABOVE) {
         let at = found + past * unit;
