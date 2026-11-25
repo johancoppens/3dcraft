@@ -42,9 +42,15 @@
 //! does not refuse it already, and interference (`contact.rs` › `evidence`)
 //! answers unknown where nothing was found, never clear (the rule of
 //! `craft3d_geom::allowance`: a loop that stops never says "nothing
-//! found"). No model measured comes near the caps: in one look the
-//! benchmark's at most 1 584 pairs looked at and 234 measured, the
-//! corpus's 682 and 338, Garabit's findings 1 588 and 1 306 (2026-11-24).
+//! found"). The caps lie above every look measured by more than three
+//! times (2026-11-25): in one look the benchmark's at most 1 584 pairs
+//! looked at and 234 measured, the corpus's 682 and 338, Garabit's
+//! findings 1 588 and 1 306, and the engine's fuzz findings, the largest
+//! inputs met (patterns of shelled balls and tubes, overlapping balls),
+//! 5 079 035 looked at and 570 811 measured, the longest look 15.8 s in
+//! release (none of them found an approach). The caps of 2026-11-24
+//! (65 536 measured, 2^20 looked at) were below the gate's own pattern of
+//! twenty shelled balls (330 218 measured, 1 114 658 looked at).
 //!
 //! **How near.** A vertex to an edge or a face by its nearest point; an edge
 //! to an edge or a face by its distance sampled along the edge, each stretch
@@ -136,15 +142,15 @@ const DESCENT: usize = 8;
 const END: f64 = 1e-7;
 /// Pairs measured in one look, at most: past that the look stops, said
 /// ([`Looked::finished`]) and counted (`crate::work::near_left`).
-const MOST_PAIRS: usize = 1 << 16;
+const MOST_PAIRS: usize = 1 << 21;
 /// Pairs whose grown boxes meet looked at in one look (each read against
 /// the filters before any geometry), at most: as [`MOST_PAIRS`].
-const MOST_LOOKED: usize = 1 << 20;
+const MOST_LOOKED: usize = 1 << 24;
 /// Why a boolean is refused, and interference is unknown, where a look
 /// stopped at a cap ([`MOST_PAIRS`], [`MOST_LOOKED`]) and what it found
 /// before does not refuse it already: what it did not measure may be too
 /// near. The numbers are the caps' (a test holds them so).
-pub(super) const CUT_SHORT: Reason = "the look for parts or walls closer together than the tolerance can tell apart stopped at its cap (65536 pairs measured, or 1048576 looked at) before it had looked at every pair: what it left may be that near (a body too large to look at in one boolean)";
+pub(super) const CUT_SHORT: Reason = "the look for parts or walls closer together than the tolerance can tell apart stopped at its cap (2097152 pairs measured, or 16777216 looked at) before it had looked at every pair: what it left may be that near (a body too large to look at in one boolean)";
 /// One over the golden ratio.
 const INVERSE_GOLDEN: f64 = 0.618_033_988_749_894_9;
 
