@@ -344,6 +344,7 @@ fn requests_after_a_blend_in_place_follow_the_renumbering() {
         face: FaceId(face),
         size: 1.0,
         largest: 0.5,
+        shown: crate::Shown::Builds,
     };
     let named = named_before(&rolled, &before, &[], too_large(1));
     assert!(matches!(

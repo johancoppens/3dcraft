@@ -9,10 +9,10 @@ use crate::derive::source_body;
 use crate::{FadeReport, FeatureResult, Names, length};
 use craft3d_doc::{Document, FeatureId, Fillet, NameRole, identity};
 use craft3d_expr::Evaluation;
-use craft3d_kernel::KernelError;
 use craft3d_kernel::fillet::{
     self as kernel, Fade, FadeFault, FilletEdge, FilletFace, FilletLawEdge, RadiusLaw,
 };
+use craft3d_kernel::{KernelError, Shown};
 use craft3d_math::Tolerance;
 use craft3d_topo::{Body, EdgeId, FaceId};
 
@@ -48,12 +48,52 @@ fn explain(
             face,
             radius,
             largest,
+            shown: Shown::Faces,
         } => format!(
             "radius: too large for {}: with a radius of {} {unit} the line along which the fillet touches the face {} leaves that face; the largest radius that fits there is below {} {unit}",
             role(edge),
             craft3d_kernel::short_number(radius),
             face_name(face),
             craft3d_kernel::fits_number(largest)
+        ),
+        // Shown by builds: the radius asked and seven tried between it and
+        // the largest found to fit do not fit. Not every radius between
+        // (where the faces leave room between two of those tried, one
+        // builds), nor any larger (one may fit that takes away whatever
+        // was in the way).
+        KernelError::FilletTooLarge {
+            edge,
+            face,
+            radius,
+            largest,
+            shown: Shown::Builds,
+        } => {
+            let below = craft3d_kernel::fits_number(largest);
+            let tried = if craft3d_kernel::fits_shown(largest) < radius {
+                format!(", nor the radii tried from {below} {unit} up to it")
+            } else {
+                String::new()
+            };
+            format!(
+                "radius: too large for {}: the {} {unit} asked does not fit beside the face {}{tried}; the largest found to fit is just below {below} {unit}",
+                role(edge),
+                craft3d_kernel::short_number(radius),
+                face_name(face),
+            )
+        }
+        // It builds, and every radius between it and the one asked is past
+        // the rim's axis (worked out).
+        KernelError::FilletTooLarge {
+            edge,
+            radius,
+            largest,
+            shown: Shown::Itself,
+            ..
+        } => format!(
+            "radius: too large for {}: with a radius of {} {unit} the ball's centre would pass the edge's axis; the largest radius that fits there is {} {unit}, which puts it on that axis",
+            role(edge),
+            craft3d_kernel::short_number(radius),
+            craft3d_kernel::short_number(largest)
         ),
         KernelError::FilletSpindle {
             edge,

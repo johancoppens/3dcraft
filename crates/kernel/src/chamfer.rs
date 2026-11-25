@@ -74,11 +74,13 @@ pub(crate) fn said(error: BlendError) -> KernelError {
             face,
             size,
             largest,
+            shown,
         } => KernelError::ChamferTooLarge {
             edge,
             face,
             distance: size,
             largest,
+            shown,
         },
         BlendError::Refused { edge, face, reason } => KernelError::Chamfer {
             edge,
@@ -129,9 +131,10 @@ pub(crate) fn said(error: BlendError) -> KernelError {
 /// [`crate::blend`] for the method, for what the corner is where
 /// chamfers meet, and for what is refused.
 ///
-/// **Errors.** [`KernelError::ChamferTooLarge`] for a distance whose cut
-/// line leaves a face, with the edge, the face and the largest distance
-/// that fits; [`KernelError::Chamfer`] for an edge that cannot be
+/// **Errors.** [`KernelError::ChamferTooLarge`] for a distance that does
+/// not fit along a face, with the edge, the face and the distance from
+/// which none fits, as shown (worked out, or built up to the distance
+/// asked: [`crate::Shown`]); [`KernelError::Chamfer`] for an edge that cannot be
 /// chamfered or is not built yet, and for a result that is not a chamfer;
 /// [`KernelError::ChamferBoolean`] when the boolean refuses a tool, with
 /// the edge and the boolean's own error.

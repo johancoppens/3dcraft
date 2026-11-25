@@ -440,8 +440,12 @@ fn what_fits_is_said_without_rounding_noise() {
         "feature.chamfer",
         json!({"edges": [["F1:face(1)", "F1:face(2)"]], "distance": 1, "chain": true}),
     );
+    // What the builds showed (since 2026-11-25; until then "the largest
+    // distance that fits there is below 0.8 mm").
     assert!(
-        reason.ends_with("the largest distance that fits there is below 0.8 mm"),
+        reason.contains("the 1 mm asked does not fit along the face")
+            && reason.contains(", nor the distances tried from 0.8 mm up to it")
+            && reason.ends_with("; the largest found to fit is just below 0.8 mm"),
         "{reason}"
     );
 }
@@ -464,13 +468,19 @@ fn a_distance_too_large_names_the_edge_the_face_and_what_fits() {
             ),
             "{reason}"
         );
+        // What the builds showed: until 2026-11-25 "the cut line … leaves
+        // that face; the largest distance that fits there is below 2 mm",
+        // more than the builds show.
         assert!(
-            reason.contains("along the face F1:face(2), leaves that face"),
+            reason.contains(&format!(
+                " asked does not fit along the face F1:face(2), nor the distances tried from {} mm up to it",
+                2.0 * k
+            )),
             "{reason}"
         );
         assert!(
-            reason.contains(&format!(
-                "the largest distance that fits there is below {} mm",
+            reason.ends_with(&format!(
+                "; the largest found to fit is just below {} mm",
                 2.0 * k
             )),
             "{reason}"
@@ -549,19 +559,30 @@ fn a_chamfer_that_ends_in_a_slanted_plane_is_built_or_too_large_at_every_distanc
             }
             let reason = failed(&mut s, "feature.edit", params);
             assert!(!reason.contains(craft3d_engine::BUG), "{k} {d}: {reason}");
+            // What the builds showed (until 2026-11-25 "the cut line …
+            // leaves that face; the largest distance that fits there is
+            // below 3 mm"); at 3 itself, the distance asked alone.
             assert!(
                 reason.starts_with(&format!(
-                    "size.distance: too large for edges.0 (between {top} and {wall}): the cut line, "
+                    "size.distance: too large for edges.0 (between {top} and {wall}): the "
                 )),
                 "{k} {d}: {reason}"
             );
             assert!(
-                reason.contains(&format!("along the face {wall}, leaves that face")),
+                reason.contains(&format!(" asked does not fit along the face {wall}")),
+                "{k} {d}: {reason}"
+            );
+            assert_eq!(
+                reason.contains(&format!(
+                    ", nor the distances tried from {} mm up to it",
+                    3.0 * k
+                )),
+                d != 3.0,
                 "{k} {d}: {reason}"
             );
             assert!(
                 reason.ends_with(&format!(
-                    "the largest distance that fits there is below {} mm",
+                    "; the largest found to fit is just below {} mm",
                     3.0 * k
                 )),
                 "{k} {d}: {reason}"
@@ -1197,7 +1218,7 @@ fn a_chamfer_never_loses_track_of_an_entity() {
                 {"command": "feature.fillet", "params": {"chain": false, "edges": [["F6:copy(0)/F1:face(0)", "F6:copy(0)/F1:face(5)"], ["F6:copy(0)/F3:copy(2)/F1:face(3)", "F6:copy(0)/F3:copy(2)/F1:face(5)"]], "name": "N4", "radius": 1.25}},
                 {"command": "feature.chamfer", "params": {"chain": false, "distance": 5.0, "edges": [["{N4}:copy(0)/{N0}:face(1)", "{N4}:copy(0)/{N2}:copy(4)/{N1}:chamfer(1)"], ["{N4}:copy(0)/{N0}:face(1)", "{N4}:copy(0)/{N2}:copy(3)/{N0}:face(5)"], ["{N4}:copy(0)/{N0}:face(1)", "{N4}:copy(0)/{N2}:copy(3)/{N0}:face(3)"]], "name": "N5"}}
             ]),
-            "size.distance: too large for edges.2 (between {N4}:copy(0)/{N0}:face(1) and {N4}:copy(0)/{N2}:copy(3)/{N0}:face(3)): the cut line, 5 mm from the edge along the face {N4}:copy(0)/{N0}:face(1), leaves that face; the largest distance that fits there is below 0.625 mm",
+            "size.distance: too large for edges.2 (between {N4}:copy(0)/{N0}:face(1) and {N4}:copy(0)/{N2}:copy(3)/{N0}:face(3)): the 5 mm asked does not fit along the face {N4}:copy(0)/{N0}:face(1), nor the distances tried from 0.625 mm up to it; the largest found to fit is just below 0.625 mm",
             // What it says fits is built.
             (0.624, None),
         ),

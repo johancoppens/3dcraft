@@ -333,11 +333,19 @@ fn answer(steps: &Steps) -> Answer {
     }
 }
 
-/// The largest size a too-large refusal says fits.
+/// The size a too-large refusal says is the least that does not fit:
+/// worked out (*"… the largest radius that fits there is below X mm"*) or
+/// shown by builds up to the size asked (*"no radius from X mm up to the
+/// … asked fits …; one fits just below X mm"*, since 2026-11-25).
 fn below(text: &str) -> Option<f64> {
-    let at = text.find("that fits there is below ")?;
-    let rest = text.get(at + "that fits there is below ".len()..)?;
-    rest.split(' ').next()?.parse().ok()
+    if !text.contains(": too large for edges") {
+        return None;
+    }
+    text.rsplit("below ")
+        .next()?
+        .strip_suffix(" mm")?
+        .parse()
+        .ok()
 }
 
 /// Every case is answered before any is held, so that one run shows them
@@ -475,14 +483,22 @@ fn seeds_103578_and_110541_are_too_large_with_what_their_faces_leave() {
 /// refused here), to 2.3963, and refused at the edge of tolerance from
 /// 2.3964 (the review of 2026-11-24, which swept 2.3943 to 2.397). Past the
 /// cap (2.45, 2.5 and 3; at every scale and turned at 2.5) the fillet is
-/// said too large with what fits said where the builds stop, *"below
-/// 2.39435"* or *"below 2.39436"*, held to 2.39435 to 2.39437. That is true
-/// of what builds and not of what the faces leave (2.39655): the right
-/// answer there is the one `owed_seed_124545_is_never_said_too_large_below_what_fits`
-/// holds to; docs/design/booleans.md › *A tangent edge across a spline
-/// border* › *Owed*.
+/// refused as the result shows it, *"the fillet takes away the whole of a
+/// face next to the edge, or does not reach it: the radius is too
+/// large"*: true by the closed form, each radius being past the 2.39655
+/// the cap leaves.
+///
+/// An expectation changed on 2026-11-25 (docs/design/blends.md › *Too
+/// large only where it is shown*): until then the fillet said what fits
+/// where the builds stop, *"below 2.39435"* or *"below 2.39436"*, held here
+/// to 2.39435 to 2.39437. That size is where the boolean's faults begin,
+/// not where the faces end, and was found by a bisection that ended on the
+/// boolean's invalid body: no evidence of room from the result, so it is
+/// not said. The words have no oracle of their own; what they claim, that
+/// the radius is past what the cap leaves, is held to the closed form.
 #[test]
 fn seed_124545_builds_what_fits_and_is_too_large_past_its_cap() {
+    const WHOLE: &str = "the fillet takes away the whole of a face next to the edge, or does not reach it: the radius is too large";
     let cap = 7.5 - ((1.25_f64 * 1.25 + 7.5 * 7.5).sqrt() - 2.5);
     let (builds_up_to, refused_from) = (2.39435, 2.39437);
     let mut wrong = Vec::new();
@@ -502,23 +518,16 @@ fn seed_124545_builds_what_fits_and_is_too_large_past_its_cap() {
     }
     past.push((1.0, Turn::Cycle, 2.5));
     for (k, t, r) in past {
+        assert!(r > cap);
         let label = format!("124545 k={k:e} {t:?} r={r}");
         let got = answer(&s124545(k, t, r));
         said(&label, &got);
-        let fits = match &got {
-            Answer::Refused(words) if words.starts_with("radius: too large for edges.0") => {
-                below(words)
-            }
-            _ => None,
-        };
-        // A message keeps six digits; the slack is for the scale's rounding.
-        match fits {
-            Some(x)
-                if x >= builds_up_to * k * (1.0 - 1e-9) && x <= refused_from * k * (1.0 + 1e-9) => {
-            }
-            _ => wrong.push(format!(
-                "{label}: not too large between {builds_up_to} and {refused_from}: {got:?}"
-            )),
+        match &got {
+            Answer::Refused(words)
+                if words.starts_with("edges.0 (between ")
+                    && words.contains(WHOLE)
+                    && below(words).is_none() => {}
+            _ => wrong.push(format!("{label}: not refused saying {WHOLE:?}: {got:?}")),
         }
     }
     let chamfer = answer(&c124545(1.0, Turn::None, 2.5));
@@ -699,14 +708,15 @@ fn rims_made_anew_whose_wall_ends_on_a_spline_are_too_large_past_what_the_faces_
 
 /// Owed, found by the review of 2026-11-23: the short cone's rim
 /// ([`cone_hole_short`]) at 0.999 of what fits, unturned and turned X to Y
-/// to Z, at every scale, is said too large, *"below 1.99793"* (just under
-/// the radius asked), by the search on builds alone from the boolean's
-/// other refusal near the tangency, on `main` (its program, 1f196da4) as on
-/// the branch; turned 30 degrees about Z it builds, and so does the limit
-/// itself, 1.999936, which passes the deep check. The right answer is a
-/// body.
+/// to Z, at every scale, is refused by the boolean near the tangency
+/// (*"a curve that runs along a surface within the tolerance"*); turned 30
+/// degrees about Z it builds, and so does the limit itself, 1.999936,
+/// which passes the deep check. The right answer is a body. Until
+/// 2026-11-25 it was said too large, *"below 1.99793"*, by the search on
+/// builds alone from that refusal (`main` 1f196da4 to 22f0bb13); since then
+/// it is said as the boolean's refusal (`blend_too_large_shown.rs`).
 #[test]
-#[ignore = "owed: the search's answer from the boolean's other refusals, where they lie below what fits"]
+#[ignore = "owed: the boolean refuses the short cone's rim near the tangency, at radii that fit"]
 fn owed_a_short_cone_is_never_said_too_large_below_a_radius_that_builds() {
     let limit = short_cone_limit();
     let mut wrong = Vec::new();
@@ -727,15 +737,17 @@ fn owed_a_short_cone_is_never_said_too_large_below_a_radius_that_builds() {
     held(&wrong);
 }
 
-/// Owed: 124545 turned 30 degrees about Z, and at radii where the
-/// boolean refuses in other words (at the edge of tolerance), is said to be
-/// too large with a largest radius that fits found by builds alone, below
-/// what fits (2.39655): on `main`, *"below 2.06238"* at 2.5 turned, *"below
-/// 0.6528"* at 1, *"below 0.5109"* at 1.5. The right answer there is a body,
-/// too large with what fits from 2.39655, or the boolean's refusal.
+/// 124545 turned 30 degrees about Z, and at radii where the boolean
+/// refused in other words (at the edge of tolerance), was said to be too
+/// large with a largest radius that fits found by builds alone, below what
+/// fits (2.39655): on `main` before 2026-11-24, *"below 2.06238"* at 2.5
+/// turned, *"below 0.6528"* at 1, *"below 0.5109"* at 1.5; and before
+/// 2026-11-25, *"below 2.39436"* at 2.5 turned. Since 2026-11-24 the radii
+/// up to 2.394 build; since 2026-11-25 a size found where the builds fail
+/// at the boolean is not said (docs/design/blends.md › *Too large only
+/// where it is shown*), and this test, owed until then, holds.
 #[test]
-#[ignore = "owed: the search's answer from the boolean's other refusals, where they lie below what fits"]
-fn owed_seed_124545_is_never_said_too_large_below_what_fits() {
+fn seed_124545_is_never_said_too_large_below_what_fits() {
     let cap = 7.5 - ((1.25_f64 * 1.25 + 7.5 * 7.5).sqrt() - 2.5);
     let mut wrong = Vec::new();
     for (t, r) in [

@@ -1423,9 +1423,9 @@ fn blend_one(
     }
     built.map_err(|error| match error {
         // A border that cannot be carried across (no ball rolls against
-        // the faces beyond, or none within the tolerance) runs off its
-        // face, as it did before it was carried: which `fit` reads as no
-        // room.
+        // the faces beyond, or none within the tolerance): the carry's
+        // limit, said as such, which `fit` does not read as no room (until
+        // 2026-11-25 it was said to run off its face, and read so).
         BlendError::Refused {
             reason:
                 Reason::FreeSurface
@@ -1435,11 +1435,7 @@ fn blend_one(
                 | Reason::JointNoNormal
                 | Reason::MeetsWithinAngle,
             ..
-        } => refuse(
-            edge,
-            crossings.first().map(|c| c.before),
-            Reason::FreeRunsOver,
-        ),
+        } => refuse(edge, crossings.first().map(|c| c.before), Reason::FreeCarry),
         other => other,
     })
 }

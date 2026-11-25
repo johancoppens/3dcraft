@@ -75,11 +75,13 @@ fn said(error: BlendError) -> KernelError {
             face,
             size,
             largest,
+            shown,
         } => KernelError::FilletTooLarge {
             edge,
             face,
             radius: size,
             largest,
+            shown,
         },
         BlendError::Refused { edge, face, reason } => KernelError::Fillet {
             edge,
@@ -131,9 +133,10 @@ fn said(error: BlendError) -> KernelError {
 /// edge and vertex. See [`crate::blend`] for the method, for corners, and
 /// for what is refused.
 ///
-/// **Errors.** [`KernelError::FilletTooLarge`] for a radius whose tangent
-/// line leaves a face, with the edge, the face and the largest radius
-/// that fits; [`KernelError::Fillet`] for an edge that cannot be filleted
+/// **Errors.** [`KernelError::FilletTooLarge`] for a radius that does not
+/// fit beside a face, with the edge, the face and the radius from which
+/// none fits, as shown (worked out, or built up to the radius asked:
+/// [`crate::Shown`]); [`KernelError::Fillet`] for an edge that cannot be filleted
 /// or is not built yet, for a corner that is not built, and for a result
 /// that is not a fillet; [`KernelError::FilletBoolean`] when the boolean
 /// refuses a tool, with the edge and the boolean's own error.

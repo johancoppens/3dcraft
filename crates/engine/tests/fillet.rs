@@ -481,9 +481,18 @@ fn the_mouth_of_a_hole_loses_material_and_inside_rims_gain_it() {
             reason.starts_with("radius: too large for edges.0"),
             "{reason}"
         );
+        // What the builds showed (until 2026-11-25 "the largest radius
+        // that fits there is below 0.25 mm").
         assert!(
             reason.contains(&format!(
-                "the largest radius that fits there is below {} mm",
+                ", nor the radii tried from {} mm up to it",
+                0.25 * k
+            )),
+            "{reason}"
+        );
+        assert!(
+            reason.ends_with(&format!(
+                "; the largest found to fit is just below {} mm",
                 0.25 * k
             )),
             "{reason}"
@@ -559,13 +568,19 @@ fn a_radius_too_large_names_the_edge_the_face_and_what_fits() {
             reason.starts_with("radius: too large for edges.0 (between F1:face(1) and F1:face(2))"),
             "{reason}"
         );
+        // What the builds showed: until 2026-11-25 "the line along which
+        // the fillet touches the face F1:face(2) leaves that face; the
+        // largest radius that fits there is below 2 mm".
         assert!(
-            reason.contains("touches the face F1:face(2) leaves that face"),
+            reason.contains(&format!(
+                " asked does not fit beside the face F1:face(2), nor the radii tried from {} mm up to it",
+                2.0 * k
+            )),
             "{reason}"
         );
         assert!(
-            reason.contains(&format!(
-                "the largest radius that fits there is below {} mm",
+            reason.ends_with(&format!(
+                "; the largest found to fit is just below {} mm",
                 2.0 * k
             )),
             "{reason}"
@@ -637,19 +652,30 @@ fn a_fillet_that_ends_in_a_slanted_plane_is_built_or_too_large_at_every_radius()
             }
             let reason = failed(&mut s, "feature.edit", params);
             assert!(!reason.contains(craft3d_engine::BUG), "{k} {r}: {reason}");
+            // What the builds showed (until 2026-11-25 "with a radius of …
+            // the line … leaves that face; the largest radius that fits
+            // there is below 3 mm"); at 3 itself, the radius asked alone.
             assert!(
                 reason.starts_with(&format!(
-                    "radius: too large for edges.0 (between {top} and {wall}): with a radius of "
+                    "radius: too large for edges.0 (between {top} and {wall}): the "
                 )),
                 "{k} {r}: {reason}"
             );
             assert!(
-                reason.contains(&format!("touches the face {wall} leaves that face")),
+                reason.contains(&format!(" asked does not fit beside the face {wall}")),
+                "{k} {r}: {reason}"
+            );
+            assert_eq!(
+                reason.contains(&format!(
+                    ", nor the radii tried from {} mm up to it",
+                    3.0 * k
+                )),
+                r != 3.0,
                 "{k} {r}: {reason}"
             );
             assert!(
                 reason.ends_with(&format!(
-                    "the largest radius that fits there is below {} mm",
+                    "; the largest found to fit is just below {} mm",
                     3.0 * k
                 )),
                 "{k} {r}: {reason}"
@@ -1358,13 +1384,15 @@ fn a_box_rounded_in_two_steps_of_one_radius() {
             json!({"feature": "Top", "radius": 3.0 * k}),
         );
         assert!(reason.contains("too large"), "{reason}");
+        // Since 2026-11-25 said as the radius that fits, which builds (it
+        // puts the ball's centre on the round's axis): *"the largest radius
+        // that fits there is 2 mm"*, no longer *"below 2 mm"*.
         let fits: f64 = reason
-            .rsplit("below ")
+            .rsplit("the largest radius that fits there is ")
             .next()
-            .unwrap()
-            .trim_end_matches(" mm")
-            .parse()
-            .unwrap_or_else(|_| panic!("{reason}"));
+            .and_then(|rest| rest.split_once(" mm"))
+            .and_then(|(number, _)| number.parse().ok())
+            .unwrap_or_else(|| panic!("{reason}"));
         assert!((fits - 2.0 * k).abs() <= 1e-9 * k, "{reason}");
     }
 }

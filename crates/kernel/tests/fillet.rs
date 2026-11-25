@@ -1257,6 +1257,7 @@ fn a_radius_too_large_names_the_edge_the_face_and_what_fits() {
                 face,
                 radius,
                 largest,
+                ..
             }) => {
                 assert_eq!(edge, request.edge);
                 assert!(normal_at(&block, face, Vec3::ZERO).dot(-Vec3::X) > 0.999);

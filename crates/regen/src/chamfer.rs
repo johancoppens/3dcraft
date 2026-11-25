@@ -8,8 +8,8 @@ use crate::derive::source_body;
 use crate::{FeatureResult, Names, angle, length};
 use craft3d_doc::{Chamfer, ChamferSize, Document, FeatureId, NameRole};
 use craft3d_expr::Evaluation;
-use craft3d_kernel::KernelError;
 use craft3d_kernel::chamfer::{self as kernel, ChamferEdge, ChamferFace};
+use craft3d_kernel::{KernelError, Shown};
 use craft3d_math::Tolerance;
 use craft3d_topo::{Body, EdgeId, FaceId};
 
@@ -45,6 +45,7 @@ fn explain(
             face,
             distance,
             largest,
+            shown,
         } => {
             let on_first = reference(edge).is_some_and(|p| p.first == face);
             let parameter = match (&chamfer.size, on_first) {
@@ -52,13 +53,39 @@ fn explain(
                 (ChamferSize::DistanceAngle { .. }, false) => "size.angle",
                 _ => "size.distance",
             };
-            format!(
-                "{parameter}: too large for {}: the cut line, {} {unit} from the edge along the face {}, leaves that face; the largest distance that fits there is below {} {unit}",
-                role(edge),
-                craft3d_kernel::short_number(distance),
-                face_name(face),
-                craft3d_kernel::fits_number(largest)
-            )
+            let below = craft3d_kernel::fits_number(largest);
+            match shown {
+                Shown::Faces => format!(
+                    "{parameter}: too large for {}: the cut line, {} {unit} from the edge along the face {}, leaves that face; the largest distance that fits there is below {below} {unit}",
+                    role(edge),
+                    craft3d_kernel::short_number(distance),
+                    face_name(face),
+                ),
+                // Shown by builds: the distance asked and seven tried between
+                // it and the largest found to fit do not fit. Not every
+                // distance between (where the faces leave room between two of
+                // those tried, one builds), nor any larger (one may fit that
+                // takes away whatever was in the way).
+                Shown::Builds => {
+                    let tried = if craft3d_kernel::fits_shown(largest) < distance {
+                        format!(", nor the distances tried from {below} {unit} up to it")
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "{parameter}: too large for {}: the {} {unit} asked does not fit along the face {}{tried}; the largest found to fit is just below {below} {unit}",
+                        role(edge),
+                        craft3d_kernel::short_number(distance),
+                        face_name(face),
+                    )
+                }
+                Shown::Itself => format!(
+                    "{parameter}: too large for {}: the largest distance that fits along the face {} is {} {unit}",
+                    role(edge),
+                    face_name(face),
+                    craft3d_kernel::short_number(largest)
+                ),
+            }
         }
         KernelError::Chamfer { edge, face, reason } => {
             let at = edge.map_or_else(|| "edges".to_string(), role);

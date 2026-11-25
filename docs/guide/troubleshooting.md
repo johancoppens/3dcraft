@@ -48,8 +48,8 @@ the first:
 
 ![A failed feature in the feature list: its red row with the reason, and the rows made from it dimmed](images/failed-feature.png)
 
-- **A size that does not fit** (a fillet radius, a shell thickness): the message gives the largest that
-  fits. Make it smaller, or undo.
+- **A size that does not fit** (a fillet radius, a shell thickness): the message gives the largest size found
+  to fit, or the largest that fits where 3DCraft has shown it. Make it smaller, or undo.
 - **A reference that was lost**: an upstream edit took away the face or edge a feature names. The
   message names what it lost and the feature that made it. Point the feature at the right one with
   `feature.edit` (`edges`, `faces`, `sketch`, `target`), or undo the upstream edit.
