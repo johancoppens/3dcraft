@@ -10,9 +10,12 @@
 //!   the 1e-9 under which `near.rs` › `from_plane` takes the ring's own x
 //!   for the part of the plate's normal square to the axis: its pairs then
 //!   lie a quarter turn round the ring from the lowest point, 2.4
-//!   tolerances higher, and the seeds of the search land there too. The
-//!   ring leaning 2e-9 rad, where `from_plane` takes the plate's normal's
-//!   part, is refused: the control.
+//!   tolerances higher, and the seeds of the search land there too. (The
+//!   section takes such a ring as lying flat: `craft3d_geom`'s
+//!   `plane_torus` below the angular tolerance, 1e-9 by default. Leaning
+//!   2e-9 rad the section marches and refuses, *"tangent or nearly
+//!   coincident over too large an area"*, at 1.5 and at 3 tolerances alike,
+//!   so that is no control: Check 45622243924.)
 //! - A ring slid on a rod one tolerance off the rod's axis, its inside 1.5
 //!   tolerances from the rod on one side and 3.5 on the other (a cylinder
 //!   and a torus: no closed form). Every seed lands on the far side, where
@@ -25,9 +28,8 @@
 //!   so the box misses the ring's lowest point by `R sin α` (240
 //!   tolerances), and the two bodies' boxes do not meet. On `main` too.
 //!
-//! The ring leaning 8e-10 rad, the ring on the rod and the ring sunk into
-//! the block fail today; the control passes (run with `--nocapture` for
-//! the answers).
+//! All three fail today, built as two shells with the interference clear
+//! (Check 45622243924; run with `--nocapture` for the answers).
 
 #![allow(
     clippy::unwrap_used,
@@ -112,39 +114,6 @@ fn ring_over_plate(lean: f64, gap: f64, tol: &Tolerance) -> (Body, Body) {
     (ring, plate)
 }
 
-/// What the union and the interference of a ring and a plate said: the
-/// case and the answers in words, whether the union was refused, the
-/// shells it was built with (none where refused), and the interference.
-struct Said {
-    what: String,
-    answer: String,
-    union_refused: bool,
-    shells: usize,
-    between: &'static str,
-}
-
-/// The union and the interference of a ring and a plate
-/// ([`ring_over_plate`]), said.
-fn ring_and_plate(lean: f64, gap: f64, tol: &Tolerance) -> Said {
-    let (ring, plate) = ring_over_plate(lean, gap, tol);
-    let union = boolean(&ring, &plate, BooleanOp::Union, tol);
-    let between = interference(&ring, &plate, tol);
-    let what = format!("a ring leaning {lean:e} rad, {gap} tolerances over a plate");
-    let answer = format!(
-        "the union {}, the interference {}",
-        said(&union),
-        contact(&between)
-    );
-    println!("near_dimple_review: {what}: {answer}");
-    Said {
-        what,
-        answer,
-        union_refused: refused(&union),
-        shells: union.as_ref().map_or(0, |r| r.body.shells.len()),
-        between: contact(&between),
-    }
-}
-
 /// A ring leaning 8e-10 rad from a plate's normal, its lowest point 1.5
 /// tolerances over the plate inside both faces: the closed form's pairs
 /// lie where the ring's own x points (`from_plane` takes it below a lean
@@ -157,36 +126,18 @@ fn ring_and_plate(lean: f64, gap: f64, tol: &Tolerance) -> Said {
 #[test]
 fn a_ring_leaning_less_than_a_billionth_of_a_radian_over_a_plate_in_the_band_is_not_united() {
     let tol = Tolerance::default();
-    let near = ring_and_plate(8e-10, 1.5, &tol);
-    assert!(
-        near.union_refused && matches!(near.between, "touch" | "unknown"),
-        "{}: {}",
-        near.what,
-        near.answer
+    let (ring, plate) = ring_over_plate(8e-10, 1.5, &tol);
+    let union = boolean(&ring, &plate, BooleanOp::Union, &tol);
+    let between = interference(&ring, &plate, &tol);
+    let answer = format!(
+        "the union {}, the interference {}",
+        said(&union),
+        contact(&between)
     );
-}
-
-/// The control: the same ring leaning 2e-9 rad, where `from_plane` takes
-/// the part of the plate's normal square to the axis and so finds the
-/// lowest point (the seeds land 6 tolerances higher). 1.5 tolerances over
-/// the plate refused and the interference a touch; 3 tolerances, the two
-/// parts built and the interference clear.
-#[test]
-fn a_ring_leaning_two_billionths_of_a_radian_over_a_plate_is_told_by_its_lowest_point() {
-    let tol = Tolerance::default();
-    let near = ring_and_plate(2e-9, 1.5, &tol);
+    println!("near_dimple_review: a ring leaning 8e-10 rad, 1.5 tolerances over a plate: {answer}");
     assert!(
-        near.union_refused && matches!(near.between, "touch" | "unknown"),
-        "{}: {}",
-        near.what,
-        near.answer
-    );
-    let apart = ring_and_plate(2e-9, 3.0, &tol);
-    assert!(
-        apart.shells == 2 && apart.between == "clear",
-        "{}: {}",
-        apart.what,
-        apart.answer
+        refused(&union) && matches!(contact(&between), "touch" | "unknown"),
+        "a ring leaning 8e-10 rad, 1.5 tolerances over a plate: {answer}"
     );
 }
 
