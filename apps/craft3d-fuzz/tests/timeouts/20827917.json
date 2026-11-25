@@ -1,0 +1,136 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "feature.torus",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              0.01,
+              -1.0,
+              0.01
+            ],
+            "major": 0.015,
+            "minor": 0.005,
+            "name": "N0",
+            "position": [
+              0.0,
+              -0.01,
+              -0.005
+            ]
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.edit",
+          "params": {
+            "feature": "N0",
+            "minor": 0.005
+          }
+        }
+      ],
+      "step": "edit"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.pattern",
+          "params": {
+            "angle": "360 deg / 6",
+            "axis": [
+              0.01,
+              0.01,
+              1.0
+            ],
+            "count": 6,
+            "name": "N2",
+            "point": [
+              0.02,
+              -0.002506417464144736,
+              0.017493369350286263
+            ],
+            "source": "N0"
+          }
+        }
+      ],
+      "step": "pattern"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.planeCut",
+          "params": {
+            "keep": true,
+            "name": "N6",
+            "planes": [
+              {
+                "normal": [
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                "point": [
+                  0.01999999987193722,
+                  -0.0025064178791408265,
+                  -0.0024999999999999988
+                ],
+                "side": "above"
+              }
+            ],
+            "target": "N2"
+          }
+        }
+      ],
+      "step": "planeCut"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.fillet",
+          "params": {
+            "chain": true,
+            "edges": [
+              [
+                "{N2}:copy(2)/{N0}:face(0)",
+                "{N2}:copy(3)/{N0}:face(0)"
+              ],
+              [
+                "{N2}:copy(3)/{N0}:face(0)",
+                "{N2}:copy(4)/{N0}:face(0)"
+              ],
+              [
+                "{N2}:copy(4)/{N0}:face(0)",
+                "{N2}:copy(5)/{N0}:face(0)"
+              ]
+            ],
+            "name": "N8",
+            "radius": 0.000625
+          }
+        }
+      ],
+      "step": "blend"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N9",
+            "op": "union",
+            "target": "N8",
+            "tool": "N6"
+          }
+        }
+      ],
+      "step": "boolean"
+    }
+  ],
+  "scale": 0.001,
+  "seed": 20827917
+}

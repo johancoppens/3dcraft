@@ -557,6 +557,7 @@ name = "craft3d-fuzz"
 version = "0.2.1"
 dependencies = [
  "craft3d-engine",
+ "craft3d-geom",
  "serde_json",
 ]
 
