@@ -1,0 +1,171 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "feature.cylinder",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              0.0,
+              0.0,
+              1.0
+            ],
+            "height": 12.5,
+            "name": "N0",
+            "position": [
+              -10.0,
+              -7.5,
+              -5.0
+            ],
+            "radius": 5.0
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.edit",
+          "params": {
+            "feature": "N0",
+            "radius": 2.5
+          }
+        }
+      ],
+      "step": "edit"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.fillet",
+          "params": {
+            "chain": false,
+            "edges": [
+              [
+                "{N0}:face(0)",
+                "{N0}:face(2)"
+              ],
+              [
+                "{N0}:face(0)",
+                "{N0}:face(1)"
+              ]
+            ],
+            "name": "N2",
+            "radius": 5.0
+          }
+        }
+      ],
+      "step": "blend"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.sphere",
+          "params": {
+            "name": "N3",
+            "position": [
+              -9.992672446442949,
+              -7.5,
+              12.5
+            ],
+            "radius": 5.0
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.offsetFace",
+          "params": {
+            "distance": 5.0,
+            "faces": [
+              "{N3}:face(0)"
+            ],
+            "name": "N4"
+          }
+        }
+      ],
+      "step": "offsetFace"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.torus",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "major": 12.5,
+            "minor": 2.5,
+            "name": "N5",
+            "position": [
+              -18.72370573381339,
+              -1.2547428028663408,
+              -2.5
+            ]
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N6",
+            "op": "union",
+            "target": "N4",
+            "tool": "N5"
+          }
+        }
+      ],
+      "step": "boolean"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.fillet",
+          "params": {
+            "chain": false,
+            "edges": [
+              [
+                "{N6}:copy(0)/{N3}:face(0)",
+                "{N6}:copy(1)/{N5}:face(0)"
+              ]
+            ],
+            "name": "N7",
+            "radius": 1.25
+          }
+        }
+      ],
+      "step": "blend"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.shell",
+          "params": {
+            "name": "N8",
+            "open": [
+              "{N7}:copy(0)/{N6}:copy(1)/{N5}:face(0)"
+            ],
+            "source": "N7",
+            "thickness": 2.5
+          }
+        }
+      ],
+      "step": "shell"
+    }
+  ],
+  "scale": 1.0,
+  "seed": 20802370
+}

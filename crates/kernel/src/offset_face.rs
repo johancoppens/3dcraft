@@ -901,17 +901,40 @@ pub(crate) fn offset_for_known(
     // be rebuilt, or one rebuilt that the closing of the body refuses),
     // the fillets are offset as any freeform face instead, which holds
     // each to its exact offset within its share of the tolerance or
-    // refuses it; the refusal said is the first one. Both searches within
-    // one bound on their work together.
+    // refuses it; the refusal said is the first one. Both within one bound
+    // on their work together.
+    //
+    // The second way is tried at the whole distance alone: a search builds
+    // only at its whole distance (`bounded_fitting` answers with a body
+    // from `attempt(1.0)` alone, and with a refusal after any halving),
+    // and the second way's refusal is never said, so its halving could
+    // change nothing. It took 14 of the 44 s of the random design
+    // 20802370's shell (2026-11-25): the torus behind an open face thinned
+    // towards nothing, its halving's two tries 4.8 and 78.8 million units.
     craft3d_geom::allowance::within(face_op_work(body, &moved), || {
         let first = search(&fillets);
         if first.is_ok() || fillets.is_empty() {
             return first;
         }
-        match search(&BTreeMap::new()) {
-            Ok(made) => Ok(made),
-            Err(_) => first,
-        }
+        let whole = craft3d_geom::allowance::within(face_op_work(body, &moved), || {
+            let made = at(
+                body,
+                offsets,
+                &BTreeMap::new(),
+                1.0,
+                corners,
+                operation,
+                tolerance,
+            );
+            // A try during which the bound was reached is not believed
+            // (`bounded_fitting`).
+            if craft3d_geom::allowance::exhausted() {
+                None
+            } else {
+                made.ok()
+            }
+        });
+        whole.map_or(first, Ok)
     })
 }
 
@@ -1479,3 +1502,7 @@ mod tests {
         assert_eq!(tries, 3);
     }
 }
+
+#[cfg(test)]
+#[path = "offset_face_second_way_review.rs"]
+mod second_way_review;

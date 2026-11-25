@@ -39,12 +39,30 @@
 //! never guessed ([`PARTLY`]). Anything else (too few samples over the
 //! other face, a face too large to sample, a side that cannot be told) is
 //! no evidence, and the caller keeps the refusal it had.
+//!
+//! **What can count, first.** Whether a sample is over the other face is
+//! two winding numbers (the other face's loops about the sample's foot,
+//! its own face's about the sample), dear on a freeform face with long
+//! loops: each piece of a loop is halved until it keeps clear of the point,
+//! and every step finds a point of the loop on the patch. Only a sample
+//! within a quarter of the tolerance of the other surface and further than
+//! the tolerance from its own face's boundary can be counted over it (its
+//! own face says *on* to a sample nearer its boundary than that, never
+//! *in*), and both answers other than "no evidence" need [`EVIDENCE`]
+//! counted. So the samples' feet are found first, and where fewer than
+//! that many can count over both faces' samples together the answer is no
+//! evidence without a winding number asked: the same answer, by the same
+//! numbers. A fillet's face against the face it is tangent to along its
+//! border lies within the tolerance of it only along that border, on its
+//! own boundary: 2^18 samples asked both ways took 17 s and 70 s in the
+//! random designs 20838232 and 20827917 (2026-11-25).
 
 use super::freeform::is_freeform;
 use super::outline::{Outline, Side};
 use super::section::Solid;
 use super::{Reason, Stop};
 use craft3d_geom::Surface;
+use craft3d_math::Vec3;
 
 /// What [`coincide`] found of a pair of faces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,14 +108,29 @@ pub(super) fn coincide(
     if !(is_freeform(&oa.surface) || is_freeform(&ob.surface)) {
         return Ok(Coincidence::Unknown);
     }
-    let mut same = None;
-    let mut evidence = 0_usize;
-    let mut partly = false;
+    // The feet of every freeform face's samples, and how many of them can
+    // be counted over the other face at most: fewer than the evidence asks
+    // for leave no answer but "no evidence" (the module's documentation).
+    let mut planned = Vec::with_capacity(2);
+    let mut possible = 0_usize;
     for ((own, of_own), (other, of_other)) in [((a, fa), (b, fb)), ((b, fb), (a, fa))] {
         if !is_freeform(&own.outline(of_own)?.surface) {
             continue;
         }
-        match sample((own, of_own), (other, of_other), tol) {
+        let Some(found) = feet((own, of_own), (other, of_other), tol) else {
+            return Ok(Coincidence::Unknown);
+        };
+        possible = possible.saturating_add(found.possible);
+        planned.push(((own, of_own), (other, of_other), found));
+    }
+    if possible < EVIDENCE {
+        return Ok(Coincidence::Unknown);
+    }
+    let mut same = None;
+    let mut evidence = 0_usize;
+    let mut partly = false;
+    for ((own, of_own), (other, of_other), found) in &planned {
+        match sample((*own, *of_own), (*other, *of_other), found, tol) {
             Found::Over { agree, count } => {
                 if same.is_some_and(|s| s != agree) {
                     return Ok(Coincidence::Unknown);
@@ -197,41 +230,123 @@ fn trimmed(own: &Outline) -> Option<((f64, f64), (f64, f64))> {
     (ulo < uhi && vlo < vhi).then_some(((ulo, uhi), (vlo, vhi)))
 }
 
-fn sample((solid, face): (&Solid, usize), (twin, of_twin): (&Solid, usize), tol: f64) -> Found {
+/// One sample of a face that may be over the other face: the point, the
+/// parameters of its foot on the other surface, the foot, and how far
+/// apart they are.
+#[derive(Clone, Copy)]
+struct Foot {
+    p: Vec3,
+    at: (f64, f64),
+    q: Vec3,
+    d: f64,
+}
+
+/// The samples of a face ([`feet`]): its stations each way, per sample
+/// (row by row, a row per station along u) its [`Foot`] or nothing (a
+/// sample not near the other face's box, or with its foot outside the
+/// other face's cover), and how many of them can be counted over the
+/// other face at most.
+struct Feet {
+    us: Vec<f64>,
+    vs: Vec<f64>,
+    feet: Vec<Option<Foot>>,
+    possible: usize,
+}
+
+/// The samples of `face` of `solid` over its trimmed parameters with their
+/// feet on the face `of_twin` of `twin`, before any is asked whether it is
+/// over that face; `None` where the face cannot be sampled or a foot not
+/// found (no evidence, as [`sample`] answered). `possible` counts the
+/// samples within a quarter of the tolerance of the other surface and
+/// further than the tolerance from their own face's boundary: the most
+/// [`sample`] can count (it counts a sample only where its own face says
+/// it is *in*, which [`Outline::side`] says only beyond the tolerance from
+/// the boundary, the same test as [`Outline::within`]).
+fn feet(
+    (solid, face): (&Solid, usize),
+    (twin, of_twin): (&Solid, usize),
+    tol: f64,
+) -> Option<Feet> {
     let (Ok(own), Ok(other), Some(other_box)) = (
         solid.outline(face),
         twin.outline(of_twin),
         twin.boxes.get(of_twin),
     ) else {
-        return Found::Unknown;
+        return None;
     };
-    let Some(((ulo, uhi), (vlo, vhi))) = trimmed(own) else {
-        return Found::Unknown;
-    };
+    let ((ulo, uhi), (vlo, vhi)) = trimmed(own)?;
     let us = stations(&knots(&own.surface, true), ulo, uhi);
     let vs = stations(&knots(&own.surface, false), vlo, vhi);
-    if us.len().saturating_mul(vs.len()) > MOST {
-        return Found::Unknown;
+    let total = us.len().saturating_mul(vs.len());
+    if total > MOST {
+        return None;
     }
-    let mut rows: Vec<Row> = Vec::with_capacity(us.len());
-    let mut agree: Option<bool> = None;
-    let (mut count, mut apart) = (0_usize, false);
+    let mut feet = Vec::with_capacity(total);
+    let mut possible = 0_usize;
     for &u in &us {
-        let mut row = Vec::with_capacity(vs.len());
         for &v in &vs {
-            row.push(f64::NAN);
             let p = own.surface.eval(u, v);
             if !(p.is_finite() && other_box.contains(p, 2.0 * tol)) {
+                feet.push(None);
                 continue;
             }
-            let Some((pu, pv)) = other.sheet().project(p) else {
-                return Found::Unknown;
-            };
+            let (pu, pv) = other.sheet().project(p)?;
             let q = other.surface.eval(pu, pv);
             let d = p.distance(q);
             if !d.is_finite() {
-                return Found::Unknown;
+                return None;
             }
+            // (The other face's cover proves most feet outside it at no
+            // cost: a foot further than four tolerances from the face.)
+            if !twin.may_hold(of_twin, q, tol) {
+                feet.push(None);
+                continue;
+            }
+            if d <= 0.25 * tol && !own.within(p, tol) {
+                possible += 1;
+            }
+            feet.push(Some(Foot {
+                p,
+                at: (pu, pv),
+                q,
+                d,
+            }));
+        }
+    }
+    Some(Feet {
+        us,
+        vs,
+        feet,
+        possible,
+    })
+}
+
+fn sample(
+    (solid, face): (&Solid, usize),
+    (twin, of_twin): (&Solid, usize),
+    found: &Feet,
+    tol: f64,
+) -> Found {
+    let (Ok(own), Ok(other)) = (solid.outline(face), twin.outline(of_twin)) else {
+        return Found::Unknown;
+    };
+    let mut rows: Vec<Row> = Vec::with_capacity(found.us.len());
+    let mut agree: Option<bool> = None;
+    let (mut count, mut apart) = (0_usize, false);
+    let mut feet = found.feet.iter();
+    for &u in &found.us {
+        let mut row = Vec::with_capacity(found.vs.len());
+        for &v in &found.vs {
+            row.push(f64::NAN);
+            let Some(Some(Foot {
+                p,
+                at: (pu, pv),
+                q,
+                d,
+            })) = feet.next().copied()
+            else {
+                continue;
+            };
             // Only a sample of this face whose foot is inside the other
             // face is over it.
             let near = d <= 0.25 * tol;
@@ -239,11 +354,6 @@ fn sample((solid, face): (&Solid, usize), (twin, of_twin): (&Solid, usize), tol:
             // over the other face and how its normal lies there, not only
             // the first few: a fold or a turned patch further on must not
             // be taken for the same orientation.
-            // (The other face's cover proves most feet outside it at no
-            // cost: a foot further than four tolerances from the face.)
-            if !twin.may_hold(of_twin, q, tol) {
-                continue;
-            }
             let over = match other.side(q, tol) {
                 Ok(Side::In) => match own.side(p, tol) {
                     Ok(Side::In) => true,
@@ -323,3 +433,7 @@ fn between(rows: &[Row], tol: f64) -> bool {
     }
     most + 0.125 * bend <= 0.5 * tol
 }
+
+#[cfg(test)]
+#[path = "coincide_early_review.rs"]
+mod early_review;

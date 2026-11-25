@@ -1,0 +1,126 @@
+{
+  "groups": [
+    {
+      "commands": [
+        {
+          "command": "sketch.create",
+          "params": {
+            "name": "S0",
+            "offset": 0.0,
+            "plane": "zx"
+          }
+        },
+        {
+          "command": "sketch.circle",
+          "params": {
+            "center": [
+              0.0,
+              -0.0025
+            ],
+            "radius": 0.0025,
+            "sketch": "S0"
+          }
+        },
+        {
+          "command": "feature.extrude",
+          "params": {
+            "distance": 0.01,
+            "name": "N0",
+            "sketch": "S0"
+          }
+        }
+      ],
+      "step": "extrude"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.torus",
+          "params": {
+            "angle": "0 deg",
+            "axis": [
+              0.01,
+              0.01,
+              0.0
+            ],
+            "major": 0.01,
+            "minor": 0.0025,
+            "name": "N1",
+            "position": [
+              -0.000013695261579316567,
+              0.0,
+              -0.0025
+            ]
+          }
+        }
+      ],
+      "step": "primitive"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": true,
+            "name": "N2",
+            "op": "subtract",
+            "target": "N1",
+            "tool": "N0"
+          }
+        }
+      ],
+      "step": "boolean"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.fillet",
+          "params": {
+            "chain": false,
+            "edges": [
+              [
+                "{N2}:copy(0)/{N1}:face(0)",
+                "{N2}:copy(1)/{N0}:side(e2)"
+              ]
+            ],
+            "name": "N3",
+            "radius": 0.000625
+          }
+        }
+      ],
+      "step": "blend"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": true,
+            "name": "N4",
+            "op": "intersect",
+            "target": "N0",
+            "tool": "N3"
+          }
+        }
+      ],
+      "step": "boolean"
+    },
+    {
+      "commands": [
+        {
+          "command": "feature.boolean",
+          "params": {
+            "keepTool": false,
+            "name": "N5",
+            "op": "union",
+            "target": "N0",
+            "tool": "N3"
+          }
+        }
+      ],
+      "step": "boolean"
+    }
+  ],
+  "scale": 0.001,
+  "seed": 20838232
+}
