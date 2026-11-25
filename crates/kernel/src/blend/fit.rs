@@ -27,7 +27,8 @@
 //! that the faces leave no room ([`no_room`]: the blend reaches a face it
 //! should not, takes a neighbour away, comes out in pieces) at the size
 //! asked, at the size a bisection between a build and such a failure ends
-//! on, and at the sizes evenly between those two. A failure of the boolean
+//! on (or a few tolerances past it, nothing building between), and at the
+//! sizes evenly between those two. A failure of the boolean
 //! (a refusal at the edge of tolerance, an invalid body,
 //! [`BlendError::Invalid`]) is no such evidence: it may come at a size that
 //! fits, with sizes on either side of it that build, so where builds that
@@ -656,21 +657,19 @@ pub(super) fn explain(
     }
     // No event explains it: bisect on the builds, only where the result
     // at the size asked shows no room, and say what it finds only where the
-    // failure it ends on and those between it and the size asked show no
-    // room too. A size found where builds fail at the boolean is wherever
-    // its faults happen to lie ([`proven`]).
+    // result shows no room at it or a few tolerances past it (nothing
+    // building between: where a face is about to be taken whole, the
+    // boolean may refuse the sliver left of it) and at the sizes between it
+    // and the size asked. A size found where builds fail at the boolean is
+    // wherever its faults happen to lie ([`proven`]).
     if !no_room(&error) {
         return error;
     }
-    let Some(found) = bisect(fits, fails, 4.0 * tol / smallest, |at| search.attempt(at)) else {
+    let resolution = 4.0 * tol / smallest;
+    let Some(found) = bisect(fits, fails, resolution, |at| search.attempt(at)) else {
         return error;
     };
-    let shows = found >= 1.0
-        || matches!(
-            search.seen.get(&found.to_bits()),
-            Some(Outcome::Failed(failure)) if no_room(failure)
-        );
-    if !shows {
+    if !shows_no_room(&mut search, found, tol / smallest) {
         return error;
     }
     // The side the error names, or the first.
@@ -693,6 +692,29 @@ pub(super) fn explain(
         too_large(own, named, found * size),
         error,
     )
+}
+
+/// How many tolerances past a size a bisection ended on the builds that
+/// look for evidence of no room there are made, nearest first.
+const ABOVE: [f64; 2] = [4.0, 64.0];
+
+/// Whether the result shows no room ([`no_room`]) at `found` (a multiple
+/// of the size asked, where a bisection ended), or a few tolerances past
+/// it (`unit`, a tolerance as a multiple) with nothing building between;
+/// the size asked, which failed so, where `found` is no smaller.
+fn shows_no_room(search: &mut Search<'_>, found: f64, unit: f64) -> bool {
+    for past in std::iter::once(0.0).chain(ABOVE) {
+        let at = found + past * unit;
+        if at >= 1.0 {
+            return true;
+        }
+        match search.attempt(at) {
+            Outcome::Failed(failure) if no_room(&failure) => return true,
+            Outcome::Failed(_) => {}
+            Outcome::Built | Outcome::Spent => return false,
+        }
+    }
+    false
 }
 
 /// Into how many parts the sizes between a largest size found and the
