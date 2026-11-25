@@ -127,9 +127,18 @@ const AGREEING_FLOOR: usize = 11591;
 /// rests on the other body without a place the section makes (a touch of
 /// two faces no point of the section shows); the digest and the sum are
 /// unchanged. The outright agreement goes from 10571 to 10534, the
-/// zero-thick count from 1023 to 1060.
-const MATCHED_FLOOR: usize = 10534;
-const ZERO_THICK_CEILING: usize = 1060;
+/// zero-thick count from 1023 to 1060. Changed on 2026-11-25 (two faces'
+/// nearest points in closed form where their kinds have them, and a
+/// descent where the search's projections crawl, `boolean::near`): three
+/// more unions of `near` that were a `match` are refused as two shells
+/// that touch, one each of `block-sphere`, `sphere-torus` and
+/// `torus-torus`, each with a point on two parts of the body made without
+/// the refusal (`on_parts`); their parts are a tolerance or less apart, by
+/// the cases' own numbers; the digest and the sum are unchanged. The
+/// outright agreement goes from 10534 to 10531, the zero-thick count from
+/// 1060 to 1063.
+const MATCHED_FLOOR: usize = 10531;
+const ZERO_THICK_CEILING: usize = 1063;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and

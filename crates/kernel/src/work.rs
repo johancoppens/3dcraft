@@ -21,10 +21,10 @@ static NEAR_LEFT: AtomicU64 = AtomicU64::new(0);
 
 /// Entities a boolean's look for near approaches (`boolean/near.rs`) left
 /// with pairs not measured, at its caps on the pairs it measures and looks
-/// at in one boolean: what was left is not refused, as before the look
-/// existed, and is counted here, so that it is not silent. Zero in a
-/// process whose every look finished. Not part of [`KernelWork`] (the
-/// benchmark's counts).
+/// at in one boolean (since 2026-11-25 the boolean is then refused, and
+/// interference unknown, where what was found does not refuse it already;
+/// the count stays beside that). Zero in a process whose every look
+/// finished. Not part of [`KernelWork`] (the benchmark's counts).
 pub fn near_left() -> u64 {
     NEAR_LEFT.load(Ordering::Relaxed)
 }

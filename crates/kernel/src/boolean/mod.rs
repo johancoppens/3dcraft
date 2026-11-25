@@ -903,9 +903,14 @@ fn run(
         }
         // Where the places above see nothing: an edge or a face passing an
         // edge or a face of the other operand (or one the boolean made)
-        // within twice the tolerance, no surfaces meeting nearby.
-        let approaches = near::in_result(&result, &a, &b, &sections, tol);
-        near_approaches(&result, tolerance, &approaches)?;
+        // within twice the tolerance, no surfaces meeting nearby. A look
+        // stopped at its cap, where what it found does not refuse the
+        // result already, refuses it: what it left may be that near.
+        let looked = near::in_result(&result, &a, &b, &sections, tol);
+        near_approaches(&result, tolerance, &looked.approaches)?;
+        if !looked.finished {
+            return Err(Stop::of(near::CUT_SHORT));
+        }
     }
     Ok(result)
 }
