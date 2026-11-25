@@ -1334,9 +1334,10 @@ fn blend_one(
             .ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?;
         let outward =
             outward_from(&solver, &surface, &params, &sections, convex).ok_or_else(unsolvable)?;
-        if let Some(side) = folds(&surface, &params, &sections, (0.0, 1.0)) {
-            let face = [first, second].get(side).copied();
-            return Err(refuse(edge, face, Reason::FreeFolds));
+        // A ring is kept whole.
+        let fold = folds(&surface, &params, &sections, (0.0, 1.0), (0.0, 1.0));
+        if let Some(fold) = fold {
+            return Err(fold.refusal(edge, [first, second]));
         }
         let (blend_face, second_border) =
             splice_ring(body, edge, [first, second], surface, outward)?;
@@ -1788,9 +1789,28 @@ fn blend_open(
     }
     let outward_hint =
         outward_from(home_solver, &surface, &params, &sections, convex).ok_or_else(unsolvable)?;
-    if let Some(side) = folds(&surface, &params, &sections, (0.0, 1.0)) {
-        let face = faces.get(side).copied();
-        return Err(refuse(edge, face, Reason::FreeFolds));
+    // What of the face is kept: from the cut at its start (or its tip) to
+    // the cut at its end, each cut taken where it reaches furthest out.
+    let mut kept = [0.0_f64, 1.0];
+    for (index, (cut, tip)) in cuts.iter().zip(&tips).enumerate() {
+        let at = match (cut, tip) {
+            (Some(chain::OneEnd::Cut { at: [a, b], .. }), _) => {
+                if index == 0 {
+                    a.min(*b)
+                } else {
+                    a.max(*b)
+                }
+            }
+            (None, Some(tip)) => tip.at,
+            _ => return Err(lost()),
+        };
+        if let Some(slot) = kept.get_mut(index) {
+            *slot = at;
+        }
+    }
+    let [from, to] = kept;
+    if let Some(fold) = folds(&surface, &params, &sections, (0.0, 1.0), (from, to)) {
+        return Err(fold.refusal(edge, faces));
     }
     let motion = match solvers.as_slice() {
         [only] => only.moved.map(|m| m.motion),
@@ -2406,27 +2426,59 @@ fn outward_from(
 /// normal by the twist between neighbours only, far less than a quarter
 /// turn), and a fillet's normal keeps its side of the radius from the
 /// ball's centre. A normal that vanishes counts as a fold.
+///
+/// **Along the edge** (2026-11-25, the random designs 20791978 and
+/// 20821184): where the edge bends more tightly than the blend reaches
+/// from it, a whole section lies past the line in which the planes across
+/// the edge meet, and the sections there run back along the edge as the
+/// planes move on: the surface turns over between two samples, and every
+/// normal of a section turned over points the other way at once, its
+/// middle's too, so holding each section to its own middle does not see
+/// it. So across the part of the face that is kept (`kept`, of the edge's
+/// own parameter: the sections between the cuts at its two ends, which
+/// may reach past the edge's ends), the middle of every section of a
+/// fillet found has its normal on one side of the radius from the ball's
+/// centre. One on the other side is [`Fold::Along`]. Not the sections
+/// halfway between two: their ball's centre is the mean of their
+/// neighbours', which near the tip of a fillet whose radius runs to
+/// nothing need not lie on the side of the face its own does. Not a
+/// chamfer's: its line's side of the edge's point turns where the edge
+/// turns from convex to concave, which a chamfer builds through (a loft's
+/// ridge that dips below its eaves, `fillet_pinched.rs`); a chamfer's
+/// sections that run back are owed a side read against its faces'
+/// normals. Before, such a fillet face reached the tangency the fillet is
+/// held to at its borders, which found its normal turned over there and
+/// said so as a bug; where the turn lay between that check's seven
+/// points, the face was handed on folded.
 fn folds(
     surface: &NurbsSurface,
     params: &[f64],
     sections: &[Section],
     range: (f64, f64),
-) -> Option<usize> {
+    kept: (f64, f64),
+) -> Option<Fold> {
     const ACROSS: u32 = 16;
     let ((u0, _), (v0, v1)) = surface.domain();
-    let mut samples: Vec<(f64, Option<Vec3>)> = Vec::with_capacity(2 * params.len());
+    // Each with whether it is a section found (not one halfway between
+    // two, whose ball's centre is the mean of theirs).
+    let mut samples: Vec<(f64, Option<Vec3>, bool)> = Vec::with_capacity(2 * params.len());
     for (k, (s, section)) in params.iter().zip(sections).enumerate() {
         // (A section drawn into a point has no normal to hold.)
         if section.pole.is_none() {
-            samples.push((*s, section.centre));
+            samples.push((*s, section.centre, true));
         }
         if let (Some(next), Some(after)) = (params.get(k + 1), sections.get(k + 1)) {
             let centre = section.centre.zip(after.centre).map(|(a, b)| (a + b) * 0.5);
-            samples.push((0.5 * (s + next), centre));
+            samples.push((0.5 * (s + next), centre, false));
         }
     }
-    for (s, centre) in samples {
-        if !(s >= range.0 && s <= range.1) {
+    // Which ways the middles of the kept sections face: one seen facing
+    // along the reference, one against it.
+    let mut faced = [false, false];
+    for (s, centre, found) in samples {
+        let held = s >= range.0 && s <= range.1;
+        let in_kept = found && s >= kept.0 && s <= kept.1;
+        if !(held || in_kept) {
             continue;
         }
         let u = if s < u0 { s + 1.0 } else { s };
@@ -2441,25 +2493,60 @@ fn folds(
             None => n.dot(mid),
         };
         let Some((pm, nm)) = normal(0.5 * (v0 + v1)) else {
-            return Some(0);
+            if held {
+                return Some(Fold::Across(0));
+            }
+            continue;
         };
+        if in_kept && let Some(c) = centre {
+            let way = nm.dot(pm - c);
+            if way > 0.0 {
+                faced[0] = true;
+            } else if way < 0.0 {
+                faced[1] = true;
+            }
+        }
+        if !held {
+            continue;
+        }
         let middle = reference(pm, nm, nm);
         if !(middle.abs() > 0.0) {
-            return Some(0);
+            return Some(Fold::Across(0));
         }
         for j in 0..=ACROSS {
             let t = f64::from(j) / f64::from(ACROSS);
             let v = v0 + (v1 - v0) * t;
             let side = usize::from(t > 0.5);
             let Some((p, n)) = normal(v) else {
-                return Some(side);
+                return Some(Fold::Across(side));
             };
             if !(reference(p, n, nm) * middle > 0.0) {
-                return Some(side);
+                return Some(Fold::Across(side));
             }
         }
     }
-    None
+    (faced == [true, true]).then_some(Fold::Along)
+}
+
+/// How a blend surface folds through itself ([`folds`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fold {
+    /// A section folds across itself: nearer the border on the first face
+    /// (0) or on the other (1).
+    Across(usize),
+    /// Sections run back along the edge, where it bends more tightly than
+    /// the blend reaches from it.
+    Along,
+}
+
+impl Fold {
+    /// The refusal of a blend of `edge` between `faces` that folds so.
+    fn refusal(self, edge: EdgeId, faces: [FaceId; 2]) -> BlendError {
+        match self {
+            Fold::Across(side) => refuse(edge, faces.get(side).copied(), Reason::FreeFolds),
+            Fold::Along => refuse(edge, None, Reason::FreeRunsBack),
+        }
+    }
 }
 
 /// The border `border` of a blend face lies on `face` and stays on it:
