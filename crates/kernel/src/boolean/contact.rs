@@ -75,7 +75,9 @@ pub enum Interference {
 /// both boundaries by twice that area) or only an edge of it; a face's
 /// orientation counts, so a pin in a hole and a body in a cavity face
 /// the walls they lie against. Every refusal of the boolean (contact at the edge of
-/// tolerance, geometry not handled) is an error, never "clear".
+/// tolerance, geometry not handled) is an error, never "clear"; so is a look
+/// for near approaches stopped at its cap before it found one
+/// (`near::CUT_SHORT`).
 pub fn interference(
     a: &Body,
     b: &Body,
@@ -367,7 +369,8 @@ fn evidence(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<Evidence, Stop>
     // further apart than the tolerance can tell, at the point between the
     // two nearest points found.
     if found.kind.is_none() {
-        for approach in near::between(&sa, &sb, &sections, tol) {
+        let looked = near::between(&sa, &sb, &sections, tol);
+        for approach in &looked.approaches {
             found.raise(ContactKind::Point);
             found.point(approach.p.lerp(approach.q, 0.5), tol);
             for (operand, face) in approach.faces {
@@ -376,6 +379,14 @@ fn evidence(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<Evidence, Stop>
                     Operand::B => found.faces_b.insert(face),
                 };
             }
+        }
+        // A look stopped at its cap that found nothing: a pair it did not
+        // measure may touch, so the answer is not known (refused, as every
+        // refusal of the boolean is: unknown), never clear. One that found
+        // an approach before it stopped is a touch: two points of the two
+        // solids that near, and no volume in common.
+        if found.kind.is_none() && !looked.finished {
+            return Err(Stop::of(near::CUT_SHORT));
         }
     }
     Ok(found)

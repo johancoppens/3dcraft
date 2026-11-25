@@ -40,10 +40,14 @@
 //!   `1 − 1.5 t / 20` a step, so after their forty steps they stop about
 //!   0.22 units over the plane, further than twice the tolerance, and the
 //!   golden-section polish, which starts only from a pair within twice the
-//!   tolerance, is not tried: the web is built, as on `main`. A wrong body
-//!   by the rule of 2026-10-22: that test fails on the branch (4 of 4 in
-//!   the band, Check 45362576161), and is ignored as owed until the
-//!   search reaches it (run with `--ignored`).
+//!   tolerance, is not tried: the web was built, as on `main`. A wrong body
+//!   by the rule of 2026-10-22: that test failed on the branch (4 of 4 in
+//!   the band, Check 45362576161), ignored as owed until the search
+//!   reached it. Since 2026-11-25 a plane and a ball are measured by their
+//!   nearest points in closed form (the foot of the centre, and the point
+//!   of the ball over it: `near.rs` › `square_pairs`), wherever the dimple
+//!   is, and the test runs (`boolean_near_dimple.rs` holds the dimple at
+//!   other places and radii, and under a spline face).
 
 #![allow(
     clippy::unwrap_used,
@@ -418,11 +422,11 @@ fn a_web_in_the_band_under_a_wide_dimple_at_the_plates_middle_is_refused() {
 /// lies about 8.5 degrees round the ball from the lowest point, and the
 /// alternating projections between the ball and the bottom close in by
 /// `1 − 1.5 t / 20` a step: after forty, still 8.3 degrees round, 0.22
-/// over the bottom, so no pair within twice the tolerance is found and the
-/// polish is not tried. The web is built, as on `main`: a wrong body by the
-/// rule of 2026-10-22.
+/// over the bottom, so no pair within twice the tolerance was found and
+/// the polish was not tried. The web was built, as on `main`: a wrong body
+/// by the rule of 2026-10-22. The plane and the ball's nearest points in
+/// closed form find it (2026-11-25): refused in the band, one shell at 3.
 #[test]
-#[ignore = "owed, a wrong body main gives too: the search between two faces does not reach a web in the band under a wide dimple off the plate's middle (docs/roadmap.md); fails today: run with --ignored --nocapture"]
 fn a_web_in_the_band_under_a_wide_dimple_off_the_plates_middle_is_refused() {
     let faults = dish_answers(2.0);
     assert!(
