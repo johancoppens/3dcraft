@@ -2115,7 +2115,7 @@ fn section_with(
     if !coincident.is_empty() {
         let (boundary_a, boundary_b) = (boundary_edges(a.body), boundary_edges(b.body));
         if !(boundary_a.is_empty() && boundary_b.is_empty()) {
-            for (fa, fb) in coincident {
+            for &(fa, fb) in &coincident {
                 lying_edges(
                     a,
                     fa,
@@ -2129,8 +2129,201 @@ fn section_with(
                 )?;
             }
         }
+        // The folds of faces on one surface, from the edges themselves
+        // (`fold_edges`, since 2026-11-25).
+        let faces_a: BTreeSet<usize> = coincident.iter().map(|&(fa, _)| fa).collect();
+        let faces_b: BTreeSet<usize> = coincident.iter().map(|&(_, fb)| fb).collect();
+        let (folds_a, folds_b) = (fold_edges(a, &faces_a), fold_edges(b, &faces_b));
+        if !(folds_a.is_empty() && folds_b.is_empty()) {
+            for &(fa, fb) in &coincident {
+                lying_edges(
+                    a,
+                    fa,
+                    b,
+                    fb,
+                    Lying::Fold(&folds_a, &folds_b),
+                    vertices,
+                    tolerance,
+                    kept,
+                    &mut sections,
+                )?;
+            }
+        }
     }
     Ok(sections)
+}
+
+/// The sine within which the two faces of an edge are taken as tangent
+/// across it, for [`fold_edges`]: at a smaller angle the curve in which
+/// the neighbour meets another surface the face lies on may lie a hundred
+/// tolerances and more from the edge (the tolerance over the sine). The
+/// sine within which `tweak` puts a vertex of two tangent faces on their
+/// seam, the same.
+const FOLD: f64 = 1e-2;
+
+/// The edges of `faces` of `solid` that are folds: the two faces meet
+/// there at no angle, their outward normals at the edge's middle opposite
+/// to within the sine [`FOLD`] (a knife edge of no angle, a cusp; the
+/// material between them or around them). A seam of one face (used twice
+/// by it) is none.
+///
+/// **Why** (2026-11-25, random design 114519). Where a face of one body
+/// lies on a face of the other (`coincident`), its edges are imprinted on
+/// that face by the curves in which its neighbours meet it: the neighbour
+/// across an edge meets the surface the two faces share along that edge.
+/// A neighbour tangent to the face there only touches that surface, along
+/// a band about `√(2 r tol)` wide (`r` the radius the two part at) where
+/// they are within the tolerance of each other, and the edge may have been
+/// placed anywhere in it; the curve geometry gives for the touch (a closed
+/// form's tangent line, on the exact tangency) need not be the edge. A
+/// shell's floor, a plane tangent to its hollowed rod, had its edge with
+/// the rod 2.4e-4 along the band; the shell's mirror image in a plane
+/// through the rod's axis had its own as far on the other side; each lay on
+/// the other's rod face within the tolerance and divided it, and the
+/// tangent line on the seam, outside both floors, imprinted neither: the
+/// boolean built an invalid body (and so where the two cross for real
+/// within the band, a shell a fraction of the tolerance thinner). Such an
+/// edge is imprinted from itself ([`lying_edges`], [`Lying::Fold`]).
+///
+/// Only folds: the face operations put a vertex where two faces meet
+/// tangent with their outward normals the same way (a seam held G1, a
+/// blend's edge) on the seam (`tweak::on_seam`), where their neighbour's
+/// curve is the edge, and imprinting those edges from themselves too cost
+/// the benchmark's booleans of fillets' tools up to 18 % more edges asked
+/// and changed nothing; a fold's vertex is left where Newton's steps stop
+/// on it.
+fn fold_edges(solid: &Solid, faces: &BTreeSet<usize>) -> BTreeSet<EdgeId> {
+    let uses = craft3d_topo::edge_faces(solid.body);
+    let mut found = BTreeSet::new();
+    for &face in faces {
+        for id in solid.edges_of(face) {
+            let Some(pair) = uses.get(id.0 as usize) else {
+                continue;
+            };
+            let [first, second] = pair.as_slice() else {
+                continue;
+            };
+            if first == second {
+                continue;
+            }
+            let Some(edge) = solid.body.edge(id) else {
+                continue;
+            };
+            let middle = edge.curve.eval(0.5 * (edge.range.0 + edge.range.1));
+            let outward = |face: &FaceId| -> Option<Vec3> {
+                let face = solid.body.face(*face)?;
+                let (u, v) = face.surface.project(middle).ok()?;
+                let normal = face.surface.normal(u, v)?;
+                Some(if face.reversed { -normal } else { normal })
+            };
+            if let (Some(n), Some(m)) = (outward(first), outward(second))
+                && n.dot(m) < 0.0
+                && n.cross(m).length() <= FOLD
+            {
+                found.insert(id);
+            }
+        }
+    }
+    found
+}
+
+/// Of `edges` of `own` (its operand `operand`), folds that lie on the face
+/// `other` of the other body, those that no stretch already on `other`
+/// imprints, to be imprinted from themselves.
+///
+/// - A fold along which a stretch on that face runs is left to it, all of
+///   it: the stretch within the tolerance of the fold at seven places
+///   spread over it, and [`ALONG`] tolerances long or more (shorter, or
+///   further, a curve that crosses the fold at a small angle can be as
+///   near; the measure [`edge_crossings`] takes for two edges that share a
+///   stretch). Such a stretch is the curve in which the fold's neighbour
+///   meets the face where that curve is the edge (an exact tangency: the
+///   tool of a fillet, its round against the face it rounds), or the fold
+///   itself where the neighbour only touches the face (`Lying::Near`), and
+///   the rest of the fold lies beyond the face or where the neighbour's
+///   curve leaves it. An imprint of the fold from itself beside it is a
+///   second border on the face where it already has one, cut at other
+///   places (where the fold crosses the face's edges by [`edge_crossings`],
+///   where the stretch ends by the curve's own cuts): at a crossing of a
+///   spline border, a sliver between the two, refused as an imprint that
+///   does not fit (the trial Gate of 2026-11-25: a fillet's tool against a
+///   wall whose other border is a spline, at 1000 times the size); and a
+///   tool cut whose answer was right (*too large, below what fits*) became
+///   a refusal at the edge of tolerance. The fold of the shell's floor
+///   (above) has no stretch along it: the floor's curve against the other
+///   rod is the tangent line on the seam, 2.4e-4 away and clipped.
+/// - Otherwise each is cut where a stretch on the face ends on it, and
+///   passed over where every piece lies on such a stretch at its quarters
+///   and its middle (not at its ends, which a stretch that ends a little
+///   short of the fold's vertex may miss by more than the tolerance): a
+///   stretch that crosses a fold at its middle at a small angle, and ends
+///   beyond both of its ends, runs along none of it (the review of
+///   2026-11-25, read at the middle alone before).
+fn not_imprinted(
+    own: &Solid,
+    edges: Vec<EdgeId>,
+    operand: Operand,
+    other: usize,
+    vertices: &Vertices,
+    sections: &Sections,
+    tol: f64,
+) -> Result<Vec<EdgeId>, Stop> {
+    let on_face = |s: &&Stretch| match operand {
+        Operand::A => s.fb == other,
+        Operand::B => s.fa == other,
+    };
+    let mut left = Vec::new();
+    for id in edges {
+        let edge = own.body.edge(id).ok_or(Stop::of(LOST))?;
+        let runs_along = |s: &Stretch| {
+            let (s0, s1) = s.range;
+            let mut length = 0.0;
+            let mut before: Option<Vec3> = None;
+            for k in 1..=7 {
+                let at = s.curve.eval(s0 + (s1 - s0) * f64::from(k) / 8.0);
+                if locate(&edge.curve, edge.range, at, tol).is_none() {
+                    return false;
+                }
+                if let Some(before) = before {
+                    length += at.distance(before);
+                }
+                before = Some(at);
+            }
+            length >= ALONG * tol
+        };
+        if sections.stretches.iter().filter(on_face).any(runs_along) {
+            continue;
+        }
+        let (t0, t1) = edge.range;
+        let mut cuts = vec![t0, t1];
+        for stretch in sections.stretches.iter().filter(on_face) {
+            for vertex in [stretch.start, stretch.end] {
+                if let Some(&p) = vertices.points.get(vertex)
+                    && let Some(t) = locate(&edge.curve, edge.range, p, tol)
+                    && t > t0
+                    && t < t1
+                {
+                    cuts.push(t);
+                }
+            }
+        }
+        cuts.sort_by(f64::total_cmp);
+        cuts.dedup();
+        let along = cuts.iter().zip(cuts.iter().skip(1)).all(|(&lo, &hi)| {
+            (1..=3).all(|k| {
+                let at = edge.curve.eval(lo + (hi - lo) * f64::from(k) / 4.0);
+                sections
+                    .stretches
+                    .iter()
+                    .filter(on_face)
+                    .any(|s| locate(&s.curve, s.range, at, tol).is_some())
+            })
+        });
+        if !along {
+            left.push(id);
+        }
+    }
+    Ok(left)
 }
 
 /// The faces of `b` whose boxes may meet `box_a`, ascending: the pairs of
@@ -2548,6 +2741,12 @@ enum Lying<'e> {
     /// boundary of a sheet: these of A, these of B), which no second face
     /// of their own imprints.
     Boundary(&'e BTreeSet<EdgeId>, &'e BTreeSet<EdgeId>),
+    /// The folds of either face (these of A, these of B: [`fold_edges`]),
+    /// for faces that lie on one surface: the neighbour across a fold is
+    /// tangent to the face, and no curve of it against the other face need
+    /// be the edge, so each is imprinted from itself, as a sheet's boundary
+    /// is.
+    Fold(&'e BTreeSet<EdgeId>, &'e BTreeSet<EdgeId>),
 }
 
 /// The edges of `body` that one face uses, once.
@@ -2867,7 +3066,7 @@ fn lying_edges(
     let reach = EDGE_REACH * tol;
     let (boundary_a, boundary_b) = match which {
         Lying::Near => (None, None),
-        Lying::Boundary(of_a, of_b) => (Some(of_a), Some(of_b)),
+        Lying::Boundary(of_a, of_b) | Lying::Fold(of_a, of_b) => (Some(of_a), Some(of_b)),
     };
     // The edges of each face that come within the tolerance of the other
     // face's surface somewhere (nine places along them).
@@ -2892,10 +3091,20 @@ fn lying_edges(
         }
         Ok(found)
     };
-    let (of_a, of_b) = (
+    let (mut of_a, mut of_b) = (
         close(a, fa, ob.sheet(), boundary_a)?,
         close(b, fb, oa.sheet(), boundary_b)?,
     );
+    // A fold that a stretch already runs along (where its neighbour's curve
+    // is the edge: every fold of a fillet's tool, built exactly) is left to
+    // it, and so one that the stretches cover all along: imprinted from
+    // itself beside them it asked for edges for nothing (the benchmark's
+    // tools, up to 15 % more), or divided a face into slivers where the two
+    // end apart (`not_imprinted`).
+    if matches!(which, Lying::Fold(..)) {
+        of_a = not_imprinted(a, of_a, Operand::A, fb, vertices, sections, tol)?;
+        of_b = not_imprinted(b, of_b, Operand::B, fa, vertices, sections, tol)?;
+    }
     if of_a.is_empty() && of_b.is_empty() {
         return Ok(());
     }
@@ -2905,8 +3114,9 @@ fn lying_edges(
     // A boundary edge lies on the other face's surface, and so do that
     // face's own edges: no edge meets the other's surface where the two
     // cross, so where the boundary edge enters or leaves the other face
-    // is found between the curves themselves.
-    if matches!(which, Lying::Boundary(..)) {
+    // is found between the curves themselves. So for a fold of a face on
+    // the other's surface.
+    if matches!(which, Lying::Boundary(..) | Lying::Fold(..)) {
         for &id in &of_a {
             edge_crossings(a, id, b, fb, &named, tol, &mut found)?;
         }
@@ -4237,6 +4447,115 @@ pub(super) mod tests {
                     "{what}"
                 );
             }
+        }
+    }
+
+    /// The review of the folds (2026-11-25): [`not_imprinted`] passes an
+    /// edge over only where the stretches already on the other face run
+    /// along all of it. A stretch that crosses a fold at the fold's middle,
+    /// at a thousandth of a radian, and ends far beyond both of its ends
+    /// (no vertex of it on the edge) is within the tolerance of the edge for
+    /// two thousandths of its length; the rest of the edge is imprinted by
+    /// nothing, so the edge must be kept.
+    #[test]
+    fn a_stretch_across_the_middle_of_a_fold_does_not_run_along_it() {
+        use super::super::{Operand, Vertices};
+        let tolerance = Tolerance::default();
+        let tol = tolerance.linear;
+        let block = crate::primitives::block(&craft3d_math::Frame::WORLD, 1.0, 1.0, 1.0).unwrap();
+        let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
+        let a = prepare(&block, Operand::A, &mut vertices, &tolerance, true).unwrap();
+        // The block's edge along x at y = 0, z = 0.
+        let index = block
+            .edges
+            .iter()
+            .position(|e| {
+                let p = e.curve.eval(0.5 * (e.range.0 + e.range.1));
+                p.y.abs() < 1e-12 && p.z.abs() < 1e-12
+            })
+            .unwrap();
+        let id = EdgeId(u32::try_from(index).unwrap());
+        // Through (0.5, 0, 0) at a slope of 1e-3, from x = -1.5 to 2.5.
+        let (from, to) = (Vec3::new(-1.5, -2e-3, 0.0), Vec3::new(2.5, 2e-3, 0.0));
+        let line = craft3d_geom::Line::through(from, to).unwrap();
+        let start = vertices.points.len();
+        vertices.points.push(from);
+        vertices.points.push(to);
+        let mut sections = Sections::default();
+        sections.stretches.push(Stretch {
+            curve: Curve3::Line(line),
+            range: (0.0, from.distance(to)),
+            start,
+            end: start + 1,
+            fa: 0,
+            fb: 0,
+            inside_a: true,
+            inside_b: true,
+            crossing: true,
+        });
+        let left = not_imprinted(&a, vec![id], Operand::A, 0, &vertices, &sections, tol).unwrap();
+        assert_eq!(
+            left,
+            vec![id],
+            "passed over: the stretch runs along {:e} of the edge",
+            2.0 * tol / 1e-3
+        );
+    }
+
+    /// The round of 2026-11-25 after the review: a fold along which a
+    /// stretch on the other face runs is left to that stretch, all of it,
+    /// though the stretch covers only part of it (the rest lies beyond the
+    /// face, or where the neighbour's curve leaves it); a stretch shorter
+    /// than [`ALONG`] tolerances, or beside the fold by more than the
+    /// tolerance, leaves it to be imprinted from itself.
+    #[test]
+    fn a_stretch_along_part_of_a_fold_takes_all_of_it() {
+        use super::super::{Operand, Vertices};
+        let tolerance = Tolerance::default();
+        let tol = tolerance.linear;
+        let block = crate::primitives::block(&craft3d_math::Frame::WORLD, 1.0, 1.0, 1.0).unwrap();
+        let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
+        let a = prepare(&block, Operand::A, &mut vertices, &tolerance, true).unwrap();
+        // The block's edge along x at y = 0, z = 0.
+        let index = block
+            .edges
+            .iter()
+            .position(|e| {
+                let p = e.curve.eval(0.5 * (e.range.0 + e.range.1));
+                p.y.abs() < 1e-12 && p.z.abs() < 1e-12
+            })
+            .unwrap();
+        let id = EdgeId(u32::try_from(index).unwrap());
+        // (from x, to x, off in y, passed over)
+        for (x0, x1, off, passed) in [
+            // Along 0.3 of it, 0.3 of the tolerance beside it.
+            (0.6, 0.9, 0.3 * tol, true),
+            // Along it for 32 tolerances only.
+            (0.5, 0.5 + 32.0 * tol, 0.0, false),
+            // Along it, 3 tolerances beside it.
+            (0.1, 0.9, 3.0 * tol, false),
+        ] {
+            let (from, to) = (Vec3::new(x0, off, 0.0), Vec3::new(x1, off, 0.0));
+            let line = craft3d_geom::Line::through(from, to).unwrap();
+            let start = vertices.points.len();
+            vertices.points.push(from);
+            vertices.points.push(to);
+            let mut sections = Sections::default();
+            sections.stretches.push(Stretch {
+                curve: Curve3::Line(line),
+                range: (0.0, from.distance(to)),
+                start,
+                end: start + 1,
+                fa: 0,
+                fb: 0,
+                inside_a: true,
+                inside_b: true,
+                crossing: false,
+            });
+            let left =
+                not_imprinted(&a, vec![id], Operand::A, 0, &vertices, &sections, tol).unwrap();
+            let want = if passed { Vec::new() } else { vec![id] };
+            assert_eq!(left, want, "x {x0} to {x1}, {off:e} beside");
         }
     }
 }
