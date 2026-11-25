@@ -1,12 +1,19 @@
 # Decisions
 
-> **Last updated:** 2026-11-24
+> **Last updated:** 2026-11-25
 
 This is the record of the decisions taken while 3DCraft was built, written at the time and kept as it was. "The developer" is the project's maintainer; "an agent" and "the coordinator" are the AI agents that built it (the coordinator plans the others' work and merges it). A decision made by an agent "for the developer to overturn" (some of them overnight, while nobody could be asked) stood unless it was overturned, and a later entry says so where it was; dates are when a decision was taken, ids of runs and commits are the workshop's evidence of the day. From outside the project, an open decision is raised in an issue.
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-11-25: The kayak's waterplane in its last digits, and a void that touches the outer wall along curves (decided by the developer)
+
+Two questions the coordinator put; the developer's answers:
+
+- **`measure.below` closes a section's loops where a fitted curve ends short of the next** (`below::closing_sums`, branch `check/closed-section-loops`), and that goes to `main`: the kayak's waterline measurements move in their last digits (relative 1e-11 to 1e-10; its volumes unchanged) and the 37 hashes of `crates/engine/tests/measure_far.rs` (the kayak's six and a test sliver's 31) are pinned again. The new areas no longer depend on where the model lies, and at two of its three levels they lie closer to the hull's exact section.
+- **A void whose wall touches the body's outer wall only along curves is refused as zero thickness** (the rule of 2026-10-15, not that of 2026-10-18), on the coordinator's recommendation, given after the developer's answer (the question had put both rules without one). The void stays a shell of its own: the curves, imprinted, are slits in the outer face that end inside it and join no faces into one shell, so it is two shells of one body that touch along curves, the case 2026-10-15 names; 2026-10-18 speaks of one shell (a through hole whose wall touches the plate's side is part of the outer shell). It keeps what `main` did and 0.2.1 does (refused there at a hit 6.3 tolerances off the curve, now at a point of it), so no published answer changes. Pinned by `boolean_pinch_along_a_curve_review.rs` › `a_void_whose_wall_touches_the_blocks_face_along_the_arcs_is_refused_as_two_shells` ([`design/booleans.md`](design/booleans.md) › *A pinch along a curve*).
 
 ### 2026-11-24: Near approaches: slivers beside a vertex stay accepted, an approach outside the result is not refused; a fillet says "too large" only where it is shown (decided by the developer)
 
