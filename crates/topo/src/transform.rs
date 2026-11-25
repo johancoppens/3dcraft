@@ -961,13 +961,22 @@ fn face_extent(
         }
         Surface::Torus(torus) => {
             // A circle of radius R about the axis, thickened by r: along a
-            // unit direction e it reaches R·|e − (e·z) z| + r.
+            // unit direction e it reaches R·|e − (e·z) z| + r, which along
+            // a world axis is R times the length of the other two
+            // components of z. Taken from those two, not as √(1 − z_i²):
+            // where the axis leans less than about 1e-8 rad from a world
+            // axis, z_i² rounds to 1 and the box lost R·sin of the lean
+            // (2026-11-25).
             let (major, minor) = torus.radii();
             let frame = torus.frame();
             if face.loops.is_empty() || round == Round::Whole {
-                let [x, y, z] =
-                    components(frame.z()).map(|c| major * (1.0 - c * c).max(0.0).sqrt() + minor);
-                out.add_reach(frame.origin(), Vec3::new(x, y, z));
+                let [zx, zy, zz] = components(frame.z());
+                let reach = Vec3::new(
+                    major * zy.phypot(zz) + minor,
+                    major * zz.phypot(zx) + minor,
+                    major * zx.phypot(zy) + minor,
+                );
+                out.add_reach(frame.origin(), reach);
                 return Ok(());
             }
             let sign = if face.reversed { -1.0 } else { 1.0 };

@@ -27,36 +27,54 @@
 //!   not looked at. This is read from the sources before any geometry.
 //! - Their boxes, grown by twice the tolerance, meet: a tree of the boxes of
 //!   the larger side, asked with each box of the other in turn, each answer
-//!   measured as it comes.
+//!   measured as it comes. A vertex or an edge is passed over against a
+//!   piece of a ball or a ring where the box of what the piece holds is
+//!   that far from it (since 2026-11-25, [`Look::away_from_piece`]).
 //! - They share no vertex: two entities that share one anywhere are not
 //!   measured, however near they come away from it (a face and its own edge;
 //!   read from the topology alone, owed in the roadmap).
 //! - Not two vertices: every vertex of a result is a point the section
 //!   registered, and two of those in the band are refused there.
 //!
-//! At most [`MOST_PAIRS`] pairs are measured and [`MOST_LOOKED`] looked at in
-//! one look. A look that reaches either stops and says so
-//! ([`Looked::finished`]), and the entities of the smaller side it left are
-//! counted (`crate::work::near_left`): a pair it did not measure may be an
+//! A look does at most [`MOST_WORK`] units of work ([`Work`]: a pair looked
+//! at, a point sought or measured; each unit's cost is bounded) and holds
+//! at most [`MOST_FOUND`] approaches. A look that reaches either stops and
+//! says so ([`Looked::finished`]), and the entities of the smaller side it
+//! left are counted (`crate::work::near_left`; its work in
+//! `crate::work::near_work`): a pair it did not measure may be an
 //! approach, so the boolean refuses ([`CUT_SHORT`]) where what was found
 //! does not refuse it already, and interference (`contact.rs` › `evidence`)
 //! answers unknown where nothing was found, never clear (the rule of
 //! `craft3d_geom::allowance`: a loop that stops never says "nothing
-//! found"). The caps lie above every look measured by more than three
-//! times (2026-11-25): in one look the benchmark's at most 1 584 pairs
-//! looked at and 234 measured, the corpus's 682 and 338, Garabit's
-//! findings 1 588 and 1 306, and the engine's fuzz findings, the largest
-//! inputs met (patterns of shelled balls and tubes, overlapping balls),
-//! 5 079 035 looked at and 570 811 measured, the longest look 15.8 s in
-//! release (none of them found an approach). The caps of 2026-11-24
-//! (65 536 measured, 2^20 looked at) were below the gate's own pattern of
-//! twenty shelled balls (330 218 measured, 1 114 658 looked at).
+//! found"). The caps count work, not pairs (since 2026-11-25), so that
+//! they bound the look's time and memory: a pair costs from a few units to
+//! hundreds by its kinds, and the caps of pairs (2^21 measured, 2^24 looked
+//! at, 2026-11-25) let a look of edges against edges run for minutes and
+//! hold a quarter of a gigabyte of approaches before it stopped (the
+//! review of the dimple and the caps, F7). The largest look measured did
+//! 16 105 070 units (the engine's fuzz findings, a pattern of shelled
+//! tubes less a ball: 7.5 s in release on a busy machine, half a
+//! microsecond a unit; the large looks 0.2 to 1.3 µs a unit), the
+//! benchmark's at most 8 108 and the corpus's 28 279; the cap is four
+//! times the largest: at the units' costs averaged over those large looks
+//! some 15 to 90 s of such work (an average over the workloads measured,
+//! not a bound: a unit's own cost is bounded by its search's caps, which
+//! allow more). The 65 536 approaches, the joined ones (left as they are)
+//! counted with the rest, hold some 7 MB (none of those looks found one).
 //!
 //! **How near.** A vertex to an edge or a face by its nearest point; an edge
 //! to an edge or a face by its distance sampled along the edge, each stretch
 //! between samples bounded below by the edge's speed, and only the stretches
 //! that may come within twice the tolerance searched closer (golden
-//! sections). Two faces ([`least_between`]): where the kinds of their
+//! sections). Two edges are first bounded from below on both sides
+//! ([`edges_apart`], since 2026-11-25: a line by its chord, an arc of a
+//! circle or an ellipse of at most half a turn by its chord and sagitta, a
+//! piece of a spline by its chord and the control points of the spans it
+//! crosses (their convex hull) or by its middle and its speed, any other
+//! piece by its middle and its speed, halved where they may come that
+//! near; never a spline edge whose range runs past its curve's domain),
+//! and passed over, before any nearest point is sought, where every pair
+//! of their stretches is proven further apart. Two faces ([`least_between`]): where the kinds of their
 //! surfaces have them in closed form (a plane or a ball against any
 //! analytic surface, two cylinders: [`square_pairs`]), the pairs of points
 //! on a line square to both surfaces. The least distance between points
@@ -72,7 +90,12 @@
 //! where two faces are nearly tangent, by about `1 − gap · κ` a step (κ the
 //! difference of the faces' curvatures; a ball of radius 20 a tolerance and
 //! a half over a plane, 0.04 % a step), and a line search takes the step
-//! the distance asks for; and a cone's apex with its nearest point. For
+//! the distance asks for. Where they settled, on a pair square to both
+//! surfaces that may be a saddle of the distance (a ring slid on a rod off
+//! its axis: least across, greatest round), the distance's curvature
+//! across the first surface, and where it curves down some way a line
+//! search that way and a descent from there ([`escape`], since
+//! 2026-11-25); and a cone's apex with its nearest point. For
 //! every kind also the search as it was before (the projections' nearest
 //! end within twice the tolerance, polished by golden sections across the
 //! first face). A straight edge over a plane and two planes come nearest at
@@ -121,11 +144,12 @@ use super::outline::{self, Outline, Sheet, Side, boxes_meet};
 use super::regions::ANGLE_GUARD;
 use super::section::{self, Sections, Solid};
 use super::{BooleanResult, Operand, Reason};
-use craft3d_geom::{Cone, Curve3, Cylinder, Plane, Sphere, Surface};
+use craft3d_geom::{Cone, Curve3, Cylinder, NurbsCurve, Plane, Sphere, Surface};
 use craft3d_math::{Bbox3, Portable, Vec3};
 use craft3d_topo::{Body, Edge, EdgeId, FaceId};
-use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::BTreeSet;
+use std::f64::consts::PI;
 
 /// Samples along an edge.
 const SAMPLES: usize = 24;
@@ -137,20 +161,31 @@ const GOLDEN: usize = 32;
 const ALTERNATE: usize = 40;
 /// Line searches of a descent between two faces ([`descend`]), at most.
 const DESCENT: usize = 8;
+/// The step of [`escape`]'s second differences, as a share of its reach.
+const ESCAPE: f64 = 0.125;
 /// A parameter this close to an end of its range (as a share of the
 /// range) is at that end: the vertex, looked at as one.
 const END: f64 = 1e-7;
-/// Pairs measured in one look, at most: past that the look stops, said
+/// Vertices and edges away from the boundary of a piece of a ball or a
+/// ring measured against it before the box of what it holds is made and
+/// read ([`Look::away_from_piece`]).
+const HELD_AFTER: u32 = 8;
+/// Pairs of stretches of two edges compared by [`edges_apart`], at most,
+/// before it gives up and the edges are searched as before.
+const APART: usize = 32;
+/// The look's work, at most, in units of [`Work`] (a pair looked at, a
+/// point sought or measured): past that the look stops, said
 /// ([`Looked::finished`]) and counted (`crate::work::near_left`).
-const MOST_PAIRS: usize = 1 << 21;
-/// Pairs whose grown boxes meet looked at in one look (each read against
-/// the filters before any geometry), at most: as [`MOST_PAIRS`].
-const MOST_LOOKED: usize = 1 << 24;
+const MOST_WORK: u64 = 1 << 26;
+/// Approaches held by one look, at most, joined ones ([`Approach::joined`],
+/// which the boolean leaves as they are) counted with the rest: as
+/// [`MOST_WORK`].
+const MOST_FOUND: usize = 1 << 16;
 /// Why a boolean is refused, and interference is unknown, where a look
-/// stopped at a cap ([`MOST_PAIRS`], [`MOST_LOOKED`]) and what it found
+/// stopped at a cap ([`MOST_WORK`], [`MOST_FOUND`]) and what it found
 /// before does not refuse it already: what it did not measure may be too
 /// near. The numbers are the caps' (a test holds them so).
-pub(super) const CUT_SHORT: Reason = "the look for parts or walls closer together than the tolerance can tell apart stopped at its cap (2097152 pairs measured, or 16777216 looked at) before it had looked at every pair: what it left may be that near (a body too large to look at in one boolean)";
+pub(super) const CUT_SHORT: Reason = "the look for parts or walls closer together than the tolerance can tell apart stopped at its cap (67108864 units of work, or 65536 approaches found) before it had looked at every pair: what it left may be that near (a body too large to look at in one boolean)";
 /// One over the golden ratio.
 const INVERSE_GOLDEN: f64 = 0.618_033_988_749_894_9;
 
@@ -193,11 +228,66 @@ pub(super) struct Approach {
 pub(super) struct Looked {
     /// The approaches found, in a fixed order.
     pub approaches: Vec<Approach>,
-    /// False where the look stopped at a cap ([`MOST_PAIRS`] pairs
-    /// measured, [`MOST_LOOKED`] looked at) with pairs left: those may be
+    /// False where the look stopped at a cap ([`MOST_WORK`] units of
+    /// work, [`MOST_FOUND`] approaches) with pairs left: those may be
     /// approaches, so what the look did not find is not known to be clear
     /// ([`CUT_SHORT`]).
     pub finished: bool,
+}
+
+/// The work of one look, counted as it is done, for its cap
+/// ([`MOST_WORK`]) and `crate::work::near_work`: one unit for each pair
+/// looked at (its filters), each point of an edge's curve evaluated for
+/// [`edges_apart`], and each point sought or measured on a curve or a
+/// surface (a nearest point, a projection, a distance, a normal, a point
+/// placed inside or outside a face, a cover asked). Each unit's cost is
+/// bounded (every search has its own cap), so the cap bounds the look's
+/// time; the work made once per entity (outlines, boxes, covers, the
+/// faces an entity lies on) is bounded by the bodies' size.
+struct Work(Cell<u64>);
+
+impl Work {
+    fn new() -> Work {
+        Work(Cell::new(0))
+    }
+
+    fn add(&self, units: u64) {
+        self.0.set(self.0.get().saturating_add(units));
+    }
+
+    fn done(&self) -> u64 {
+        self.0.get()
+    }
+
+    fn onto(&self, sheet: Sheet, p: Vec3) -> Option<Vec3> {
+        self.add(1);
+        outline::onto(sheet, p)
+    }
+
+    fn nearest(&self, curve: &Curve3, range: (f64, f64), p: Vec3) -> Option<(f64, f64)> {
+        self.add(1);
+        outline::nearest(curve, range, p)
+    }
+
+    fn surface_distance(&self, sheet: Sheet, p: Vec3) -> f64 {
+        self.add(1);
+        outline::surface_distance(sheet, p)
+    }
+
+    fn normal(&self, sheet: Sheet, p: Vec3) -> Option<Vec3> {
+        self.add(1);
+        outline::outward_normal(sheet, false, p)
+    }
+
+    fn inside(&self, o: &Outline, p: Vec3, tol: f64) -> bool {
+        self.add(1);
+        inside(o, p, tol)
+    }
+
+    fn eval(&self, curve: &Curve3, t: f64) -> Vec3 {
+        self.add(1);
+        curve.eval(t)
+    }
 }
 
 impl Looked {
@@ -310,8 +400,15 @@ struct Topo<'r> {
     /// Per face, the box of what it holds (`Body::held_face_bbox`), made
     /// when first asked for: for a piece of a ball or a ring much smaller
     /// than the box of the whole, which the pairing takes (dearer to make,
-    /// so made only for the faces a pair of faces is measured on).
+    /// so made only for the faces a pair of faces is measured on, and those
+    /// [`Look::away_from_piece`] asks).
     held: Vec<Option<Option<Bbox3>>>,
+    /// Per face, the box of its boundary (its loops), made when first
+    /// asked for.
+    rims: Vec<Option<Option<Bbox3>>>,
+    /// Per face, how many vertices and edges away from its boundary were
+    /// measured against it ([`Look::away_from_piece`]).
+    away: Vec<u32>,
 }
 
 impl<'r> Topo<'r> {
@@ -348,6 +445,8 @@ impl<'r> Topo<'r> {
             face_edges: vec![None; body.faces.len()],
             outlines: (0..body.faces.len()).map(|_| None).collect(),
             held: vec![None; body.faces.len()],
+            rims: vec![None; body.faces.len()],
+            away: vec![0; body.faces.len()],
         }
     }
 
@@ -398,26 +497,23 @@ impl<'r> Topo<'r> {
         *slot = Some(out);
     }
 
-    /// The vertices of an entity, ascending, each once (of a face, once
-    /// [`Topo::ensure_vertices`] made them).
-    fn vertices(&self, ent: Ent) -> Cow<'_, [u32]> {
+    /// The vertices of an entity, ascending, each once.
+    fn vertices(&mut self, ent: Ent) -> Vec<u32> {
         match ent {
-            Ent::Vertex(v) => Cow::Owned(vec![v]),
+            Ent::Vertex(v) => vec![v],
             Ent::Edge(e) => match self.body.edges.get(e as usize) {
                 Some(edge) => {
                     let mut v = vec![edge.start.0, edge.end.0];
                     v.sort_unstable();
                     v.dedup();
-                    Cow::Owned(v)
+                    v
                 }
-                None => Cow::Owned(Vec::new()),
+                None => Vec::new(),
             },
-            Ent::Face(f) => Cow::Borrowed(
-                self.face_vertices
-                    .get(f as usize)
-                    .and_then(|list| list.as_deref())
-                    .unwrap_or(&[]),
-            ),
+            Ent::Face(f) => {
+                self.ensure_vertices(f);
+                self.face_vertex_list(f).to_vec()
+            }
         }
     }
 
@@ -558,23 +654,6 @@ impl<'r> Topo<'r> {
         })
     }
 
-    /// Whether two entities share a vertex: the shorter list of vertices
-    /// looked up in the longer.
-    fn share_vertex(&mut self, x: Ent, y: Ent) -> bool {
-        for ent in [x, y] {
-            if let Ent::Face(f) = ent {
-                self.ensure_vertices(f);
-            }
-        }
-        let (vx, vy) = (self.vertices(x), self.vertices(y));
-        let (few, many) = if vx.len() <= vy.len() {
-            (&vx, &vy)
-        } else {
-            (&vy, &vx)
-        };
-        few.iter().any(|v| many.binary_search(v).is_ok())
-    }
-
     /// The shell an entity is in (`usize::MAX` where none is known).
     fn shell(&self, ent: Ent) -> usize {
         self.faces(ent)
@@ -604,16 +683,54 @@ impl<'r> Topo<'r> {
         *slot.get_or_insert_with(|| body.held_face_bbox(FaceId(f)).ok())
     }
 
+    /// The box of face `f`'s boundary ([`Topo::rims`]): its loops' boxes
+    /// together; none for a face without loops, and none where an edge of
+    /// its boundary is a spline whose range runs past its curve's domain
+    /// ([`past_domain`]: that edge's box, and so the face's, need not hold
+    /// it).
+    fn rim_box(&mut self, f: u32) -> Option<Bbox3> {
+        let body = self.body;
+        let slot = self.rims.get_mut(f as usize)?;
+        *slot.get_or_insert_with(|| {
+            let face = body.faces.get(f as usize)?;
+            let mut out = Bbox3::EMPTY;
+            for &l in &face.loops {
+                let lp = body.loop_(l)?;
+                for c in &lp.coedges {
+                    let edge = body.edge(c.edge)?;
+                    if past_domain(&edge.curve, edge.range) {
+                        return None;
+                    }
+                }
+                let (lo, hi) = body.loop_bbox(l).ok()?.corners()?;
+                out.add(lo);
+                out.add(hi);
+            }
+            (!out.is_empty()).then_some(out)
+        })
+    }
+
     /// The outline of face `f` when [`Topo::ensure`] made it.
     fn made(&self, f: u32) -> Option<&Outline> {
         self.outlines.get(f as usize)?.as_ref()?.as_ref()
     }
 }
 
-/// An entity with its box, for the pairing.
+/// An entity with its box, for the pairing, and what the filters read of
+/// it ([`Info`], at `info` in the list [`Look::items`] makes).
 struct Item {
     who: Who,
     bbox: Bbox3,
+    info: usize,
+}
+
+/// What the filters of a pair read of an entity, read once per entity
+/// rather than per pair: the faces of A and of B it lies on (each
+/// ascending; [`Look::sides`]) and its vertices (ascending).
+struct Info {
+    on_a: Vec<u32>,
+    on_b: Vec<u32>,
+    vertices: Vec<u32>,
 }
 
 /// What one look knows.
@@ -627,6 +744,7 @@ struct Look<'r, 'x> {
     met: BTreeSet<(u32, u32)>,
     tol: f64,
     near: f64,
+    work: Work,
 }
 
 fn look<'r, 'x>(
@@ -656,22 +774,25 @@ fn look<'r, 'x>(
         met,
         tol,
         near,
+        work: Work::new(),
     };
-    look.run()
+    let looked = look.run();
+    crate::work::near_worked(look.work.done());
+    looked
 }
 
-/// The caps of one look: pairs looked at, pairs measured.
+/// The caps of one look: its work, the approaches it holds.
 #[cfg(not(test))]
-fn caps() -> (usize, usize) {
-    (MOST_LOOKED, MOST_PAIRS)
+fn caps() -> (u64, usize) {
+    (MOST_WORK, MOST_FOUND)
 }
 
 /// The caps of one look, or those a test of this thread set.
 #[cfg(test)]
-fn caps() -> (usize, usize) {
+fn caps() -> (u64, usize) {
     tests::CAPS
-        .with(std::cell::Cell::get)
-        .unwrap_or((MOST_LOOKED, MOST_PAIRS))
+        .with(Cell::get)
+        .unwrap_or((MOST_WORK, MOST_FOUND))
 }
 
 /// The rank of an entity's kind: vertices, edges, faces.
@@ -735,25 +856,86 @@ impl<'r, 'x> Look<'r, 'x> {
 
     /// Whether a face of A one lies on and a face of B the other lies on
     /// were met by the section.
-    fn met_across(&self, x: Who, y: Who) -> bool {
-        let ((xa, xb), (ya, yb)) = (self.sides(x), self.sides(y));
+    fn met_across(&self, x: &Info, y: &Info) -> bool {
         let any = |on_a: &[u32], on_b: &[u32]| {
             on_a.iter()
                 .any(|&fa| on_b.iter().any(|&fb| self.met.contains(&(fa, fb))))
         };
-        any(xa.as_slice(), yb.as_slice()) || any(ya.as_slice(), xb.as_slice())
+        any(&x.on_a, &y.on_b) || any(&y.on_a, &x.on_b)
+    }
+
+    /// The box an entity is paired by: its own (`Body::face_bbox`, which
+    /// for a face on a ball or a ring is the whole ball's or ring's,
+    /// `Body::edge_bbox`, its point).
+    fn pairing_box(&self, who: Who) -> Option<Bbox3> {
+        let body = self.topos.get(who.0)?.body;
+        match who.1 {
+            Ent::Face(f) => body.face_bbox(FaceId(f)).ok(),
+            Ent::Edge(e) => body.edge_bbox(EdgeId(e)).ok(),
+            Ent::Vertex(v) => {
+                let point = body.vertices.get(v as usize)?.point;
+                point.is_finite().then(|| Bbox3::from_points([point]))
+            }
+        }
+    }
+
+    /// Whether a vertex or an edge whose box is `bx` is proven further than
+    /// twice the tolerance from face `f` of body `body`, a piece of a ball
+    /// or a ring, by the box of what the face holds (since 2026-11-25). The
+    /// pairing boxes such a face by the whole ball, so every entity near the
+    /// ball meets every piece of it (the gate's twenty shelled balls: 1.1
+    /// million pairs looked at, 164 497 of an edge and a face sampled).
+    /// Asked only where `bx` is that far from the box of the face's boundary
+    /// (no box of what the face holds is smaller), and only once
+    /// [`HELD_AFTER`] such vertices and edges have been measured against the
+    /// face: the box costs from a tenth of a millisecond to a few hundred on
+    /// a face with a long boundary (some of the corpus's), more than a few
+    /// pairs' measures. Grown, because a point the look takes as inside a
+    /// face may lie up to the tolerance outside its boundary ([`inside`]),
+    /// so up to that outside the box of what it holds: a pair passed over
+    /// is one whose measure finds nothing. Never asked for an edge, nor of a
+    /// face with an edge in its boundary, that is a spline whose range runs
+    /// past its curve's domain ([`past_domain`]: its box need not hold it).
+    fn away_from_piece(&mut self, body: usize, f: u32, bx: &Bbox3) -> bool {
+        let reach = 2.0 * self.near;
+        let Some(topo) = self.topos.get_mut(body) else {
+            return false;
+        };
+        let shape = topo.body;
+        let Some(face) = shape.faces.get(f as usize) else {
+            return false;
+        };
+        if face.loops.is_empty() || !matches!(face.surface, Surface::Sphere(_) | Surface::Torus(_))
+        {
+            return false;
+        }
+        match topo.rim_box(f) {
+            Some(rim) if !boxes_meet(bx, &rim, reach) => {}
+            _ => return false,
+        }
+        let Some(away) = topo.away.get_mut(f as usize) else {
+            return false;
+        };
+        *away = away.saturating_add(1);
+        if *away < HELD_AFTER {
+            return false;
+        }
+        topo.held_box(f)
+            .is_some_and(|held| !boxes_meet(bx, &held, reach))
     }
 
     /// The two sides: the entities on a face of A some pair of `met` holds,
-    /// and those on a face of B some pair holds, with their boxes.
-    fn items(&self) -> (Vec<Item>, Vec<Item>) {
+    /// and those on a face of B some pair holds, with their boxes
+    /// ([`Look::pairing_box`]), and what the filters read of each entity
+    /// (indexed by the items' `info`).
+    fn items(&mut self) -> (Vec<Item>, Vec<Item>, Vec<Info>) {
         let (mut on_a, mut on_b) = (BTreeSet::new(), BTreeSet::new());
         for &(fa, fb) in &self.met {
             on_a.insert(fa);
             on_b.insert(fb);
         }
-        let mut left: Vec<Item> = Vec::new();
-        let mut right: Vec<Item> = Vec::new();
+        // Per body: its faces, then its edges, then its vertices.
+        let mut wanted: Vec<(Who, (bool, bool))> = Vec::new();
         for (i, topo) in self.topos.iter().enumerate() {
             let body = topo.body;
             // Per face: whether it is a piece of a face of A, or of B, that
@@ -778,52 +960,61 @@ impl<'r, 'x> Look<'r, 'x> {
             let edge_flags: Vec<(bool, bool)> = (0..body.edges.len())
                 .map(|e| either(topo.edge_faces.of(index(e)), flags.as_slice()))
                 .collect();
-            let mut push = |who: Who, bbox: Option<Bbox3>, (fa, fb): (bool, bool)| {
-                let Some(bbox) = bbox else {
-                    return;
-                };
-                if fa {
-                    left.push(Item { who, bbox });
-                }
-                if fb {
-                    right.push(Item { who, bbox });
-                }
-            };
             for (f, &flag) in flags.iter().enumerate() {
                 if flag.0 || flag.1 {
-                    let id = index(f);
-                    push((i, Ent::Face(id)), body.face_bbox(FaceId(id)).ok(), flag);
+                    wanted.push(((i, Ent::Face(index(f))), flag));
                 }
             }
             for (e, &flag) in edge_flags.iter().enumerate() {
                 if flag.0 || flag.1 {
-                    let id = index(e);
-                    push((i, Ent::Edge(id)), body.edge_bbox(EdgeId(id)).ok(), flag);
+                    wanted.push(((i, Ent::Edge(index(e))), flag));
                 }
             }
-            for (v, vertex) in body.vertices.iter().enumerate() {
+            for v in 0..body.vertices.len() {
                 let id = index(v);
                 let flag = either(topo.vertex_edges.of(id), edge_flags.as_slice());
-                if (flag.0 || flag.1) && vertex.point.is_finite() {
-                    push(
-                        (i, Ent::Vertex(id)),
-                        Some(Bbox3::from_points([vertex.point])),
-                        flag,
-                    );
+                if flag.0 || flag.1 {
+                    wanted.push(((i, Ent::Vertex(id)), flag));
                 }
             }
         }
-        (left, right)
+        let mut left: Vec<Item> = Vec::new();
+        let mut right: Vec<Item> = Vec::new();
+        let mut infos: Vec<Info> = Vec::with_capacity(wanted.len());
+        for (who, (fa, fb)) in wanted {
+            let Some(bbox) = self.pairing_box(who) else {
+                continue;
+            };
+            let (on_a, on_b) = self.sides(who);
+            let vertices = self
+                .topos
+                .get_mut(who.0)
+                .map(|topo| topo.vertices(who.1))
+                .unwrap_or_default();
+            let info = infos.len();
+            infos.push(Info {
+                on_a,
+                on_b,
+                vertices,
+            });
+            if fa {
+                left.push(Item { who, bbox, info });
+            }
+            if fb {
+                right.push(Item { who, bbox, info });
+            }
+        }
+        (left, right, infos)
     }
 
     /// The approaches: each entity of the smaller side against those of the
     /// larger side's tree whose grown boxes meet its own, measured as the
-    /// tree gives them; in that order, which is fixed. Past [`MOST_LOOKED`]
-    /// pairs looked at or [`MOST_PAIRS`] measured the look stops, not
+    /// tree gives them; in that order, which is fixed. Past [`MOST_WORK`]
+    /// units of work or [`MOST_FOUND`] approaches the look stops, not
     /// finished, and the entities of the smaller side not finished are
     /// counted (`crate::work::near_left`).
     fn run(&mut self) -> Looked {
-        let (left, right) = self.items();
+        let (left, right, infos) = self.items();
         if left.is_empty() || right.is_empty() {
             return Looked::through(Vec::new());
         }
@@ -839,9 +1030,8 @@ impl<'r, 'x> Look<'r, 'x> {
         let boxes: Vec<Bbox3> = many.iter().map(|it| it.bbox).collect();
         let tree = FaceTree::new(&boxes);
         let near = self.near;
-        let (most_looked, most_pairs) = caps();
+        let (most_work, most_found) = caps();
         let mut found = Vec::new();
-        let (mut looked, mut measured) = (0usize, 0usize);
         for (done, it) in few.iter().enumerate() {
             for k in tree.candidates(|bx| boxes_meet(bx, &it.bbox, near)) {
                 let Some(other) = many.get(k) else {
@@ -853,15 +1043,18 @@ impl<'r, 'x> Look<'r, 'x> {
                 if in_many.contains(&it.who) && in_few.contains(&other.who) && other.who < it.who {
                     continue;
                 }
-                looked += 1;
-                if looked > most_looked || measured >= most_pairs {
+                self.work.add(1);
+                if self.work.done() > most_work || found.len() >= most_found {
                     crate::work::near_left_over(few.len().saturating_sub(done));
                     return Looked {
                         approaches: found,
                         finished: false,
                     };
                 }
-                if let Some(approach) = self.pair(it.who, other.who, &mut measured) {
+                let (Some(x), Some(y)) = (infos.get(it.info), infos.get(other.info)) else {
+                    continue;
+                };
+                if let Some(approach) = self.pair((it, x), (other, y)) {
                     found.push(approach);
                 }
             }
@@ -870,24 +1063,35 @@ impl<'r, 'x> Look<'r, 'x> {
     }
 
     /// One pair whose grown boxes meet: the filters (two vertices, a
-    /// vertex in common, no face of A and face of B met across), then its
-    /// measure, counted in `measured`.
-    fn pair(&mut self, x: Who, y: Who, measured: &mut usize) -> Option<Approach> {
-        let (x, y) = if (rank(x.1), x) > (rank(y.1), y) {
+    /// vertex in common, no face of A and face of B met across, a vertex or
+    /// an edge away from a piece of a ball or a ring: [`Look::away_from_piece`]),
+    /// then its measure.
+    fn pair(&mut self, x: (&Item, &Info), y: (&Item, &Info)) -> Option<Approach> {
+        let (x, y) = if (rank(x.0.who.1), x.0.who) > (rank(y.0.who.1), y.0.who) {
             (y, x)
         } else {
             (x, y)
         };
+        let ((xi, ix), (yi, iy)) = (x, y);
+        let (x, y) = (xi.who, yi.who);
         if let (Ent::Vertex(_), Ent::Vertex(_)) = (x.1, y.1) {
             return None;
         }
-        if x.0 == y.0 && self.topos.get_mut(x.0)?.share_vertex(x.1, y.1) {
+        if x.0 == y.0 && share(&ix.vertices, &iy.vertices) {
             return None;
         }
-        if !self.met_across(x, y) {
+        if !self.met_across(ix, iy) {
             return None;
         }
-        *measured += 1;
+        let boxed = self
+            .edge(x)
+            .is_none_or(|edge| !past_domain(&edge.curve, edge.range));
+        if let (Ent::Vertex(_) | Ent::Edge(_), Ent::Face(f)) = (x.1, y.1)
+            && boxed
+            && self.away_from_piece(y.0, f, &xi.bbox)
+        {
+            return None;
+        }
         let approach = match (x.1, y.1) {
             (Ent::Vertex(_), Ent::Edge(_)) => self.vertex_edge(x, y),
             (Ent::Vertex(_), Ent::Face(_)) => self.vertex_face(x, y),
@@ -987,6 +1191,7 @@ impl<'r, 'x> Look<'r, 'x> {
     /// of body `body` is a piece of prove `p` further than twice the
     /// tolerance from all of them.
     fn covers_hold(&self, body: usize, f: u32, p: Vec3) -> bool {
+        self.work.add(1);
         self.sources(body, f).into_iter().any(|(operand, face)| {
             self.solid(operand)
                 .cover(face as usize, self.tol)
@@ -996,6 +1201,7 @@ impl<'r, 'x> Look<'r, 'x> {
 
     /// As [`Look::covers_hold`], for the box `bx`.
     fn covers_reach(&self, body: usize, f: u32, bx: &Bbox3) -> bool {
+        self.work.add(1);
         self.sources(body, f).into_iter().any(|(operand, face)| {
             self.solid(operand)
                 .cover(face as usize, self.tol)
@@ -1014,6 +1220,7 @@ impl<'r, 'x> Look<'r, 'x> {
         bf: &Bbox3,
         bg: &Bbox3,
     ) -> bool {
+        self.work.add(1);
         let (sx, sy) = (self.sources(x, f), self.sources(y, g));
         for &(ox, fx) in &sx {
             for &(oy, fy) in &sy {
@@ -1043,7 +1250,7 @@ impl<'r, 'x> Look<'r, 'x> {
     fn vertex_edge(&self, x: Who, y: Who) -> Option<Approach> {
         let p = self.point(x)?;
         let edge = self.edge(y)?;
-        let (t, d) = outline::nearest(&edge.curve, edge.range, p)?;
+        let (t, d) = self.work.nearest(&edge.curve, edge.range, p)?;
         if !(d.is_finite() && d < self.near) || at_end(t, edge.range) {
             return None;
         }
@@ -1062,15 +1269,15 @@ impl<'r, 'x> Look<'r, 'x> {
             if !self.covers_hold(y.0, f, p) {
                 return None;
             }
-        } else if outline::surface_distance(Sheet::bare(&face.surface), p) >= near {
+        } else if self.work.surface_distance(Sheet::bare(&face.surface), p) >= near {
             return None;
         }
         if !self.topos.get_mut(y.0)?.ensure(f, tol) {
             return None;
         }
         let o = self.topos.get(y.0)?.made(f)?;
-        let q = outline::onto(o.sheet(), p)?;
-        (p.distance(q) < near && inside(o, q, tol)).then(|| Self::approach(x, y, p, q))
+        let q = self.work.onto(o.sheet(), p)?;
+        (p.distance(q) < near && self.work.inside(o, q, tol)).then(|| Self::approach(x, y, p, q))
     }
 
     fn edge_edge(&self, x: Who, y: Who) -> Option<Approach> {
@@ -1080,9 +1287,10 @@ impl<'r, 'x> Look<'r, 'x> {
             return None;
         }
         let near = self.near;
+        let work = &self.work;
         if let (Curve3::Line(_), Curve3::Line(_)) = (&e1.curve, &e2.curve) {
-            let (p0, p1) = (e1.curve.eval(r1.0), e1.curve.eval(r1.1));
-            let (q0, q1) = (e2.curve.eval(r2.0), e2.curve.eval(r2.1));
+            let (p0, p1) = (work.eval(&e1.curve, r1.0), work.eval(&e1.curve, r1.1));
+            let (q0, q1) = (work.eval(&e2.curve, r2.0), work.eval(&e2.curve, r2.1));
             let (s, t) = segments(p0, p1, q0, q1)?;
             if s <= END || s >= 1.0 - END || t <= END || t >= 1.0 - END {
                 return None;
@@ -1090,12 +1298,18 @@ impl<'r, 'x> Look<'r, 'x> {
             let (p, q) = (p0.lerp(p1, s), q0.lerp(q1, t));
             return (p.distance(q) < near).then(|| Self::approach(x, y, p, q));
         }
+        // Before any nearest point is sought: two edges proven further
+        // apart than twice the tolerance everywhere give nothing below.
+        if edges_apart(e1, e2, near, work) {
+            return None;
+        }
         // Along the edge whose nearest points are the dearer to find (a
         // spline), measured against the other.
         let flip = matches!(e2.curve, Curve3::Nurbs(_)) && !matches!(e1.curve, Curve3::Nurbs(_));
         let (along, other) = if flip { (e2, e1) } else { (e1, e2) };
         let distance = |pt: Vec3| {
-            outline::nearest(&other.curve, other.range, pt).map_or(f64::INFINITY, |(_, d)| d)
+            work.nearest(&other.curve, other.range, pt)
+                .map_or(f64::INFINITY, |(_, d)| d)
         };
         let mut best: Option<Approach> = None;
         for t in least_along(&along.curve, along.range, near, distance) {
@@ -1103,7 +1317,7 @@ impl<'r, 'x> Look<'r, 'x> {
                 continue;
             }
             let p = along.curve.eval(t);
-            let Some((u, _)) = outline::nearest(&other.curve, other.range, p) else {
+            let Some((u, _)) = work.nearest(&other.curve, other.range, p) else {
                 continue;
             };
             if at_end(u, other.range) {
@@ -1122,6 +1336,9 @@ impl<'r, 'x> Look<'r, 'x> {
         best
     }
 
+    /// An edge against a face. A piece of a ball or a ring that the edge
+    /// passes only where the rest of the ball would be is passed over
+    /// before this ([`Look::away_from_piece`]).
     fn edge_face(&mut self, x: Who, y: Who) -> Option<Approach> {
         let edge = self.edge(x)?;
         let (Ent::Edge(e), Ent::Face(f)) = (x.1, y.1) else {
@@ -1146,7 +1363,9 @@ impl<'r, 'x> Look<'r, 'x> {
             }
         } else if let Some((lo, hi)) = bx.corners() {
             let middle = lo.lerp(hi, 0.5);
-            if outline::surface_distance(Sheet::bare(&face.surface), middle)
+            if self
+                .work
+                .surface_distance(Sheet::bare(&face.surface), middle)
                 > 0.5 * lo.distance(hi) + near
             {
                 return None;
@@ -1157,19 +1376,22 @@ impl<'r, 'x> Look<'r, 'x> {
         }
         let o = self.topos.get(y.0)?.made(f)?;
         let sheet = o.sheet();
-        let distance =
-            |pt: Vec3| outline::onto(sheet, pt).map_or(f64::INFINITY, |q| pt.distance(q));
+        let work = &self.work;
+        let distance = |pt: Vec3| {
+            work.onto(sheet, pt)
+                .map_or(f64::INFINITY, |q| pt.distance(q))
+        };
         let mut best: Option<Approach> = None;
         for t in least_along(&edge.curve, r, near, distance) {
             if at_end(t, r) {
                 continue;
             }
             let p = edge.curve.eval(t);
-            let Some(q) = outline::onto(sheet, p) else {
+            let Some(q) = work.onto(sheet, p) else {
                 continue;
             };
             let d = p.distance(q);
-            if d < near && inside(o, q, tol) && best.is_none_or(|b| d < b.distance) {
+            if d < near && work.inside(o, q, tol) && best.is_none_or(|b| d < b.distance) {
                 best = Some(Self::approach(x, y, p, q));
             }
         }
@@ -1191,21 +1413,23 @@ impl<'r, 'x> Look<'r, 'x> {
         // Each box's middle against the other surface, where it is known
         // exactly: the whole faces' boxes first, then (for a piece of a
         // ball or a ring) the boxes of what they hold.
-        let far = |bx: &Bbox3, other: &Surface| {
+        let far = |work: &Work, bx: &Bbox3, other: &Surface| {
             !is_freeform(other)
                 && bx.corners().is_some_and(|(lo, hi)| {
-                    outline::surface_distance(Sheet::bare(other), lo.lerp(hi, 0.5))
+                    work.surface_distance(Sheet::bare(other), lo.lerp(hi, 0.5))
                         > 0.5 * lo.distance(hi) + near
                 })
         };
         let whole_f = body_x.face_bbox(FaceId(f)).ok()?;
         let whole_g = body_y.face_bbox(FaceId(g)).ok()?;
-        if far(&whole_f, &fg.surface) || far(&whole_g, &ff.surface) {
+        if far(&self.work, &whole_f, &fg.surface) || far(&self.work, &whole_g, &ff.surface) {
             return None;
         }
         let box_f = self.topos.get_mut(x.0)?.held_box(f)?;
         let box_g = self.topos.get_mut(y.0)?.held_box(g)?;
-        if !boxes_meet(&box_f, &box_g, near) || far(&box_f, &fg.surface) || far(&box_g, &ff.surface)
+        if !boxes_meet(&box_f, &box_g, near)
+            || far(&self.work, &box_f, &fg.surface)
+            || far(&self.work, &box_g, &ff.surface)
         {
             return None;
         }
@@ -1224,9 +1448,265 @@ impl<'r, 'x> Look<'r, 'x> {
         }
         let o1 = self.topos.get(x.0)?.made(f)?;
         let o2 = self.topos.get(y.0)?.made(g)?;
-        let (p, q) = least_between(o1, o2, &box_f, &box_g, tol, near)?;
+        let (p, q) = least_between(o1, o2, &box_f, &box_g, tol, near, &self.work)?;
         (p.distance(q) < near).then(|| Self::approach(x, y, p, q))
     }
+}
+
+/// Whether two ascending lists hold a value in common: the shorter looked
+/// up in the longer.
+fn share(a: &[u32], b: &[u32]) -> bool {
+    let (few, many) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    few.iter().any(|v| many.binary_search(v).is_ok())
+}
+
+/// A stretch of an edge's curve, for [`edges_apart`]: every point of the
+/// curve over `range` lies within `reach` of the segment from `a` to `b`
+/// (of the point, where they are one).
+#[derive(Clone, Copy, Debug)]
+struct Stretch {
+    range: (f64, f64),
+    a: Vec3,
+    b: Vec3,
+    reach: f64,
+}
+
+impl Stretch {
+    /// The stretch of `curve` over `range`, `speed` its speed bound
+    /// ([`speed_bound`]): a line's piece is its chord. An arc of a circle
+    /// of at most half a turn lies within its sagitta `2R sin²(φ/4)` of
+    /// its chord (φ its angle), and an arc of an ellipse within that of the
+    /// larger semi-axis (the ellipse is a circle's arc stretched, which
+    /// stretches no distance by more than that axis). A piece of a spline
+    /// lies in the convex hull of the control points of the spans it
+    /// crosses (its weights positive), so within the farthest of them from
+    /// its chord: that, where it is less than the bound by speed. Any other
+    /// piece within `speed` times half its range of its middle point.
+    fn of(curve: &Curve3, range: (f64, f64), speed: f64, work: &Work) -> Option<Stretch> {
+        let (lo, hi) = range;
+        if !(lo.is_finite() && hi.is_finite() && hi > lo) {
+            return None;
+        }
+        let chord = |reach: f64| Stretch {
+            range,
+            a: work.eval(curve, lo),
+            b: work.eval(curve, hi),
+            reach,
+        };
+        let by_speed = || {
+            let middle = work.eval(curve, 0.5 * (lo + hi));
+            Stretch {
+                range,
+                a: middle,
+                b: middle,
+                reach: speed * 0.5 * (hi - lo),
+            }
+        };
+        let quarter = (0.25 * (hi - lo)).psin();
+        let stretch = match curve {
+            Curve3::Line(_) => chord(0.0),
+            Curve3::Circle(circle) if hi - lo <= PI => {
+                chord(2.0 * circle.radius() * quarter * quarter)
+            }
+            Curve3::Ellipse(ellipse) if hi - lo <= PI => {
+                let (a, b) = ellipse.semi_axes();
+                chord(2.0 * a.max(b) * quarter * quarter)
+            }
+            Curve3::Nurbs(_) if past_domain(curve, range) => return None,
+            Curve3::Nurbs(spline) => {
+                let rho = speed * 0.5 * (hi - lo);
+                match holding_points(spline, range) {
+                    Some(points) => {
+                        let hull = chord(0.0);
+                        let reach = points
+                            .iter()
+                            .map(|&c| point_segment(c, hull.a, hull.b))
+                            .fold(0.0_f64, f64::max);
+                        if reach.is_finite() && reach < rho {
+                            Stretch { reach, ..hull }
+                        } else {
+                            by_speed()
+                        }
+                    }
+                    None => by_speed(),
+                }
+            }
+            _ => by_speed(),
+        };
+        (stretch.a.is_finite()
+            && stretch.b.is_finite()
+            && stretch.reach.is_finite()
+            && stretch.reach >= 0.0)
+            .then_some(stretch)
+    }
+
+    /// Its two halves.
+    fn halves(&self, curve: &Curve3, speed: f64, work: &Work) -> Option<(Stretch, Stretch)> {
+        let (lo, hi) = self.range;
+        let middle = 0.5 * (lo + hi);
+        if !(lo < middle && middle < hi) {
+            return None;
+        }
+        Some((
+            Stretch::of(curve, (lo, middle), speed, work)?,
+            Stretch::of(curve, (middle, hi), speed, work)?,
+        ))
+    }
+}
+
+/// The control points of a spline curve whose convex hull holds its piece
+/// over `range`: those of the spans the range crosses (`P[a − p] ..=
+/// P[b − 1]`, the range from the span that starts at knot `a` to the one
+/// that ends at knot `b`, `p` the degree). None where the knots or the
+/// weights (which must be positive for the hull to hold) are not as a
+/// spline's.
+fn holding_points(spline: &NurbsCurve, range: (f64, f64)) -> Option<&[Vec3]> {
+    let p = spline.degree();
+    let (knots, points, weights) = (spline.knots(), spline.control_points(), spline.weights());
+    let n = points.len();
+    if n == 0 || knots.len() != n + p + 1 || weights.len() != n {
+        return None;
+    }
+    let (lo, hi) = range;
+    let starts = knots.get(p..=n)?.partition_point(|&u| u <= lo);
+    let a = (p + starts.saturating_sub(1)).min(n - 1);
+    let b = (p + 1 + knots.get(p + 1..=n)?.partition_point(|&u| u < hi)).min(n);
+    let (first, last) = (a.checked_sub(p)?, b.checked_sub(1)?);
+    if first > last
+        || !weights
+            .get(first..=last)?
+            .iter()
+            .all(|&w| w.is_finite() && w > 0.0)
+    {
+        return None;
+    }
+    points.get(first..=last)
+}
+
+/// The distance from `p` to the segment from `s0` to `s1` (a point where
+/// they are one).
+fn point_segment(p: Vec3, s0: Vec3, s1: Vec3) -> f64 {
+    let d = s1 - s0;
+    let dd = d.dot(d);
+    let t = if dd > 0.0 {
+        ((p - s0).dot(d) / dd).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    p.distance(s0 + d * t)
+}
+
+/// Whether a spline edge's range runs past its curve's domain (an edge may:
+/// `NurbsCurve::eval` carries the end spans on as the polynomials or
+/// rational functions they are, and `craft3d_topo`'s regions read such an
+/// edge so, `region.rs` › `each_piece`). Past the domain the curve leaves
+/// the convex hull of its control points, its speed bound does not hold,
+/// and `craft3d_topo`'s box of the edge (its control points) does not hold
+/// it either: no bound of the look reads such an edge (the review of round
+/// three, 2026-11-25). A range that is not a number is past it too.
+fn past_domain(curve: &Curve3, range: (f64, f64)) -> bool {
+    match curve {
+        Curve3::Nurbs(spline) => {
+            let (lo, hi) = spline.domain();
+            !(range.0 >= lo && range.1 <= hi)
+        }
+        Curve3::Line(_) | Curve3::Circle(_) | Curve3::Ellipse(_) => false,
+    }
+}
+
+/// Whether two edges are proven further apart than `near` everywhere
+/// (2026-11-25): their curves' stretches ([`Stretch`]) compared two by
+/// two, a pair whose segments' least distance ([`segment_gap`], a bound
+/// from below) less both reaches exceeds `near` passed over, the others
+/// halved (the stretch with the larger reach) until every pair is passed
+/// over; not proven where [`APART`] pairs were compared first, or a pair
+/// of chords or points with no reach comes that near, or a stretch can be
+/// halved no further, and never for a spline edge whose range runs past its
+/// curve's domain ([`past_domain`]). Every point of each edge lies in a stretch, so where
+/// this holds no two points of them, however found, are nearer than
+/// `near`, and the search it spares would find no approach: passing the
+/// pair over changes no answer. A margin of rounding (64 rounding errors
+/// of the largest coordinate) on top.
+fn edges_apart(e1: &Edge, e2: &Edge, near: f64, work: &Work) -> bool {
+    let (c1, c2) = (&e1.curve, &e2.curve);
+    if past_domain(c1, e1.range) || past_domain(c2, e2.range) {
+        return false;
+    }
+    let (s1, s2) = (speed_bound(c1), speed_bound(c2));
+    if !(s1.is_finite() && s2.is_finite() && s1 >= 0.0 && s2 >= 0.0) {
+        return false;
+    }
+    let (Some(p), Some(q)) = (
+        Stretch::of(c1, e1.range, s1, work),
+        Stretch::of(c2, e2.range, s2, work),
+    ) else {
+        return false;
+    };
+    let largest = [p.a, p.b, q.a, q.b].into_iter().fold(0.0_f64, |m, v| {
+        m.max(v.x.abs()).max(v.y.abs()).max(v.z.abs())
+    });
+    let limit = near + 64.0 * f64::EPSILON * (largest + p.reach + q.reach);
+    if !limit.is_finite() {
+        return false;
+    }
+    let mut stack = vec![(p, q)];
+    let mut compared = 0usize;
+    while let Some((p, q)) = stack.pop() {
+        compared += 1;
+        if compared > APART {
+            return false;
+        }
+        let gap = segment_gap(p.a, p.b, q.a, q.b);
+        if gap - p.reach - q.reach > limit {
+            continue;
+        }
+        if p.reach <= 0.0 && q.reach <= 0.0 {
+            return false;
+        }
+        if p.reach >= q.reach {
+            let Some((p1, p2)) = p.halves(c1, s1, work) else {
+                return false;
+            };
+            stack.push((p2, q));
+            stack.push((p1, q));
+        } else {
+            let Some((q1, q2)) = q.halves(c2, s2, work) else {
+                return false;
+            };
+            stack.push((p, q2));
+            stack.push((p, q1));
+        }
+    }
+    true
+}
+
+/// A bound from below of the distance between the segments `a0 a1` and
+/// `b0 b1` (either may be a point), to rounding: the least of each end's
+/// distance to the other segment and, unless the two are parallel, of the
+/// distance between the lines through them less what rounding could add
+/// to it. The distance is one of these (at an end of one segment, or
+/// between the insides of both, where it is the lines'), and the lines'
+/// distance is never more than the segments'. Zero for points that are
+/// not finite.
+fn segment_gap(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> f64 {
+    if !(a0.is_finite() && a1.is_finite() && b0.is_finite() && b1.is_finite()) {
+        return 0.0;
+    }
+    let to = point_segment;
+    let mut gap = to(a0, b0, b1)
+        .min(to(a1, b0, b1))
+        .min(to(b0, a0, a1))
+        .min(to(b1, a0, a1));
+    let (d1, d2) = (a1 - a0, b1 - b0);
+    let n = d1.cross(d2);
+    let length = n.length();
+    if length > 0.0 {
+        let r = a0 - b0;
+        let error = 16.0 * f64::EPSILON * r.length() * d1.length() * d2.length();
+        let lines = (r.dot(n).abs() - error) / length;
+        gap = gap.min(lines.max(0.0));
+    }
+    if gap.is_finite() { gap } else { 0.0 }
 }
 
 /// The nearest pair offered for which a test holds, nearer than a limit.
@@ -1266,8 +1746,12 @@ impl Least {
 ///   vertex) or lies wholly inside both faces (one pair of it is among
 ///   them).
 /// - Otherwise from the end of every seed whose projections had not
-///   settled in their steps, a descent ([`descend`]), and a cone's apex
-///   with its nearest point ([`apexes`]).
+///   settled in their steps, a descent ([`descend`]); from every end where
+///   they settled (once for ends within the tolerance of each other),
+///   which is a pair square to both surfaces and may be a saddle or a
+///   greatest of the distance rather than its least, a way down where the
+///   distance curves down across the first surface ([`escape`],
+///   2026-11-25); and a cone's apex with its nearest point ([`apexes`]).
 ///
 /// The least of all of these, the first of equals: so never further than
 /// the search as it was. Every point lies on its surface, evaluated
@@ -1279,9 +1763,11 @@ fn least_between(
     box_g: &Bbox3,
     tol: f64,
     limit: f64,
+    work: &Work,
 ) -> Option<(Vec3, Vec3)> {
     let ((lo1, hi1), (lo2, hi2)) = (box_f.corners()?, box_g.corners()?);
-    let fits = |p: Vec3, q: Vec3| inside(o1, p, tol) && inside(o2, q, tol);
+    let fits = |p: Vec3, q: Vec3| work.inside(o1, p, tol) && work.inside(o2, q, tol);
+    work.add(1);
     let closed = square_pairs(&o1.surface, &o2.surface);
     let reach = 0.25 * box_f.diagonal().min(box_g.diagonal());
     let (common_lo, common_hi) = (lo1.max(lo2), hi1.min(hi2));
@@ -1292,16 +1778,23 @@ fn least_between(
     ];
     let mut ends = Least::below(limit);
     let mut descents: Vec<(Vec3, Vec3)> = Vec::new();
+    let mut settled_at: Vec<Vec3> = Vec::new();
     for seed in seeds {
         if !seed.is_finite() {
             continue;
         }
-        let Some((p, q, settled)) = alternate(o1, o2, seed, tol) else {
+        let Some((p, q, settled)) = alternate(o1, o2, seed, tol, work) else {
             continue;
         };
         ends.offer(p, q, fits);
-        if !settled && closed.is_none() {
-            descents.extend(descend(o1, o2, p, reach, tol, fits));
+        if closed.is_some() {
+            continue;
+        }
+        if !settled {
+            descents.extend(descend(o1, o2, p, reach, tol, work, fits));
+        } else if !settled_at.iter().any(|&at| at.distance(p) <= tol) {
+            settled_at.push(p);
+            descents.extend(escape(o1, o2, p, reach, tol, work, fits));
         }
     }
     let mut least = Least::below(limit);
@@ -1309,7 +1802,7 @@ fn least_between(
     // place of touch and stop short of it: across the first face from the
     // nearest end, to the least distance there.
     if let Some((p, q, d)) = ends.best {
-        let (p2, q2) = polish(o1, o2, p, q, reach);
+        let (p2, q2) = polish(o1, o2, p, q, reach, work);
         if p2.distance(q2) < d && fits(p2, q2) {
             least.offer(p2, q2, fits);
         } else {
@@ -1326,7 +1819,7 @@ fn least_between(
             }
         }
         None => {
-            for (p, q) in apexes(o1, o2) {
+            for (p, q) in apexes(o1, o2, work) {
                 least.offer(p, q, fits);
             }
         }
@@ -1339,15 +1832,21 @@ fn least_between(
 /// surface, and the point of the second it was projected from), and
 /// whether they settled (the last step moved no more than a millionth of
 /// the tolerance). None where no step could be taken.
-fn alternate(o1: &Outline, o2: &Outline, seed: Vec3, tol: f64) -> Option<(Vec3, Vec3, bool)> {
-    let mut p = outline::onto(o1.sheet(), seed)?;
+fn alternate(
+    o1: &Outline,
+    o2: &Outline,
+    seed: Vec3,
+    tol: f64,
+    work: &Work,
+) -> Option<(Vec3, Vec3, bool)> {
+    let mut p = work.onto(o1.sheet(), seed)?;
     let mut q = p;
     let (mut moved_any, mut settled) = (false, false);
     for _ in 0..ALTERNATE {
-        let Some(q2) = outline::onto(o2.sheet(), p) else {
+        let Some(q2) = work.onto(o2.sheet(), p) else {
             break;
         };
-        let Some(p2) = outline::onto(o1.sheet(), q2) else {
+        let Some(p2) = work.onto(o1.sheet(), q2) else {
             break;
         };
         let moved = p2.distance(p);
@@ -1360,6 +1859,16 @@ fn alternate(o1: &Outline, o2: &Outline, seed: Vec3, tol: f64) -> Option<(Vec3, 
         }
     }
     moved_any.then_some((p, q, settled))
+}
+
+/// The pair of a point `x` projected onto the first face's surface and
+/// that point projected onto the second's, and their distance: what
+/// [`descend`], [`escape`] and [`polish`] move over the first surface.
+fn pair_at(o1: &Outline, o2: &Outline, x: Vec3, work: &Work) -> Option<(Vec3, Vec3, f64)> {
+    let a = work.onto(o1.sheet(), x)?;
+    let b = work.onto(o2.sheet(), a)?;
+    let d = a.distance(b);
+    d.is_finite().then_some((a, b, d))
 }
 
 /// A descent of the distance from the first face's surface to the
@@ -1386,14 +1895,10 @@ fn descend(
     start: Vec3,
     reach: f64,
     tol: f64,
+    work: &Work,
     fits: impl Fn(Vec3, Vec3) -> bool,
 ) -> Option<(Vec3, Vec3)> {
-    let at = |x: Vec3| -> Option<(Vec3, Vec3, f64)> {
-        let a = outline::onto(o1.sheet(), x)?;
-        let b = outline::onto(o2.sheet(), a)?;
-        let d = a.distance(b);
-        d.is_finite().then_some((a, b, d))
-    };
+    let at = |x: Vec3| pair_at(o1, o2, x, work);
     let mut now = at(start)?;
     let mut kept = fits(now.0, now.1).then_some(now);
     if !(reach.is_finite() && reach > 0.0) {
@@ -1402,7 +1907,7 @@ fn descend(
     let mut last: Option<(Vec3, f64)> = None;
     for _ in 0..DESCENT {
         let (p, q, d) = now;
-        let Some(normal) = outline::outward_normal(o1.sheet(), false, p) else {
+        let Some(normal) = work.normal(o1.sheet(), p) else {
             break;
         };
         let pull = q - p;
@@ -1445,20 +1950,91 @@ fn descend(
     kept.map(|(p, q, _)| (p, q))
 }
 
+/// Where the alternating projections settled at `p` on the first face's
+/// surface (2026-11-25): the pair there is square to both surfaces, so
+/// the distance is stationary at it, but it may be a saddle (least across
+/// a ring slid on a rod off its axis, greatest round it: the review of the
+/// dimple and the caps, F2) or a greatest, where no descent starts (the
+/// slope is nothing). Its curvature across the first surface, from second
+/// differences of the distance [`ESCAPE`] times `reach` either way along
+/// two directions square to the normal and along both diagonals: where it
+/// curves down along some direction by more than rounding (and a
+/// millionth of the tolerance), a golden-section line search along the
+/// direction it curves down most, `reach` either way, and a descent
+/// ([`descend`]) from the pair it reaches where that is nearer. None
+/// where the distance curves up every way (a least, which the
+/// projections' end already offers) or no step could be taken; otherwise
+/// what the descent keeps.
+fn escape(
+    o1: &Outline,
+    o2: &Outline,
+    p: Vec3,
+    reach: f64,
+    tol: f64,
+    work: &Work,
+    fits: impl Fn(Vec3, Vec3) -> bool,
+) -> Option<(Vec3, Vec3)> {
+    if !(reach.is_finite() && reach > 0.0) {
+        return None;
+    }
+    let at = |x: Vec3| pair_at(o1, o2, x, work);
+    let (p, q, d) = at(p)?;
+    let normal = work.normal(o1.sheet(), p)?;
+    let aside = if normal.x.abs() < 0.9 {
+        Vec3::X
+    } else {
+        Vec3::Y
+    };
+    let e1 = normal.cross(aside).normalized()?;
+    let e2 = normal.cross(e1);
+    let h = ESCAPE * reach;
+    let f = |s: f64, t: f64| at(p + e1 * s + e2 * t).map_or(f64::NAN, |found| found.2);
+    let a = f(h, 0.0) + f(-h, 0.0) - 2.0 * d;
+    let c = f(0.0, h) + f(0.0, -h) - 2.0 * d;
+    let b = 0.25 * (f(h, h) - f(h, -h) - f(-h, h) + f(-h, -h));
+    if !(a.is_finite() && b.is_finite() && c.is_finite()) {
+        return None;
+    }
+    // The least of the two curvatures (times h²) and its direction.
+    let least = 0.5 * (a + c) - (0.5 * (a - c)).phypot(b);
+    let largest = [p, q].into_iter().fold(0.0_f64, |m, v| {
+        m.max(v.x.abs()).max(v.y.abs()).max(v.z.abs())
+    });
+    let floor = 1e-6 * tol + 64.0 * f64::EPSILON * (largest + d);
+    if least.is_nan() || least >= -floor {
+        return None;
+    }
+    let (one, two) = ((b, least - a), (least - c, b));
+    let (u, v) = if one.0.phypot(one.1) >= two.0.phypot(two.1) {
+        one
+    } else {
+        two
+    };
+    let dir = (e1 * u + e2 * v).normalized()?;
+    let s = golden(-reach, reach, |s| {
+        at(p + dir * s).map_or(f64::INFINITY, |found| found.2)
+    });
+    let found = at(p + dir * s)?;
+    if found.2.is_nan() || found.2 >= d {
+        return None;
+    }
+    descend(o1, o2, found.0, reach, tol, work, fits)
+}
+
 /// The apex of a cone (where its surface has no normal, so no pair of
 /// [`square_pairs`] and no settled projection need be there) with the
 /// point of the other face's surface nearest it, each way; both apexes
 /// where both are cones.
-fn apexes(o1: &Outline, o2: &Outline) -> Vec<(Vec3, Vec3)> {
+fn apexes(o1: &Outline, o2: &Outline, work: &Work) -> Vec<(Vec3, Vec3)> {
     let (a1, a2) = (apex(&o1.surface), apex(&o2.surface));
     let mut out = Vec::new();
     if let Some(a) = a1
-        && let Some(b) = outline::onto(o2.sheet(), a)
+        && let Some(b) = work.onto(o2.sheet(), a)
     {
         out.push((a, b));
     }
     if let Some(b) = a2
-        && let Some(a) = outline::onto(o1.sheet(), b)
+        && let Some(a) = work.onto(o1.sheet(), b)
     {
         out.push((a, b));
     }
@@ -1536,16 +2112,24 @@ fn from_plane(plane: &Plane, other: &Surface) -> Option<Vec<(Vec3, Vec3)>> {
             // The torus's point at (u, v) is `o + R w(u) + r N(u, v)`, its
             // normal `N = cos v w(u) + sin v z`: where `N = ±n`, `w(u)` is
             // `±` the part of `n` square to the axis. Where `n` is along
-            // the axis (to a billionth), the circles on top and underneath:
-            // one point of each. The part square to the axis taken twice,
-            // so that rounding leaves it square to the axis.
+            // the axis, the circles on top and underneath: one point of
+            // each. The part square to the axis taken twice, so that
+            // rounding leaves it square to the axis. Along the axis means
+            // to the rounding of that part (a ring lying flat leaves about
+            // 1e-16 of it), not to an angle: the direction of a part `m`
+            // long is off by about `ε / |m|`, which moves the pairs' height
+            // over the plane by about `R ε` whatever `m` is, while a ring
+            // leaning `|m|` rad taken as flat puts its pairs a quarter turn
+            // from its lowest point, `R |m|` higher (the review of the
+            // dimple and the caps, F1: 1e-9 here took a ring of radius 3000
+            // leaning 8e-10 rad as flat, 2.4 tolerances off).
             let f = torus.frame();
             let (major, minor) = torus.radii();
             let axis = f.z();
             let m = n - axis * n.dot(axis);
             let m = m - axis * m.dot(axis);
             let (across, up) = match m.normalized() {
-                Some(across) if m.length() > 1e-9 => (across, n),
+                Some(across) if m.length() > 1e-12 => (across, n),
                 _ => (f.x(), axis),
             };
             let mut out = Vec::with_capacity(4);
@@ -1724,12 +2308,12 @@ fn common(a: &[u32], b: &[u32]) -> Vec<u32> {
 /// first (and `q` on the second): golden sections along two directions
 /// across the first surface at `p`, `reach` either way, twice over, each
 /// keeping only a pair nearer than the last.
-fn polish(o1: &Outline, o2: &Outline, p: Vec3, q: Vec3, reach: f64) -> (Vec3, Vec3) {
+fn polish(o1: &Outline, o2: &Outline, p: Vec3, q: Vec3, reach: f64, work: &Work) -> (Vec3, Vec3) {
     let mut best = (p, q, p.distance(q));
     if !(reach.is_finite() && reach > 0.0) {
         return (p, q);
     }
-    let Some(normal) = outline::outward_normal(o1.sheet(), false, p) else {
+    let Some(normal) = work.normal(o1.sheet(), p) else {
         return (p, q);
     };
     let aside = if normal.x.abs() < 0.9 {
@@ -1741,12 +2325,7 @@ fn polish(o1: &Outline, o2: &Outline, p: Vec3, q: Vec3, reach: f64) -> (Vec3, Ve
         return (p, q);
     };
     let e2 = normal.cross(e1);
-    let at = |from: Vec3, dir: Vec3, s: f64| -> Option<(Vec3, Vec3, f64)> {
-        let a = outline::onto(o1.sheet(), from + dir * s)?;
-        let b = outline::onto(o2.sheet(), a)?;
-        let d = a.distance(b);
-        d.is_finite().then_some((a, b, d))
-    };
+    let at = |from: Vec3, dir: Vec3, s: f64| pair_at(o1, o2, from + dir * s, work);
     for _ in 0..2 {
         for dir in [e1, e2] {
             let from = best.0;
@@ -1910,6 +2489,9 @@ fn segments(p0: Vec3, p1: Vec3, q0: Vec3, q1: Vec3) -> Option<(f64, f64)> {
 }
 
 #[cfg(test)]
+mod look_3_review;
+
+#[cfg(test)]
 mod tests {
     #![allow(
         clippy::unwrap_used,
@@ -1923,15 +2505,15 @@ mod tests {
     use crate::boolean::hits::signed_distance;
     use crate::boolean::{BooleanOp, Interference, boolean, interference};
     use crate::primitives;
-    use craft3d_geom::{NurbsCurve, NurbsSurface, Torus};
+    use craft3d_geom::{Circle, Ellipse, Line, NurbsSurface, Torus};
     use craft3d_math::{Frame, Tolerance};
-    use craft3d_topo::{BodyKind, Coedge};
+    use craft3d_topo::{BodyKind, Coedge, VertexId};
     use std::cell::Cell;
 
     thread_local! {
-        /// Caps a test of this thread set (`(looked at, measured)`), which
+        /// Caps a test of this thread set (`(work, approaches)`), which
         /// [`super::caps`] gives instead of the real ones.
-        pub(super) static CAPS: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
+        pub(super) static CAPS: Cell<Option<(u64, usize)>> = const { Cell::new(None) };
     }
 
     const SCALES: [f64; 3] = [1e-3, 1.0, 1e3];
@@ -2265,9 +2847,10 @@ mod tests {
         let held = |(body, f): (&Body, usize)| body.held_face_bbox(FaceId(index(f))).unwrap();
         let (o1, o2) = (outline(x), outline(y));
         let (b1, b2) = (held(x), held(y));
-        let one = least_between(&o1, &o2, &b1, &b2, tol, f64::INFINITY)
+        let work = Work::new();
+        let one = least_between(&o1, &o2, &b1, &b2, tol, f64::INFINITY, &work)
             .map_or(f64::INFINITY, |(p, q)| p.distance(q));
-        let other = least_between(&o2, &o1, &b2, &b1, tol, f64::INFINITY)
+        let other = least_between(&o2, &o1, &b2, &b1, tol, f64::INFINITY, &work)
             .map_or(f64::INFINITY, |(p, q)| p.distance(q));
         assert!(
             (one - other).abs() <= 1e-6 * tol,
@@ -2357,15 +2940,16 @@ mod tests {
     /// naming the cap, and interference is unknown (refused in the same
     /// words), never clear. Two balls 1.5 tolerances apart, which the look
     /// finds: with the real caps the union is zero thickness and the
-    /// interference a touch; with a cap of no pair measured, or of no pair
-    /// looked at, nothing is found and both are refused for the cap. Two
-    /// balls 3 tolerances apart: built as two parts and clear, as before.
-    /// The reason names the caps as they are. At 1e-3, 1 and 1e3.
+    /// interference a touch; with a cap of no approach held, or of no work
+    /// (so no pair looked at), nothing is found and both are refused for
+    /// the cap. Two balls 3 tolerances apart: built as two parts and clear,
+    /// as before. The reason names the caps as they are. At 1e-3, 1 and
+    /// 1e3.
     #[test]
     fn a_look_cut_short_refuses_and_is_never_clear() {
         assert!(
-            CUT_SHORT.contains(&MOST_PAIRS.to_string())
-                && CUT_SHORT.contains(&MOST_LOOKED.to_string()),
+            CUT_SHORT.contains(&format!("{MOST_WORK} units of work"))
+                && CUT_SHORT.contains(&format!("{MOST_FOUND} approaches")),
             "the reason names the caps"
         );
         for k in SCALES {
@@ -2391,7 +2975,7 @@ mod tests {
                 ),
                 "at {k}"
             );
-            for caps in [(usize::MAX, 0), (0, usize::MAX)] {
+            for caps in [(u64::MAX, 0), (0, usize::MAX)] {
                 CAPS.with(|c| c.set(Some(caps)));
                 let union = boolean(&a, &near, BooleanOp::Union, &tol);
                 let between = interference(&a, &near, &tol);
@@ -2417,6 +3001,183 @@ mod tests {
                 Interference::Clear,
                 "at {k}"
             );
+        }
+    }
+
+    /// A number in [0, 1) (SplitMix64).
+    fn random(state: &mut u64) -> f64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        (z >> 11) as f64 / (1_u64 << 53) as f64
+    }
+
+    /// A point within `k` of `centre` along each axis, at random.
+    fn random_point(state: &mut u64, centre: Vec3, k: f64) -> Vec3 {
+        let x = 2.0 * random(state) - 1.0;
+        let y = 2.0 * random(state) - 1.0;
+        let z = 2.0 * random(state) - 1.0;
+        centre + Vec3::new(x, y, z) * k
+    }
+
+    /// An edge of a kind (0 a line, 1 an arc of a circle, 2 an arc of an
+    /// ellipse, 3 a piece of a cubic spline) of a size about `k`, within
+    /// `k` of `centre`, at random; arcs of up to a whole turn.
+    fn random_edge(kind: usize, state: &mut u64, centre: Vec3, k: f64) -> Edge {
+        let origin = random_point(state, centre, k);
+        let z = random_point(state, Vec3::ZERO, 1.0);
+        let x = random_point(state, Vec3::ZERO, 1.0);
+        let frame = Frame::new(origin, z, x).unwrap_or_else(|| Frame::WORLD.at(origin).unwrap());
+        let start = PI * (2.0 * random(state) - 1.0);
+        let sweep = 0.05 + (2.0 * PI - 0.05) * random(state);
+        let (curve, range) = match kind {
+            0 => {
+                let along = random_point(state, Vec3::ZERO, 1.0);
+                let along = if along.length() > 0.1 { along } else { Vec3::X };
+                let length = k * (0.2 + 2.0 * random(state));
+                (
+                    Curve3::Line(Line::new(origin, along).unwrap()),
+                    (0.0, length),
+                )
+            }
+            1 => {
+                let radius = k * (0.2 + 2.0 * random(state));
+                (
+                    Curve3::Circle(Circle::new(frame, radius).unwrap()),
+                    (start, start + sweep),
+                )
+            }
+            2 => {
+                let a = k * (0.3 + 2.0 * random(state));
+                let b = a * (0.1 + 0.9 * random(state));
+                (
+                    Curve3::Ellipse(Ellipse::new(frame, a, b).unwrap()),
+                    (start, start + sweep),
+                )
+            }
+            _ => {
+                let points: Vec<Vec3> = (0..4).map(|_| random_point(state, origin, k)).collect();
+                let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+                let lo = 0.3 * random(state);
+                let hi = lo + (1.0 - lo) * (0.2 + 0.8 * random(state));
+                (
+                    Curve3::Nurbs(NurbsCurve::polynomial(3, knots, points).unwrap()),
+                    (lo, hi),
+                )
+            }
+        };
+        Edge {
+            curve,
+            range,
+            start: VertexId(0),
+            end: VertexId(0),
+        }
+    }
+
+    /// The least distance between two edges as dense sampling finds it:
+    /// 401 points along each, each with its nearest point on the other (a
+    /// bound from above).
+    fn sampled_apart(e1: &Edge, e2: &Edge) -> f64 {
+        let one_way = |a: &Edge, b: &Edge| {
+            (0..=400)
+                .map(|i| {
+                    let t = a.range.0 + (a.range.1 - a.range.0) * f64::from(i) / 400.0;
+                    let p = a.curve.eval(t);
+                    outline::nearest(&b.curve, b.range, p).map_or(f64::INFINITY, |(_, d)| d)
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        one_way(e1, e2).min(one_way(e2, e1))
+    }
+
+    /// The bound of two edges ([`edges_apart`]) never passes over a pair
+    /// that comes nearer than its `near`: for lines, arcs of circles and of
+    /// ellipses and pieces of cubic splines at random, every pair of kinds,
+    /// crossed, near each other and apart, at 1e-3, 1 and 1e6, either way
+    /// round, it says apart only where the least distance dense sampling
+    /// finds (a bound from above of the least there is) is at least `near`
+    /// (with `near` a thousandth above it: never). And it is of use: of the
+    /// pairs with an arc of a circle and a line or another arc, it proves
+    /// at least a quarter apart at half their least distance.
+    #[test]
+    fn the_bound_of_two_edges_never_passes_over_a_pair_that_near() {
+        let mut state = 7_u64;
+        let (mut tried, mut proven) = (0usize, 0usize);
+        for k in [1e-3, 1.0, 1e6] {
+            let centre = Vec3::new(3.0, -2.0, 5.0) * k;
+            for one in 0..4 {
+                for two in 0..4 {
+                    for spread in [0.3, 1.0, 3.0] {
+                        for _ in 0..4 {
+                            let e1 = random_edge(one, &mut state, centre, k);
+                            let e2 = random_edge(two, &mut state, centre, spread * k);
+                            let least = sampled_apart(&e1, &e2);
+                            assert!(least.is_finite(), "kinds {one} and {two}");
+                            let work = Work::new();
+                            for (i, fraction) in
+                                [0.5, 0.9, 0.999, 1.001, 1.5].into_iter().enumerate()
+                            {
+                                let near = fraction * least;
+                                if near <= 0.0 {
+                                    continue;
+                                }
+                                let either = edges_apart(&e1, &e2, near, &work);
+                                let apart = either || edges_apart(&e2, &e1, near, &work);
+                                assert!(
+                                    !apart || least >= near,
+                                    "kinds {one} and {two} at {k}: apart at {near}, sampled {least}: {e1:?} {e2:?}"
+                                );
+                                if i == 0 && (one == 1 || two == 1) && one < 2 && two < 2 {
+                                    tried += 1;
+                                    proven += usize::from(either);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            4 * proven >= tried,
+            "arcs proven apart at half their least distance: {proven} of {tried}"
+        );
+    }
+
+    /// [`segment_gap`] is never more than the least distance between two
+    /// segments, a segment and a point, or two segments nearly parallel
+    /// (sampled densely, a bound from above), at 1e-3, 1 and 1e6.
+    #[test]
+    fn the_gap_of_two_segments_is_never_more_than_their_distance() {
+        let mut state = 11_u64;
+        for k in [1e-3, 1.0, 1e6] {
+            let centre = Vec3::new(-4.0, 7.0, 2.0) * k;
+            for case in 0..400 {
+                let a0 = random_point(&mut state, centre, k);
+                let mut a1 = random_point(&mut state, centre, k);
+                let b0 = random_point(&mut state, centre, k);
+                let mut b1 = random_point(&mut state, centre, k);
+                match case % 4 {
+                    1 => a1 = a0,
+                    2 => b1 = b0 + (a1 - a0) * 0.7 + Vec3::new(1e-9, 0.0, 0.0) * k,
+                    3 => b1 = b0 + (a1 - a0) * -1.3,
+                    _ => {}
+                }
+                let gap = segment_gap(a0, a1, b0, b1);
+                let mut least = f64::INFINITY;
+                for i in 0..=200 {
+                    for j in 0..=200 {
+                        let p = a0.lerp(a1, f64::from(i) / 200.0);
+                        let q = b0.lerp(b1, f64::from(j) / 200.0);
+                        least = least.min(p.distance(q));
+                    }
+                }
+                assert!(
+                    gap >= 0.0 && gap <= least + 1e-12 * k,
+                    "case {case} at {k}: the gap {gap}, sampled {least}"
+                );
+            }
         }
     }
 }

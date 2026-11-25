@@ -28,8 +28,15 @@
 //!   so the box misses the ring's lowest point by `R sin α` (240
 //!   tolerances), and the two bodies' boxes do not meet. On `main` too.
 //!
-//! All three fail today, built as two shells with the interference clear
-//! (Check 45622243924; run with `--nocapture` for the answers).
+//! All three failed on the review's branch, built as two shells with the
+//! interference clear (Check 45622243924), and were ignored as owed; all
+//! three pass since 2026-11-25 (`check/near-look-3`; the workshop's
+//! `plan/near-look-3/`): `from_plane` takes a ring as flat only to the
+//! rounding of the part of the normal square to its axis (1e-12), the
+//! search between two faces looks for a way down from every pair where the
+//! projections settle (`near.rs` › `escape`), and the box of a torus face
+//! reaches `R √(z_j² + z_k²) + r` along each axis. Run with `--nocapture`
+//! for the answers.
 
 #![allow(
     clippy::unwrap_used,
@@ -116,15 +123,14 @@ fn ring_over_plate(lean: f64, gap: f64, tol: &Tolerance) -> (Body, Body) {
 
 /// A ring leaning 8e-10 rad from a plate's normal, its lowest point 1.5
 /// tolerances over the plate inside both faces: the closed form's pairs
-/// lie where the ring's own x points (`from_plane` takes it below a lean
-/// of 1e-9), 1.5 + 2.4 tolerances over the plate, and so do the
-/// projections from the three seeds (the ring's box middle is its centre,
-/// whose projection onto the ring is at its x; the plate's box middle lies
-/// along the frame's −x). Refused, by the rule; built today, the
-/// interference clear: the pairs `from_plane` gives miss the isolated
-/// pair of the least distance by up to `2 R × 1e-9`.
+/// lay where the ring's own x points while `from_plane` took a ring
+/// leaning less than 1e-9 as flat, 1.5 + 2.4 tolerances over the plate,
+/// and so do the projections from the three seeds (the ring's box middle
+/// is its centre, whose projection onto the ring is at its x; the plate's
+/// box middle lies along the frame's −x). Refused, by the rule; built
+/// before 2026-11-25, the interference clear: the pairs `from_plane` gave
+/// missed the isolated pair of the least distance by up to `2 R × 1e-9`.
 #[test]
-#[ignore = "owed, a wrong body main gives too: a plane against a ring leaning under 1e-9 rad takes the ring flat and misses its nearest pair (docs/roadmap.md); fails today: run with --ignored"]
 fn a_ring_leaning_less_than_a_billionth_of_a_radian_over_a_plate_in_the_band_is_not_united() {
     let tol = Tolerance::default();
     let (ring, plate) = ring_over_plate(8e-10, 1.5, &tol);
@@ -171,12 +177,12 @@ fn ring_on_rod(tol: &Tolerance) -> (Body, Body) {
 /// rod's axis twice, and the ring's centre) all land on the rod at +y, the
 /// far side, where the alternating projections settle in their first step
 /// 3.5 tolerances apart: a pair square to both surfaces, least across the
-/// ring and greatest round it. No descent is tried from a settled end, and
-/// no edge or vertex comes near. Refused, by the rule; today the
-/// interference is clear (the rod first, so its wall is the search's first
-/// face) and the union, whose first face is the rod's too, built.
+/// ring and greatest round it, and no edge or vertex comes near. Refused,
+/// by the rule; before 2026-11-25, when no descent was tried from a
+/// settled end, the interference was clear (the rod first, so its wall is
+/// the search's first face) and the union, whose first face is the rod's
+/// too, built.
 #[test]
-#[ignore = "owed, a wrong body main gives too: every seed of the search between two faces settles on the far side of a ring on a rod (docs/roadmap.md); fails today: run with --ignored"]
 fn a_ring_slid_on_a_rod_off_its_axis_in_the_band_is_not_united() {
     let tol = Tolerance::new(0.01, 1e-9).unwrap();
     let (rod, ring) = ring_on_rod(&tol);
@@ -200,12 +206,11 @@ fn a_ring_slid_on_a_rod_off_its_axis_in_the_band_is_not_united() {
 /// 200 by 200 under it whose top is at z = −10.0001. The ring sinks 140
 /// tolerances into the block along 200 units: they overlap, so the union
 /// is one body (or refused) and the interference an overlap (or unknown).
-/// Today `craft3d_topo`'s box of the ring ends at z = −10 (`R √(1 − z²) +
-/// r`, z = 1), 100 tolerances over the block's top, so the bodies' boxes do
-/// not meet: the union is the two bodies as two shells that overlap, and
-/// the interference clear. Not this branch's: `main` has the same box.
+/// Before 2026-11-25 `craft3d_topo`'s box of the ring ended at z = −10 (`R
+/// √(1 − z²) + r`, z = 1), 100 tolerances over the block's top, so the
+/// bodies' boxes did not meet: the union was the two bodies as two shells
+/// that overlap, and the interference clear (on `main` too).
 #[test]
-#[ignore = "owed, a wrong body main gives too: a torus box loses R sin(a) when its axis leans under about 1e-8 rad from a world axis (docs/roadmap.md); fails today: run with --ignored"]
 fn a_large_ring_leaning_a_hundred_millionth_of_a_radian_sunk_into_a_block_is_not_left_two_parts() {
     let tol = Tolerance::default();
     let (s, c) = 8e-9_f64.psin_cos();

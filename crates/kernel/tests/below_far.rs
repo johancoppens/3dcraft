@@ -502,7 +502,14 @@ fn print_rows(rows: &[Row]) {
 /// What each row of the table that was answered before the change gave
 /// (`main` 5305636e, printed by the Check run 45024256884 on the probe
 /// commit 31d39767, which is that commit and these tests alone): the hash
-/// of every number of it. A row not listed was refused there.
+/// of every number of it. A row not listed was refused there. The torus's
+/// rows at 0 and 10 times its size from the origin since 2026-11-25 (the
+/// trial Gate 45639379639 of `check/near-look-3`): the box of a whole
+/// torus face reaches `R √(z_j² + z_k²) + r` along each world axis rather
+/// than `R √(1 − z_i²) + r` (`craft3d_topo` `transform.rs` ›
+/// `face_extent`), the same reach but for its last bits for this turned
+/// torus, and the section reads the box, so the hashes moved; every one of
+/// those rows is measured within its allowance as before.
 const FAR_PINS: &[(&str, u64)] = &[
     ("Sphere k=1e-3 D=0e0 h=-0.5", 0xee47ab214d279442),
     ("Sphere k=1e-3 D=0e0 h=0", 0x8ae60270df768af2),
@@ -615,33 +622,33 @@ const FAR_PINS: &[(&str, u64)] = &[
     ("Torus k=1e-3 D=0e0 h=-0.3", 0xefce9577b3bdffd3),
     ("Torus k=1e-3 D=0e0 h=0", 0x754a9618896691e7),
     ("Torus k=1e-3 D=0e0 h=0.25", 0x848a5785bf89c7d6),
-    ("Torus k=1e-3 D=1e1 h=-0.3", 0x17475fb21e1e7afd),
-    ("Torus k=1e-3 D=1e1 h=0", 0xc65a7eb00b9d246b),
-    ("Torus k=1e-3 D=1e1 h=0.25", 0xbf18ecceaf94cd5f),
+    ("Torus k=1e-3 D=1e1 h=-0.3", 0x4329ea0e338dd1a0),
+    ("Torus k=1e-3 D=1e1 h=0", 0x97fbf4c969acf561),
+    ("Torus k=1e-3 D=1e1 h=0.25", 0x6a8372d4dd8731cc),
     ("Torus k=1e-3 D=1e3 h=-0.3", 0x996af0cc0c16e517),
     ("Torus k=1e-3 D=1e3 h=0", 0xfcf3b05b7e880d37),
     ("Torus k=1e-3 D=1e3 h=0.25", 0x918c7f583a541136),
     ("Torus k=1e-3 D=1e4 h=-0.3", 0x478bae3df5d86a6d),
     ("Torus k=1e-3 D=1e4 h=0", 0x1c522520733855d1),
     ("Torus k=1e-3 D=1e4 h=0.25", 0x724f58e09996e6db),
-    ("Torus k=1e0 D=0e0 h=-0.3", 0x240753846e849cb3),
-    ("Torus k=1e0 D=0e0 h=0", 0x0315524361e8c347),
-    ("Torus k=1e0 D=0e0 h=0.25", 0x94c4e18a70a83128),
-    ("Torus k=1e0 D=1e1 h=-0.3", 0x1496b41d08942cc3),
-    ("Torus k=1e0 D=1e1 h=0", 0xe08a167ee8e38fe2),
-    ("Torus k=1e0 D=1e1 h=0.25", 0x975586f5991631dc),
+    ("Torus k=1e0 D=0e0 h=-0.3", 0x91bc65fdbe718066),
+    ("Torus k=1e0 D=0e0 h=0", 0x69692ef7f08bec5f),
+    ("Torus k=1e0 D=0e0 h=0.25", 0x5e9bc0880708d7dc),
+    ("Torus k=1e0 D=1e1 h=-0.3", 0x8f30a8f9baf7516c),
+    ("Torus k=1e0 D=1e1 h=0", 0xd523fe6bfe4429e6),
+    ("Torus k=1e0 D=1e1 h=0.25", 0xec38a87bcf0f89c3),
     ("Torus k=1e0 D=1e3 h=-0.3", 0xf87d704a62f7d5f8),
     ("Torus k=1e0 D=1e3 h=0", 0x748bac26d1f663b7),
     ("Torus k=1e0 D=1e3 h=0.25", 0x342648cca363f678),
     ("Torus k=1e0 D=1e4 h=-0.3", 0x6bf528e0d39d08fa),
     ("Torus k=1e0 D=1e4 h=0", 0x2a1b76b9508c0dc6),
     ("Torus k=1e0 D=1e4 h=0.25", 0x5c743aba5fec0a58),
-    ("Torus k=1e6 D=0e0 h=-0.3", 0x92bb36734b1bd060),
-    ("Torus k=1e6 D=0e0 h=0", 0xd5db820fdf143ae4),
-    ("Torus k=1e6 D=0e0 h=0.25", 0xbca1ed672c9ef6b7),
-    ("Torus k=1e6 D=1e1 h=-0.3", 0xdc2fc827a4eda62e),
-    ("Torus k=1e6 D=1e1 h=0", 0x9702d9c0da8a03be),
-    ("Torus k=1e6 D=1e1 h=0.25", 0x90a5f1d5099839e2),
+    ("Torus k=1e6 D=0e0 h=-0.3", 0x82a1caab09f8be10),
+    ("Torus k=1e6 D=0e0 h=0", 0x6db1f16d230cb318),
+    ("Torus k=1e6 D=0e0 h=0.25", 0xf9e4b27cdc009b2a),
+    ("Torus k=1e6 D=1e1 h=-0.3", 0x4ed19f7086e08cfb),
+    ("Torus k=1e6 D=1e1 h=0", 0xad590219a5257b74),
+    ("Torus k=1e6 D=1e1 h=0.25", 0x3674e8bfddcfaa85),
     ("Torus k=1e6 D=1e3 h=-0.3", 0x4a6d49854193e486),
     ("Torus k=1e6 D=1e3 h=0", 0xea4df2b3ab54b9dd),
     ("Torus k=1e6 D=1e3 h=0.25", 0x8d72f3414fe1eb59),
@@ -966,7 +973,10 @@ fn todays_answers() -> Vec<(String, u64)> {
 
 /// What each of [`todays_answers`] gave before the change (`main`
 /// 5305636e, printed by the Check run 45024256884 on the probe commit
-/// 31d39767): the hash of every number of it.
+/// 31d39767): the hash of every number of it. The torus near its bottom at
+/// 1 and 1e6 since 2026-11-25, as [`FAR_PINS`] says: its axis leans 0.4
+/// rad from z, the lowest point of its box moved in its last bits with the
+/// box's reach, and the cuts are made from it.
 const PINS: &[(&str, u64)] = &[
     ("box k=1e-3", 0x7ca715e251251f39),
     ("box level k=1e-3", 0x741c327413effae8),
@@ -1024,9 +1034,9 @@ const PINS: &[(&str, u64)] = &[
     ("tube k=1e0", 0xc347bfc2c4e5cb1a),
     ("u k=1e0", 0x7acf0e97627193f8),
     ("stepped level k=1e0", 0x0f9781cb76543ef5),
-    ("torus near bottom 0.01 k=1e0", 0x5962d8f8777951b6),
-    ("torus near bottom 0.5 k=1e0", 0x3c5c86c86b6d950f),
-    ("torus near bottom 1.5 k=1e0", 0x1d361c7614836e88),
+    ("torus near bottom 0.01 k=1e0", 0x2877307a980ee2ae),
+    ("torus near bottom 0.5 k=1e0", 0x9036027448dd2128),
+    ("torus near bottom 1.5 k=1e0", 0x2b85948129ba9f42),
     ("far prism k=1e0", 0x9f890d6f3e8b3bed),
     ("floating box kg=0.5 g=0 k=1e0", 0xd553971c1023c7b5),
     ("floating box kg=0.9 g=0 k=1e0", 0x48e9907afa925056),
@@ -1060,9 +1070,9 @@ const PINS: &[(&str, u64)] = &[
     ("tube k=1e6", 0x66a715b93cd435aa),
     ("u k=1e6", 0x87f3e7973b752d53),
     ("stepped level k=1e6", 0xa9932015e603cf11),
-    ("torus near bottom 0.01 k=1e6", 0x4b7a52d4188a6d1b),
-    ("torus near bottom 0.5 k=1e6", 0xf689d00ba0c3668b),
-    ("torus near bottom 1.5 k=1e6", 0x8f1bbf7f08976a2c),
+    ("torus near bottom 0.01 k=1e6", 0x345f0001c034b8b0),
+    ("torus near bottom 0.5 k=1e6", 0x0342b3a16385d06e),
+    ("torus near bottom 1.5 k=1e6", 0x68423c8098d418c2),
     ("far prism k=1e6", 0x0ae1f8be78cb5836),
     ("floating box kg=0.5 g=0 k=1e6", 0xe0167398fb99e39c),
     ("floating box kg=0.9 g=0 k=1e6", 0xdda8cc0eb9ffef3e),

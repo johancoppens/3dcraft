@@ -18,6 +18,7 @@ static PATCH_TREES: AtomicU64 = AtomicU64::new(0);
 static BLEND_SECTIONS: AtomicU64 = AtomicU64::new(0);
 static HELPER_PANICS: AtomicU64 = AtomicU64::new(0);
 static NEAR_LEFT: AtomicU64 = AtomicU64::new(0);
+static NEAR_WORK: AtomicU64 = AtomicU64::new(0);
 
 /// Entities a boolean's look for near approaches (`boolean/near.rs`) left
 /// with pairs not measured, at its caps on the pairs it measures and looks
@@ -31,6 +32,19 @@ pub fn near_left() -> u64 {
 
 pub(crate) fn near_left_over(count: usize) {
     NEAR_LEFT.fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
+}
+
+/// The work of the looks for near approaches (`boolean/near.rs`), in the
+/// units their cap counts (since 2026-11-25: a pair looked at, a point of
+/// an edge evaluated for the bound of two edges, a point sought or
+/// measured on a curve or a surface), added once per look. Not part of
+/// [`KernelWork`] (the benchmark's counts).
+pub fn near_work() -> u64 {
+    NEAR_WORK.load(Ordering::Relaxed)
+}
+
+pub(crate) fn near_worked(units: u64) {
+    NEAR_WORK.fetch_add(units, Ordering::Relaxed);
 }
 
 /// Helper threads of the kernel that panicked (a boolean section's

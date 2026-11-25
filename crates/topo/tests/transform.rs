@@ -404,6 +404,57 @@ fn boxes_of_the_primitives_are_the_closed_forms() {
     }
 }
 
+/// A whole torus whose axis leans a hair from a world axis is boxed
+/// whole: the box reaches the torus's furthest points along that axis,
+/// `R sin α + r` either side of the centre, and no further than rounding
+/// beyond them. Before 2026-11-25 the reach along an axis was
+/// `R √(1 − z_i²) + r`, and under a lean of about 1e-8 rad `z_i²` rounds to
+/// 1: the box lost `R sin α` (the review of the dimple and the caps, F3; a
+/// ring of radius 30 000 leaning 8e-9 rad missed 2.4e-4 under its box).
+/// Leans from none to a thousandth of a radian, each world axis leaning
+/// towards the next, the ring and its centre at three scales.
+#[test]
+fn a_torus_leaning_a_hair_off_a_world_axis_is_boxed_whole() {
+    let axes = [Vec3::X, Vec3::Y, Vec3::Z];
+    for scale in [1e-3, 1.0, 1e6] {
+        let (major, minor) = (30000.0 * scale, 10.0 * scale);
+        let centre = Vec3::new(3.0, -7.0, 11.0) * scale;
+        for lean in [0.0, 1e-12, 1e-10, 8e-10, 8e-9, 1e-8, 1e-6, 1e-3] {
+            let (s, c) = lean.psin_cos();
+            for (i, &along) in axes.iter().enumerate() {
+                let (toward, third) = (axes[(i + 1) % 3], axes[(i + 2) % 3]);
+                let axis = along * c + toward * s;
+                let frame = Frame::new(centre, axis, third).unwrap();
+                let body = solids::torus(&frame, major, minor).unwrap().body;
+                // The furthest points along `along`, and the reach the
+                // other two ways.
+                let out = (along * s - toward * c) * major + along * minor;
+                let extremes = [centre + out, centre - out];
+                let reach = along * (major * s + minor)
+                    + toward * (major * c + minor)
+                    + third * (major + minor);
+                let want = box_of([centre - reach, centre + reach]);
+                let margin = 1e-12 * (major + centre.length());
+                let what = format!("a torus leaning {lean} rad from axis {i} at scale {scale}");
+                for (name, bbox) in [
+                    ("bbox", body.bbox().unwrap()),
+                    ("held_bbox", body.held_bbox().unwrap()),
+                    ("face_bbox", body.face_bbox(FaceId(0)).unwrap()),
+                    ("held_face_bbox", body.held_face_bbox(FaceId(0)).unwrap()),
+                ] {
+                    for p in extremes {
+                        assert!(
+                            bbox.contains(p, 0.0),
+                            "{what}, {name}: {bbox:?} misses its furthest point {p:?}"
+                        );
+                    }
+                    assert_same_box(&format!("{what}, {name}"), &bbox, &want, margin);
+                }
+            }
+        }
+    }
+}
+
 /// Many points of every edge of `body`.
 fn edge_points(body: &Body) -> Vec<Vec3> {
     let mut out = Vec::new();
