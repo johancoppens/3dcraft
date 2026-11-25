@@ -302,9 +302,12 @@ pub(super) struct Sections {
 /// they lie (the table of `classify::solids`): a face of A where it is
 /// outside B (union, difference) or inside it (intersection), a face of B
 /// where it is outside A (union) or inside it (difference, intersection).
-/// The section reads it in one place only, a spline edge's touch inside
-/// the face it touches ([`super::corner::kept_both`]); without it (a sheet
-/// among the operands, contact's evidence) such a touch stands.
+/// The section reads it, through [`super::corner::keeps_both`], in two
+/// places: a spline edge's touch inside the face it touches
+/// ([`super::corner::kept_both`]), and a stretch along which two faces only
+/// touch, inside both by its samples with an end clear outside one of
+/// them ([`clip`]). Without it (a sheet among the operands, contact's
+/// evidence) such a touch stands, and such a stretch is judged as before.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Kept {
     /// A's faces are kept where they are outside B.
@@ -1025,6 +1028,11 @@ fn flat_face_clear_of(
 /// needs it to: a piece that ends inside a face, or has the same piece of
 /// the face on both sides, is dropped when the regions are made, and what
 /// it divides needlessly is merged again at the end.
+///
+/// `kept` is which faces the boolean keeps, where it is a boolean of two
+/// solids: a stretch along which the faces only touch, inside both by its
+/// samples but with an end clear outside one of them, is left out where
+/// the result does not keep both faces there (below, at the stretches).
 #[allow(clippy::too_many_arguments)]
 fn clip(
     meeting: &MeetingCurve,
@@ -1035,6 +1043,7 @@ fn clip(
     fb: usize,
     vertices: &mut Vertices,
     tolerance: &Tolerance,
+    kept: Option<Kept>,
     sections: &mut Sections,
 ) -> Result<(), Stop> {
     let tol = tolerance.linear;
@@ -1509,6 +1518,41 @@ fn clip(
             {
                 return Err(Stop::of(NEARLY_TOUCHING).at(&named));
             }
+        }
+        // A stretch along which the faces only touch, inside both by its
+        // samples, with an end clear outside one of them: between its
+        // cuts a stretch crosses no edge of either face, so this one has
+        // crossed that face's border where the border's cut was lost. An
+        // edge that crosses a curve of touch only touches the other
+        // surface there, and a spline edge's touch stands where the
+        // spline comes nearest, many tolerances along it and off the
+        // curve (docs/design/booleans.md › *A tangent edge across a spline
+        // border*); it is taken onto the curve only on the touched face's
+        // border, or where the result keeps both faces (`edge_cuts`). So
+        // the curve is cut where the other face's edges cross it (those
+        // lie in the touched surface, and their touches fall on the
+        // curve) and not where this face's do: random design 108069, a
+        // circle kept from where one torus crosses it to where it does
+        // again, 0.0115 past the border of the face it touches along at
+        // either end. Such a stretch is no part of the imprint as it is:
+        // the curves cut into the faces cross it without a vertex. Where
+        // the result does not keep both faces there (a union, the one
+        // touching the other from within it) the curve divides nothing,
+        // and the stretch is left out, as one whose samples show it
+        // running over a border is (above). Where the result keeps both
+        // the curve is an edge of it, whose cuts are taken onto it
+        // (`corner::kept_both`); a stretch that still ends outside a face
+        // there, or whose sides cannot be read, stands as before.
+        if !crossing
+            && inside == [true, true]
+            && [oa, ob]
+                .into_iter()
+                .any(|face| clear_outside(face, from.point) || clear_outside(face, to.point))
+            && kept.is_some_and(|kept| {
+                super::corner::keeps_both(a.operand, oa, ob, middle, kept, tol) == Some(false)
+            })
+        {
+            continue;
         }
         let start = vertices
             .find_or_add_with(from.point, edge_meets_edge(from))
@@ -2090,6 +2134,7 @@ fn section_with(
                             fb,
                             vertices,
                             tolerance,
+                            kept,
                             &mut sections,
                         )?;
                     }
@@ -3021,7 +3066,7 @@ fn lying_edges(
                     deviation: 0.0,
                 };
                 clip(
-                    &meeting, &found, a, fa, b, fb, vertices, tolerance, sections,
+                    &meeting, &found, a, fa, b, fb, vertices, tolerance, kept, sections,
                 )?;
             }
         }
@@ -3856,6 +3901,7 @@ pub(super) mod tests {
                     fb,
                     &mut vertices,
                     &tolerance,
+                    None,
                     &mut sections,
                 );
                 let found = match &made {
@@ -3969,6 +4015,7 @@ pub(super) mod tests {
             fb,
             &mut vertices,
             &tolerance,
+            None,
             &mut sections,
         );
         match &made {

@@ -460,38 +460,53 @@ pub(super) fn kept_both(
     let Some(faces) = faces_of(own, id, tol) else {
         return false;
     };
+    faces.into_iter().any(|face| {
+        own.outline(face).is_ok_and(|outline| {
+            keeps_both(own.operand, outline, against, p, kept, tol) == Some(true)
+        })
+    })
+}
+
+/// Whether the boolean keeps both `face`, of `operand`, and `against`, of
+/// the other operand, about `p`, where the two are tangent and `face`
+/// keeps to one side of `against` ([`side_of`]): `kept` says which faces
+/// of each operand the boolean keeps, by the side of the other operand
+/// they lie on. `None` where they are not tangent at `p` (their normals
+/// further apart than [`TANGENT`]), or where the side cannot be read (the
+/// surfaces cross there, or part too slowly for the walks).
+///
+/// Two faces that touch along a curve are both in the result on both sides
+/// of it, or one of them is, or neither: the one is on the same side of
+/// the other operand on both sides of the curve. Only where both are kept
+/// is the curve an edge of the result ([`kept_both`]); where one is kept or
+/// neither, it divides nothing.
+pub(super) fn keeps_both(
+    operand: Operand,
+    face: &Outline,
+    against: &Outline,
+    p: Vec3,
+    kept: Kept,
+    tol: f64,
+) -> Option<bool> {
     let other = against.sheet();
-    let Some(n_other) = outward_normal(other, against.reversed, p).and_then(Vec3::normalized)
-    else {
-        return false;
-    };
-    let other_operand = match own.operand {
+    let n_other = outward_normal(other, against.reversed, p).and_then(Vec3::normalized)?;
+    let sheet = face.sheet();
+    let n_own = outward_normal(sheet, face.reversed, p).and_then(Vec3::normalized)?;
+    let sine = n_own.cross(n_other).length();
+    if sine.is_nan() || sine > TANGENT {
+        return None;
+    }
+    // The face beyond `against` (on its outward side) is outside the other
+    // operand. Then `against` is on the face's inner side, inside
+    // `operand`, where their outward normals agree, and outside it where
+    // they are opposed; and the other way round.
+    let beyond = side_of(sheet, (other, against.reversed), p, n_other, tol)?;
+    let against_outside = beyond != (n_own.dot(n_other) > 0.0);
+    let other_operand = match operand {
         Operand::A => Operand::B,
         Operand::B => Operand::A,
     };
-    faces.into_iter().any(|face| {
-        let Ok(outline) = own.outline(face) else {
-            return false;
-        };
-        let sheet = outline.sheet();
-        let Some(n_own) = outward_normal(sheet, outline.reversed, p).and_then(Vec3::normalized)
-        else {
-            return false;
-        };
-        let sine = n_own.cross(n_other).length();
-        if sine.is_nan() || sine > TANGENT {
-            return false;
-        }
-        // The face beyond `against` (on its outward side) is outside the
-        // other operand. Then `against` is on the face's inner side,
-        // inside `own`, where their outward normals agree, and outside it
-        // where they are opposed; and the other way round.
-        let Some(beyond) = side_of(sheet, (other, against.reversed), p, n_other, tol) else {
-            return false;
-        };
-        let against_outside = beyond != (n_own.dot(n_other) > 0.0);
-        kept.outside(own.operand) == beyond && kept.outside(other_operand) == against_outside
-    })
+    Some(kept.outside(operand) == beyond && kept.outside(other_operand) == against_outside)
 }
 
 /// Which side of `other` (by its outward normal, `reversed` as its face

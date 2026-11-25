@@ -650,8 +650,10 @@ fn run(
         options.trust_operands,
     )?;
     // Which faces are kept by where they lie, for two solids (the table of
-    // `classify::solids`): the section reads it where a spline edge only
-    // touches a face (`corner::kept_both`).
+    // `classify::solids`): the section reads it, through
+    // `corner::keeps_both`, where a spline edge only touches a face
+    // (`corner::kept_both`) and at a stretch of touch with an end clear
+    // outside a face (`section::clip`).
     let kept = (mode == Mode::Solids).then(|| section::Kept::of(op));
     let sections = section::section(&a, &b, &mut vertices, tolerance, kept)?;
 
