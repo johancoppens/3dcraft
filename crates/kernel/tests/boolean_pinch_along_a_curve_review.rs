@@ -10,8 +10,8 @@
 //! - A union and a cut in the other order (the edges on B).
 //! - The edges on the tool of a cut that keeps both faces: a block beyond
 //!   x = 0 less the torus within the slab, a void whose wall touches the
-//!   block's face along the arcs, a wall that thins to nothing within one
-//!   part.
+//!   block's face along the arcs: two shells of one body that touch,
+//!   refused as zero thickness (decided 2026-11-25).
 //! - The torus within the slab joined to the cutter by a bridge, so that
 //!   the two rest on each other along the arcs and are one part.
 //! - The cutter turned about the line where the slab's floor meets the
@@ -368,34 +368,35 @@ fn the_cutter_united_with_the_hollowed_slab_keeps_one_face() {
 }
 
 #[test]
-#[ignore = "owed, as on main: the block's outer shell and the void's touch along the arcs and are refused as two parts (Check 45626434190)"]
-fn a_void_whose_wall_touches_the_blocks_face_along_the_arcs_is_one_part() {
+fn a_void_whose_wall_touches_the_blocks_face_along_the_arcs_is_refused_as_two_shells() {
     // The block beyond x = 0 less the torus within the slab: the void's
     // wall touches the block's face x = 0 along the arcs, from inside the
-    // block; the wall between them thins to nothing there from both sides
-    // and the block stays one part (as the hole whose wall touches the
-    // plate's side, 2026-10-18: a wall that thins to nothing within one
-    // shell is a valid body). The edges that cross C are the tool's (B),
-    // and the cut keeps both faces. `main` refused it as zero thickness at
-    // a hit 6.3 tolerances off C (its outer shell and the void's touching:
-    // made without the refusal, two shells of the set's volume); the
-    // branch the same at a point of C, every case (Check 45626434190):
-    // the arcs, imprinted, are slits in the block's face that end inside
-    // it, and the void stays a shell of its own. Whether such a void is a
-    // wall that thins to nothing within one shell (2026-10-18) or two
-    // shells that touch (2026-10-15) is the developer's to say.
+    // block. The edges that cross C are the tool's (B), and the cut keeps
+    // both faces. Imprinted, the arcs are slits in the block's face that
+    // end inside it and join no faces into one shell, so the void stays a
+    // shell of its own: two shells of one body that touch along the arcs,
+    // refused as zero thickness (2026-10-15), not a wall that thins to
+    // nothing within one shell (2026-10-18, as a through hole whose wall
+    // touches the plate's side is). Decided by the developer on
+    // 2026-11-25 (docs/decisions.md). `main` refused it at a hit 6.3
+    // tolerances off C, the branch of the pinch along a curve at a point
+    // of C in every case (Check 45626434190); made without the refusal,
+    // two shells of the set's volume on both. A difference has no other
+    // order that gives this point set.
     let mut failures = Vec::new();
     for case in Case::all() {
         let beyond = case.block(BEYOND);
         let inside = case.inside();
         let label = "beyond - inside";
-        println!(
-            "{label} at {case:?}: {}",
-            outcome(case, &beyond, &inside, Subtract)
-        );
-        made_anyway(case, label, &beyond, &inside, Subtract);
-        let ops = (&beyond, &inside, Subtract);
-        failures.extend(built(case, label, ops, BEYOND_LESS_TORUS, 1).err());
+        failures.extend(zero_thickness_on_c(case, label, &beyond, &inside, Subtract).err());
+        // Within the tolerance times about the result's area (the block's
+        // 4800 and the void's wall).
+        match made_anyway(case, label, &beyond, &inside, Subtract) {
+            Some((2, volume)) if (volume - BEYOND_LESS_TORUS).abs() <= 1e-6 * 5000.0 => {}
+            other => failures.push(format!(
+                "{label} at {case:?}: made without the refusal {other:?}, not 2 shells of {BEYOND_LESS_TORUS:e}"
+            )),
+        }
     }
     none_failed(&failures);
 }
