@@ -153,7 +153,7 @@ Otherwise the refusal at the size asked, as it is: the boolean's in the blend's 
 
 **Owed.**
 
-- The short cone's rim at 0.999 of what fits, and 124545's fillet from 2.39436 to its cap: the boolean refuses near a tangency at radii that fit; bodies owed ([`booleans.md`](booleans.md) › *A tangent edge across a spline border* › *Owed*).
+- The short cone's rim at 0.999 of what fits, and 124545's fillet from 2.3963 to its cap (from 2.39436 until 2026-11-25, when the radii up to 2.396 came to build: [`booleans.md`](booleans.md) › *Two operands' edges placed apart on one tangency line*): the boolean refuses near a tangency at radii that fit; bodies owed ([`booleans.md`](booleans.md) › *A tangent edge across a spline border* › *Owed*).
 - A limit that is no event, where the builds past it fail at the boolean (124545's fillet past its cap), is not said; the cap's far point as an event (a maximum of the measure across the edge) would say it.
 - A blend built in place (a straight edge between planes, the lip over a channel's corner in the probe) is not searched where it fails with its own invalid body or a mesh that cannot be checked; as before.
 - *"Below X"* where the faces leave room again above the size asked (the review's pocket near an edge, `blend_too_large_shown_review.rs`): the words claimed every larger size, the search shows the sizes up to the one asked. Mended on 2026-11-25: the words say what is shown (above, *The words say what is shown*); the review's test holds them true. A larger size is not tried: saying which larger size fits is owed.

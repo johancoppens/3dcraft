@@ -386,6 +386,29 @@ fn too_large(
     }
 }
 
+/// The steps run, the last through the deep check: the volume and area of
+/// the document, or why it is not built and checked.
+fn built_volume(steps: &Steps) -> Result<(f64, f64), String> {
+    let mut s = Session::new(Workspace::unrestricted());
+    for (id, params) in steps {
+        let made = s.execute(id, params).unwrap();
+        if made["status"] == "failed" {
+            return Err(format!("{id}: {}", made["error"]));
+        }
+    }
+    let check = s.execute("document.check", &json!({"deep": true})).unwrap();
+    if check["ok"] != true {
+        return Err(format!("the deep check: {check}"));
+    }
+    let measured = s
+        .execute("document.measure", &json!({"inertia": false}))
+        .unwrap();
+    match (measured["volume"].as_f64(), measured["area"].as_f64()) {
+        (Some(volume), Some(area)) => Ok((volume, area)),
+        _ => Err(format!("not measured: {measured}")),
+    }
+}
+
 /// The radius `r` (at scale 1) builds, and the body passes the deep check.
 fn builds(wrong: &mut Vec<String>, label: &str, make: Make, k: f64, t: Turn, r: f64) {
     let got = answer(&make(k, t, r));
@@ -471,6 +494,13 @@ fn seeds_103578_and_110541_are_too_large_with_what_their_faces_leave() {
     held(&wrong);
 }
 
+/// Random design 124545's fillet near its cap, (radius, volume): the
+/// volume of the same set made the other way round, `(C \ T) ∩ N0` (the
+/// cylinder less the fillet's tool, then the torus), by the kernel as it
+/// was before 2026-11-25, at scale 1 not turned (the probe of the folds,
+/// Checks 45676888557 and 45681945069 of the workshop).
+const OTHER_WAY: [(f64, f64); 2] = [(2.39437, 50.91545176504402), (2.396, 50.90830442300714)];
+
 /// Random design 124545: the cap leaves room up to 2.39655, where the
 /// fillet would take the whole cap (a chamfer of the rim, whose tool has no
 /// tangent edge, finds it: *"below 2.39654"*). Before 2026-11-24 the first
@@ -478,15 +508,30 @@ fn seeds_103578_and_110541_are_too_large_with_what_their_faces_leave() {
 /// refused in the boolean's words, also at radii that fit.
 ///
 /// A regression test of today's answer, not of the right one. Radii build
-/// and pass the deep check up to 2.394358 (held here at 0.9 to 2.39435);
-/// from 2.394360 the tool's cut is the boolean's invalid body (2.39437 is
-/// refused here), to 2.3963, and refused at the edge of tolerance from
-/// 2.3964 (the review of 2026-11-24, which swept 2.3943 to 2.397). Past the
-/// cap (2.45, 2.5 and 3; at every scale and turned at 2.5) the fillet is
-/// refused as the result shows it, *"the fillet takes away the whole of a
-/// face next to the edge, or does not reach it: the radius is too
-/// large"*: true by the closed form, each radius being past the 2.39655
-/// the cap leaves.
+/// and pass the deep check up to 2.394358 (held here at 0.9 to 2.39435),
+/// and since 2026-11-25 also at 2.39437 to 2.396 (below); at 2.3963 the
+/// tool's cut is refused as an imprint that does not fit (held here; on
+/// `main` before that day the boolean's invalid body), and at the edge of
+/// tolerance from 2.3964 (the review of 2026-11-24, which swept 2.3943 to
+/// 2.397). Past the cap (2.45, 2.5 and 3; at every scale and turned at
+/// 2.5) the fillet is refused as the result shows it, *"the fillet takes
+/// away the whole of a face next to the edge, or does not reach it: the
+/// radius is too large"*: true by the closed form, each radius being past
+/// the 2.39655 the cap leaves.
+///
+/// An expectation changed on 2026-11-25 (docs/design/booleans.md › *Two
+/// operands' edges placed apart on one tangency line*): 2.39437 was held
+/// refused, the tool's cut the boolean's invalid body from 2.394360 to
+/// 2.3963. There the round's curve against the cap is lost where the cap's
+/// border meets it at a shallow angle, and nothing divided the cap along
+/// the tool's fold (its strip on the cap against its round, at no angle);
+/// a fold of a face that lies on the other body's face, which no stretch
+/// runs along, is now imprinted from itself. The bodies at 2.39437 and
+/// 2.396 are held to the same set made the other way round, the cylinder
+/// less the tool and then the torus, with the code before that day (the
+/// kernel's volumes [`OTHER_WAY`], `boolean_tangent_edge_border.rs`'s
+/// probe in Checks 45676888557 and 45681945069 of the workshop), within
+/// the tolerance times the area: 2.0e-7 and 8.8e-7 off, against 9.7e-5.
 ///
 /// An expectation changed on 2026-11-25 (docs/design/blends.md › *Too
 /// large only where it is shown*): until then the fillet said what fits
@@ -500,11 +545,22 @@ fn seeds_103578_and_110541_are_too_large_with_what_their_faces_leave() {
 fn seed_124545_builds_what_fits_and_is_too_large_past_its_cap() {
     const WHOLE: &str = "the fillet takes away the whole of a face next to the edge, or does not reach it: the radius is too large";
     let cap = 7.5 - ((1.25_f64 * 1.25 + 7.5 * 7.5).sqrt() - 2.5);
-    let (builds_up_to, refused_from) = (2.39435, 2.39437);
+    let (builds_up_to, refused_from) = (2.39435, 2.3963);
     let mut wrong = Vec::new();
     for r in [0.9, 1.25, 1.3, builds_up_to] {
         let label = format!("124545 k=1 r={r}");
         builds(&mut wrong, &label, s124545, 1.0, Turn::None, r);
+    }
+    for (r, other_way) in OTHER_WAY {
+        let label = format!("124545 k=1 r={r}");
+        let got = built_volume(&s124545(1.0, Turn::None, r));
+        println!("{label}: {got:?}, the other way round {other_way}");
+        match got {
+            Ok((volume, area)) if (volume - other_way).abs() <= 1e-6 * area => {}
+            _ => wrong.push(format!(
+                "{label}: not built, checked and {other_way}: {got:?}"
+            )),
+        }
     }
     let label = format!("124545 k=1 r={refused_from}");
     let got = answer(&s124545(1.0, Turn::None, refused_from));
