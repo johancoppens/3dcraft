@@ -61,20 +61,29 @@ fn explain(
                     craft3d_kernel::short_number(distance),
                     face_name(face),
                 ),
-                // Shown by builds up to the distance asked, and no further:
-                // a larger one is not tried (it may fit, where it takes away
-                // whatever was in the way).
-                Shown::Builds if craft3d_kernel::fits_shown(largest) >= distance => format!(
-                    "{parameter}: too large for {}: a distance of {} {unit} along the face {} does not fit; one fits just below {below} {unit}",
+                // Shown by builds: the distance asked and seven tried between
+                // it and the largest found to fit do not fit. Not every
+                // distance between (where the faces leave room between two of
+                // those tried, one builds), nor any larger (one may fit that
+                // takes away whatever was in the way).
+                Shown::Builds => {
+                    let tried = if craft3d_kernel::fits_shown(largest) < distance {
+                        format!(", nor the distances tried from {below} {unit} up to it")
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "{parameter}: too large for {}: the {} {unit} asked does not fit along the face {}{tried}; the largest found to fit is just below {below} {unit}",
+                        role(edge),
+                        craft3d_kernel::short_number(distance),
+                        face_name(face),
+                    )
+                }
+                Shown::Itself => format!(
+                    "{parameter}: too large for {}: the largest distance that fits along the face {} is {} {unit}",
                     role(edge),
-                    craft3d_kernel::short_number(distance),
                     face_name(face),
-                ),
-                Shown::Builds => format!(
-                    "{parameter}: too large for {}: no distance along the face {} from {below} {unit} up to the {} {unit} asked fits; one fits just below {below} {unit}",
-                    role(edge),
-                    face_name(face),
-                    craft3d_kernel::short_number(distance),
+                    craft3d_kernel::short_number(largest)
                 ),
             }
         }

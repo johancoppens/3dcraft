@@ -2,11 +2,14 @@
 //! `docs/design/blends.md`): a fillet's or a chamfer's *"too large"* says
 //! which sizes do not fit, and each must be true.
 //!
-//! - *"no radius (distance) … from X mm up to the R mm asked fits"*
-//!   (`Shown::Builds`): no size from X up to R builds;
-//! - *"a radius (distance) of R mm does not fit"*: R does not build;
+//! - *"the R mm asked does not fit …, nor the radii (distances) tried from
+//!   X mm up to it"* (`Shown::Builds`, since this review's F4): R does not
+//!   build (the sizes tried are not named, and a size between them may);
 //! - *"the largest radius (distance) that fits there is below X mm"*
-//!   (`Shown::Faces`): no size at or above X builds.
+//!   (`Shown::Faces`): no size at or above X builds;
+//! - *"the largest radius that fits there is X mm"* (`Shown::Itself`): no
+//!   size above X builds;
+//! - never *"below 0 mm"* (this review's F5: no face shows it).
 //!
 //! Each is held against sizes that build a right body: the deep check
 //! passes and the volume is the closed form's to 1e-9. Two cases where a
@@ -104,22 +107,18 @@ impl Answer {
             let x = number(words.get(at + BELOW.len()..)?)?;
             return Some((x, f64::INFINITY));
         }
-        if let Some(at) = words.find(" asked fits") {
-            let before = words.get(..at)?;
-            let from = before.rfind(" from ")?;
-            let (x, r) = before
-                .get(from + " from ".len()..)?
-                .split_once(" mm up to the ")?;
-            let r = r.strip_suffix(" mm")?;
-            return Some((x.parse().ok()?, r.parse().ok()?));
+        const IS: &str = "that fits there is ";
+        if let Some(at) = words.find(IS) {
+            let x = number(words.get(at + IS.len()..)?)?;
+            return Some((x * (1.0 + 1e-9), f64::INFINITY));
         }
-        for start in ["a radius of ", "a distance of "] {
-            if let Some(at) = words.find(start)
-                && words.contains("does not fit")
-            {
-                let r = number(words.get(at + start.len()..)?)?;
-                return Some((r, r));
-            }
+        if let Some(at) = words.find(" mm asked does not fit") {
+            let before = words.get(..at)?;
+            let r: f64 = before
+                .get(before.rfind("the ")? + "the ".len()..)?
+                .parse()
+                .ok()?;
+            return Some((r, r));
         }
         None
     }
@@ -222,6 +221,12 @@ fn holds(case: &Case) {
             if !matches!(got, Answer::Refused(_)) {
                 wrong.push(format!(
                     "{} k={k:e} at {size}: not refused: {got:?}",
+                    case.label
+                ));
+            }
+            if matches!(&got, Answer::Refused(words) if words.contains("below 0 mm")) {
+                wrong.push(format!(
+                    "{} k={k:e} at {size}: says nothing fits: {got:?}",
                     case.label
                 ));
             }

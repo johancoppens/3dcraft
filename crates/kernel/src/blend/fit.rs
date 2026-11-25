@@ -45,10 +45,11 @@
 //! so what is shown is that the sizes tried from the one said up to the
 //! one asked fail (seven evenly between, and the one asked), and one just
 //! below it builds: so the refusal says ([`crate::Shown::Builds`]), not
-//! that nothing larger fits. A size between two of those tried may build
-//! where the faces leave a window of room there, and the refusal's words
-//! then say more than is shown (two shallow pockets near the edge:
-//! `crates/engine/tests/blend_too_large_shown_review2.rs`, failing). Where
+//! that nothing larger fits, nor every size between: a size between two
+//! of those tried may build where the faces leave a window of room there
+//! (two shallow pockets near the edge:
+//! `crates/engine/tests/blend_too_large_shown_review2.rs`), so the words
+//! name the size asked and the sizes tried, not a range. Where
 //! the faces leave room again above the size asked (a shallow pocket near
 //! the edge that a larger blend takes whole), larger sizes build
 //! (`crates/engine/tests/blend_too_large_shown_review.rs`). An event is

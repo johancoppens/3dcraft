@@ -5,10 +5,11 @@
 //! one asked and never above it, so where the faces leave room again above
 //! the size asked, X was said below sizes that build (on `main` 22f0bb13,
 //! and on the branch until the review's F1 was mended). Since then the
-//! search says what it shows, *"no radius (distance) from X up to the R
-//! asked fits …; one fits just below X"*, and this test holds those words
-//! true: no size from X up to R builds, and the unbounded claim is not
-//! made.
+//! search says what it tried, *"the R mm asked does not fit …, nor the
+//! radii (distances) tried from X mm up to it; the largest found to fit is
+//! just below X mm"* (the second review's F4), and this test holds those
+//! words true: the size asked does not build, and the unbounded claim is
+//! not made.
 //!
 //! The case: a block 10 × 10 × 10 with a shallow pocket in its top near its
 //! front top edge (x 4 to 6, y 1 to 1.5, 0.05 deep), and that edge (y = 0,
@@ -84,18 +85,20 @@ enum Answer {
 }
 
 impl Answer {
-    /// The sizes a too-large refusal says do not fit, *"from X mm up to
-    /// the R mm asked"*, at the scale of the document.
+    /// The size a too-large refusal says does not fit, *"the R mm asked
+    /// does not fit"* (and those it tried, which it does not name), at the
+    /// scale of the document: R to R.
     fn range(&self) -> Option<(f64, f64)> {
         let Answer::Refused(words) = self else {
             return None;
         };
-        let at = words.find(" from ")?;
-        let (x, rest) = words
-            .get(at + " from ".len()..)?
-            .split_once(" mm up to the ")?;
-        let (r, _) = rest.split_once(" mm asked")?;
-        Some((x.parse().ok()?, r.parse().ok()?))
+        let at = words.find(" mm asked does not fit")?;
+        let before = words.get(..at)?;
+        let r: f64 = before
+            .get(before.rfind("the ")? + "the ".len()..)?
+            .parse()
+            .ok()?;
+        Some((r, r))
     }
 
     /// Whether the refusal claims a largest size that fits, with no bound
@@ -146,10 +149,9 @@ fn swallowed(chamfer: bool, size: f64) -> f64 {
     }
 }
 
-/// Each size `asked` is refused: where a size is said, as *"from X up to
-/// the R asked"*, no size of `larger` from X up to R builds the closed
-/// form's body (each of them lies above R, and builds), and the words
-/// claim nothing above R.
+/// Each size `asked` is refused: where it is said too large (*"the R mm
+/// asked does not fit"*), no size of `larger` is R (each of them lies above
+/// R, and builds), and the words claim nothing above R.
 fn never_below_a_size_that_builds(chamfer: bool, asked: &[f64], larger: &[f64]) {
     let kind = if chamfer { "chamfer" } else { "fillet" };
     let mut wrong = Vec::new();

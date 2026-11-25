@@ -289,6 +289,13 @@ pub(super) fn section(
         largest: largest.max(0.0),
         shown: crate::Shown::Faces,
     };
+    // No ball of the radius fits against the face on `side` (no size is
+    // said: what fits is not worked out here).
+    let no_ball = |side: usize| BlendError::Refused {
+        edge: Some(edge),
+        face: faces.get(side).copied(),
+        reason: super::Reason::NoBall,
+    };
     // How far round its circle a trace may go.
     let most = |trace: &Trace| trace.circle().map_or(f64::INFINITY, |(_, r)| MOST_TURN * r);
     match size {
@@ -338,9 +345,10 @@ pub(super) fn section(
                 dp.total_cmp(&dq)
             });
             let Some([x, y]) = best else {
-                // The two curves moved by the radius do not meet: the ball
-                // does not fit between the faces.
-                return Err(too_large(0, radius, 0.0));
+                // The two curves moved by the radius do not meet: no ball
+                // of it fits between the faces. What fits is not worked
+                // out here: no size is said.
+                return Err(super::refused(edge, super::Reason::NoBall));
             };
             let centre = e1 * x + e2 * y;
             let mut feet = [Vec3::new(0.0, 0.0, 0.0); 2];
@@ -354,14 +362,14 @@ pub(super) fn section(
                         ..
                     } => {
                         let Some(dir) = (centre - middle).normalized() else {
-                            return Err(too_large(side, radius, 0.0));
+                            return Err(no_ball(side));
                         };
                         middle + dir * rim
                     }
                 };
                 let s = trace.coordinate(foot);
                 if !(s > 16.0 * tol && s < most(trace)) {
-                    return Err(too_large(side, radius, 0.0));
+                    return Err(no_ball(side));
                 }
                 if let (Some(f), Some(d)) = (feet.get_mut(side), distances.get_mut(side)) {
                     *f = foot;

@@ -234,6 +234,12 @@ pub(crate) enum Reason {
     /// leave (`fit` does not read it as no room; until 2026-11-25 it was
     /// said as [`Reason::FreeRunsOver`]).
     FreeCarry,
+    /// No ball of the radius touches both faces where it would have to:
+    /// the two curves the faces' traces moved by the radius do not meet,
+    /// or the ball's foot on a round face would lie at the edge itself,
+    /// on the face's axis or more than half way round it (`section`).
+    /// Until 2026-11-25 said too large *"below 0"*, which no face showed.
+    NoBall,
     /// The blend face would fold through itself.
     FreeFolds,
     /// A chamfer face would pass through a face beside its edge: a face's
@@ -376,6 +382,9 @@ impl Reason {
             Reason::FreeCarry => {
                 "the chamfer's cut line runs over a smooth edge of a face beside the edge, and it could not be carried on onto the face beyond within the tolerance: give another distance"
             }
+            Reason::NoBall => {
+                "the chamfer's cut lines do not lie on both faces beside the edge: give another distance"
+            }
             Reason::MiddleTangent => {
                 "the two faces are tangent at the middle of this edge, though not all along it: whether a chamfer cuts the edge away or fills it is read at its middle, where this edge has no corner; a chamfer of such an edge is not built yet"
             }
@@ -509,6 +518,9 @@ impl Reason {
             }
             Reason::FreeCarry => {
                 "the fillet's border runs over a smooth edge of a face beside the edge, and the ball could not be rolled on against the faces beyond it within the tolerance: give another radius"
+            }
+            Reason::NoBall => {
+                "no ball of this radius fits against both faces beside the edge (none touches both, or it would touch a round face at the edge itself or more than half way round it): give a smaller radius"
             }
             Reason::MiddleTangent => {
                 "the two faces are tangent at the middle of this edge, though not all along it: the rolling ball has no corner to round there"
@@ -3100,14 +3112,14 @@ fn on_axis(
         return None;
     }
     Some(if past.own < asked {
-        // Worked out from the faces: every radius between the one that
-        // puts the centre on the axis and the one asked is past the axis.
+        // It builds, and every radius between it and the one asked is past
+        // the axis (worked out): the largest that fits is it.
         BlendError::TooLarge {
             edge: plan.edge,
             face: past.face,
             size: asked,
             largest: past.own,
-            shown: crate::Shown::Faces,
+            shown: crate::Shown::Itself,
         }
     } else {
         match &plan.path {

@@ -245,7 +245,7 @@ regeneration carries on with the rest. On the L-bracket of
 variable.set {"name": "inner_r", "expr": "30 mm"}
 document.check
 -> {"ok": false, "problems": [
-     {"feature": "F3", "name": "Rounded", "problem": "radius: too large for edges.0 (between F2:side(e9) and F2:side(e10)): no radius from 26 mm up to the 30 mm asked fits beside the face F2:side(e10); one fits just below 26 mm"},
+     {"feature": "F3", "name": "Rounded", "problem": "radius: too large for edges.0 (between F2:side(e9) and F2:side(e10)): the 30 mm asked does not fit beside the face F2:side(e10), nor the radii tried from 26 mm up to it; the largest found to fit is just below 26 mm"},
      {"feature": "F6", "name": "Drilled", "causedBy": "F3", "problem": "target: `Rounded` failed; fix it first"},
      {"feature": "F9", "name": "Part", "causedBy": "F3", "problem": "target: `Drilled` failed; fix it first"},
      {"assertion": "volume", "problem": "cannot be measured: `Part` has no body", ...},

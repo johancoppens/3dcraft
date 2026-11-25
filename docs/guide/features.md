@@ -383,8 +383,8 @@ it off with a flat face at an angle.
 and `angle`) take `edges` as pairs of faces: `[["F1:face(2)", "F1:face(4)"], …]`. A pair means every edge
 between those two faces. `chain: true` adds the edges that continue an edge smoothly. Straight edges between
 flat faces and circular edges round an axis are exact; other edges get a spline face within the tolerance. A
-radius that does not fit fails saying from which radius up to the one asked none tried fits, and that one just
-below it does (or why it is not built). `document.edges` lists every edge of a body with
+radius that does not fit fails saying which radii it tried that did not fit and the largest it found to fit
+(or why it is not built). `document.edges` lists every edge of a body with
 its two faces. Examples: [bracket](../examples/bracket.json), [case](../examples/case.json),
 [flange](../examples/flange.json).
 

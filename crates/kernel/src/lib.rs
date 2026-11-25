@@ -81,11 +81,16 @@ pub enum Shown {
     /// The faces, worked out: from that size on, at every larger one, the
     /// line along which the blend touches the face leaves it.
     Faces,
-    /// Builds: one just below that size built, and every size tried from
-    /// it up to the size asked failed. Nothing larger than the size asked
-    /// was tried: a larger one may fit (a blend that takes a pocket near
-    /// its edge whole).
+    /// Builds: one just below that size built, and the size asked and
+    /// seven sizes tried from it up to the size asked failed. A size
+    /// between those tried may fit (where the faces leave a window of
+    /// room between two of them), and so may one larger than the size
+    /// asked (a blend that takes a pocket near its edge whole).
     Builds,
+    /// That size itself builds, and the faces show that every larger one
+    /// up to the size asked does not fit: a fillet's ball whose centre
+    /// would pass the axis of the rim it runs round.
+    Itself,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -694,14 +699,40 @@ impl fmt::Display for KernelError {
                 distance,
                 largest,
                 shown: Shown::Builds,
+            } => {
+                write!(
+                    f,
+                    "the chamfer of edge {} is too large for face {}: the {} asked does not fit",
+                    edge.0,
+                    face.0,
+                    short(*distance)
+                )?;
+                if fits_shown(*largest) < *distance {
+                    write!(
+                        f,
+                        ", nor the distances tried from {} up to it",
+                        fits_number(*largest)
+                    )?;
+                }
+                write!(
+                    f,
+                    "; the largest found to fit is just below {}",
+                    fits_number(*largest)
+                )
+            }
+            KernelError::ChamferTooLarge {
+                edge,
+                face,
+                largest,
+                shown: Shown::Itself,
+                ..
             } => write!(
                 f,
-                "the chamfer of edge {} is too large for face {}: no distance along it from {} \
-                 up to the {distance} asked fits, and one fits just below {}",
+                "the chamfer of edge {} is too large for face {}: the largest distance that fits \
+                 is {}",
                 edge.0,
                 face.0,
-                fits_number(*largest),
-                fits_number(*largest)
+                short(*largest)
             ),
             KernelError::Chamfer { edge, face, reason } => {
                 write!(f, "chamfer")?;
@@ -745,14 +776,41 @@ impl fmt::Display for KernelError {
                 radius,
                 largest,
                 shown: Shown::Builds,
+            } => {
+                write!(
+                    f,
+                    "the fillet of edge {} is too large for face {}: the {} asked does not fit",
+                    edge.0,
+                    face.0,
+                    short(*radius)
+                )?;
+                if fits_shown(*largest) < *radius {
+                    write!(
+                        f,
+                        ", nor the radii tried from {} up to it",
+                        fits_number(*largest)
+                    )?;
+                }
+                write!(
+                    f,
+                    "; the largest found to fit is just below {}",
+                    fits_number(*largest)
+                )
+            }
+            KernelError::FilletTooLarge {
+                edge,
+                face,
+                radius,
+                largest,
+                shown: Shown::Itself,
             } => write!(
                 f,
-                "the fillet of edge {} is too large for face {}: no radius from {} up to the \
-                 {radius} asked fits, and one fits just below {}",
+                "the fillet of edge {} is too large for face {}: with a radius of {radius} the \
+                 ball's centre would pass the edge's axis; the largest radius that fits is {}, \
+                 which puts it on that axis",
                 edge.0,
                 face.0,
-                fits_number(*largest),
-                fits_number(*largest)
+                short(*largest)
             ),
             KernelError::FilletSpindle {
                 edge,
