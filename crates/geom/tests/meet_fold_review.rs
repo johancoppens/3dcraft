@@ -41,14 +41,13 @@
 //! the places asked), and where the first answers the two are the same bit
 //! for bit. No fold was read on any pair whose curves run one way.
 //!
-//! The opened figures, held to the crossing, are not all the crossing:
+//! The opened figures, held to the crossing, were not all the crossing:
 //! where the surfaces are a tenth of a tolerance apart at the place the
 //! curves crossed, the march reads a crossing point there and in some
-//! boxes gives a stretch twice, on `main` as here and with no fold read
-//! (`near_crossings_read_as_crossing_points_give_no_stretch_twice`, which
-//! fails: a wrong answer the fold does not touch; ignored as owed, run
-//! with `--ignored`). Their families hold the
-//! fold and the bits only.
+//! boxes gave a stretch twice, with no fold read (a wrong answer the fold
+//! did not touch; repaired since, 2026-11-25:
+//! `near_crossings_read_as_crossing_points_give_no_stretch_twice`).
+//! Their families hold the fold and the bits only.
 
 // Test code: a failure in a helper is a failed test.
 #![allow(
@@ -964,16 +963,16 @@ fn steinmetz_ellipses_opened_at_their_crossings_read_no_fold() {
     run("two tubes opened", &steinmetz_opened(), true, false);
 }
 
-/// **A wrong answer, on `main` as here; not of the fold.** Where Viviani's
-/// and Steinmetz's are opened by a ten-thousandth of a radius, the
-/// surfaces are a tenth of a tolerance apart where the curves crossed,
-/// and the march reads a point where they cross there, a little apart;
-/// in some boxes it gives a stretch of the crossing twice. Found by this
-/// review (Check 45288306141: in the two families above, 54 and 128 pairs
-/// of 720, every one at `η = ±1e-4`, at every scale, upright and turned),
-/// with the march as first made giving the same answer bit for bit and
-/// no fold read, so the answer `main` gives. Three of them, upright at
-/// scale 1:
+/// **A wrong answer this review found, not of the fold; repaired since
+/// (2026-11-25).** Where Viviani's and Steinmetz's are opened by a
+/// ten-thousandth of a radius, the surfaces are a tenth of a tolerance
+/// apart where the curves crossed, and the march reads a point where they
+/// cross there, a little apart; in some boxes it gave a stretch of the
+/// crossing twice. Found by this review (Check 45288306141: in the two
+/// families above, 54 and 128 pairs of 720, every one at `η = ±1e-4`, at
+/// every scale, upright and turned), with the march as first made giving
+/// the same answer bit for bit and no fold read. Three of them, upright
+/// at scale 1, as they were:
 ///
 /// - the two tubes, `η = 1e-4`, in the cube of 2.1 radii: two curves that
 ///   are the same half of a loop, from one of the two points to the other;
@@ -985,8 +984,17 @@ fn steinmetz_ellipses_opened_at_their_crossings_read_no_fold() {
 ///   asked as a boolean asks it (`meet_surfaces`, which has no closed form
 ///   for a ball and a cylinder), the same. (Two cylinders whose radii are
 ///   within the tolerance of each other meet in closed form there.)
+///
+/// Each came from a seed inside the zone of such a point (between half the
+/// radius its arms are seeded at and the radius within which a branch is
+/// drawn straight to it): one beside an arm a branch already came into the
+/// point along, a few tolerances off what was drawn and so not seen to be
+/// on it, traced again; one so near the point that its run towards it
+/// could not see it straight ahead and went round it onto the next arm,
+/// which the trace's other run, or another branch, had come into the point
+/// along (docs/design/booleans.md › *A stretch given twice beside a
+/// crossing point the surfaces are a little apart at*).
 #[test]
-#[ignore = "owed, on main as here and not of the fold: a stretch of the crossing given twice where the surfaces are a tenth of a tolerance apart at a crossing point (docs/roadmap.md); fails today: run with --ignored --nocapture"]
 fn near_crossings_read_as_crossing_points_give_no_stretch_twice() {
     let placed = placings(1.0)[0].1;
     let size = sizes(1.5, 18);
@@ -1017,6 +1025,80 @@ fn near_crossings_read_as_crossing_points_give_no_stretch_twice() {
     assert!(
         failed.is_empty(),
         "{} answers are not the crossing:\n{}",
+        failed.len(),
+        failed.join("\n")
+    );
+}
+
+/// An end of a curve that is neither at a place where curves of the
+/// crossing cross or pass close (within two tolerances of it: the march
+/// reads a crossing point there, the surfaces a tenth of a tolerance apart
+/// or less) nor on the box (within two tolerances of a side): the crossing
+/// has no end there. `None` where every curve ends so.
+fn loose_end(pair: &Pair, m: &Meeting) -> Option<String> {
+    let t = pair.tol.linear;
+    for (n, curve) in m.curves.iter().enumerate() {
+        if curve.closed {
+            continue;
+        }
+        for end in [curve.range.0, curve.range.1] {
+            let p = curve.curve.eval(end);
+            let at_point = pair.keep_off.iter().any(|c| c.distance(p) <= 2.0 * t);
+            let on_box = !pair.within.contains(p, -2.0 * t);
+            if !at_point && !on_box {
+                let from = pair
+                    .keep_off
+                    .iter()
+                    .map(|c| c.distance(p))
+                    .fold(f64::INFINITY, f64::min);
+                return Some(format!(
+                    "curve {n} ends at {p:?}, {} tolerances from the nearest point where curves of the crossing cross or pass close, inside the box",
+                    from / t
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Viviani's figure and Steinmetz's ellipses opened (the two families
+/// above, 1 440 pairs) held to their crossing, and every end of a curve at
+/// the point where the march reads a crossing or on the box. The second is
+/// what `held` leaves out: it does not look within 50 tolerances of that
+/// point (`keep_off_radius`, a twentieth of the radius), and asks a curve
+/// to be near the crossing at 97 places of each piece, every 80 tolerances
+/// or so along a whole loop. Where a
+/// seed inside the zone of such a point was traced again and `united`
+/// joined its trace to the branch already traced (26 pairs at `η = 1e-4`
+/// before the repair), the joined curve began 80 tolerances out on an arm
+/// (where that arm's seed was) instead of at the point, which `held` did
+/// not see (probe Check 45673361291, two of them written out).
+#[test]
+fn opened_figures_are_their_crossing_and_end_only_at_the_point_or_on_the_box() {
+    let mut failed = Vec::new();
+    let mut counted: BTreeMap<String, usize> = BTreeMap::new();
+    for pair in vivianis_opened().iter().chain(steinmetz_opened().iter()) {
+        let met = meet_surfaces_numeric(&pair.a, &pair.b, &pair.within, &pair.tol);
+        let why = match &met {
+            Ok(SurfaceMeeting::Meets(m)) => held(pair, m).err().or_else(|| loose_end(pair, m)),
+            other => Some(format!("{other:?}")),
+        };
+        let family = if pair.what.starts_with("ball") {
+            "ball and tube opened"
+        } else {
+            "two tubes opened"
+        };
+        *counted.entry(family.to_string()).or_insert(0) += 1;
+        if let Some(why) = why {
+            failed.push(format!("{}: {why}", pair.what));
+        }
+    }
+    for (family, n) in &counted {
+        say(&format!("REVIEW-ENDS {family}: {n} pairs"));
+    }
+    assert!(
+        failed.is_empty(),
+        "{} answers are not the crossing ending at its points or the box:\n{}",
         failed.len(),
         failed.join("\n")
     );

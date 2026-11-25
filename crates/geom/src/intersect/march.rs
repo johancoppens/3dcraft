@@ -101,6 +101,21 @@
 //! refuses ([`folded`]). A branch that does not run back is the one it
 //! was, bit for bit (docs/design/booleans.md › *A step through a point
 //! where two curves of a crossing cross each other: traced and mended*).
+//!
+//! **A crossing point the surfaces are a little apart at.** Where the
+//! surfaces are within the tolerance of each other at a crossing point but
+//! not on each other, `f = 0` does not reach the point: it turns round it,
+//! from one arm onto the next, `turn` from it. Inside the point's zone a
+//! branch is drawn straight to the point instead, and a seed there lies a
+//! few tolerances off what was drawn; nearer than a few `turn` a run
+//! towards the point cannot see it straight ahead and goes round it. The
+//! arm a place lies along is read from its direction at the point: a seed
+//! inside the zone along an arm a branch already comes into the point along
+//! is on that branch ([`Marcher::along_traced`]), and a run that goes round
+//! the point onto such an arm, or onto the one the trace's other run came
+//! in along, ends at the point ([`Marcher::passed`]). Without such a zone
+//! nothing of this is computed (docs/design/booleans.md › *A stretch given
+//! twice beside a crossing point the surfaces are a little apart at*).
 
 // `!(x > 0.0)` is deliberate throughout: unlike `x <= 0.0` it is also true
 // for NaN.
@@ -303,6 +318,23 @@ struct Singular {
     turn: f64,
 }
 
+/// A crossing point read as one although the surfaces are a little apart
+/// there: within `radius` a branch is drawn straight to the point instead
+/// of along `f = 0`, which turns away before it gets there (round the
+/// point, from one arm onto the next, `turn` from it).
+#[derive(Clone, Debug)]
+struct Zone {
+    u: f64,
+    v: f64,
+    p: Vec3,
+    radius: f64,
+    /// Nearer the point than this a seed is left to the arms (half the
+    /// radius at which they are seeded).
+    near: f64,
+    /// The directions in space in which its arms leave the point.
+    arms: Vec<Vec3>,
+}
+
 /// Where Newton on the gradient of `f` came to rest.
 #[derive(Clone, Copy, Debug)]
 struct Stationary {
@@ -458,7 +490,13 @@ pub(super) struct Marcher {
     /// apart there, each with the radius within which a branch is drawn
     /// straight to the point instead of along `f = 0`, which turns away
     /// before it gets there.
-    zones: Vec<(Vec3, f64)>,
+    zones: Vec<Zone>,
+    /// The arms along which a branch traced so far comes into the point
+    /// of a zone, as (zone, arm): a seed beside such an arm inside the
+    /// zone is on that branch ([`Marcher::along_traced`]), and a run that
+    /// goes round the point onto such an arm ends at the point
+    /// ([`Marcher::passed`]).
+    traced_into: Vec<(usize, usize)>,
     /// Points of contact of higher order whose arms are made near them.
     tacnodes: Vec<tacnode::Tacnode>,
     /// The chart of the field's surface when that is freeform: its
@@ -524,6 +562,7 @@ impl Marcher {
             evals: 0,
             lying: Vec::new(),
             zones: Vec::new(),
+            traced_into: Vec::new(),
             tacnodes: Vec::new(),
             field_chart: None,
             within: *within,
@@ -2296,10 +2335,12 @@ impl Marcher {
     }
 
     /// Seeds on the four arms that leave a crossing point: along the
-    /// directions in which the Hessian vanishes.
-    fn arms(&mut self, s: &Singular, seeds: &mut Vec<(f64, f64)>) {
+    /// directions in which the Hessian vanishes. Returns those directions
+    /// in space (none where the point cannot be evaluated).
+    fn arms(&mut self, s: &Singular, seeds: &mut Vec<(f64, f64)>) -> Vec<Vec3> {
+        let mut found = Vec::new();
         let (Some(e), Some((a, b, c))) = (self.eval(s.u, s.v), self.hessian(s.u, s.v)) else {
-            return;
+            return found;
         };
         let root = (b * b - a * c).max(0.0).sqrt();
         let directions = if a.abs() >= c.abs() && a != 0.0 {
@@ -2311,17 +2352,171 @@ impl Marcher {
         };
         let radius = s.arm;
         for (du, dv) in directions {
-            let len = (e.su * du + e.sv * dv).length();
+            let along = e.su * du + e.sv * dv;
+            let len = along.length();
             if !(len > 0.0) {
                 continue;
             }
             for side in [1.0, -1.0] {
+                found.push(along * (side / len));
                 let k = side * radius / len;
                 if let Some((_, u, v)) = self.correct(s.u + du * k, s.v + dv * k) {
                     seeds.push((u, v));
                 }
             }
         }
+        found
+    }
+
+    /// The arm of a zone that a place lies along, by its direction from
+    /// the zone's point: the arm nearest by angle, where that angle is
+    /// less than a quarter of the angle between the arm and the next one
+    /// (nearer the bisector, or the point itself, no arm is told).
+    fn arm_of(zone: &Zone, q: Vec3) -> Option<usize> {
+        let d = (q - zone.p).normalized()?;
+        let mut best: Option<(usize, f64)> = None;
+        for (i, a) in zone.arms.iter().enumerate() {
+            let c = a.dot(d);
+            if best.is_none_or(|(_, b)| c > b) {
+                best = Some((i, c));
+            }
+        }
+        let (i, c) = best?;
+        let a = zone.arms.get(i)?;
+        let next = zone
+            .arms
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| j != i)
+            .map(|(_, b)| a.dot(*b))
+            .fold(-1.0_f64, f64::max);
+        let angle = c.clamp(-1.0, 1.0).pacos();
+        let gap = next.clamp(-1.0, 1.0).pacos();
+        (angle < 0.25 * gap).then_some(i)
+    }
+
+    /// The arms along which the points of a branch (or of a run, from the
+    /// point it went on from) come into the point of a zone: (zone, arm)
+    /// for each end on such a point, told by the point next to it.
+    fn arms_into_zones(&self, pts: &[Pt]) -> Vec<(usize, usize)> {
+        let mut found = Vec::new();
+        let before_last = pts.len().checked_sub(2).and_then(|i| pts.get(i));
+        for (z, zone) in self.zones.iter().enumerate() {
+            for (end, next) in [(pts.first(), pts.get(1)), (pts.last(), before_last)] {
+                if let (Some(end), Some(next)) = (end, next)
+                    && end.p.distance(zone.p) <= self.on
+                    && let Some(j) = Self::arm_of(zone, next.p)
+                {
+                    found.push((z, j));
+                }
+            }
+        }
+        found
+    }
+
+    /// Whether a place inside the zone of a crossing point lies along an
+    /// arm that a branch traced already comes into the point along. Inside
+    /// the zone a branch is drawn straight to the point, and `f = 0`, which
+    /// turns away from it, lies beside what was drawn by about `turn² / d`
+    /// at `d` from it: a few tolerances, more than a seed may be off a
+    /// branch ([`Marcher::on_branch`]). Such a seed traced again gave the
+    /// stretch of that branch twice (docs/design/booleans.md › *A stretch
+    /// given twice beside a crossing point the surfaces are a little apart
+    /// at*).
+    fn along_traced(&self, q: Vec3) -> bool {
+        self.zones.iter().enumerate().any(|(z, zone)| {
+            let d = q.distance(zone.p);
+            d <= zone.radius
+                && d > self.on
+                && Self::arm_of(zone, q).is_some_and(|j| self.traced_into.contains(&(z, j)))
+        })
+    }
+
+    /// `march` with the arms along which `other` (the points of the run
+    /// the other way from `start`) comes into the point of a zone counted
+    /// as traced ([`Marcher::passed`]).
+    fn beside<T>(&mut self, start: &Pt, other: &[Pt], march: impl FnOnce(&mut Self) -> T) -> T {
+        let before = self.traced_into.len();
+        if !self.zones.is_empty() {
+            let mut run = Vec::with_capacity(other.len() + 1);
+            run.push(*start);
+            run.extend_from_slice(other);
+            let more = self.arms_into_zones(&run);
+            self.traced_into.extend(more);
+        }
+        let out = march(self);
+        self.traced_into.truncate(before);
+        out
+    }
+
+    /// Notes a run at `cur` (after `kept` points) that is inside the zone
+    /// of a crossing point and heading for it: the zone, and the points it
+    /// would keep were it to end at the point ([`Marcher::passed`]): up to
+    /// the last one at least `near` from it, where its direction tells its
+    /// arm.
+    fn heading_in(&self, passing: &mut Option<(usize, usize)>, cur: &Pt, kept: usize) {
+        for (z, zone) in self.zones.iter().enumerate() {
+            let d = zone.p - cur.p;
+            let dist = d.length();
+            if !(dist <= zone.radius && dist > self.on && d.dot(cur.t) > 0.0) {
+                continue;
+            }
+            match *passing {
+                None => *passing = Some((z, kept)),
+                Some((w, _)) if w == z && dist >= zone.near => *passing = Some((z, kept)),
+                Some(_) => {}
+            }
+            return;
+        }
+    }
+
+    /// A run that headed for the point of a zone and did not end there
+    /// (where the surfaces are a little apart at a crossing point, a run
+    /// that comes within a few `turn` of it before it looks for the point
+    /// ahead cannot see it straight ahead, and follows `f = 0` round the
+    /// point onto the next arm): once it heads away from the point, at
+    /// least `near` from it, the arm it goes out along. Where a branch
+    /// traced already, or the trace's run the other way, comes into the
+    /// point along that arm, the run would trace that stretch again: it is
+    /// to end at the point, keeping what [`Marcher::heading_in`] noted
+    /// (`Some((zone, kept))`). Out along an arm not traced, it goes on as
+    /// it did.
+    fn passed(&self, passing: &mut Option<(usize, usize)>, cur: &Pt) -> Option<(usize, usize)> {
+        let (z, keep) = (*passing)?;
+        let zone = self.zones.get(z)?;
+        let d = zone.p - cur.p;
+        if d.dot(cur.t) > 0.0 || d.length() < zone.near {
+            return None;
+        }
+        *passing = None;
+        let j = Self::arm_of(zone, cur.p)?;
+        self.traced_into.contains(&(z, j)).then_some((z, keep))
+    }
+
+    /// The points of a run that ends at the point of zone `z`: its first
+    /// `keep`, then the point, drawn straight from the last of them (or
+    /// from `first`, the point the run went on from), as a run that finds
+    /// a crossing point straight ahead ends there.
+    fn ended_at(&self, mut pts: Vec<Pt>, keep: usize, z: usize, first: &Pt) -> Vec<Pt> {
+        pts.truncate(keep);
+        let Some(zone) = self.zones.get(z) else {
+            return pts;
+        };
+        let last = pts.last().copied().unwrap_or(*first);
+        let d = zone.p - last.p;
+        let dist = d.length();
+        if dist > 0.0 {
+            let (u, v) = self.near((zone.u, zone.v), &last);
+            pts.push(Pt {
+                u,
+                v,
+                p: zone.p,
+                t: d * (1.0 / dist),
+                du: 0.0,
+                dv: 0.0,
+            });
+        }
+        pts
     }
 
     // ----- marching ------------------------------------------------------------
@@ -2439,6 +2634,7 @@ impl Marcher {
     ) -> Result<(Vec<Pt>, End), GeomError> {
         let mut pts: Vec<Pt> = Vec::new();
         let mut cur = again.map_or(*start, |a| a.from);
+        let first = cur;
         let taken = again.map_or(0, |a| a.taken);
         let mut h = again.map_or(0.25 * self.hmax, |a| a.cap.min(0.25 * self.hmax));
         // How far this run has gone since it was taken up.
@@ -2446,6 +2642,9 @@ impl Marcher {
         let cos_turn = MAX_TURN.pcos();
         let cos_half = (0.5 * MAX_TURN).pcos();
         let hmin = self.hmin;
+        // The zone of a crossing point the run is heading for, and what it
+        // keeps if it is to end there (`heading_in`, `passed`).
+        let mut passing: Option<(usize, usize)> = None;
         loop {
             self.spent()?;
             if pts.len() + taken > MAX_POINTS {
@@ -2453,6 +2652,7 @@ impl Marcher {
                     "an intersection curve needs more points than the cap allows",
                 ));
             }
+            self.heading_in(&mut passing, &cur, pts.len());
             // A crossing point or an apex straight ahead ends the branch.
             let mut snapped = None;
             for s in singular {
@@ -2609,6 +2809,9 @@ impl Marcher {
                         pts.push(new);
                         cur = new;
                         gone += went;
+                        if let Some((z, keep)) = self.passed(&mut passing, &cur) {
+                            return Ok((self.ended_at(pts, keep, z, &first), End::Open));
+                        }
                         continue;
                     }
                 };
@@ -2647,6 +2850,11 @@ impl Marcher {
             pts.push(new);
             cur = new;
             gone += len;
+            // Round a crossing point onto an arm traced already: the run
+            // ends at the point instead (`passed`).
+            if let Some((z, keep)) = self.passed(&mut passing, &cur) {
+                return Ok((self.ended_at(pts, keep, z, &first), End::Open));
+            }
             if turn >= cos_half {
                 // (A run taken up again: no longer than its cap while it
                 // has not gone as far as the cap is held over.)
@@ -2768,11 +2976,16 @@ impl Marcher {
         };
         let (mut forward, end) = self.run(&start, 1.0, singular, true)?;
         let mut closed = end == End::Closed;
-        // (In the order of the march: away from the start, reversed.)
+        // (In the order of the march: away from the start, reversed. A
+        // run that goes round a crossing point onto the arm the other run
+        // came into it along ends there: `beside`, `passed`.)
         let mut backward = if closed {
             Vec::new()
         } else {
-            self.run(&start.reversed(), -1.0, singular, false)?.0
+            self.beside(&start, &forward, |m| {
+                m.run(&start.reversed(), -1.0, singular, false)
+            })?
+            .0
         };
         let mut taken_up = 0;
         loop {
@@ -2836,14 +3049,20 @@ impl Marcher {
                 forward.truncate(k - at);
                 let from = forward.last().copied().unwrap_or(start);
                 let again = Again::past(from, forward.len(), span);
-                let (more, end) = self.run_on(&start, 1.0, singular, true, Some(again))?;
+                let (more, end) = self.beside(&start, &backward, |m| {
+                    m.run_on(&start, 1.0, singular, true, Some(again))
+                })?;
                 forward.extend(more);
                 let was_closed = closed;
                 closed = end == End::Closed;
                 if closed {
                     backward.clear();
                 } else if was_closed {
-                    backward = self.run(&start.reversed(), -1.0, singular, false)?.0;
+                    backward = self
+                        .beside(&start, &forward, |m| {
+                            m.run(&start.reversed(), -1.0, singular, false)
+                        })?
+                        .0;
                 }
             } else if k < at && at - k <= backward.len() {
                 // A step of the backward run, from the later of the two
@@ -2852,7 +3071,9 @@ impl Marcher {
                 let back = start.reversed();
                 let from = backward.last().copied().unwrap_or(back);
                 let again = Again::past(from, backward.len(), span);
-                let (more, _) = self.run_on(&back, -1.0, singular, false, Some(again))?;
+                let (more, _) = self.beside(&start, &forward, |m| {
+                    m.run_on(&back, -1.0, singular, false, Some(again))
+                })?;
                 backward.extend(more);
             } else {
                 // Not a step of the march (a span drawn on into a cusp).
@@ -3357,7 +3578,7 @@ impl Marcher {
     fn modelled(&self, a: &Pt, b: &Pt) -> bool {
         self.zones
             .iter()
-            .any(|&(p, radius)| a.p.distance(p) <= radius && b.p.distance(p) <= radius)
+            .any(|z| a.p.distance(z.p) <= z.radius && b.p.distance(z.p) <= z.radius)
     }
 
     /// The point of the chart halfway between `a` and `b` in its
@@ -4014,11 +4235,18 @@ impl Marcher {
         seeds.retain(|&(u, v)| !self.on_lying_border(u, v));
         for s in singular.clone() {
             if s.kind == SingularKind::Cross {
-                self.arms(&s, &mut seeds);
+                let arms = self.arms(&s, &mut seeds);
                 // (A quarter over: an arm's seed is brought onto `f = 0`
                 // from its place on the circle.)
                 if s.turn > 0.5 * self.tol.linear {
-                    self.zones.push((s.p, 1.25 * s.arm));
+                    self.zones.push(Zone {
+                        u: s.u,
+                        v: s.v,
+                        p: s.p,
+                        radius: 1.25 * s.arm,
+                        near: 0.5 * s.arm,
+                        arms,
+                    });
                 }
             }
         }
@@ -4056,9 +4284,13 @@ impl Marcher {
                 };
                 e.p.distance(s.p) <= radius.max(2.0 * merge)
             };
+            // (Inside the zone of a crossing point the surfaces are a
+            // little apart at, beside an arm a branch comes into the point
+            // along: on that branch, `along_traced`.)
             if branches.iter().any(|b| self.on_branch(e.p, &b.pts, slack))
                 || singular.iter().any(covered)
                 || self.tac_inside(u, v)
+                || self.along_traced(e.p)
             {
                 continue;
             }
@@ -4098,6 +4330,14 @@ impl Marcher {
                     ));
                 }
                 branches.push(branch);
+            }
+            // The arms the branches come into the points of zones along.
+            if !self.zones.is_empty() {
+                let into: Vec<(usize, usize)> = branches
+                    .iter()
+                    .flat_map(|b| self.arms_into_zones(&b.pts))
+                    .collect();
+                self.traced_into = into;
             }
         }
         let mut curves = self.lying_curves(&branches);
