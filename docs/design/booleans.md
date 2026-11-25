@@ -1625,10 +1625,10 @@ At 2.5 tolerances every union is two parts, checked, and the interference clear;
 
 *Gate.* A trial Gate on 22b38643 (45328771261): success in every step (`cargo xtask ci`, every test binary passing, the benchmark within its baseline, clippy, wasm; FreeCAD; the web module's size).
 
-*Owed, and the developer's questions.*
+*Owed, and the developer's questions* (both answered on 2026-11-24: as they are; [`decisions.md`](../decisions.md)).
 
-- **Slivers and wedges in the band** (the investigation's first question): accepted where the wedge reading at the place joins the walls, as before (the 24 subtractions of `boolean_border_tangent` at 1.4 tolerances, `boolean_truss_joint`'s four intersections, the corpus's four `near/block-cone/018` and `near/cylinder-cylinder/018`, the Garabit crack's union U1, each pinned as built); or refused as the band.
-- **An approach that is not in the result** (the second question): B's corner 1.5 tolerances outside A; A less B is A and is built, as before. A look at the operands instead of the result would refuse it.
+- **Slivers and wedges in the band** (the investigation's first question): accepted where the wedge reading at the place joins the walls, as before (the 24 subtractions of `boolean_border_tangent` at 1.4 tolerances, `boolean_truss_joint`'s four intersections, the corpus's four `near/block-cone/018` and `near/cylinder-cylinder/018`, the Garabit crack's union U1, each pinned as built). The developer: they stay accepted.
+- **An approach that is not in the result** (the second question): B's corner 1.5 tolerances outside A; A less B is A and is built, as before. A look at the operands instead of the result would refuse it. The developer: it is not refused, since nothing thin is made.
 - **Two walls of one shell within half the tolerance** where no place shows them: left as they were. The corpus has three such subtractions that are built (`flush/block-cone/028`, `/030`, `flush/cylinder-spline/015`), the tests a few (`cones_that_share_a_ruling`); whether the shell touches itself there (`within_a_shell` at the look's place) or a wall thins to nothing is not decided here.
 - With zero thickness off (the steps of fillets and chamfers) nothing is looked at; regeneration's post-check (`parts_touch`) still finds an edge's approach to a face of another part only at the edge's middle.
 
