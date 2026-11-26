@@ -293,7 +293,7 @@ fn patch_cover(
     let step_of = |from: f64, to: f64| (to - from + 0.5).rem_euclid(1.0) - 0.5;
     let (mut around, mut across) = (Vec::new(), Vec::new());
     for seg in loops.iter().flatten() {
-        let speed = speed_bound(&seg.curve);
+        let speed = speed_bound(&seg.curve, seg.range);
         let width = seg.range.1 - seg.range.0;
         // How far the shares can move along the piece, and samples enough
         // for a hundredth of that between two.
@@ -402,7 +402,7 @@ impl Chart {
                     // piece may cover between samples is then small too.
                     // (With a fixed count, a circle around the axis strayed
                     // by radians around the tube and covered every cut.)
-                    let length = speed_bound(&seg.curve) * (seg.range.1 - seg.range.0);
+                    let length = speed_bound(&seg.curve, seg.range) * (seg.range.1 - seg.range.0);
                     let samples = if length.is_finite() && length > 0.0 {
                         (length / (0.05 * minor))
                             .ceil()
@@ -413,7 +413,7 @@ impl Chart {
                     let step = (seg.range.1 - seg.range.0) / samples;
                     // Half a step of travel, as an angle: at most a quarter
                     // turn's worth of arc per chord.
-                    let stray = 0.25 * PI * speed_bound(&seg.curve) * step;
+                    let stray = 0.25 * PI * speed_bound(&seg.curve, seg.range) * step;
                     let margins = (stray / (major - minor), stray / minor);
                     let (start_u, start_v) =
                         torus_angles(&frame, major, seg.curve.eval(seg.range.0));
@@ -903,7 +903,7 @@ impl Chart {
         // A stretch that stays within a disc that does not contain the
         // target turns by less than half a turn, which is what `angle`
         // assumes. Halve the stretches until they do.
-        let curve_speed = speed_bound(&seg.curve);
+        let curve_speed = speed_bound(&seg.curve, seg.range);
         let pace = curve_speed * target.lipschitz;
         if !(pace.is_finite() && pace > 0.0) {
             return Err(TOO_CLOSE);

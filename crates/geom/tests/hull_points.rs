@@ -53,7 +53,6 @@ fn the_hull_of_part_of_a_spline_holds_that_part_and_leaves_far_control_points_ou
         let c = spline(k);
         // The whole domain: the control points themselves.
         assert_eq!(c.hull_points((0.0, 1.0)).unwrap(), c.control_points());
-        assert_eq!(c.hull_points((1.0, -0.5)).unwrap(), c.control_points());
         for range in [
             (0.0, 0.5),
             (0.05, 0.12),
@@ -63,8 +62,22 @@ fn the_hull_of_part_of_a_spline_holds_that_part_and_leaves_far_control_points_ou
         ] {
             holds(&c, range, k, 8.0);
         }
-        // Past the domain on one side only, or not finite: none.
-        assert!(c.hull_points((-0.1, 0.5)).is_none());
+        // Past the domain, where `eval` carries the first span on, the
+        // curve leaves the hull of the control points (here behind its
+        // first one, away from the second), and the hull is theirs and the
+        // first piece's carried on (2026-11-26; until then the control
+        // points alone for the whole domain and more, which did not hold
+        // it, and none for a range past one end).
+        let control = Bbox3::from_points(c.control_points().iter().copied());
+        assert!(
+            (0..=100).any(|i| !control.contains(c.eval(-0.5 * f64::from(i) / 100.0), 1e-3 * k)),
+            "{k}: the curve carried on stays within its control points"
+        );
+        let past = c.hull_points((1.0, -0.5)).unwrap();
+        assert_eq!(&past[..c.control_points().len()], c.control_points());
+        holds(&c, (1.0, -0.5), k, 8.0);
+        holds(&c, (-0.1, 0.5), k, 8.0);
+        // Not finite: none.
         assert!(c.hull_points((0.5, f64::NAN)).is_none());
         // One parameter: the point (within rounding).
         let one = c.hull_points((0.3, 0.3)).unwrap();
@@ -279,4 +292,117 @@ fn a_piece_cut_past_its_span_holds_the_curve_continued() {
         assert!(piece_points_over(&first, (d0 + 1.0, d0 + 2.0)).is_none());
         assert!(piece_points_over(&first, (f64::NAN, d0 + 0.5)).is_none());
     }
+}
+
+/// A spline carried on past its domain (2026-11-26): on 1500 splines of
+/// degrees 1 to 5, rational and not, clamped and not, at three scales, at
+/// the origin and far from it, over ranges that run past the start, past
+/// the end, past both and wholly before or past the domain, by a billionth
+/// to two widths of the end span, every point `eval` gives lies in the box
+/// of the control points and `continued_hull` (no margin: the hull is
+/// padded for rounding), and the speed `derivatives` gives within
+/// `continued_derivative_bounds` where the range leaves the domain (with
+/// the control polygon's bound over the domain). The hull is missing only
+/// where nothing is known: past the end of a domain that ends on a knot
+/// span of no width, and a rational piece whose weights do not come out
+/// positive. Within the domain both are empty and zero.
+#[test]
+fn a_spline_carried_on_past_its_domain_lies_in_the_hull_of_its_pieces_and_moves_within_their_bound()
+{
+    let mut seed = 0xca77_1ed0_u64;
+    let (mut held, mut unknown, mut bounded) = (0_usize, 0_usize, 0_usize);
+    for case in 0..1500 {
+        let degree = 1 + case % 5;
+        let k = [1e-3, 1.0, 1e6][case % 3];
+        let made = match std::panic::catch_unwind(move || {
+            let mut s = seed;
+            (random_spline(degree, &mut s, k), s)
+        }) {
+            Ok((curve, moved)) => {
+                seed = moved;
+                curve
+            }
+            // Knots that leave no domain: another.
+            Err(_) => {
+                seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                continue;
+            }
+        };
+        // Every other one far from the origin.
+        let shift = if case % 2 == 0 {
+            Vec3::ZERO
+        } else {
+            Vec3::new(3.0, -7.0, 11.0) * (1e3 * k)
+        };
+        let curve = NurbsCurve::new(
+            degree,
+            made.knots().to_vec(),
+            made.control_points().iter().map(|&p| p + shift).collect(),
+            made.weights().to_vec(),
+        )
+        .unwrap();
+        let (d0, d1) = curve.domain();
+        let knots = curve.knots();
+        let first = curve.span_at(d0);
+        let start_width = knots[first + 1] - knots[first];
+        let count = curve.control_points().len();
+        let end_width = knots[count] - knots[count - 1];
+        let rational = curve.weights().iter().any(|&w| w != 1.0);
+        // Within the domain: nothing to add.
+        assert!(!curve.runs_past_domain((d0, d1)), "case {case}");
+        assert_eq!(curve.continued_hull((d0, d1)), Some(Vec::new()));
+        assert_eq!(
+            curve.continued_derivative_bounds((d0, d1)),
+            Some((0.0, 0.0))
+        );
+        let polygon = Bbox3::from_points(curve.control_points().iter().copied());
+        let s = [1e-9, 0.3, 1.0, 2.0][case % 4];
+        let (before, after) = (d0 - s * start_width, d1 + s * end_width.max(start_width));
+        let middle = 0.5 * (d0 + d1);
+        for range in [
+            (before, middle),
+            (middle, after),
+            (before, after),
+            (before, d0 - 0.5 * s * start_width),
+            (d1 + 0.5 * s * end_width.max(start_width), after),
+        ] {
+            assert!(curve.runs_past_domain(range), "case {case} {range:?}");
+            let past_end = range.1 > d1;
+            let Some(hull) = curve.continued_hull(range) else {
+                assert!(
+                    rational || (past_end && end_width <= 0.0),
+                    "case {case} {range:?}: no hull of a polynomial spline"
+                );
+                unknown += 1;
+                continue;
+            };
+            held += 1;
+            let mut boxed = polygon;
+            for &p in &hull {
+                boxed.add(p);
+            }
+            let speed = curve.continued_derivative_bounds(range);
+            bounded += usize::from(speed.is_some());
+            for i in 0..=256 {
+                let t = range.0 + (range.1 - range.0) * f64::from(i) / 256.0;
+                let p = curve.eval(t);
+                assert!(
+                    boxed.contains(p, 0.0),
+                    "case {case} degree {degree} {range:?} at {t}: {p:?} outside {boxed:?}"
+                );
+                if let Some((fastest, _)) = speed
+                    && !(d0..=d1).contains(&t)
+                {
+                    let moving = curve.derivatives(t).1.length();
+                    assert!(
+                        moving <= fastest * (1.0 + 1e-9),
+                        "case {case} degree {degree} {range:?} at {t}: {moving} > {fastest}"
+                    );
+                }
+            }
+        }
+    }
+    println!("carried on: {held} held, {unknown} unknown, {bounded} with a speed bound");
+    assert!(held > 4000, "{held} held");
+    assert!(bounded > 3000, "{bounded} bounded");
 }

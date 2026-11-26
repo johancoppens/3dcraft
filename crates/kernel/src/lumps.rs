@@ -125,7 +125,7 @@ fn uncertainty(
                     if let Some(edge) = body.edge(coedge.edge)
                         && edge.range.1 > edge.range.0
                     {
-                        edges += crate::boolean::speed_bound(&edge.curve)
+                        edges += crate::boolean::speed_bound(&edge.curve, edge.range)
                             * (edge.range.1 - edge.range.0);
                     }
                 }

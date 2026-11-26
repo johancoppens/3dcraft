@@ -18,7 +18,7 @@ use super::freeform::is_freeform;
 use super::outline::Sheet;
 use super::poly::Poly;
 use craft3d_geom::intersect::{CurveHit, CurveIntersection, intersect_curve_surface};
-use craft3d_geom::{Curve3, GeomError, Surface};
+use craft3d_geom::{Curve3, GeomError, NurbsCurve, Surface};
 use craft3d_math::Portable;
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 
@@ -77,42 +77,59 @@ pub(super) fn signed_distance(sheet: Sheet, p: Vec3) -> Option<f64> {
     Some(d)
 }
 
-/// An upper bound on the speed of the curve: the length travelled per unit
-/// of parameter.
-pub(crate) fn speed_bound(curve: &Curve3) -> f64 {
+/// An upper bound on the speed of the curve over `range`: the length
+/// travelled per unit of parameter. A spline's is its control polygon's,
+/// which bounds it over its domain; where the range runs past the domain
+/// (`NurbsCurve::eval` carries the end spans on there) the larger of that
+/// and the bound of the end pieces carried on
+/// (`NurbsCurve::continued_derivative_bounds`; infinite where they have
+/// none, so that nothing is proven clear by it). Before 2026-11-26 it took
+/// no range, and a spline edge past its domain could move faster than it
+/// said. A range within the domain gets the same bound, bit for bit.
+pub(crate) fn speed_bound(curve: &Curve3, range: (f64, f64)) -> f64 {
     match curve {
         Curve3::Line(_) => 1.0,
         Curve3::Circle(c) => c.radius(),
         Curve3::Ellipse(e) => e.semi_axes().0.max(e.semi_axes().1),
         Curve3::Nurbs(c) => {
-            // The derivative of a B-spline is a B-spline over the scaled
-            // differences of its control points; for a rational curve the
-            // differences of the weighted points, seen from a point of the
-            // curve, are bounded through the size of the control polygon.
-            let degree = c.degree();
-            let (knots, points, weights) = (c.knots(), c.control_points(), c.weights());
-            let size = Bbox3::from_points(points.iter().copied()).diagonal();
-            let (mut lightest, mut heaviest) = (f64::INFINITY, 0.0_f64);
-            for &w in weights {
-                lightest = lightest.min(w);
-                heaviest = heaviest.max(w);
+            let within = spline_speed_bound(c);
+            if !c.runs_past_domain(range) {
+                return within;
             }
-            let mut bound = 0.0_f64;
-            for (i, (pair, weight)) in points.windows(2).zip(weights.windows(2)).enumerate() {
-                let (Some(&lo), Some(&hi)) = (knots.get(i + 1), knots.get(i + degree + 1)) else {
-                    continue;
-                };
-                let (&[a, b], &[wa, wb]) = (pair, weight) else {
-                    continue;
-                };
-                if hi > lo {
-                    let reach = heaviest * a.distance(b) + (wb - wa).abs() * size;
-                    bound = bound.max(degree as f64 * reach / (hi - lo));
-                }
-            }
-            bound / lightest
+            c.continued_derivative_bounds(range)
+                .map_or(f64::INFINITY, |(first, _)| within.max(first))
         }
     }
+}
+
+/// [`speed_bound`] of a spline over its domain.
+fn spline_speed_bound(c: &NurbsCurve) -> f64 {
+    // The derivative of a B-spline is a B-spline over the scaled
+    // differences of its control points; for a rational curve the
+    // differences of the weighted points, seen from a point of the
+    // curve, are bounded through the size of the control polygon.
+    let degree = c.degree();
+    let (knots, points, weights) = (c.knots(), c.control_points(), c.weights());
+    let size = Bbox3::from_points(points.iter().copied()).diagonal();
+    let (mut lightest, mut heaviest) = (f64::INFINITY, 0.0_f64);
+    for &w in weights {
+        lightest = lightest.min(w);
+        heaviest = heaviest.max(w);
+    }
+    let mut bound = 0.0_f64;
+    for (i, (pair, weight)) in points.windows(2).zip(weights.windows(2)).enumerate() {
+        let (Some(&lo), Some(&hi)) = (knots.get(i + 1), knots.get(i + degree + 1)) else {
+            continue;
+        };
+        let (&[a, b], &[wa, wb]) = (pair, weight) else {
+            continue;
+        };
+        if hi > lo {
+            let reach = heaviest * a.distance(b) + (wb - wa).abs() * size;
+            bound = bound.max(degree as f64 * reach / (hi - lo));
+        }
+    }
+    bound / lightest
 }
 
 /// Near the surface the signed distance along the curve bends by no more
@@ -120,8 +137,9 @@ pub(crate) fn speed_bound(curve: &Curve3) -> f64 {
 /// curvature of the surface and of the curve. The second number is how
 /// near "near" is: within that distance of the surface its level sets are
 /// at most twice as curved as it is. `None` where there is no such bound
-/// (a cone, whose curvature has no limit towards the apex; a spline).
-fn bend_bound(curve: &Curve3, surface: &Surface) -> Option<(f64, f64)> {
+/// (a cone, whose curvature has no limit towards the apex; a spline). Of
+/// the curve over `range` ([`speed_bound`], [`turn_bound`]).
+fn bend_bound(curve: &Curve3, range: (f64, f64), surface: &Surface) -> Option<(f64, f64)> {
     let (curvature, zone) = match surface {
         Surface::Plane(_) => (0.0, f64::INFINITY),
         Surface::Cylinder(s) => (2.0 / s.radius(), 0.25 * s.radius()),
@@ -132,64 +150,78 @@ fn bend_bound(curve: &Curve3, surface: &Surface) -> Option<(f64, f64)> {
         }
         Surface::Cone(_) | Surface::Bezier(_) | Surface::Nurbs(_) => return None,
     };
-    let speed = speed_bound(curve);
-    let turn = turn_bound(curve)?;
+    let speed = speed_bound(curve, range);
+    let turn = turn_bound(curve, range)?;
     let bound = speed * speed * curvature + turn;
     (bound.is_finite() && zone > 0.0).then_some((bound, zone))
 }
 
-/// How much the curve bends, at most: its second derivative per unit of
-/// parameter squared. `None` where no finite bound comes out.
-pub(super) fn turn_bound(curve: &Curve3) -> Option<f64> {
+/// How much the curve bends over `range`, at most: its second derivative
+/// per unit of parameter squared. `None` where no finite bound comes out.
+/// A spline's over its domain is read off its control points; where the
+/// range runs past the domain, the larger of that and the bound of the end
+/// pieces carried on (`NurbsCurve::continued_derivative_bounds`, none where
+/// they have none), as [`speed_bound`]. A range within the domain gets the
+/// same bound, bit for bit.
+pub(super) fn turn_bound(curve: &Curve3, range: (f64, f64)) -> Option<f64> {
     match curve {
         Curve3::Line(_) => Some(0.0),
         Curve3::Circle(c) => Some(c.radius()),
         Curve3::Ellipse(e) => Some(e.semi_axes().0.max(e.semi_axes().1)),
         Curve3::Nurbs(c) => {
-            // The second derivative of a polynomial spline is a spline
-            // over the second differences of its control points, each
-            // scaled by the knot spans it straddles (*The NURBS Book*
-            // 3.3), and lies in their hull.
-            // A rational spline's second derivative is no spline, but it
-            // is bounded through the nets of its Bézier pieces all the
-            // same (`NurbsCurve::derivative_bounds`).
-            if c.weights().iter().any(|&w| (w - 1.0).abs() > 1e-12) {
-                return c.derivative_bounds().map(|(_, second)| second);
+            let within = spline_turn_bound(c);
+            if !c.runs_past_domain(range) {
+                return within;
             }
-            let (degree, knots, points) = (c.degree(), c.knots(), c.control_points());
-            if degree < 2 {
-                return Some(0.0);
-            }
-            let first: Vec<Vec3> = points
-                .windows(2)
-                .enumerate()
-                .map(|(i, pair)| {
-                    let (Some(&lo), Some(&hi), &[a, b]) =
-                        (knots.get(i + 1), knots.get(i + degree + 1), pair)
-                    else {
-                        return Vec3::ZERO;
-                    };
-                    if hi > lo {
-                        (b - a) * (degree as f64 / (hi - lo))
-                    } else {
-                        Vec3::ZERO
-                    }
-                })
-                .collect();
-            let mut bound = 0.0_f64;
-            for (i, pair) in first.windows(2).enumerate() {
-                let (Some(&lo), Some(&hi), &[a, b]) =
-                    (knots.get(i + 2), knots.get(i + degree + 1), pair)
-                else {
-                    continue;
-                };
-                if hi > lo {
-                    bound = bound.max((b - a).length() * ((degree - 1) as f64) / (hi - lo));
-                }
-            }
-            bound.is_finite().then_some(bound)
+            let (_, second) = c.continued_derivative_bounds(range)?;
+            within.map(|bound| bound.max(second))
         }
     }
+}
+
+/// [`turn_bound`] of a spline over its domain.
+fn spline_turn_bound(c: &NurbsCurve) -> Option<f64> {
+    // The second derivative of a polynomial spline is a spline
+    // over the second differences of its control points, each
+    // scaled by the knot spans it straddles (*The NURBS Book*
+    // 3.3), and lies in their hull.
+    // A rational spline's second derivative is no spline, but it
+    // is bounded through the nets of its Bézier pieces all the
+    // same (`NurbsCurve::derivative_bounds`).
+    if c.weights().iter().any(|&w| (w - 1.0).abs() > 1e-12) {
+        return c.derivative_bounds().map(|(_, second)| second);
+    }
+    let (degree, knots, points) = (c.degree(), c.knots(), c.control_points());
+    if degree < 2 {
+        return Some(0.0);
+    }
+    let first: Vec<Vec3> = points
+        .windows(2)
+        .enumerate()
+        .map(|(i, pair)| {
+            let (Some(&lo), Some(&hi), &[a, b]) =
+                (knots.get(i + 1), knots.get(i + degree + 1), pair)
+            else {
+                return Vec3::ZERO;
+            };
+            if hi > lo {
+                (b - a) * (degree as f64 / (hi - lo))
+            } else {
+                Vec3::ZERO
+            }
+        })
+        .collect();
+    let mut bound = 0.0_f64;
+    for (i, pair) in first.windows(2).enumerate() {
+        let (Some(&lo), Some(&hi), &[a, b]) = (knots.get(i + 2), knots.get(i + degree + 1), pair)
+        else {
+            continue;
+        };
+        if hi > lo {
+            bound = bound.max((b - a).length() * ((degree - 1) as f64) / (hi - lo));
+        }
+    }
+    bound.is_finite().then_some(bound)
 }
 
 /// What a stretch of the curve is with respect to the surface.
@@ -382,7 +414,7 @@ fn numeric(
         bounded,
     } = probe;
     let (start, end) = range;
-    let speed = speed_bound(curve);
+    let speed = speed_bound(curve, range);
     if !(start.is_finite() && end.is_finite() && speed.is_finite() && speed > 0.0) {
         return Err(GeomError::InvalidParameter(
             "a curve piece without a finite extent cannot be intersected numerically",
@@ -813,7 +845,7 @@ pub(super) fn curve_hits(
             distance: &|p| signed_distance(sheet, p),
             lower: None,
             lower_stretch: None,
-            bend: bend_bound(curve, surface),
+            bend: bend_bound(curve, range, surface),
             within: None,
             bounded: false,
         },
@@ -915,7 +947,7 @@ fn by_quartic(
     // Clear, stretch by stretch, halving at most [`CLEAR_LOOKS`] times.
     // (Beyond two tolerances and what rounding could be, as `monotone`
     // reads the distance.)
-    let speed = speed_bound(curve);
+    let speed = speed_bound(curve, range);
     let size = [range.0, range.1]
         .into_iter()
         .map(|t| curve.eval(t).length())
@@ -1503,7 +1535,7 @@ fn curve_hits_freeform(
     // the surface less how far the curve can leave the chord, and
     // one on the surface by its ends and how much it and the surface
     // can bend between them.
-    let turn = turn_bound(curve);
+    let turn = turn_bound(curve, range);
     let lower_stretch = turn.map(|turn| {
         move |a: f64, b: f64, needed: f64| {
             let fat = 0.125 * turn * (b - a) * (b - a);
@@ -1541,6 +1573,10 @@ fn curve_hits_freeform(
         tolerance.linear,
     )
 }
+
+#[cfg(test)]
+#[path = "hits_domain_review.rs"]
+mod domain_review;
 
 #[cfg(test)]
 mod tests {
@@ -1802,6 +1838,62 @@ mod tests {
         ));
     }
 
+    /// Past a spline's domain, where `NurbsCurve::eval` carries its end
+    /// spans on, the curve moves and bends faster than its control
+    /// polygon says; with the range (2026-11-26) the bounds take the end
+    /// pieces carried on, and within the domain they are what they were,
+    /// bit for bit.
+    #[test]
+    fn the_speed_and_turn_bounds_hold_where_a_range_runs_past_the_domain() {
+        for k in [1e-3, 1.0, 1e6] {
+            let spline = NurbsCurve::polynomial(
+                3,
+                vec![0.0, 0.0, 0.0, 0.0, 0.2, 0.5, 1.0, 1.0, 1.0, 1.0],
+                vec![
+                    Vec3::new(0.0, 0.0, 0.0) * k,
+                    Vec3::new(1.0, 2.0, -1.0) * k,
+                    Vec3::new(2.0, -1.0, 0.5) * k,
+                    Vec3::new(3.0, 0.5, 2.0) * k,
+                    Vec3::new(4.0, 1.0, -0.5) * k,
+                    Vec3::new(5.0, -2.0, 0.0) * k,
+                ],
+            )
+            .unwrap();
+            let curve = Curve3::Nurbs(spline.clone());
+            let within = spline_speed_bound(&spline);
+            assert_eq!(speed_bound(&curve, (0.0, 1.0)).to_bits(), within.to_bits());
+            assert_eq!(speed_bound(&curve, (0.3, 0.6)).to_bits(), within.to_bits());
+            assert_eq!(turn_bound(&curve, (0.1, 0.9)), spline_turn_bound(&spline));
+            let mut beyond = false;
+            for range in [(-0.5, 1.0), (0.0, 1.6), (-0.3, 1.3), (1.2, 1.5)] {
+                let speed = speed_bound(&curve, range);
+                let turn = turn_bound(&curve, range).unwrap();
+                let h = 1e-5;
+                let (mut fastest, mut steepest) = (0.0_f64, 0.0_f64);
+                for i in 0..=2000 {
+                    let t = range.0 + (range.1 - range.0) * f64::from(i) / 2000.0;
+                    fastest = fastest.max(spline.derivatives(t).1.length());
+                    let second =
+                        (spline.derivatives(t + h).1 - spline.derivatives(t - h).1) * (0.5 / h);
+                    steepest = steepest.max(second.length());
+                }
+                assert!(
+                    fastest <= speed * (1.0 + 1e-12),
+                    "{k} {range:?}: {fastest} > {speed}"
+                );
+                assert!(
+                    steepest <= turn * (1.0 + 1e-6),
+                    "{k} {range:?}: {steepest} > {turn}"
+                );
+                beyond |= fastest > within;
+            }
+            assert!(
+                beyond,
+                "{k}: carried on, it never moves faster than its polygon says"
+            );
+        }
+    }
+
     #[test]
     fn the_speed_bound_is_a_bound() {
         let f = tilted(1.0);
@@ -1825,8 +1917,8 @@ mod tests {
             ),
         ];
         for curve in &curves {
-            let bound = speed_bound(curve);
             let (a, b) = curve.domain();
+            let bound = speed_bound(curve, (a, b));
             let mut fastest = 0.0_f64;
             for i in 0..=2000 {
                 let t = a + (b - a) * f64::from(i) / 2000.0;
@@ -2077,7 +2169,7 @@ mod tests {
             vec![1.0; 6],
         )
         .unwrap();
-        let bound = turn_bound(&Curve3::Nurbs(curve.clone())).unwrap();
+        let bound = turn_bound(&Curve3::Nurbs(curve.clone()), curve.domain()).unwrap();
         assert!(bound > 0.0);
         let h = 1e-5;
         let mut steepest = 0.0_f64;
@@ -2104,7 +2196,7 @@ mod tests {
             vec![1.0, 0.5, 1.0],
         )
         .unwrap();
-        let bound = turn_bound(&Curve3::Nurbs(rational.clone())).unwrap();
+        let bound = turn_bound(&Curve3::Nurbs(rational.clone()), rational.domain()).unwrap();
         let mut steepest = 0.0_f64;
         for k in 1..1000 {
             let t = f64::from(k) / 1000.0;
@@ -2118,7 +2210,7 @@ mod tests {
             "a bound {bound} far above {steepest}"
         );
         // And the speed bound of a rational spline holds as well.
-        let speed = speed_bound(&Curve3::Nurbs(rational.clone()));
+        let speed = speed_bound(&Curve3::Nurbs(rational.clone()), rational.domain());
         for k in 0..=1000 {
             let fast = rational.derivatives(f64::from(k) / 1000.0).1.length();
             assert!(fast <= speed, "{fast} > {speed}");
@@ -2141,7 +2233,7 @@ mod tests {
                 distance: &|p| signed_distance(sheet, p),
                 lower: None,
                 lower_stretch: None,
-                bend: bend_bound(curve, surface),
+                bend: bend_bound(curve, range, surface),
                 within: None,
                 bounded: false,
             },

@@ -1,7 +1,7 @@
 //! The validity checker: what must hold for a body to be a body.
 
 use crate::{Body, BodyKind, Coedge, EdgeId, Face, FaceId, LoopId, ShellId, VertexId};
-use craft3d_geom::Surface;
+use craft3d_geom::{Curve3, Surface};
 use craft3d_math::{Bits, Tolerance};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -21,6 +21,14 @@ pub enum Defect {
     },
     /// An edge's parameter range is empty or backwards.
     EdgeRange {
+        edge: EdgeId,
+    },
+    /// A spline edge's range runs past its curve's domain to where no
+    /// bound of the curve is known (`NurbsCurve::continued_hull`): past
+    /// the end of a domain that ends on a knot span of no width, or a
+    /// rational end piece carried on to where its weights do not come out
+    /// positive (2026-11-26). Its box, and the boolean's, could not hold it.
+    PastDomain {
         edge: EdgeId,
     },
     /// A vertex is not at the end of its edge's curve.
@@ -209,6 +217,9 @@ impl fmt::Display for Defect {
                 "edge {} has an empty or reversed parameter range",
                 edge.0
             ),
+            Defect::PastDomain { edge } => {
+                write!(f, "edge {}: {}", edge.0, crate::transform::PAST_DOMAIN)
+            }
             Defect::VertexOffEdge {
                 edge,
                 vertex,
@@ -656,6 +667,15 @@ pub fn check_capped(body: &Body, tol: &Tolerance, cap: f64) -> Vec<Defect> {
         }
         if t0 >= t1 {
             defects.push(Defect::EdgeRange { edge: id });
+        }
+        // A range past a spline's domain is taken where the curve carried
+        // on there can be bounded (`craft3d_topo`'s boxes and the
+        // boolean's hold it then), and refused where it cannot.
+        if let Curve3::Nurbs(spline) = &edge.curve
+            && spline.runs_past_domain(edge.range)
+            && spline.continued_hull(edge.range).is_none()
+        {
+            defects.push(Defect::PastDomain { edge: id });
         }
         for (vertex, t) in [(edge.start, t0), (edge.end, t1)] {
             match body.vertex(vertex) {

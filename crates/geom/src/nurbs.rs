@@ -846,30 +846,44 @@ impl NurbsCurve {
     /// Points whose convex hull holds the curve over `range` (its two
     /// parameters in either order), every weight involved being positive
     /// and finite (a rational curve lies in the hull of its control points
-    /// only then): over the whole domain or more, the control points
-    /// themselves; over part of it, the control points of the Bézier
-    /// pieces of that part, each piece the curve's span cut to the range
-    /// by de Casteljau's algorithm (exact: the same polynomial, or
-    /// rational function, over a shorter interval), so that control
-    /// points far from the part used (an end span continued a long way)
-    /// do not count. `None` when the range is not finite, reaches past
-    /// the domain on one side only, or a weight (of the curve over the
-    /// whole domain, of a cut piece over part of it) is not positive and
-    /// finite: no hull of control points is known to hold the curve.
+    /// only then): over the whole domain, the control points themselves;
+    /// over part of it, the control points of the Bézier pieces of that
+    /// part, each piece the curve's span cut to the range by de
+    /// Casteljau's algorithm (exact: the same polynomial, or rational
+    /// function, over a shorter interval), so that control points far
+    /// from the part used (an end span continued a long way) do not
+    /// count. Past the domain, where [`NurbsCurve::eval`] carries the end
+    /// spans on and the curve leaves the hull of its control points, those
+    /// of the part within the domain and the padded hull of the end pieces
+    /// carried on ([`NurbsCurve::continued_hull`]; until 2026-11-26 the
+    /// control points alone for a range past both ends, and none for one
+    /// past one end). `None` when the range is not finite, a weight (of
+    /// the curve over the whole domain, of a cut piece over part of it) is
+    /// not positive and finite, or the part past the domain has no known
+    /// hull: no hull of control points is known to hold the curve.
     pub fn hull_points(&self, range: (f64, f64)) -> Option<Vec<Vec3>> {
         if !(range.0.is_finite() && range.1.is_finite()) {
             return None;
         }
         let (r0, r1) = (range.0.min(range.1), range.0.max(range.1));
         let (d0, d1) = self.domain();
-        if r0 <= d0 && r1 >= d1 {
-            let positive = self.weights().iter().all(|w| w.is_finite() && *w > 0.0);
-            return positive.then(|| self.control_points().to_vec());
+        let within = |lo: f64, hi: f64| {
+            if lo <= d0 && hi >= d1 {
+                let positive = self.weights().iter().all(|w| w.is_finite() && *w > 0.0);
+                return positive.then(|| self.control_points().to_vec());
+            }
+            hull_points_in(&self.bezier_pieces(), (lo, hi))
+        };
+        if !self.runs_past_domain((r0, r1)) {
+            return within(r0, r1);
         }
-        if r0 < d0 || r1 > d1 {
-            return None;
-        }
-        hull_points_in(&self.bezier_pieces(), (r0, r1))
+        let mut points = if r1 < d0 || r0 > d1 {
+            Vec::new()
+        } else {
+            within(r0.max(d0), r1.min(d1))?
+        };
+        points.extend(self.continued_hull((r0, r1))?);
+        (!points.is_empty()).then_some(points)
     }
 
     /// The knot span of the domain that holds `t`, as the `k` of
@@ -2796,6 +2810,11 @@ impl Bits for NurbsSurface {
         weights.push_bits(out);
     }
 }
+
+/// A spline carried on past its domain, bounded (`continued_hull`,
+/// `continued_derivative_bounds`).
+#[path = "nurbs_continued.rs"]
+mod continued;
 
 #[cfg(test)]
 mod tests {

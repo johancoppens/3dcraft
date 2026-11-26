@@ -326,26 +326,48 @@ fn nearest_by_pieces(
     distance: &dyn Fn(f64) -> f64,
     mut best: (f64, f64),
 ) -> Option<(f64, f64)> {
+    // A range past the domain: the pieces of the part within it, and the
+    // end pieces carried on past it cut and halved until their weights are
+    // positive (`NurbsCurve::continued_pieces`, 2026-11-26; a rational piece
+    // carried on whole can have a weight that is not, though its curve is
+    // finite there, and was not searched). A range within the domain as it
+    // always was.
+    let past = curve.runs_past_domain((t0, t1));
+    let (d0, d1) = curve.domain();
+    let (c0, c1) = if past {
+        (t0.max(d0), t1.min(d1))
+    } else {
+        (t0, t1)
+    };
     // (Each piece with its points in homogeneous form from here on.)
-    let mut spans: Vec<CurvePiece> = curve
-        .bezier_pieces()
-        .into_iter()
-        .filter(|&((lo, hi), _)| hi > t0 && lo < t1)
-        .map(|(span, net)| (span, net.into_iter().map(|(q, w)| (q * w, w)).collect()))
-        .collect();
+    let mut spans: Vec<CurvePiece> = if !past || c0 <= c1 {
+        curve
+            .bezier_pieces()
+            .into_iter()
+            .filter(|&((lo, hi), _)| hi > c0 && lo < c1)
+            .map(|(span, net)| (span, net.into_iter().map(|(q, w)| (q * w, w)).collect()))
+            .collect()
+    } else {
+        Vec::new()
+    };
     // The first piece from where the range starts, the last to where it
     // ends: a share of the piece's own parameter, within it or past it.
     if let Some(((lo, hi), net)) = spans.first_mut()
-        && *lo != t0
+        && *lo != c0
     {
-        *net = split_net(net, (t0 - *lo) / (*hi - *lo)).1;
-        *lo = t0;
+        *net = split_net(net, (c0 - *lo) / (*hi - *lo)).1;
+        *lo = c0;
     }
     if let Some(((lo, hi), net)) = spans.last_mut()
-        && *hi != t1
+        && *hi != c1
     {
-        *net = split_net(net, (t1 - *lo) / (*hi - *lo)).0;
-        *hi = t1;
+        *net = split_net(net, (c1 - *lo) / (*hi - *lo)).0;
+        *hi = c1;
+    }
+    if past {
+        for (span, net) in curve.continued_pieces((t0, t1))? {
+            spans.push((span, net.into_iter().map(|(q, w)| (q * w, w)).collect()));
+        }
     }
     if spans.is_empty() {
         return None;
@@ -413,7 +435,7 @@ fn nearest_by_pieces(
 /// ([`nearest_by_pieces`]), whose bounds are the pieces' own; one that
 /// does not run out answers as it always did, bit for bit.
 fn nearest_on_spline(curve: &Curve3, range: (f64, f64), p: Vec3) -> Option<(f64, f64)> {
-    let speed = speed_bound(curve);
+    let speed = speed_bound(curve, range);
     let (t0, t1) = range;
     if !(speed.is_finite() && t0.is_finite() && t1.is_finite() && p.is_finite()) {
         return None;
@@ -595,10 +617,12 @@ pub(super) struct Boxes {
     around: Vec<Bbox3>,
 }
 
-/// A box around a piece of `curve` from `a` to `b`: the ends, a piece of
-/// a circle or an ellipse counted as the whole of it, and a spline's
-/// control points (which its curve stays within).
-pub(super) fn piece_box(curve: &Curve3, a: Vec3, b: Vec3) -> Bbox3 {
+/// A box around a piece of `curve` over `range` from `a` to `b`: the ends,
+/// a piece of a circle or an ellipse counted as the whole of it, and a
+/// spline's control points (which its curve stays within over its domain),
+/// with, where the range runs past the domain, the padded hull of the end
+/// pieces carried on there ([`spline_carried_on`]).
+pub(super) fn piece_box(curve: &Curve3, range: (f64, f64), a: Vec3, b: Vec3) -> Bbox3 {
     let mut bx = Bbox3::from_points([a, b]);
     // A piece of a circle or an ellipse counts as the whole of it.
     let conic = match &curve {
@@ -612,7 +636,11 @@ pub(super) fn piece_box(curve: &Curve3, a: Vec3, b: Vec3) -> Bbox3 {
             Some((f.origin(), f.x() * major, f.y() * minor))
         }
         Curve3::Nurbs(c) => {
-            for &p in c.control_points() {
+            for &p in c
+                .control_points()
+                .iter()
+                .chain(&spline_carried_on(c, range))
+            {
                 bx.add(p);
             }
             None
@@ -626,8 +654,25 @@ pub(super) fn piece_box(curve: &Curve3, a: Vec3, b: Vec3) -> Bbox3 {
     bx
 }
 
+/// Points whose hull holds a spline as it is evaluated over the parts of
+/// `range` past its domain, where `NurbsCurve::eval` carries its end spans
+/// on and the curve leaves the hull of its control points: the end pieces'
+/// own, padded for the rounding of carrying them on
+/// (`NurbsCurve::continued_hull`, 2026-11-26; before, nothing, and the
+/// boxes of the boolean did not hold such an edge). None for a range within
+/// the domain, and none where no such points are known, which
+/// `craft3d_topo`'s check refuses (`Defect::PastDomain`): no operand has
+/// such an edge.
+fn spline_carried_on(curve: &NurbsCurve, range: (f64, f64)) -> Vec<Vec3> {
+    if !curve.runs_past_domain(range) {
+        return Vec::new();
+    }
+    curve.continued_hull(range).unwrap_or_default()
+}
+
 /// Points whose hull holds the part of a spline over `range`: the control
-/// points of that part, or all the curve's where they cannot be had.
+/// points of that part (past the domain with the end pieces carried on,
+/// `NurbsCurve::hull_points`), or all the curve's where they cannot be had.
 fn spline_hull(curve: &NurbsCurve, range: (f64, f64)) -> Vec<Vec3> {
     curve
         .hull_points(range)
@@ -639,7 +684,7 @@ pub(super) fn boxes(loops: &[Vec<Seg>]) -> Boxes {
     let mut around = vec![Bbox3::EMPTY; loops.len()];
     for (l, loop_) in loops.iter().enumerate() {
         for (k, seg) in loop_.iter().enumerate() {
-            let b = piece_box(&seg.curve, seg.a, seg.b);
+            let b = piece_box(&seg.curve, seg.range, seg.a, seg.b);
             if let Some((lo, hi)) = b.corners() {
                 if let Some(whole) = around.get_mut(l) {
                     whole.add(lo);
@@ -1449,8 +1494,11 @@ pub(super) fn hull_of<E>(
                 Some((f.origin(), f.x() * a, f.y() * b))
             }
             Curve3::Nurbs(c) => {
+                let carried = spline_carried_on(c, seg.range);
                 hull.points.extend_from_slice(c.control_points());
+                hull.points.extend_from_slice(&carried);
                 points.extend_from_slice(c.control_points());
+                points.extend(carried);
                 hull.near.extend(spline_hull(c, seg.range));
                 None
             }
@@ -1878,6 +1926,10 @@ pub(super) fn line_in_box(
     }
     (enter <= leave).then_some((enter, leave))
 }
+
+#[cfg(test)]
+#[path = "outline_domain_review.rs"]
+mod domain_review;
 
 #[cfg(test)]
 mod tests {
@@ -2840,6 +2892,47 @@ mod tests {
         assert!(SplinePiece::new(0.0, 1.0, net(0.5), Vec3::ZERO).is_some());
         for weight in [0.0, -0.5, f64::NAN, f64::INFINITY] {
             assert!(SplinePiece::new(0.0, 1.0, net(weight), Vec3::ZERO).is_none());
+        }
+    }
+
+    /// A rational quarter circle carried on ten spans past its domain stays
+    /// on its circle, its weight positive all the way, but the end piece
+    /// carried on whole has a negative weight (the Bernstein coefficients of
+    /// a positive function over a long stretch): until 2026-11-26 the search
+    /// by pieces gave up there, and a place where such an edge crosses a
+    /// plane was not found again on it (the turned segment of
+    /// `boolean_spline_past_domain.rs`). The end piece is now cut and
+    /// halved until its weights are positive (`continued_pieces`), and every
+    /// point of the curve there is found on it, before the start too.
+    #[test]
+    fn a_point_of_a_rational_spline_carried_far_past_its_domain_is_found_by_pieces() {
+        for k in [1e-3, 1.0, 1e6] {
+            let frame = tilted();
+            let spline = NurbsCurve::new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![
+                    frame.point(k, 0.0, 0.0),
+                    frame.point(k, k, 0.0),
+                    frame.point(0.0, k, 0.0),
+                ],
+                vec![1.0, 0.5_f64.sqrt(), 1.0],
+            )
+            .unwrap();
+            let curve = Curve3::Nurbs(spline.clone());
+            for (range, at) in [((0.0, 10.0), 7.3), ((0.0, 10.0), 3.41), ((-3.0, 1.0), -2.2)] {
+                let p = curve.eval(at);
+                let distance = |t: f64| curve.eval(t).distance(p);
+                let first = (distance(range.0), range.0);
+                // A sample within what the search resolves (its floor is a
+                // billionth of the curve's size); Newton's method finishes
+                // from it.
+                let (d, t) = nearest_by_pieces(&spline, range, p, &distance, first).unwrap();
+                assert!(d <= 1e-7 * k, "{k} {range:?} {at}: {d} at {t}");
+                assert!(t >= range.0 && t <= range.1, "{t}");
+                let (t, d) = nearest(&curve, range, p).unwrap();
+                assert!(d <= 1e-9 * k, "{k} {range:?} {at}: {d} at {t}");
+            }
         }
     }
 

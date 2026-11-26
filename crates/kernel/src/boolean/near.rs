@@ -686,8 +686,8 @@ impl<'r> Topo<'r> {
     /// The box of face `f`'s boundary ([`Topo::rims`]): its loops' boxes
     /// together; none for a face without loops, and none where an edge of
     /// its boundary is a spline whose range runs past its curve's domain
-    /// ([`past_domain`]: that edge's box, and so the face's, need not hold
-    /// it).
+    /// ([`past_domain`]: kept from before that edge's box, and so the
+    /// face's, held it).
     fn rim_box(&mut self, f: u32) -> Option<Bbox3> {
         let body = self.body;
         let slot = self.rims.get_mut(f as usize)?;
@@ -895,7 +895,8 @@ impl<'r, 'x> Look<'r, 'x> {
     /// so up to that outside the box of what it holds: a pair passed over
     /// is one whose measure finds nothing. Never asked for an edge, nor of a
     /// face with an edge in its boundary, that is a spline whose range runs
-    /// past its curve's domain ([`past_domain`]: its box need not hold it).
+    /// past its curve's domain ([`past_domain`]: kept from before its box
+    /// held it).
     fn away_from_piece(&mut self, body: usize, f: u32, bx: &Bbox3) -> bool {
         let reach = 2.0 * self.near;
         let Some(topo) = self.topos.get_mut(body) else {
@@ -1600,10 +1601,14 @@ fn point_segment(p: Vec3, s0: Vec3, s1: Vec3) -> f64 {
 /// `NurbsCurve::eval` carries the end spans on as the polynomials or
 /// rational functions they are, and `craft3d_topo`'s regions read such an
 /// edge so, `region.rs` › `each_piece`). Past the domain the curve leaves
-/// the convex hull of its control points, its speed bound does not hold,
-/// and `craft3d_topo`'s box of the edge (its control points) does not hold
-/// it either: no bound of the look reads such an edge (the review of round
-/// three, 2026-11-25). A range that is not a number is past it too.
+/// the convex hull of its control points, which the look's own bounds
+/// read (a stretch's hull, [`Stretch::of`]): no bound of the look reads
+/// such an edge (the review of round three, 2026-11-25). The speed bound
+/// and `craft3d_topo`'s box of the edge hold it since 2026-11-26 (with the
+/// range, `speed_bound`; the end pieces carried on,
+/// `NurbsCurve::continued_hull`), and before did not; the look keeps
+/// passing over nothing by them for such an edge. A range that is not a
+/// number is past it too.
 fn past_domain(curve: &Curve3, range: (f64, f64)) -> bool {
     match curve {
         Curve3::Nurbs(spline) => {
@@ -1632,7 +1637,7 @@ fn edges_apart(e1: &Edge, e2: &Edge, near: f64, work: &Work) -> bool {
     if past_domain(c1, e1.range) || past_domain(c2, e2.range) {
         return false;
     }
-    let (s1, s2) = (speed_bound(c1), speed_bound(c2));
+    let (s1, s2) = (speed_bound(c1, e1.range), speed_bound(c2, e2.range));
     if !(s1.is_finite() && s2.is_finite() && s1 >= 0.0 && s2 >= 0.0) {
         return false;
     }
@@ -2404,7 +2409,7 @@ fn least_along(
     if !(t0.is_finite() && t1.is_finite() && t1 > t0) {
         return Vec::new();
     }
-    let speed = speed_bound(curve);
+    let speed = speed_bound(curve, range);
     let step = (t1 - t0) / SAMPLES as f64;
     let ts: Vec<f64> = (0..=SAMPLES)
         .map(|k| {

@@ -570,11 +570,30 @@ fn edge_extent(
             arc_extent(e.frame(), a, b, curve, range, out);
         }
         // Weights are positive, so the curve is inside the convex hull of
-        // its control points.
-        Curve3::Nurbs(c) => c.control_points().iter().for_each(|&p| out.add(p)),
+        // its control points over its domain. Past it, where `eval`
+        // carries the end spans on, the curve leaves that hull: there the
+        // end pieces' own, padded for the rounding of carrying them on
+        // (`NurbsCurve::continued_hull`; until 2026-11-26 the control
+        // points alone, which a box of such an edge did not hold). An edge
+        // within its domain is boxed as it always was, bit for bit.
+        Curve3::Nurbs(c) => {
+            c.control_points().iter().for_each(|&p| out.add(p));
+            if c.runs_past_domain(range) {
+                let carried = c.continued_hull(range).ok_or(TransformError::Edge {
+                    edge,
+                    error: GeomError::InvalidParameter(PAST_DOMAIN),
+                })?;
+                carried.into_iter().for_each(|p| out.add(p));
+            }
+        }
     }
     Ok(())
 }
+
+/// Why an edge whose range runs past its spline's domain has no box (and
+/// no place in a valid body, [`crate::Defect::PastDomain`]).
+pub(crate) const PAST_DOMAIN: &str =
+    "its range runs past its spline's domain to where the curve cannot be bounded";
 
 /// Samples per edge for following a boundary around a cone's axis.
 fn winding_samples(curve: &Curve3) -> usize {

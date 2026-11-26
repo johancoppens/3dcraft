@@ -843,7 +843,7 @@ pub(super) fn may_come_within(curve: &Curve3, range: (f64, f64), p: Vec3, r: f64
     if matches!(curve, Curve3::Line(_) | Curve3::Circle(_)) {
         return nearest(curve, range, p).is_none_or(|(_, d)| d <= room);
     }
-    let speed = speed_bound(curve);
+    let speed = speed_bound(curve, range);
     let (t0, t1) = range;
     if !(speed.is_finite() && t0.is_finite() && t1.is_finite() && t0 <= t1 && p.is_finite()) {
         return true;

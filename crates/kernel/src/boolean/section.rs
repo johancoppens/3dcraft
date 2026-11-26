@@ -224,7 +224,7 @@ impl Solid<'_> {
             return Bbox3::EMPTY;
         };
         match (self.body.vertex(edge.start), self.body.vertex(edge.end)) {
-            (Some(a), Some(b)) => piece_box(&edge.curve, a.point, b.point),
+            (Some(a), Some(b)) => piece_box(&edge.curve, edge.range, a.point, b.point),
             _ => Bbox3::EMPTY,
         }
     }
@@ -3157,7 +3157,7 @@ fn edge_crossings(
         return Err(Stop::of(LOST));
     };
     let (t0, t1) = edge.range;
-    let speed = super::hits::speed_bound(&edge.curve);
+    let speed = super::hits::speed_bound(&edge.curve, edge.range);
     if !(speed.is_finite() && speed > 0.0 && t1 > t0) {
         return Err(Stop::of(LOST).at(named));
     }
@@ -3179,10 +3179,10 @@ fn edge_crossings(
         // piece's parameter range). `None` without a bound: then only
         // the edge is halved, and its pieces are told by the distance
         // from their middle alone.
-        let bends = super::hits::turn_bound(&edge.curve)
-            .zip(super::hits::turn_bound(&piece.curve))
+        let bends = super::hits::turn_bound(&edge.curve, edge.range)
+            .zip(super::hits::turn_bound(&piece.curve, piece.range))
             .filter(|(a, b)| a.is_finite() && b.is_finite());
-        let other_speed = super::hits::speed_bound(&piece.curve);
+        let other_speed = super::hits::speed_bound(&piece.curve, piece.range);
         let (e0, e1) = piece.range;
         // Pairs of a piece of the edge and a piece of the other edge.
         let mut open: Vec<(f64, f64, f64, f64)> = vec![(t0, t1, e0, e1)];
