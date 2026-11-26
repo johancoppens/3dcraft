@@ -762,6 +762,7 @@ fn run(
 #[test]
 #[ignore = "the review's comparison with main's coincide, minutes in release: cargo test --release -p craft3d-kernel --lib -- --ignored early_review --nocapture"]
 fn the_answer_from_the_feet_first_is_mains_for_every_pair_of_faces() {
+    // native clock: a test module (`#[cfg(test)]`), never built for the browser.
     let started = std::time::Instant::now();
     let mut tally = Tally::default();
     for (k, turned) in [(1e-3, false), (1.0, false), (1e6, false), (1.0, true)] {
