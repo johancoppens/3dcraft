@@ -1,0 +1,122 @@
+[
+ {
+  "command": "file.new",
+  "params": {
+   "tolerance": 1e-06,
+   "units": "mm"
+  }
+ },
+ {
+  "command": "sketch.create",
+  "params": {
+   "name": "S0",
+   "offset": 10.0,
+   "plane": "xy"
+  }
+ },
+ {
+  "command": "sketch.polyline",
+  "params": {
+   "closed": true,
+   "points": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     10.0,
+     0.0
+    ],
+    [
+     10.0,
+     2.5
+    ],
+    [
+     5.0,
+     2.5
+    ],
+    [
+     5.0,
+     10.0
+    ],
+    [
+     0.0,
+     10.0
+    ]
+   ],
+   "sketch": "S0"
+  }
+ },
+ {
+  "command": "feature.revolve",
+  "params": {
+   "angle": "180 deg",
+   "axis": "y",
+   "name": "N0",
+   "sketch": "S0"
+  }
+ },
+ {
+  "command": "sketch.create",
+  "params": {
+   "name": "S1",
+   "offset": 0.0,
+   "plane": "xy"
+  }
+ },
+ {
+  "command": "sketch.polyline",
+  "params": {
+   "closed": true,
+   "points": [
+    [
+     -7.5,
+     -7.5
+    ],
+    [
+     2.5,
+     -7.5
+    ],
+    [
+     2.5,
+     -2.5
+    ],
+    [
+     -2.5,
+     -2.5
+    ],
+    [
+     -2.5,
+     2.5
+    ],
+    [
+     -7.5,
+     2.5
+    ]
+   ],
+   "sketch": "S1"
+  }
+ },
+ {
+  "command": "feature.extrude",
+  "params": {
+   "distance": 10.0,
+   "join": "N0",
+   "name": "N1",
+   "sketch": "S1"
+  }
+ },
+ {
+  "command": "feature.pattern",
+  "params": {
+   "count": 4,
+   "name": "N2",
+   "source": "N1",
+   "step": [
+    10.0,
+    0.0,
+    0.0
+   ]
+  }
+ }
+]

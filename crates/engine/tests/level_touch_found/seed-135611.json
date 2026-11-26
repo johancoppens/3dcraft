@@ -1,0 +1,240 @@
+[
+ {
+  "command": "file.new",
+  "params": {
+   "tolerance": 1e-06,
+   "units": "mm"
+  }
+ },
+ {
+  "command": "feature.cylinder",
+  "params": {
+   "angle": "0 deg",
+   "axis": [
+    -1.0,
+    0.0,
+    0.0
+   ],
+   "height": 15.0,
+   "name": "N0",
+   "position": [
+    -12.5,
+    2.5,
+    7.5
+   ],
+   "radius": 5.0
+  }
+ },
+ {
+  "command": "sketch.create",
+  "params": {
+   "face": "F1:face(2)",
+   "name": "S1"
+  }
+ },
+ {
+  "command": "sketch.polyline",
+  "params": {
+   "closed": true,
+   "points": [
+    [
+     -5.0,
+     -2.5
+    ],
+    [
+     5.0,
+     -2.5
+    ],
+    [
+     5.0,
+     0.0
+    ],
+    [
+     -5.0,
+     0.0
+    ]
+   ],
+   "sketch": "S1"
+  }
+ },
+ {
+  "command": "feature.extrude",
+  "params": {
+   "cut": "N0",
+   "name": "N1",
+   "reversed": true,
+   "sketch": "S1",
+   "throughAll": true
+  }
+ },
+ {
+  "command": "feature.transform",
+  "params": {
+   "angle": "180 deg",
+   "axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "keep": true,
+   "name": "N2",
+   "pivot": [
+    -27.5,
+    7.5,
+    2.5273905231586333
+   ],
+   "source": "N1",
+   "translate": [
+    0.0,
+    15.0,
+    0.0
+   ]
+  }
+ },
+ {
+  "command": "sketch.create",
+  "params": {
+   "face": "F5:copy(0)/F4:copy(1)/F3:side(e7)",
+   "name": "S3"
+  }
+ },
+ {
+  "command": "sketch.polyline",
+  "params": {
+   "closed": true,
+   "points": [
+    [
+     5.0,
+     -5.0
+    ],
+    [
+     7.5,
+     -5.0
+    ],
+    [
+     7.5,
+     -2.5
+    ],
+    [
+     5.0,
+     -2.5
+    ]
+   ],
+   "sketch": "S3"
+  }
+ },
+ {
+  "command": "feature.extrude",
+  "params": {
+   "distance": 7.5,
+   "name": "N3",
+   "sketch": "S3"
+  }
+ },
+ {
+  "command": "feature.mirror",
+  "params": {
+   "keep": true,
+   "name": "N4",
+   "normal": [
+    0.0,
+    1.0,
+    0.0
+   ],
+   "point": [
+    2.5,
+    0.0,
+    0.0
+   ],
+   "source": "N1"
+  }
+ },
+ {
+  "command": "sketch.create",
+  "params": {
+   "face": "F8:copy(0)/F4:copy(1)/F3:side(e7)",
+   "name": "S5"
+  }
+ },
+ {
+  "command": "sketch.polyline",
+  "params": {
+   "closed": true,
+   "points": [
+    [
+     0.0,
+     -2.5
+    ],
+    [
+     10.0,
+     -2.5
+    ],
+    [
+     10.0,
+     2.5
+    ],
+    [
+     5.0,
+     2.5
+    ],
+    [
+     5.0,
+     7.5
+    ],
+    [
+     0.0,
+     7.5
+    ]
+   ],
+   "sketch": "S5"
+  }
+ },
+ {
+  "command": "feature.extrude",
+  "params": {
+   "cut": "N4",
+   "name": "N5",
+   "reversed": true,
+   "sketch": "S5",
+   "throughAll": true
+  }
+ },
+ {
+  "command": "feature.fillet",
+  "params": {
+   "chain": false,
+   "edges": [
+    [
+     "F7:side(e7)",
+     "F7:startCap(e5,e6,e7,e8)"
+    ],
+    [
+     "F7:side(e5)",
+     "F7:endCap(e5,e6,e7,e8)"
+    ]
+   ],
+   "name": "N7",
+   "radius": 1.25
+  }
+ },
+ {
+  "command": "feature.boolean",
+  "params": {
+   "keepTool": false,
+   "name": "N8",
+   "op": "union",
+   "target": "N2",
+   "tool": "N7"
+  }
+ },
+ {
+  "command": "feature.boolean",
+  "params": {
+   "keepTool": false,
+   "name": "N9",
+   "op": "union",
+   "target": "N5",
+   "tool": "N1"
+  }
+ }
+]
