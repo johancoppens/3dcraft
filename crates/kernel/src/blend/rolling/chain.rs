@@ -1287,9 +1287,46 @@ fn prepare(
     tolerance: &Tolerance,
 ) -> Result<Computed, BlendError> {
     match chain.pieces.first().ok_or_else(lost)?.shape {
-        Shape::Ball { .. } => along_spine(body, chain, items, meets, tolerance),
+        Shape::Ball { .. } => along_spine(body, chain, items, meets, false, tolerance),
         Shape::Cut { .. } => compute(body, chain, items, tolerance),
     }
+}
+
+/// Blends the one open edge of `one` (a chain of one piece, a fillet of
+/// one radius, no meet) in place as a chain's fillets are built
+/// ([`along_spine`]): for a lone edge whose sections across it run back
+/// along it, which the construction in place refuses
+/// (`super::along_the_path`). Its face is held to `folds` over what is
+/// kept, as that construction holds its own, and measured as a chain's
+/// are. Returns its face with the index of its request.
+pub(super) fn build_alone(
+    body: &mut Body,
+    one: &Chain,
+    items: &[Item],
+    tolerance: &Tolerance,
+) -> Result<Vec<(FaceId, usize)>, BlendError> {
+    let alone = matches!(
+        (
+            one.pieces.as_slice(),
+            one.joints.as_slice(),
+            one.closed,
+            one.meets
+        ),
+        (
+            [Piece {
+                shape: Shape::Ball { .. },
+                ..
+            }],
+            [],
+            false,
+            [None, None]
+        )
+    );
+    if !alone {
+        return Err(lost());
+    }
+    let computed = along_spine(body, one, items, &[], true, tolerance)?;
+    finish(body, one, computed, [None, None], tolerance)
 }
 
 /// Puts the worked-out blend faces of `chain` into `body` (with what the
@@ -1962,13 +1999,16 @@ fn pick(params: &[f64], count: usize) -> Vec<usize> {
 /// sections of each face are then the balls in the planes square to a
 /// cubic through the centres found, turned at the joints into the planes
 /// of the joints' balls, so the faces on both sides of a joint end in the
-/// same ball.
+/// same ball. `held`: a lone open edge's face ([`build_alone`]) is held
+/// to `folds` between its end cuts, as the construction in place holds
+/// its own; a chain's and a meet's are not (as since 2026-10-14).
 #[allow(clippy::too_many_lines)]
 fn along_spine(
     body: &Body,
     chain: &Chain,
     items: &[Item],
     meets: &[Meet],
+    held: bool,
     tolerance: &Tolerance,
 ) -> Result<Computed, BlendError> {
     let tol = tolerance.linear;
@@ -2222,6 +2262,8 @@ fn along_spine(
         kept.push((list.clone(), params));
     }
     let mut made = Vec::with_capacity(n);
+    // Per piece, the samples its face went through (`held` only).
+    let mut samples_of: Vec<(Vec<f64>, Vec<Section>)> = Vec::new();
     let limit = 0.25 * tol;
     let bend = bend(tolerance, size);
     let mut cut_ranges: [(f64, f64); 2] = [(0.0, 0.0); 2];
@@ -2311,6 +2353,9 @@ fn along_spine(
             spans: [(0.0, 1.0); 2],
             outward,
         });
+        if held {
+            samples_of.push((params, sections));
+        }
     }
     let ends = match ends {
         None => None,
@@ -2345,6 +2390,33 @@ fn along_spine(
         }
     };
     spans_left(pieces, &made)?;
+    if held {
+        // What is kept of the lone face: from its start cut, where it
+        // reaches furthest in, to its end cut, where it reaches furthest
+        // out (as `blend_open` holds its own).
+        let cut_at = |index: usize| match ends.as_ref().and_then(|e| e.get(index)) {
+            Some(EndKind::Third(end)) => Some(end.at),
+            _ => None,
+        };
+        let (Some([a0, b0]), Some([a1, b1])) = (cut_at(0), cut_at(1)) else {
+            return Err(lost());
+        };
+        let between = (a0.min(b0), a1.max(b1));
+        let (Some(piece), Some(m), Some((params, sections))) =
+            (pieces.first(), made.first(), samples_of.first())
+        else {
+            return Err(lost());
+        };
+        if let Some(fold) = super::folds(&m.surface, params, sections, between, between) {
+            // Sections square to the path that run back along it: the
+            // path itself bends more tightly than the radius, said so (not
+            // as the sections across the edge, which were not taken).
+            return Err(match fold {
+                super::Fold::Along => refused(piece.edge, Reason::PathRunsBack),
+                across @ super::Fold::Across(_) => across.refusal(piece.edge, piece.faces),
+            });
+        }
+    }
     let joints = joint_balls
         .into_iter()
         .zip(&switched)

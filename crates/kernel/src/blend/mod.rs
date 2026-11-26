@@ -244,8 +244,16 @@ pub(crate) enum Reason {
     FreeFolds,
     /// The blend's sections across the edge would run back along it,
     /// where the edge bends more tightly than the blend reaches from it
-    /// (`rolling::folds`, along).
+    /// (`rolling::folds`, along), and the fillet is not tried along the
+    /// balls' own path (a closed edge, a radius that varies, borders
+    /// carried across smooth edges; a chamfer).
     FreeRunsBack,
+    /// The fillet tried along the balls' own path (where its sections
+    /// across the edge run back) folds there too: its sections, square to
+    /// the path of the balls' centres, run back along that path, which
+    /// bends more tightly than the radius (`rolling::folds`, along, on the
+    /// face `chain::build_alone` made).
+    PathRunsBack,
     /// A chamfer face would pass through a face beside its edge: a face's
     /// trace from the edge to the cut line is shown on the other side of
     /// the chamfer's line. A fillet face would: a face's trace from the
@@ -379,6 +387,10 @@ impl Reason {
             }
             Reason::FreeRunsBack => {
                 "the chamfer face along this edge would fold over itself: the edge bends more tightly than the chamfer reaches from it, so there its lines across the edge (each in the plane square to the edge) run back along it: the distance is too large for this edge"
+            }
+            // Only a fillet is tried along the balls' path.
+            Reason::PathRunsBack => {
+                "the chamfer face along this edge would fold over itself: its lines across the edge run back along it: the distance is too large for this edge"
             }
             Reason::Through => {
                 "the chamfer face would pass through a face beside the edge (its line across the edge runs through that face, as through a pipe chamfered far along it): the distance is too large for that face"
@@ -518,7 +530,10 @@ impl Reason {
                 "the fillet face along this edge would fold through itself: where the ball touches a face beside the edge goes past where the sections across the edge meet (over the top of a small cap, say): the radius is too large for that face"
             }
             Reason::FreeRunsBack => {
-                "the fillet face along this edge would fold over itself: the edge bends more tightly than the fillet reaches from it, so there the rolling ball's sections across the edge (each in the plane square to the edge) run back along it; a fillet whose sections follow the ball's own path there is not built yet: give a smaller radius"
+                "the fillet face along this edge would fold over itself: the edge bends more tightly than the fillet reaches from it, so there the rolling ball's sections across the edge (each in the plane square to the edge) run back along it; a fillet whose sections follow the ball's own path instead is built along an open edge of one radius whose borders stay on its two faces, not yet along this one: give a smaller radius"
+            }
+            Reason::PathRunsBack => {
+                "the fillet face along this edge would fold over itself: the edge bends more tightly than the fillet reaches from it, and the path of the rolling ball's centre, along which such a fillet is built instead, bends more tightly than the radius too, so the ball's sections run back along that path as well: give a smaller radius"
             }
             Reason::Through => {
                 "the fillet face would pass through a face beside the edge: between the edge and where the rolling ball touches that face, the face bulges into the ball (a bead beside a groove's rim, say); a fillet whose ball rests on the bulge instead is not built yet: give another radius"

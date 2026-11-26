@@ -1255,21 +1255,22 @@ fn proven_on(
     .map_err(|stop| stop.at)
 }
 
-/// Blends the edge of `one` (a chain of one piece, the request `item`:
-/// an edge none of the closed forms covers) in place: see the module
-/// documentation.
+/// Blends the edge of `one` (a chain of one piece, its request one of
+/// `items`: an edge none of the closed forms covers) in place: see the
+/// module documentation.
 fn blend_one(
     body: &mut Body,
     one: &chain::Chain,
-    item: &Item,
+    items: &[Item],
     tolerance: &Tolerance,
 ) -> Result<FaceId, BlendError> {
+    let piece = one.pieces.first().ok_or_else(lost)?;
     let Item {
         request,
         faces: [first, second],
         into,
         convex,
-    } = *item;
+    } = *items.get(piece.item).ok_or_else(lost)?;
     let edge = request.edge;
     let tol = tolerance.linear;
     let data = body.edge(edge).ok_or_else(lost)?.clone();
@@ -1419,6 +1420,23 @@ fn blend_one(
         (middle, seed),
         tolerance,
     );
+    // A fillet of one radius whose sections across the edge run back
+    // along it (refused by `folds` as `Fold::Along` before anything was
+    // spliced, so `body` is as it was): built along the balls' own path,
+    // as a chain of one piece. What the path fails with is then the
+    // fillet's answer, as it stands: its own refusal, true of the face
+    // along the path (a fold along the path itself said so,
+    // `Reason::PathRunsBack`), or an internal error, said as one. The
+    // fold's refusal stays only where the path is not tried.
+    let built = match built {
+        Err(BlendError::Refused {
+            reason: Reason::FreeRunsBack,
+            ..
+        }) if along.is_none() && crossings.is_empty() && matches!(shape, Shape::Ball { .. }) => {
+            along_the_path(body, one, items, &data, convex, tolerance)
+        }
+        other => other,
+    };
     if crossings.is_empty() {
         return built;
     }
@@ -1439,6 +1457,35 @@ fn blend_one(
         } => refuse(edge, crossings.first().map(|c| c.before), Reason::FreeCarry),
         other => other,
     })
+}
+
+/// The fillet of the lone open edge of `one` (`data` as it was), whose
+/// sections across the edge run back along it ([`Fold::Along`]), built in
+/// place as a chain's fillets are ([`chain::build_alone`]): the balls
+/// walked along their own path, the sections in the planes square to it,
+/// which do not run back where the ball rolls on. The planes across the
+/// edge are only how the construction in place picks its balls; where
+/// the edge bends more tightly than the fillet reaches from it they come
+/// out of order, while the balls themselves go on along the curve where
+/// the faces moved in by the radius meet. Held as the construction in
+/// place holds its face: tangent to both faces along its borders, which
+/// stay on them, folded neither across nor along over what is kept, and
+/// no loop left behind it.
+fn along_the_path(
+    body: &mut Body,
+    one: &chain::Chain,
+    items: &[Item],
+    data: &Edge,
+    convex: bool,
+    tolerance: &Tolerance,
+) -> Result<FaceId, BlendError> {
+    let made = chain::build_alone(body, one, items, tolerance)?;
+    let [(face, _)] = made.as_slice() else {
+        return Err(lost());
+    };
+    let edge = one.pieces.first().ok_or_else(lost)?.edge;
+    no_loop_behind(body, *face, convex, &data.curve, edge, tolerance)?;
+    Ok(*face)
 }
 
 /// The blend face of an open edge, from `seed` (its section at the
@@ -4047,8 +4094,7 @@ fn blend_items(
         }
         if let ([piece], []) = (found.pieces.as_slice(), found.joints.as_slice()) {
             // Held to `no_loop_behind` inside, on its fitted surface.
-            let item = items.get(piece.item).ok_or_else(lost)?;
-            let face = blend_one(&mut out, found, item, tolerance)?;
+            let face = blend_one(&mut out, found, items, tolerance)?;
             blends.push((face, piece.item));
         } else {
             let made = chain::build(&mut out, found, items, tolerance)?;

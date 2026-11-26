@@ -15,9 +15,12 @@
 //!   0.00054418 for 20791978 (none at 0.0005441, from 0.9840 to 0.9880 of
 //!   the edge by the cone's angle at 0.0005442, back by 3e-10, a third of
 //!   the tolerance) and 0.00045825 for 20821184 (none at 0.0004582, back
-//!   by 2.1e-8 at 0.0004584). The kernel's refusal starts between the same
-//!   two radii, and does so at the scales 0.1, 1e3 and 1e8 with the
-//!   tolerance scaled alike (Check 45633310788).
+//!   by 2.1e-8 at 0.0004584). The construction in place's refusal started
+//!   between the same two radii, and did so at the scales 0.1, 1e3 and 1e8
+//!   with the tolerance scaled alike (Check 45633310788). Since 2026-11-25
+//!   the fillet is built past it along the balls' own path
+//!   (`fillet_run_back.rs`): held here either side, at every scale, to the
+//!   volume worked out outside the code.
 
 #![allow(
     clippy::unwrap_used,
@@ -120,15 +123,95 @@ fn scaled(steps: &[(&'static str, Value)], k: f64) -> Vec<(&'static str, Value)>
         .collect()
 }
 
-/// A fillet of `edge` by `radius` on the body of `steps` at `tolerance`:
-/// `None` where it is built and passes the deep check, else the refusal's
-/// words (a built body that fails the deep check fails the test).
-fn fillet(tolerance: f64, steps: &[(&str, Value)], edge: [&str; 2], radius: f64) -> Option<String> {
-    let mut s = session(tolerance, steps);
+/// What the fillet of 20791978's edge alone takes away and of 20821184's
+/// rim alone adds, worked out from the primitives alone
+/// (`plan/run-back-fillets/volume_oracle.py`, `fillet_run_back.rs`), at the
+/// seeds' own scale: (seed, radius, volume).
+const ORACLE: [(&str, f64, f64); 7] = [
+    ("20791978", 0.000_544_1, 2.230_896_573_928_363_5e-9),
+    ("20791978", 0.000_544_2, 2.231_739_959_945_775_2e-9),
+    ("20791978", 0.000_544_5, 2.234_271_099_929_938e-9),
+    ("20821184", 0.000_458, 2.881_352_475_572_727_6e-9),
+    ("20821184", 0.000_458_2, 2.883_877_089_577_366_4e-9),
+    ("20821184", 0.000_458_4, 2.886_402_787_249_353e-9),
+    ("20821184", 0.000_458_6, 2.888_929_567_708_430_3e-9),
+];
+
+/// Either side of where the sections first run back, by the three
+/// oracles: built and deeply valid, below by the construction in place,
+/// above along the balls' own path, and what the fillet takes away
+/// (20791978) or adds (20821184) the volume worked out outside the code,
+/// times the scale cubed, to the tolerance times pi r (L + 4 r) (more than
+/// the fillet face's area, L the edge's length). At the seeds' own scale
+/// (1e-3, tolerance 1e-9) the radii next to the threshold (20791978:
+/// 0.0005441 none run back, 0.0005442 back by a third of the tolerance;
+/// 20821184: 0.0004582 none, 0.0004584 back by 21 tolerances), and at
+/// 0.1, 1e3 and 1e8 times it, with the tolerance alike, radii a little
+/// further either side (back by 26 and 74 tolerances above). An
+/// expectation changed on 2026-11-25: above the threshold the fillet was
+/// refused in the words of sections that run back, which was true of the
+/// construction in place, whose face folds there; the ball rolls on along
+/// the curve where the faces moved in by the radius meet, and the fillet
+/// is now built along it, the volume pinned by the oracle.
+#[test]
+fn either_side_of_where_the_sections_first_run_back_the_fillet_is_built_at_every_scale() {
+    for (k, near) in [(1.0, true), (0.1, false), (1e3, false), (1e8, false)] {
+        for (name, steps, body, edge, length, sign, below, above) in [
+            (
+                "20791978",
+                scaled(&seed_20791978(), k),
+                "N4",
+                HYPERBOLA,
+                0.008_535_946_092_545_02,
+                -1.0,
+                0.000_544_1,
+                if near { 0.000_544_2 } else { 0.000_544_5 },
+            ),
+            (
+                "20821184",
+                scaled(&seed_20821184(), k),
+                "N6",
+                RIM,
+                0.014_855_480_215_256_631,
+                1.0,
+                if near { 0.000_458_2 } else { 0.000_458 },
+                if near { 0.000_458_4 } else { 0.000_458_6 },
+            ),
+        ] {
+            for radius in [below, above] {
+                let mut s = session(1e-9 * k, &steps);
+                let before = volume(&mut s, body);
+                let said = fillet_in(&mut s, edge, radius * k);
+                assert_eq!(said, None, "{name} at {k}: radius {radius} x {k}");
+                let change = sign * (volume(&mut s, "R") - before) / (k * k * k);
+                let (_, _, oracle) = ORACLE
+                    .iter()
+                    .find(|o| o.0 == name && (o.1 - radius).abs() < 1e-12)
+                    .unwrap();
+                let within = 1e-9 * std::f64::consts::PI * radius * (length + 4.0 * radius);
+                assert!(
+                    (change - oracle).abs() <= within,
+                    "{name} at {k}: radius {radius} x {k} changes the volume by {change:e} x {k}^3, the oracle {oracle:e} (allowed {within:e})"
+                );
+            }
+        }
+    }
+}
+
+fn volume(s: &mut Session, feature: &str) -> f64 {
+    let m = s
+        .execute("document.measure", &json!({"feature": feature}))
+        .unwrap();
+    m["volume"].as_f64().unwrap()
+}
+
+/// A fillet of `edge` by `radius` as `R` in `s`: `None` where it is built
+/// and passes the deep check, else the refusal's words.
+fn fillet_in(s: &mut Session, edge: [&str; 2], radius: f64) -> Option<String> {
     let made = s
         .execute(
             "feature.fillet",
-            &json!({"chain": false, "edges": [edge], "radius": radius}),
+            &json!({"chain": false, "edges": [edge], "radius": radius, "name": "R"}),
         )
         .unwrap();
     if made["status"] == "failed" {
@@ -136,48 +219,13 @@ fn fillet(tolerance: f64, steps: &[(&str, Value)], edge: [&str; 2], radius: f64)
     }
     let check = s.execute("document.check", &json!({"deep": true})).unwrap();
     assert_eq!(check["ok"], true, "radius {radius}: built, {check}");
+    // A face that folds over itself is a warning, never part of `ok`.
+    let folds: Vec<&Value> = check["warnings"]
+        .as_array()
+        .map(|w| w.iter().filter(|w| w["kind"] == "fold").collect())
+        .unwrap_or_default();
+    assert!(folds.is_empty(), "radius {radius}: a fold: {folds:?}");
     None
-}
-
-const RUNS_BACK: &str = "the rolling ball's sections across the edge (each in the plane square to the edge) run back along it";
-
-/// Either side of where the sections first run back, by the three
-/// oracles: built and deeply valid below, refused in the words of
-/// sections that run back above (never as a bug). At the seeds' own scale
-/// (1e-3, tolerance 1e-9) the radii next to the threshold (20791978:
-/// 0.0005441 none run back, 0.0005442 back by a third of the tolerance;
-/// 20821184: 0.0004582 none, 0.0004584 back by 21 tolerances), and at
-/// 0.1, 1e3 and 1e8 times it, with the tolerance alike, radii a little
-/// further either side (back by 26 and 74 tolerances above).
-#[test]
-fn the_refusal_starts_where_the_sections_first_run_back_at_every_scale() {
-    for (k, near) in [(1.0, true), (0.1, false), (1e3, false), (1e8, false)] {
-        for (name, steps, edge, below, above) in [
-            (
-                "20791978",
-                scaled(&seed_20791978(), k),
-                HYPERBOLA,
-                0.000_544_1,
-                if near { 0.000_544_2 } else { 0.000_544_5 },
-            ),
-            (
-                "20821184",
-                scaled(&seed_20821184(), k),
-                RIM,
-                if near { 0.000_458_2 } else { 0.000_458 },
-                if near { 0.000_458_4 } else { 0.000_458_6 },
-            ),
-        ] {
-            let built = fillet(1e-9 * k, &steps, edge, below * k);
-            assert_eq!(built, None, "{name} at {k}: radius {below} × {k}");
-            let said = fillet(1e-9 * k, &steps, edge, above * k);
-            let text = said.unwrap_or_else(|| {
-                panic!("{name} at {k}: radius {above} × {k} built, where its sections run back")
-            });
-            assert!(!text.contains(craft3d_math::BUG), "{name} at {k}: {text}");
-            assert!(text.contains(RUNS_BACK), "{name} at {k}: {text}");
-        }
-    }
 }
 
 /// A chamfer of 20821184's rim whose lines across the edge run back along

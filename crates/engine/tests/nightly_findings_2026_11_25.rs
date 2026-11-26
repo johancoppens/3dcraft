@@ -13,8 +13,11 @@
 //!   borders read as a bug; where the turn lay between that check's seven
 //!   points the face went on folded, and was stopped only by the check
 //!   that the body does not pass through itself, which could not mesh
-//!   it). Now refused before the face is spliced in, in words that say
-//!   so. *Oracle*: where the sections run back was worked out from the
+//!   it). Refused before the face is spliced in, in words that say so,
+//!   and since built along the balls' own path, as a chain's fillets are
+//!   (`fillet_run_back.rs`, which holds what each takes away or adds to
+//!   the volume worked out outside the code). *Oracle*: where the
+//!   sections run back was worked out from the
 //!   primitives' parameters alone (`plan/nightly-findings/scripts/
 //!   runback1.py` and `runback2.py`: in each plane square to the edge the
 //!   ball touching both faces, by Newton's method on the faces' own
@@ -22,9 +25,8 @@
 //!   from a radius between 0.000544 and 0.000546 for 20791978 (near the
 //!   vertex at the cylinder's wall, where the edge, a hyperbola, turns
 //!   most) and between 0.00045 and 0.00046 for 20821184. The radii either
-//!   side are held here: below, built and deeply checked; above, refused.
-//!   A fillet whose sections follow the ball's own path, which would build
-//!   these, is owed (the ignored test below).
+//!   side are held here, built and deeply checked: below by the
+//!   construction in place, above along the balls' own path.
 
 #![allow(
     clippy::unwrap_used,
@@ -124,46 +126,40 @@ fn fillet(steps: &[(&str, Value)], edges: Value, radius: f64) -> Option<String> 
     }
     let check = s.execute("document.check", &json!({"deep": true})).unwrap();
     assert_eq!(check["ok"], true, "radius {radius}: built, {check}");
+    // A face that folds over itself is a warning, never part of `ok`.
+    let folds: Vec<&Value> = check["warnings"]
+        .as_array()
+        .map(|w| w.iter().filter(|w| w["kind"] == "fold").collect())
+        .unwrap_or_default();
+    assert!(folds.is_empty(), "radius {radius}: a fold: {folds:?}");
     None
-}
-
-/// The words of a fillet whose sections run back along its edge.
-const RUNS_BACK: &str = "the rolling ball's sections across the edge (each in the plane square to the edge) run back along it";
-
-#[track_caller]
-fn runs_back(said: Option<String>, what: &str) {
-    let Some(text) = said else {
-        panic!("{what}: built, where its sections run back along the edge");
-    };
-    assert!(!text.contains(craft3d_math::BUG), "{what}: {text}");
-    assert!(text.contains(RUNS_BACK), "{what}: {text}");
-    assert!(text.contains("give a smaller radius"), "{what}: {text}");
 }
 
 /// The finding's own fillet (both edges it named, as the fuzzer asked
 /// them) and the edge alone either side of where its sections start to
-/// run back (between 0.000544 and 0.000546 by the oracle): refused there
-/// in words that say so, never as a bug; built and deeply valid below.
+/// run back (between 0.000544 and 0.000546 by the oracle): built and
+/// deeply valid on both sides. An expectation changed on 2026-11-25:
+/// until then the radii past that place were refused (*"… run back along
+/// it; a fillet whose sections follow the ball's own path there is not
+/// built yet: give a smaller radius"*), which was true of the
+/// construction in place, whose face folds there; the rolling ball goes
+/// on along the curve where the faces moved in by the radius meet, and
+/// the fillet it rolls is now built so (`fillet_run_back.rs` holds what it
+/// takes away to the volume worked out from the primitives alone, and to
+/// the twin `main` builds where another edge's fillet meets this one).
 #[test]
-fn seed_20791978_a_fillet_whose_sections_run_back_is_refused_in_true_words() {
+fn seed_20791978_a_fillet_whose_sections_run_back_is_built_along_the_balls_path() {
     let steps = seed_20791978();
     let both = json!([
         ["F4:copy(0)/F3:face(0)", "F4:copy(1)/F1:face(1)"],
         HYPERBOLA
     ]);
-    let said = fillet(&steps, both, 0.000_625);
-    assert!(
-        said.as_deref().is_some_and(|t| t.starts_with("edges.1 ")),
-        "{said:?}"
+    assert_eq!(
+        fillet(&steps, both, 0.000_625),
+        None,
+        "the finding's fillet"
     );
-    runs_back(said, "the finding's fillet");
-    for radius in [0.00055, 0.00056, 0.0006, 0.000_625] {
-        runs_back(
-            fillet(&steps, json!([HYPERBOLA]), radius),
-            &format!("radius {radius}"),
-        );
-    }
-    for radius in [0.0005, 0.00054] {
+    for radius in [0.0005, 0.00054, 0.00055, 0.00056, 0.0006, 0.000_625] {
         let said = fillet(&steps, json!([HYPERBOLA]), radius);
         assert_eq!(said, None, "radius {radius}");
     }
@@ -171,32 +167,31 @@ fn seed_20791978_a_fillet_whose_sections_run_back_is_refused_in_true_words() {
 
 /// The finding's fillet of the cavity's rim, and the rim either side of
 /// where its sections start to run back (between 0.00045 and 0.00046 by
-/// the oracle). At 0.00046 and 0.00047 the face that ran back passed the
-/// tangency check between its points and was refused only because the
-/// check that the body does not pass through itself could not mesh it.
+/// the oracle): built and deeply valid on both sides (an expectation
+/// changed on 2026-11-25, as above; until then refused from 0.00046). On
+/// `main` before check/nightly-findings, at 0.00046 and 0.00047 the face
+/// that ran back passed the tangency check between its points and was
+/// refused only because the check that the body does not pass through
+/// itself could not mesh it.
 #[test]
-fn seed_20821184_a_fillet_whose_sections_run_back_is_refused_in_true_words() {
+fn seed_20821184_a_fillet_whose_sections_run_back_is_built_along_the_balls_path() {
     let steps = seed_20821184();
-    for radius in [0.00046, 0.00047, 0.00048, 0.0005, 0.000_625] {
-        runs_back(
-            fillet(&steps, json!([RIM]), radius),
-            &format!("radius {radius}"),
-        );
-    }
-    for radius in [0.0004, 0.00045] {
+    for radius in [
+        0.0004, 0.00045, 0.00046, 0.00047, 0.00048, 0.0005, 0.000_625,
+    ] {
         let said = fillet(&steps, json!([RIM]), radius);
         assert_eq!(said, None, "radius {radius}");
     }
 }
 
-/// Owed: a fillet whose sections follow the ball's own path where the
-/// planes square to the edge would make them run back. The rolling ball
-/// of these radii touches both faces all along each edge (its centres lie
-/// on the curve where the faces moved in by the radius meet: for 20791978
-/// a plane parallel to a cone's axis and the cone, a hyperbola with no
-/// cusp), so the fillet exists; it is not built yet.
+/// Owed until 2026-11-25: a fillet whose sections follow the ball's own
+/// path where the planes square to the edge would make them run back. The
+/// rolling ball of these radii touches both faces all along each edge (its
+/// centres lie on the curve where the faces moved in by the radius meet:
+/// for 20791978 a plane parallel to a cone's axis and the cone, a
+/// hyperbola with no cusp), so the fillet exists; it is built along the
+/// balls' path since (`fillet_run_back.rs`).
 #[test]
-#[ignore = "owed: a fillet whose sections follow the ball's path (docs/design/blends.md › Sections that run back along the edge)"]
 fn fillets_whose_planes_square_to_the_edge_run_back_are_built() {
     assert_eq!(
         fillet(&seed_20791978(), json!([HYPERBOLA]), 0.000_625),
