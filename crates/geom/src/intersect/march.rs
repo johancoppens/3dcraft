@@ -116,6 +116,15 @@
 //! in along, ends at the point ([`Marcher::passed`]). Without such a zone
 //! nothing of this is computed (docs/design/booleans.md › *A stretch given
 //! twice beside a crossing point the surfaces are a little apart at*).
+//! A forward run that goes round the point onto the arm its own backward
+//! run, marched after it, comes in along ends at the point too
+//! ([`Marcher::trace`]); an arm cut by the chart's border before its seed
+//! is drawn from the point to the border where nothing traced has it
+//! ([`Marcher::stubs`]); and where the box cuts a span drawn into a zone,
+//! the place Newton finds on `f = 0` is kept only on the box's side near
+//! where the span as drawn leaves it ([`Marcher::box_crossing`];
+//! docs/design/booleans.md › *A box whose side passes a crossing point the
+//! surfaces are a little apart at*).
 
 // `!(x > 0.0)` is deliberate throughout: unlike `x <= 0.0` it is also true
 // for NaN.
@@ -333,6 +342,9 @@ struct Zone {
     near: f64,
     /// The directions in space in which its arms leave the point.
     arms: Vec<Vec3>,
+    /// For each arm, the step in the chart's parameters from the point to
+    /// the place its seed is brought onto `f = 0` from.
+    reach: Vec<(f64, f64)>,
 }
 
 /// Where Newton on the gradient of `f` came to rest.
@@ -497,6 +509,11 @@ pub(super) struct Marcher {
     /// goes round the point onto such an arm ends at the point
     /// ([`Marcher::passed`]).
     traced_into: Vec<(usize, usize)>,
+    /// Where the last run went round the point of a zone onto an arm
+    /// nothing had come into the point along, as (zone, points it would
+    /// keep, arm): a forward run is marched before the backward one, which
+    /// may then come into the point along that arm ([`Marcher::trace`]).
+    went_round: Vec<(usize, usize, usize)>,
     /// Points of contact of higher order whose arms are made near them.
     tacnodes: Vec<tacnode::Tacnode>,
     /// The chart of the field's surface when that is freeform: its
@@ -563,6 +580,7 @@ impl Marcher {
             lying: Vec::new(),
             zones: Vec::new(),
             traced_into: Vec::new(),
+            went_round: Vec::new(),
             tacnodes: Vec::new(),
             field_chart: None,
             within: *within,
@@ -2336,8 +2354,10 @@ impl Marcher {
 
     /// Seeds on the four arms that leave a crossing point: along the
     /// directions in which the Hessian vanishes. Returns those directions
-    /// in space (none where the point cannot be evaluated).
-    fn arms(&mut self, s: &Singular, seeds: &mut Vec<(f64, f64)>) -> Vec<Vec3> {
+    /// in space (none where the point cannot be evaluated), each with the
+    /// step in the chart's parameters from the point to the place its seed
+    /// is brought onto `f = 0` from.
+    fn arms(&mut self, s: &Singular, seeds: &mut Vec<(f64, f64)>) -> Vec<(Vec3, (f64, f64))> {
         let mut found = Vec::new();
         let (Some(e), Some((a, b, c))) = (self.eval(s.u, s.v), self.hessian(s.u, s.v)) else {
             return found;
@@ -2358,8 +2378,8 @@ impl Marcher {
                 continue;
             }
             for side in [1.0, -1.0] {
-                found.push(along * (side / len));
                 let k = side * radius / len;
+                found.push((along * (side / len), (du * k, dv * k)));
                 if let Some((_, u, v)) = self.correct(s.u + du * k, s.v + dv * k) {
                     seeds.push((u, v));
                 }
@@ -2480,8 +2500,10 @@ impl Marcher {
     /// point along that arm, the run would trace that stretch again: it is
     /// to end at the point, keeping what [`Marcher::heading_in`] noted
     /// (`Some((zone, kept))`). Out along an arm not traced, it goes on as
-    /// it did.
-    fn passed(&self, passing: &mut Option<(usize, usize)>, cur: &Pt) -> Option<(usize, usize)> {
+    /// it did, and the arm is noted in `went_round` with what it would
+    /// have kept: the trace's other run, marched after it, may come in
+    /// along that arm ([`Marcher::trace`]).
+    fn passed(&mut self, passing: &mut Option<(usize, usize)>, cur: &Pt) -> Option<(usize, usize)> {
         let (z, keep) = (*passing)?;
         let zone = self.zones.get(z)?;
         let d = zone.p - cur.p;
@@ -2490,7 +2512,155 @@ impl Marcher {
         }
         *passing = None;
         let j = Self::arm_of(zone, cur.p)?;
-        self.traced_into.contains(&(z, j)).then_some((z, keep))
+        if self.traced_into.contains(&(z, j)) {
+            return Some((z, keep));
+        }
+        self.went_round.push((z, keep, j));
+        None
+    }
+
+    /// Whether a branch has arm `j` of zone `z` already: it comes into the
+    /// point along that arm, or has a point inside the zone along it (a run
+    /// that went round the point onto the arm and on along it).
+    fn has_arm(&self, branches: &[Branch], z: usize, j: usize) -> bool {
+        let Some(zone) = self.zones.get(z) else {
+            return true;
+        };
+        branches.iter().any(|b| {
+            self.arms_into_zones(&b.pts).contains(&(z, j))
+                || b.pts.iter().any(|q| {
+                    let d = q.p.distance(zone.p);
+                    d > self.on && d <= zone.radius && Self::arm_of(zone, q.p) == Some(j)
+                })
+        })
+    }
+
+    /// Whether `f = 0` meets the border of the chart through `(u, v)` (`e`
+    /// there) inside a zone: `f` changes sign along it, sampled at 65
+    /// places across from the zone's point over the zone's radius (`along_v`:
+    /// the border is one of `u` and runs along `v`), those within the zone.
+    fn meets_border(&mut self, zone: &Zone, along_v: bool, u: f64, v: f64, e: &Eval) -> bool {
+        const SAMPLES: i32 = 32;
+        let speed = if along_v {
+            e.sv.length()
+        } else {
+            e.su.length()
+        };
+        if !(speed > 0.0) {
+            return false;
+        }
+        let step = zone.radius / (f64::from(SAMPLES) * speed);
+        let mut before: Option<f64> = None;
+        for k in -SAMPLES..=SAMPLES {
+            let (pu, pv) = if along_v {
+                (u, zone.v + step * f64::from(k))
+            } else {
+                (zone.u + step * f64::from(k), v)
+            };
+            let Some(here) = self.eval(pu, pv) else {
+                before = None;
+                continue;
+            };
+            if here.p.distance(zone.p) > zone.radius {
+                before = None;
+                continue;
+            }
+            if let Some(f) = before
+                && (f > 0.0) != (here.f > 0.0)
+            {
+                return true;
+            }
+            before = Some(here.f);
+        }
+        false
+    }
+
+    /// The arms of zones that leave the point inside the chart but are cut
+    /// by its border before the place their seed is brought onto `f = 0`
+    /// from, where the crossing comes to the border (`meets_border`) and no
+    /// branch traced has them: each drawn straight from the point to the
+    /// border, as every branch is drawn inside the zone.
+    ///
+    /// The cells of a point's disc are settled without seeds (its arms
+    /// seed what is there), and a seed nearer the point than half an arm is
+    /// left to the arms; a seed past the border gives no branch. So where
+    /// the box an intersection is asked in cuts the chart (a cylinder's
+    /// along its axis) close beside such a point, nothing drew the piece of
+    /// the arm between the point and the border, and the point was left
+    /// with an odd number of ends, or a piece of the crossing missing
+    /// (docs/design/booleans.md › *A box whose side passes a crossing point
+    /// the surfaces are a little apart at*).
+    fn stubs(&mut self, branches: &[Branch]) -> Result<Vec<Branch>, GeomError> {
+        let mut made = Vec::new();
+        let (span_u, span_v) = (self.chart.u, self.chart.v);
+        let (periodic_u, periodic_v) = (self.chart.periodic_u, self.chart.periodic_v);
+        // How far along a step `o` from `x` the border of the range is.
+        let share = |x: f64, o: f64, (lo, hi): (f64, f64), periodic: bool| {
+            if periodic || o == 0.0 {
+                1.0
+            } else if o > 0.0 {
+                (hi - x) / o
+            } else {
+                (lo - x) / o
+            }
+        };
+        for z in 0..self.zones.len() {
+            let Some(zone) = self.zones.get(z).cloned() else {
+                continue;
+            };
+            if !self.inside(zone.u, zone.v) {
+                continue;
+            }
+            for (j, &(ou, ov)) in zone.reach.iter().enumerate() {
+                if self.inside(zone.u + ou, zone.v + ov) || self.has_arm(branches, z, j) {
+                    continue;
+                }
+                let (su, sv) = (
+                    share(zone.u, ou, span_u, periodic_u),
+                    share(zone.v, ov, span_v, periodic_v),
+                );
+                let s = su.min(sv);
+                if !(s > 0.0 && s < 1.0) {
+                    continue;
+                }
+                let (u, v) = (zone.u + ou * s, zone.v + ov * s);
+                let Some(e) = self.eval(u, v) else {
+                    continue;
+                };
+                // Only where the crossing comes to the border there: where
+                // `f = 0` turns round the point short of it (the side 10
+                // tolerances beyond a point whose branches turn 20 from it,
+                // on that side), nothing of the crossing lies between.
+                if !self.meets_border(&zone, su <= sv, u, v, &e) {
+                    continue;
+                }
+                let d = e.p - zone.p;
+                let dist = d.length();
+                if !(dist > self.on && dist <= zone.radius) {
+                    continue;
+                }
+                let t = d * (1.0 / dist);
+                let Some(end) = Self::drawn(&e, u, v, t) else {
+                    continue;
+                };
+                // (The point has no tangent of its own: as an end a run
+                // snapped onto it, `refine_to_edge` mirrors its neighbour's.)
+                let mut pts = vec![
+                    Pt {
+                        u: zone.u,
+                        v: zone.v,
+                        p: zone.p,
+                        t,
+                        du: 0.0,
+                        dv: 0.0,
+                    },
+                    end,
+                ];
+                self.refine(&mut pts)?;
+                made.push(Branch { pts, closed: false });
+            }
+        }
+        Ok(made)
     }
 
     /// The points of a run that ends at the point of zone `z`: its first
@@ -2632,6 +2802,7 @@ impl Marcher {
         may_close: bool,
         again: Option<Again>,
     ) -> Result<(Vec<Pt>, End), GeomError> {
+        self.went_round.clear();
         let mut pts: Vec<Pt> = Vec::new();
         let mut cur = again.map_or(*start, |a| a.from);
         let first = cur;
@@ -2975,6 +3146,7 @@ impl Marcher {
             return Ok(Vec::new());
         };
         let (mut forward, end) = self.run(&start, 1.0, singular, true)?;
+        let round = std::mem::take(&mut self.went_round);
         let mut closed = end == End::Closed;
         // (In the order of the march: away from the start, reversed. A
         // run that goes round a crossing point onto the arm the other run
@@ -2987,6 +3159,19 @@ impl Marcher {
             })?
             .0
         };
+        // The forward run is marched before the backward one: where it went
+        // round a crossing point onto the arm the backward run then came
+        // into the point along, it would give that stretch twice, and ends
+        // at the point instead, as the backward run would have.
+        if !closed && !round.is_empty() {
+            let mut run = Vec::with_capacity(backward.len() + 1);
+            run.push(start);
+            run.extend_from_slice(&backward);
+            let into = self.arms_into_zones(&run);
+            if let Some(&(z, keep, _)) = round.iter().find(|r| into.contains(&(r.0, r.2))) {
+                forward = self.ended_at(forward, keep, z, &start);
+            }
+        }
         let mut taken_up = 0;
         loop {
             let Some((pts, at)) = self.assembled(&start, &backward, &forward, closed)? else {
@@ -3606,6 +3791,27 @@ impl Marcher {
         })
     }
 
+    /// The point at an evaluated place of a span drawn straight, travelling
+    /// along `t`: in the parameters the direction whose image is `t` on
+    /// the surface there (by the first fundamental form, as `straight`).
+    fn drawn(e: &Eval, u: f64, v: f64, t: Vec3) -> Option<Pt> {
+        let (g11, g12, g22) = (e.su.dot(e.su), e.su.dot(e.sv), e.sv.dot(e.sv));
+        let det = g11 * g22 - g12 * g12;
+        if !(det > 0.0) {
+            return None;
+        }
+        let (tu, tv) = (t.dot(e.su), t.dot(e.sv));
+        let (du, dv) = ((g22 * tu - g12 * tv) / det, (g11 * tv - g12 * tu) / det);
+        (du != 0.0 || dv != 0.0).then_some(Pt {
+            u,
+            v,
+            p: e.p,
+            t,
+            du,
+            dv,
+        })
+    }
+
     /// A point of the branch between `a` and `b`.
     fn between(&mut self, a: &Pt, b: &Pt) -> Option<Pt> {
         if let Some(made) = self.tac_between(a, b) {
@@ -4134,7 +4340,74 @@ impl Marcher {
 
     /// The last point inside the box on the way from `a` (inside) to `b`
     /// (outside).
+    ///
+    /// Each place on the way is brought onto `f = 0`. A span drawn into the
+    /// zone of a crossing point the surfaces are a little apart at (both
+    /// its ends inside the zone, or one on the point: a run snaps onto the
+    /// point from as far as twice its step) is drawn straight there, and
+    /// next to the point `f` is a saddle with almost no slope: Newton from
+    /// there can land anywhere on the crossing, or where `f = 0` turns round
+    /// the point beside the span and the box's side does not pass. So for
+    /// such a span the place found on `f = 0` is kept where it lies on a
+    /// side of the box within the zone's radius of where the span as drawn
+    /// leaves the box (`a`, where it leaves at once); elsewhere the span is
+    /// cut where it is drawn, and none where it leaves at once. Where no
+    /// place on `f = 0` is found inside the box, `f = 0` does not come into
+    /// the box there, and none is (docs/design/booleans.md › *A box whose
+    /// side passes a crossing point the surfaces are a little apart at*).
     fn box_crossing(&mut self, a: &Pt, b: &Pt, within: &Bbox3, flip: bool) -> Option<Pt> {
+        let on = self.on;
+        let radius = self
+            .zones
+            .iter()
+            .find(|z| {
+                (a.p.distance(z.p) <= z.radius && b.p.distance(z.p) <= z.radius)
+                    || a.p.distance(z.p) <= on
+                    || b.p.distance(z.p) <= on
+            })
+            .map(|z| z.radius);
+        let found = self.box_crossing_on(a, b, within, flip);
+        let (Some(radius), Some(pt)) = (radius, found) else {
+            return found;
+        };
+        // (Where the span as drawn leaves the box at once, at `a`.)
+        let drawn = self.box_crossing_drawn(a, b, within, flip);
+        let there = drawn.map_or(a.p, |d| d.p);
+        if !within.contains(pt.p, -self.cut) && pt.p.distance(there) <= radius {
+            found
+        } else {
+            drawn
+        }
+    }
+
+    /// [`Marcher::box_crossing`] along the span as drawn: its places taken
+    /// where the chart's parameters run straight from `a` to `b`, not
+    /// brought onto `f = 0` (as [`Marcher::straight`] refines such a span).
+    fn box_crossing_drawn(&mut self, a: &Pt, b: &Pt, within: &Bbox3, flip: bool) -> Option<Pt> {
+        let chord = b.p - a.p;
+        let t = chord.normalized()? * if flip { -1.0 } else { 1.0 };
+        let (mut lo, mut hi) = (0.0, 1.0);
+        let mut best = None;
+        for _ in 0..48 {
+            let mid = 0.5 * (lo + hi);
+            let (u, v) = (a.u + (b.u - a.u) * mid, a.v + (b.v - a.v) * mid);
+            match self.eval(u, v).filter(|e| within.contains(e.p, 0.0)) {
+                Some(e) => {
+                    best = Self::drawn(&e, u, v, t).or(best);
+                    lo = mid;
+                }
+                None => hi = mid,
+            }
+            if (hi - lo) * chord.length() <= self.on {
+                break;
+            }
+        }
+        best
+    }
+
+    /// The last place of `f = 0` inside the box on the way from `a` to `b`
+    /// ([`Marcher::box_crossing`]), by halving.
+    fn box_crossing_on(&mut self, a: &Pt, b: &Pt, within: &Bbox3, flip: bool) -> Option<Pt> {
         let (mut lo, mut hi) = (0.0, 1.0);
         let mut best = None;
         let chord = b.p - a.p;
@@ -4245,7 +4518,8 @@ impl Marcher {
                         p: s.p,
                         radius: 1.25 * s.arm,
                         near: 0.5 * s.arm,
-                        arms,
+                        arms: arms.iter().map(|a| a.0).collect(),
+                        reach: arms.iter().map(|a| a.1).collect(),
                     });
                 }
             }
@@ -4339,6 +4613,18 @@ impl Marcher {
                     .collect();
                 self.traced_into = into;
             }
+        }
+        // The pieces of arms between a zone's point and the chart's border
+        // that nothing seeded (`stubs`): after every seed, so that every
+        // branch traced is the one it was.
+        if !self.zones.is_empty() {
+            let stubs = self.stubs(&branches)?;
+            if branches.len().saturating_add(stubs.len()) > MAX_BRANCHES {
+                return Err(GeomError::NoConvergence(
+                    "the intersection has more branches than the cap allows",
+                ));
+            }
+            branches.extend(stubs);
         }
         let mut curves = self.lying_curves(&branches);
         for branch in &branches {

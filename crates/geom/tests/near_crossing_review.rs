@@ -7,7 +7,7 @@
 //! surfaces are a little apart at*).
 //!
 //! Every pair is asked of the marcher (`meet_surfaces_numeric`) and held to
-//! its crossing as known in closed form, by three oracles that know nothing
+//! its crossing as known in closed form, by four oracles that know nothing
 //! of the march:
 //!
 //! - `held`, as the review of the fold holds a crossing (copied from
@@ -24,7 +24,11 @@
 //!   tolerances, more by at most four times how near the crossing passes
 //!   each point (a curve drawn straight into a point the crossing passes
 //!   at a distance `c` is longer than the crossing there by at most `2c`
-//!   for each of the two curves that pass it).
+//!   for each of the two curves that pass it);
+//! - the exits (added 2026-11-26, with the repair of the boxes whose side
+//!   passes the point): where the crossing leaves the box within the
+//!   radius `held` leaves out about such a point, a curve ends on the box
+//!   within that radius of the place.
 //!
 //! The families: Viviani's figure and Steinmetz's ellipses opened by gaps
 //! from a millionth to a hundredth of a radius, either way; two cylinders
@@ -55,6 +59,21 @@
 //! rewritten: 87 of 168 not the crossing or refused on `main` (Check
 //! 45713376999), 18 with the branch (Check 45713380970), each of them
 //! wrong on `main` too.
+//!
+//! The boxes through the zone, repaired (2026-11-26, docs/design/
+//! booleans.md › *A box whose side passes a crossing point the surfaces
+//! are a little apart at*): every one of the 336 the crossing, held to the
+//! four oracles; the two tests no longer ignored. The other two stay owed.
+//!
+//! The review of that repair (2026-11-26) adds a fifth oracle, the converse
+//! of the exits (`exits_counted`): about such a point clear of the box's
+//! sides, curves end on the box as often as the crossing leaves it there.
+//! Held to it, 17 of the 336 boxes through the zone are not the crossing
+//! with the repair (each wrong on the base too), and two more families
+//! through the zone (fine insets near where the crossing turns; tori and a
+//! cone) have 93 of 768 and 20 of 360 so (156 and 79 on the base): three
+//! tests, ignored as owed. No answer the five take for the crossing on the
+//! base is otherwise with the repair (Checks 45763928388, 45763931681).
 
 // Test code: a failure in a helper is a failed test.
 #![allow(
@@ -978,15 +997,156 @@ const CROSSING: &str = "the crossing";
 /// What an answer that is not the crossing is said to be, first.
 const WRONG: &str = "WRONG";
 
-fn judged(pair: &Pair, m: &Meeting) -> Result<(), String> {
-    held(pair, m)?;
-    ends_held(pair, m)?;
-    whole_length_held(pair, m)
+/// Where the crossing leaves the box within the radius left out about a
+/// point where its curves cross or pass close (where `held` asks nothing
+/// of the curves), an end of a curve lies on the box within that radius of
+/// the place: a crossing that comes to the box's side beside such a point
+/// divides what lies on either side of it up to that side, and an answer
+/// whose curves stop at the point leaves the two joined past it.
+fn exits_held(pair: &Pair, m: &Meeting) -> Result<(), String> {
+    let t = pair.tol.linear;
+    let within = &pair.within;
+    let ends: Vec<Vec3> = m
+        .curves
+        .iter()
+        .filter(|c| !c.closed)
+        .flat_map(|c| [c.curve.eval(c.range.0), c.curve.eval(c.range.1)])
+        .filter(|p| !within.contains(*p, -2.0 * t))
+        .collect();
+    for sheet in &pair.sheets {
+        let n = 1_u32 << 16;
+        let at =
+            |i: u32| (sheet.at)(sheet.from + (sheet.to - sheet.from) * f64::from(i) / f64::from(n));
+        let mut before = at(0);
+        for i in 1..=n {
+            let p = at(i);
+            if within.contains(before, 0.0) != within.contains(p, 0.0) {
+                let (mut inner, mut outer) = if within.contains(before, 0.0) {
+                    (before, p)
+                } else {
+                    (p, before)
+                };
+                for _ in 0..60 {
+                    let mid = inner.lerp(outer, 0.5);
+                    if within.contains(mid, 0.0) {
+                        inner = mid;
+                    } else {
+                        outer = mid;
+                    }
+                }
+                let near = pair
+                    .keep_off
+                    .iter()
+                    .any(|c| c.distance(inner) <= pair.keep_off_radius);
+                if near
+                    && !ends
+                        .iter()
+                        .any(|e| e.distance(inner) <= pair.keep_off_radius)
+                {
+                    return Err(format!(
+                        "the crossing leaves the box at {inner:?}, within {} tolerances of a point where its curves cross or pass close, and no curve ends on the box within that of it",
+                        pair.keep_off_radius / t
+                    ));
+                }
+            }
+            before = p;
+        }
+    }
+    Ok(())
 }
 
-fn verdict(pair: &Pair, met: &Result<SurfaceMeeting, GeomError>) -> String {
+/// The places where the crossing leaves the box (the last place inside,
+/// found by halving between two of 65 537 places along each sheet).
+fn exits(pair: &Pair) -> Vec<Vec3> {
+    let within = &pair.within;
+    let mut found = Vec::new();
+    for sheet in &pair.sheets {
+        let n = 1_u32 << 16;
+        let at =
+            |i: u32| (sheet.at)(sheet.from + (sheet.to - sheet.from) * f64::from(i) / f64::from(n));
+        let mut before = at(0);
+        for i in 1..=n {
+            let p = at(i);
+            if within.contains(before, 0.0) != within.contains(p, 0.0) {
+                let (mut inner, mut outer) = if within.contains(before, 0.0) {
+                    (before, p)
+                } else {
+                    (p, before)
+                };
+                for _ in 0..60 {
+                    let mid = inner.lerp(outer, 0.5);
+                    if within.contains(mid, 0.0) {
+                        inner = mid;
+                    } else {
+                        outer = mid;
+                    }
+                }
+                found.push(inner);
+            }
+            before = p;
+        }
+    }
+    found
+}
+
+/// The converse of `exits_held` (the review of the repair of the boxes
+/// whose side passes the point, 2026-11-26): about a point where curves of
+/// the crossing cross or pass close that lies more than four tolerances
+/// from every side of the box (inside it or out), the curves end on the
+/// box as often as the crossing leaves it there. Counted within the radius
+/// left out about the point and 10 tolerances, the ends of curves on the
+/// box are no fewer than the places where the crossing leaves the box
+/// within that radius, and no more than those within it and 20 tolerances.
+/// A curve drawn to the box where the crossing does not come to it, or a
+/// second one beside one that does, is an end too many.
+fn exits_counted(pair: &Pair, m: &Meeting) -> Result<(), String> {
+    let t = pair.tol.linear;
+    let within = &pair.within;
+    let ends: Vec<Vec3> = m
+        .curves
+        .iter()
+        .filter(|c| !c.closed)
+        .flat_map(|c| [c.curve.eval(c.range.0), c.curve.eval(c.range.1)])
+        .filter(|p| !within.contains(*p, -2.0 * t))
+        .collect();
+    let leaves = exits(pair);
+    let r = pair.keep_off_radius;
+    for c in &pair.keep_off {
+        let clear_of_sides = within.contains(*c, -4.0 * t) || !within.contains(*c, 4.0 * t);
+        if !clear_of_sides {
+            continue;
+        }
+        let count =
+            |list: &[Vec3], reach: f64| list.iter().filter(|p| p.distance(*c) <= reach).count();
+        let (least, most) = (count(&leaves, r), count(&leaves, r + 20.0 * t));
+        let got = count(&ends, r + 10.0 * t);
+        if got < least || got > most {
+            return Err(format!(
+                "{got} ends of curves on the box within {} tolerances of {c:?}, where the crossing leaves the box {least} times within {} and {most} within {}",
+                (r + 10.0 * t) / t,
+                r / t,
+                (r + 20.0 * t) / t
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The four oracles, and with `strictly` the fifth (`exits_counted`).
+fn judged(pair: &Pair, m: &Meeting, strictly: bool) -> Result<(), String> {
+    held(pair, m)?;
+    ends_held(pair, m)?;
+    whole_length_held(pair, m)?;
+    exits_held(pair, m)?;
+    if strictly {
+        exits_counted(pair, m)?;
+    }
+    Ok(())
+}
+
+fn verdict(pair: &Pair, met: &Result<SurfaceMeeting, GeomError>, strictly: bool) -> String {
     match met {
-        Ok(SurfaceMeeting::Meets(m)) => match judged(pair, m) {
+        Ok(SurfaceMeeting::Meets(m)) => match judged(pair, m, strictly) {
             Ok(()) => CROSSING.to_string(),
             Err(why) => format!("{WRONG}: {why}"),
         },
@@ -1108,6 +1268,28 @@ fn detail(pair: &Pair, m: &Meeting) -> String {
         known / t,
         nearest.iter().map(|d| (d / t * 10.0).round() / 10.0).collect::<Vec<_>>()
     ));
+    // Where the crossing leaves the box near the points, and where curves
+    // end on the box near them (tolerances from the nearest point).
+    let reach = pair.keep_off_radius + 20.0 * t;
+    let near = |list: Vec<Vec3>| -> Vec<f64> {
+        list.into_iter()
+            .map(from_points)
+            .filter(|d| *d <= reach)
+            .map(|d| (d / t * 10.0).round() / 10.0)
+            .collect()
+    };
+    let box_ends: Vec<Vec3> = m
+        .curves
+        .iter()
+        .filter(|c| !c.closed)
+        .flat_map(|c| [c.curve.eval(c.range.0), c.curve.eval(c.range.1)])
+        .filter(|p| !pair.within.contains(*p, -2.0 * t))
+        .collect();
+    lines.push(format!(
+        "the crossing leaves the box near the points at {:?}, curves end on the box near them at {:?}",
+        near(exits(pair)),
+        near(box_ends)
+    ));
     lines.join("; ")
 }
 
@@ -1116,11 +1298,25 @@ fn detail(pair: &Pair, m: &Meeting) -> String {
 /// each that is not the crossing or that `detailed` asks for, and the
 /// counts. Returns the pairs that are not the crossing.
 fn family(name: &str, pairs: &[Pair], detailed: &dyn Fn(&Pair) -> bool) -> Vec<String> {
+    family_held(name, pairs, detailed, false)
+}
+
+/// [`family`] held to the fifth oracle too (`exits_counted`).
+fn family_strictly(name: &str, pairs: &[Pair]) -> Vec<String> {
+    family_held(name, pairs, &none, true)
+}
+
+fn family_held(
+    name: &str,
+    pairs: &[Pair],
+    detailed: &dyn Fn(&Pair) -> bool,
+    strictly: bool,
+) -> Vec<String> {
     let mut failed = Vec::new();
     let mut counted: BTreeMap<String, usize> = BTreeMap::new();
     for pair in pairs {
         let met = meet_surfaces_numeric(&pair.a, &pair.b, &pair.within, &pair.tol);
-        let said = verdict(pair, &met);
+        let said = verdict(pair, &met, strictly);
         let bits = digest(&format!("{met:?}"));
         let curves = match &met {
             Ok(SurfaceMeeting::Meets(m)) => m.curves.len(),
@@ -1405,11 +1601,13 @@ fn a_torus_and_a_plane_and_steinmetz_in_huge_boxes_are_their_crossing() {
 /// axes whose side passes the point 40 tolerances outside the box to 120
 /// inside it, across each of the six directions along those axes: 168
 /// pairs, 83 not the crossing and 4 refused on `main` (Check 45713376999),
-/// 16 and 2 with the branch (Check 45713380970), each of them not the
-/// crossing or refused on `main` too; 4 that were the crossing on `main`
-/// moved their bits and are the crossing still.
+/// 16 and 2 with the near-crossing repair (Check 45713380970), each of them
+/// not the crossing or refused on `main` too; 4 that were the crossing on
+/// `main` moved their bits and are the crossing still. All 168 the
+/// crossing since the repair of the boxes whose side passes the point
+/// (2026-11-26; docs/design/booleans.md › *A box whose side passes a
+/// crossing point the surfaces are a little apart at*).
 #[test]
-#[ignore = "owed, as on main (Check 45713376999; with the branch Check 45713380970 18 of 168, each wrong or refused on main too): a turned opened figure whose box's side passes within 40 tolerances of the point; run with --ignored"]
 fn opened_figures_whose_box_cuts_the_zone_are_their_crossing() {
     fails(
         "box through the zone",
@@ -1419,12 +1617,14 @@ fn opened_figures_whose_box_cuts_the_zone_are_their_crossing() {
 
 /// The same upright, the box's sides along the planes the figures are
 /// symmetric about: 168 pairs, 78 not the crossing or refused on
-/// `main` (Check 45711338836) and 23 with the branch (Check
+/// `main` (Check 45711338836) and 23 with the near-crossing repair (Check
 /// 45711343773), each of them not the crossing on `main` either: two
 /// curves over one stretch, a stub of an arm missing, a curve that leaves
-/// the box, a refusal.
+/// the box, a refusal; 26 by the four oracles (the exits found three more,
+/// each with the two arms towards the side missing where the crossing
+/// leaves the box beside the point). All 168 the crossing since the repair
+/// of the boxes whose side passes the point (2026-11-26).
 #[test]
-#[ignore = "owed, as on main (Check 45711338836; with the branch Check 45711343773 23 of 168, each wrong on main too): an upright opened figure whose box's side passes within 40 tolerances of the point; run with --ignored"]
 fn upright_opened_figures_whose_box_cuts_the_zone_are_their_crossing() {
     fails(
         "box through the zone, upright",
@@ -1461,6 +1661,133 @@ fn through_the_zone(which: usize) -> Vec<Pair> {
                         towards,
                         inset,
                         half,
+                    ));
+                }
+            }
+        }
+    }
+    pairs
+}
+
+/// The six directions along the world's axes.
+const SIDES: [Vec3; 6] = [
+    Vec3::X,
+    Vec3::new(-1.0, 0.0, 0.0),
+    Vec3::Y,
+    Vec3::new(0.0, -1.0, 0.0),
+    Vec3::Z,
+    Vec3::new(0.0, 0.0, -1.0),
+];
+
+/// The boxes through the zone of the two tests above, held to the fifth
+/// oracle too (`exits_counted`; the review of the repair of the boxes whose
+/// side passes the point, 2026-11-26): 44 of 336 not the crossing or
+/// refused on the base d835d891 (Check 45763928388), 17 with the repair
+/// (Check 45763931681), each of them wrong on the base too. Each of the 17:
+/// two arms drawn straight from the point to the box's side where the
+/// crossing turns round the point short of that side and leaves the box
+/// nowhere within 70 tolerances of it (upright Viviani's opened outwards,
+/// the side 10 tolerances beyond the point across y: the branches turn 20
+/// tolerances to either side, and the answer has two curves of 13.6 and
+/// 13.7 tolerances from the point to the side). Not the stubs (with them
+/// switched off the same 17 have the same bits, probe Check 45774968238):
+/// the box cut, which keeps the span as drawn where Newton's place on
+/// `f = 0` is not on the side.
+#[test]
+#[ignore = "owed, as on the base (Check 45763928388; 17 of 336 with the repair, Check 45763931681, each wrong on the base too): arms drawn to the box's side where the crossing turns short of it; run with --ignored"]
+fn boxes_through_the_zone_have_ends_on_the_box_only_where_the_crossing_leaves_it() {
+    let mut pairs = through_the_zone(0);
+    pairs.extend(through_the_zone(1));
+    fails(
+        "box through the zone, strictly",
+        &family_strictly("box through the zone, strictly", &pairs),
+    );
+}
+
+/// The opened figures (one and three ten-thousandths, either way) in cubes
+/// of three radii whose side passes the point 25 tolerances outside the box
+/// to 30 inside it, between the insets of the tests above, near where the
+/// crossing turns round the point (14 to 35 tolerances from it), upright
+/// and turned, held to the five oracles (the review of the repair of the
+/// boxes whose side passes the point, 2026-11-26): 156 of 768 not the
+/// crossing or refused on the base d835d891 (Check 45763928388), 93 with
+/// the repair (Check 45763931681), each of them wrong on the base too; 79
+/// of the 93 by the fifth oracle alone.
+#[test]
+#[ignore = "owed, as on the base (Check 45763928388; 93 of 768 with the repair, Check 45763931681, each wrong on the base too): opened figures whose box's side passes near where the crossing turns round the point; run with --ignored"]
+fn opened_figures_through_the_zone_at_fine_insets_are_their_crossing() {
+    fails(
+        "fine insets",
+        &family_strictly("fine insets", &fine_insets()),
+    );
+}
+
+/// The pairs of the test above.
+fn fine_insets() -> Vec<Pair> {
+    let mut pairs = Vec::new();
+    for (how, placed) in placings(1.0) {
+        for eta in [-3e-4, -1e-4, 1e-4, 3e-4] {
+            for towards in SIDES {
+                for inset in [-25.0, -15.0, -5.0, 5.0, 15.0, 20.0, 25.0, 30.0] {
+                    pairs.push(at_the_side(
+                        ball_and_tube_opened(placed, eta, 3.0, how),
+                        placed,
+                        towards,
+                        inset,
+                        3e-3,
+                    ));
+                    pairs.push(at_the_side(
+                        tubes_opened(placed, eta, 3.0, how),
+                        placed,
+                        towards,
+                        inset,
+                        3e-3,
+                    ));
+                }
+            }
+        }
+    }
+    pairs
+}
+
+/// Tori (arms 25 and 90 degrees apart at the inner equator; the seam a
+/// quarter turn from the point) and planes, and a cone of 35 degrees and a
+/// cylinder round one ball, in cubes of three radii whose side passes the
+/// point 10 tolerances outside to 40 inside, upright and turned, held to
+/// the five oracles: 79 of 360 not the crossing or refused on the base
+/// (Check 45763928388), 20 with the repair (Check 45763931681), each of
+/// them wrong on the base too; 15 of the 20 by the fifth oracle alone.
+#[test]
+#[ignore = "owed, as on the base (Check 45763928388; 20 of 360 with the repair, Check 45763931681, each wrong on the base too): tori and a cone whose box's side passes the point; run with --ignored"]
+fn tori_and_a_cone_through_the_zone_are_their_crossing() {
+    fails(
+        "others through the zone",
+        &family_strictly("others through the zone", &others_through_the_zone()),
+    );
+}
+
+/// The pairs of the test above.
+fn others_through_the_zone() -> Vec<Pair> {
+    let mut pairs = Vec::new();
+    for (how, placed) in placings(1.0) {
+        for eta in [-1e-4, 1e-4] {
+            for towards in SIDES {
+                for inset in [-10.0, 0.0, 10.0, 20.0, 40.0] {
+                    for q in [1.05, 2.0] {
+                        pairs.push(at_the_side(
+                            torus_and_plane(placed, q, Vec3::Y, eta, 3.0, how),
+                            placed,
+                            towards,
+                            inset,
+                            3e-3,
+                        ));
+                    }
+                    pairs.push(at_the_side(
+                        cone_and_cylinder(placed, 35.0_f64.to_radians(), eta, 3.0, how),
+                        placed,
+                        towards,
+                        inset,
+                        3e-3,
                     ));
                 }
             }
