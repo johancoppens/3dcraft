@@ -259,7 +259,8 @@ on a plate:
 `feature.boolean` with `op` `union`, `subtract` or `intersect` combines the body of `target` with the
 body of `tool`; both go into the new feature (`keepTool` keeps the tool's body to use again). The kernel is
 3DCraft's own and handles planes, cylinders, cones, spheres, tori and freeform faces; what it cannot do
-yet it **refuses with the reason**, never with a wrong solid. Faces that touch or lie within the
+yet it **refuses with the reason**, and it checks every solid it builds. A few cases where a wrong solid still
+gets through are known and listed as owed in the roadmap's boolean checklist. Faces that touch or lie within the
 tolerance of each other are the hardest cases; a cutting tool made a little longer than the part avoids
 them and says what is meant (the examples use `thickness + 2 mm` from `-1 mm`).
 
