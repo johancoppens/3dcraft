@@ -1717,9 +1717,9 @@ fn stretch_box(stretch: &Stretch, from: Vec3, to: Vec3) -> Bbox3 {
                 bx.add(to);
                 bx
             }
-            None => piece_box(&stretch.curve, from, to),
+            None => piece_box(&stretch.curve, stretch.range, from, to),
         },
-        curve => piece_box(curve, from, to),
+        curve => piece_box(curve, stretch.range, from, to),
     }
 }
 
