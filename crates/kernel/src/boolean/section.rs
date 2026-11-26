@@ -1635,33 +1635,8 @@ fn clip(
             let Some(&point) = vertices.points.get(vertex) else {
                 return Err(Stop::of(LOST));
             };
-            for (solid, face, splits) in [
-                (a, fa, &mut sections.splits_a),
-                (b, fb, &mut sections.splits_b),
-            ] {
-                // (Only the edges near the vertex are looked at: a face may
-                // have a thousand.)
-                let outline = solid.outline(face)?;
-                for (l, k) in outline.pieces_near(point, tol) {
-                    let id = solid
-                        .body
-                        .faces
-                        .get(face)
-                        .and_then(|f| f.loops.iter().filter_map(|&id| solid.body.loop_(id)).nth(l))
-                        .and_then(|loop_| loop_.coedges.get(k))
-                        .map(|coedge| coedge.edge)
-                        .ok_or(Stop::of(LOST))?;
-                    let (Some(edge), Some(ends)) = (solid.body.edge(id), solid.ends(id)) else {
-                        return Err(Stop::of(LOST));
-                    };
-                    if vertex != ends.0
-                        && vertex != ends.1
-                        && locate(&edge.curve, edge.range, point, tol).is_some()
-                    {
-                        splits.entry(id).or_default().insert(vertex);
-                    }
-                }
-            }
+            split_edges_at(a, fa, (vertex, point), tol, &mut sections.splits_a)?;
+            split_edges_at(b, fb, (vertex, point), tol, &mut sections.splits_b)?;
         }
         // The edge runs between its vertices: where several cuts were
         // one, the vertex is one of their points (or a vertex of an
@@ -1693,6 +1668,223 @@ fn clip(
             crossing,
         });
     }
+    Ok(())
+}
+
+/// Splits the edges of `face` of `solid` that the merged vertex at `point`
+/// lies on, away from their ends: a stretch that ends there divides them.
+/// (Only the edges near the vertex are looked at: a face may have a
+/// thousand.)
+fn split_edges_at(
+    solid: &Solid,
+    face: usize,
+    (vertex, point): (usize, Vec3),
+    tol: f64,
+    splits: &mut BTreeMap<EdgeId, BTreeSet<usize>>,
+) -> Result<(), Stop> {
+    let outline = solid.outline(face)?;
+    for (l, k) in outline.pieces_near(point, tol) {
+        let id = solid
+            .body
+            .faces
+            .get(face)
+            .and_then(|f| f.loops.iter().filter_map(|&id| solid.body.loop_(id)).nth(l))
+            .and_then(|loop_| loop_.coedges.get(k))
+            .map(|coedge| coedge.edge)
+            .ok_or(Stop::of(LOST))?;
+        let (Some(edge), Some(ends)) = (solid.body.edge(id), solid.ends(id)) else {
+            return Err(Stop::of(LOST));
+        };
+        if vertex != ends.0
+            && vertex != ends.1
+            && locate(&edge.curve, edge.range, point, tol).is_some()
+        {
+            splits.entry(id).or_default().insert(vertex);
+        }
+    }
+    Ok(())
+}
+
+/// A box that holds a stretch: its ends, a piece of a circle or an
+/// ellipse counted as the whole of it, a piece of a spline by the control
+/// points of that piece.
+fn stretch_box(stretch: &Stretch, from: Vec3, to: Vec3) -> Bbox3 {
+    match &stretch.curve {
+        Curve3::Nurbs(spline) => match spline.hull_points(stretch.range) {
+            Some(points) => {
+                let mut bx = Bbox3::from_points(points);
+                bx.add(from);
+                bx.add(to);
+                bx
+            }
+            None => piece_box(&stretch.curve, from, to),
+        },
+        curve => piece_box(curve, from, to),
+    }
+}
+
+/// Cuts each stretch where another stretch on one of its two faces, lying
+/// along it, ends between its ends: two stretches that run over each other
+/// between different vertices are one curve with two vertices on it.
+///
+/// Two stretches on one face run along each other only where two faces of
+/// the other body meet that face along one curve, and with manifold
+/// operands that touch themselves nowhere that curve lies along the edge
+/// the two faces share, so both stretches end where that edge's ends, or
+/// the face's edges, cut it: at the same vertices, and one arc is made of
+/// both (`Arcs::find_or_add`). An operand whose wall thins to nothing
+/// (decided 2026-10-18: a hole or a groove whose wall is tangent to the
+/// plate's side along a line) is the exception: its two faces touch along
+/// the line without an edge, and the rims of the groove's wall touch the
+/// side at the line's ends, inside the side. A face of the other body
+/// through that line (the plane of a cut that holds it) meets the groove's
+/// wall in a stretch that ends at the rims, and meets the side in one that
+/// runs on past them, cut only by the side's own edges: the first lay over
+/// the middle of the second, two arcs between different vertices, and the
+/// face's outline and the groove's loop ran over each other there (random
+/// design 122490, refused by the boolean's own check as *"loop 10 of face
+/// 10 is not a simple closed curve: it runs over loop 11 of the face"*).
+/// Cut at the first one's ends, the second's piece between them is the
+/// same arc as the first, the edge of zero angle along which the side and
+/// the groove's wall meet in the result.
+///
+/// A stretch lies along another when a point of it at a quarter, half or
+/// three quarters of its parameters is within the tolerance of the other's
+/// curve, strictly between that one's parameters; its end counts when it
+/// is within the tolerance of the other's curve, strictly between its
+/// parameters, and further than the guard from both its ends (nearer, it
+/// would have been merged with an end, or refused as two points too near).
+/// A stretch that only touches another (a circle a plane cuts from a hole
+/// tangent to the plate's side, beside the line it cuts from the side) is
+/// not along it and cuts nothing (docs/design/booleans.md › *A plane cut
+/// the boolean's own check refused as an invalid body*: such a touch is
+/// told in the regions). The edges of the stretch's two faces that a cut
+/// lies on are split there as at any end of a stretch. Where no stretch
+/// lies along another between different vertices, nothing changes: the
+/// stretches, their order and every bit of them are as they were.
+fn junctions(
+    a: &Solid,
+    b: &Solid,
+    vertices: &Vertices,
+    tol: f64,
+    sections: &mut Sections,
+) -> Result<(), Stop> {
+    if sections.stretches.len() < 2 {
+        return Ok(());
+    }
+    let point = |vertex: usize| vertices.points.get(vertex).copied().ok_or(Stop::of(LOST));
+    let guard = vertices.guard;
+    // Per face of either operand: its stretches, in order; and each
+    // stretch's box.
+    let mut on_a: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut on_b: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut boxes = Vec::with_capacity(sections.stretches.len());
+    for (index, stretch) in sections.stretches.iter().enumerate() {
+        on_a.entry(stretch.fa).or_default().push(index);
+        on_b.entry(stretch.fb).or_default().push(index);
+        boxes.push(stretch_box(
+            stretch,
+            point(stretch.start)?,
+            point(stretch.end)?,
+        ));
+    }
+    // Strictly between the ends of `stretch`, by its parameter.
+    let within = |stretch: &Stretch, p: Vec3| {
+        locate(&stretch.curve, stretch.range, p, tol)
+            .filter(|&t| t > stretch.range.0 && t < stretch.range.1)
+    };
+    // Per stretch (by index): the cuts on it, in order along it.
+    let mut found: BTreeMap<usize, Vec<(f64, usize)>> = BTreeMap::new();
+    for (index, stretch) in sections.stretches.iter().enumerate() {
+        let (Some(here), from, to) = (boxes.get(index), point(stretch.start)?, point(stretch.end)?)
+        else {
+            return Err(Stop::of(LOST));
+        };
+        let mut stops: Vec<(f64, usize)> = Vec::new();
+        let others = on_a
+            .get(&stretch.fa)
+            .into_iter()
+            .flatten()
+            .chain(on_b.get(&stretch.fb).into_iter().flatten());
+        for &other in others {
+            let (Some(along), Some(there)) = (sections.stretches.get(other), boxes.get(other))
+            else {
+                return Err(Stop::of(LOST));
+            };
+            if other == index || !boxes_meet(here, there, tol) {
+                continue;
+            }
+            let lies_along = [0.25, 0.5, 0.75].into_iter().any(|k| {
+                let t = along.range.0 + (along.range.1 - along.range.0) * k;
+                within(stretch, along.curve.eval(t)).is_some()
+            });
+            if !lies_along {
+                continue;
+            }
+            for vertex in [along.start, along.end] {
+                if vertex == stretch.start || vertex == stretch.end {
+                    continue;
+                }
+                let p = point(vertex)?;
+                if p.distance(from) <= guard || p.distance(to) <= guard {
+                    continue;
+                }
+                if let Some(t) = within(stretch, p) {
+                    stops.push((t, vertex));
+                }
+            }
+        }
+        if stops.is_empty() {
+            continue;
+        }
+        stops.sort_by(|p, q| p.0.total_cmp(&q.0).then(p.1.cmp(&q.1)));
+        stops.dedup_by_key(|stop| stop.1);
+        // Two cuts closer together than the guard, or in one place along
+        // the curve, are two points the tolerance cannot tell apart.
+        for pair in stops.windows(2) {
+            if let [(t0, v0), (t1, v1)] = pair
+                && (t1 <= t0 || point(*v0)?.distance(point(*v1)?) <= guard)
+            {
+                return Err(Stop::of(NEAR).at(&[a.name(stretch.fa), b.name(stretch.fb)]));
+            }
+        }
+        found.insert(index, stops);
+    }
+    if found.is_empty() {
+        return Ok(());
+    }
+    let old = std::mem::take(&mut sections.stretches);
+    let mut stretches = Vec::with_capacity(old.len() + found.len());
+    for (index, stretch) in old.into_iter().enumerate() {
+        let Some(stops) = found.get(&index) else {
+            stretches.push(stretch);
+            continue;
+        };
+        for &(_, vertex) in stops {
+            let p = point(vertex)?;
+            split_edges_at(a, stretch.fa, (vertex, p), tol, &mut sections.splits_a)?;
+            split_edges_at(b, stretch.fb, (vertex, p), tol, &mut sections.splits_b)?;
+        }
+        let mut at = (stretch.range.0, stretch.start);
+        for &(t, vertex) in stops
+            .iter()
+            .chain(std::iter::once(&(stretch.range.1, stretch.end)))
+        {
+            stretches.push(Stretch {
+                curve: stretch.curve.clone(),
+                range: (at.0, t),
+                start: at.1,
+                end: vertex,
+                fa: stretch.fa,
+                fb: stretch.fb,
+                inside_a: stretch.inside_a,
+                inside_b: stretch.inside_b,
+                crossing: stretch.crossing,
+            });
+            at = (t, vertex);
+        }
+    }
+    sections.stretches = stretches;
     Ok(())
 }
 
@@ -2251,6 +2443,10 @@ fn section_with(
             }
         }
     }
+    // Where a stretch lies along another of one of its faces and ends
+    // between that one's ends (an operand whose wall thins to nothing:
+    // `junctions`, since 2026-11-26).
+    junctions(a, b, vertices, tol, &mut sections)?;
     Ok(sections)
 }
 
