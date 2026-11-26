@@ -71,7 +71,9 @@
 
 use super::Operand;
 use super::Reason;
-use super::outline::{Outline, Sheet, boxes_meet, locate, onto, outward_normal, surface_distance};
+use super::outline::{
+    Outline, Sheet, boxes_meet, locate, nearest, onto, outward_normal, surface_distance,
+};
 use super::section::{Kept, Solid};
 use craft3d_geom::Curve3;
 use craft3d_math::{Frame, Vec3};
@@ -90,7 +92,7 @@ const REACH: f64 = 256.0;
 
 /// The furthest, in tolerances, a hit is ever moved: a slide longer than
 /// this is refused ([`SHALLOW`]).
-const CAP: f64 = 65536.0;
+pub(super) const CAP: f64 = 65536.0;
 
 /// The surfaces' unit normals must span at least this volume (the
 /// determinant of the three, a measure free of scale) for the point
@@ -573,6 +575,251 @@ fn side_of(
     found
 }
 
+/// How far from parallel (the sine of the angle between them) two curves
+/// on one surface must cross for [`border_crossings`] to take the place
+/// where they do: nearer parallel, a rounding of their distance moves that
+/// place along them by more than the tolerance.
+const ACROSS: f64 = 1e-2;
+
+/// How many pieces a spline edge is looked at in for where it comes
+/// nearest a border of the other face ([`border_crossings`]).
+const LOOKS_ALONG: usize = 64;
+
+/// The unit normal of `sheet` at the point of it nearest `p`.
+fn normal_at(sheet: Sheet, p: Vec3) -> Option<Vec3> {
+    let (u, v) = sheet.project(p)?;
+    sheet.surface.normal(u, v)?.normalized()
+}
+
+/// Whether the two surfaces are tangent at (the points of them nearest)
+/// `p`: their normals within the sine [`TANGENT`] of parallel, either way.
+fn tangent_at(a: Sheet, b: Sheet, p: Vec3) -> bool {
+    match (normal_at(a, p), normal_at(b, p)) {
+        (Some(n), Some(m)) => {
+            let sine = n.cross(m).length();
+            sine.is_finite() && sine <= TANGENT
+        }
+        _ => false,
+    }
+}
+
+/// Where spline edge `id` of `own`, whose two faces are tangent to each
+/// other (a blend's tangent edge), crosses an edge of `against` that lies
+/// on the surface of one of those faces, where the surface of `against` is
+/// tangent to that face (it touches it along that edge): the parameters
+/// along the edge and the places, in the edge's order.
+///
+/// Two such edges cross on the surface both lie on (random design 121704:
+/// half a torus whose end rim is filleted, less a copy moved along its
+/// axis; the two end caps lie in one plane, each bounded by its fillet's
+/// tangent edge, and those cross twice). The place is a vertex of the
+/// result: one edge leaves the other's face there, and the curve in which
+/// the two fillets meet ends there. The edge's own hit on the other face's
+/// surface stands for it badly or not at all: the edge only touches that
+/// surface (it is tangent to the edge's face along the border), and the
+/// surface ends at the border, so the edge's distance from it grows with
+/// the square of the way along it on one side and the way itself on the
+/// other, and its sign there, beside the surface's rim, is noise
+/// ([`super::hits`]). In 121704 one crossing had its hit within 0.06 of the
+/// tolerance; the other had none, so the curve along which the plane
+/// touches the copy's fillet had no cut there, and the cap was not divided
+/// along it. [`touch`] cannot follow the curve such an edge stands for: its
+/// two faces do not cross. Here the place is where the two curves cross,
+/// which they do at an angle: each piece of the border found within the
+/// tolerance of a face of the edge at its ends, its quarters and its
+/// middle; the edge looked at in [`LOOKS_ALONG`] pieces for where it comes
+/// nearest the border, and each such place taken to where the two curves
+/// come nearest each other (Gauss–Newton on both parameters). A place is
+/// kept where the curves are within the tolerance of each other there and
+/// cross at more than the sine [`ACROSS`], it is clear of the edge's ends
+/// by twice the tolerance, the edge's two faces are tangent there and
+/// `against`'s surface is tangent to the face the border lies on. Empty for
+/// every other edge.
+pub(super) fn border_crossings(
+    own: &Solid,
+    id: EdgeId,
+    against: &Outline,
+    tol: f64,
+) -> Vec<(f64, Vec3)> {
+    let mut found: Vec<(f64, Vec3)> = Vec::new();
+    let Some(edge) = own.body.edge(id) else {
+        return found;
+    };
+    if !matches!(edge.curve, Curve3::Nurbs(_)) {
+        return found;
+    }
+    let (t0, t1) = edge.range;
+    if !(t0.is_finite() && t1.is_finite() && t1 > t0) {
+        return found;
+    }
+    // The surfaces of the edge's faces as they are, without the index a
+    // face's outline makes for a freeform surface: a face that the section
+    // has not outlined is not outlined here (where its index would be made
+    // for this look alone).
+    let Some([f0, f1]) = faces_of(own, id, tol) else {
+        return found;
+    };
+    let (Some(face0), Some(face1)) = (own.body.faces.get(f0), own.body.faces.get(f1)) else {
+        return found;
+    };
+    let faces = [Sheet::bare(&face0.surface), Sheet::bare(&face1.surface)];
+    let [first, second] = faces;
+    // A tangent edge, by its middle.
+    if !tangent_at(first, second, edge.curve.eval(0.5 * (t0 + t1))) {
+        return found;
+    }
+    let (Some(start), Some(end)) = (own.body.vertex(edge.start), own.body.vertex(edge.end)) else {
+        return found;
+    };
+    let other = against.sheet();
+    let step = (t1 - t0) / LOOKS_ALONG as f64;
+    let looks: Vec<(f64, Vec3)> = (0..=LOOKS_ALONG)
+        .map(|k| {
+            let s = if k == LOOKS_ALONG {
+                t1
+            } else {
+                t0 + step * k as f64
+            };
+            (s, edge.curve.eval(s))
+        })
+        .collect();
+    for seg in against.loops.iter().flatten() {
+        // A border on one of the edge's faces.
+        let Some(face) = faces.into_iter().find(|&sheet| {
+            [0.0, 0.25, 0.5, 0.75, 1.0]
+                .into_iter()
+                .all(|k| surface_distance(sheet, seg.at(k)) <= tol)
+        }) else {
+            continue;
+        };
+        let (lo, hi) = (seg.range.0.min(seg.range.1), seg.range.0.max(seg.range.1));
+        if !(lo.is_finite() && hi.is_finite() && hi > lo) {
+            continue;
+        }
+        let near: Vec<Option<(f64, f64)>> = looks
+            .iter()
+            .map(|&(_, p)| nearest(&seg.curve, (lo, hi), p))
+            .collect();
+        for (k, &(s_k, p_k)) in looks.iter().enumerate() {
+            let Some(Some((t_k, d_k))) = near.get(k).copied() else {
+                continue;
+            };
+            // Nearest among its neighbours (no further than either), and
+            // within a piece's length of the border.
+            let neighbours = [k.checked_sub(1), k.checked_add(1)];
+            let mut reach = 0.0_f64;
+            let mut least = true;
+            for j in neighbours.into_iter().flatten() {
+                let (Some(&(_, p_j)), Some(near_j)) = (looks.get(j), near.get(j)) else {
+                    continue;
+                };
+                reach = reach.max(p_j.distance(p_k));
+                if let Some((_, d_j)) = near_j {
+                    // Strictly nearer than the one before, so that two
+                    // looks equally near give one place.
+                    let worse = if j < k { d_k >= *d_j } else { d_k > *d_j };
+                    if worse {
+                        least = false;
+                    }
+                }
+            }
+            if !least || d_k > 2.0 * reach + tol {
+                continue;
+            }
+            let Some((s, p)) =
+                curves_cross(&edge.curve, (t0, t1), &seg.curve, (lo, hi), (s_k, t_k), tol)
+            else {
+                continue;
+            };
+            let clear = p.distance(start.point) > 2.0 * tol && p.distance(end.point) > 2.0 * tol;
+            if !(s > t0 && s < t1 && clear) {
+                continue;
+            }
+            if !(tangent_at(first, second, p) && tangent_at(face, other, p)) {
+                continue;
+            }
+            if found.iter().any(|&(_, q)| q.distance(p) <= 0.5 * tol) {
+                continue;
+            }
+            found.push((s, p));
+        }
+    }
+    found.sort_by(|a, b| a.0.total_cmp(&b.0));
+    found
+}
+
+/// Whether `surface` is tangent at `p` to a face on either side of edge
+/// `id` of `own` (their normals within the sine [`TANGENT`] of parallel):
+/// where an edge's hit on `surface` lies within the stretch along which it
+/// only touches it, however the sign of its distance read there (beside a
+/// freeform surface's rim it is noise, and a touch is read as a crossing).
+/// A surface that crosses the edge's face at the hit, at more than that,
+/// is not.
+pub(super) fn touches_there(own: &Solid, id: EdgeId, surface: Sheet, p: Vec3, tol: f64) -> bool {
+    let Some([f0, f1]) = faces_of(own, id, tol) else {
+        return false;
+    };
+    [f0, f1].into_iter().any(|face| {
+        own.body
+            .faces
+            .get(face)
+            .is_some_and(|f| tangent_at(Sheet::bare(&f.surface), surface, p))
+    })
+}
+
+/// Where the curves `a` (over `range_a`) and `b` (over `range_b`) cross,
+/// from the parameters `start`: Gauss–Newton on the distance between their
+/// points, each parameter held within its range, until a step moves each
+/// point by less than a millionth of the tolerance. The parameter along
+/// `a` and its point, where the two points are within the tolerance of
+/// each other and the curves cross there at more than the sine [`ACROSS`];
+/// `None` otherwise, or where the steps do not settle.
+fn curves_cross(
+    a: &Curve3,
+    range_a: (f64, f64),
+    b: &Curve3,
+    range_b: (f64, f64),
+    start: (f64, f64),
+    tol: f64,
+) -> Option<(f64, Vec3)> {
+    let (mut s, mut t) = start;
+    for _ in 0..STEPS {
+        let (p, dp) = a.derivatives(s);
+        let (q, dq) = b.derivatives(t);
+        let f = p - q;
+        let (aa, ab, bb) = (dp.dot(dp), dp.dot(dq), dq.dot(dq));
+        let det = aa * bb - ab * ab;
+        if !(det.is_finite() && det > 0.0) {
+            return None;
+        }
+        // The least squares step of [dp, -dq] (ds, dt) = -f.
+        let (r1, r2) = (-dp.dot(f), dq.dot(f));
+        let ds = (bb * r1 + ab * r2) / det;
+        let dt = (ab * r1 + aa * r2) / det;
+        if !(ds.is_finite() && dt.is_finite()) {
+            return None;
+        }
+        let next = (
+            (s + ds).max(range_a.0).min(range_a.1),
+            (t + dt).max(range_b.0).min(range_b.1),
+        );
+        let moved = ((next.0 - s) * dp.length())
+            .abs()
+            .max(((next.1 - t) * dq.length()).abs());
+        (s, t) = next;
+        if moved <= 1e-6 * tol {
+            let (p, dp) = a.derivatives(s);
+            let (q, dq) = b.derivatives(t);
+            let (Some(u), Some(v)) = (dp.normalized(), dq.normalized()) else {
+                return None;
+            };
+            let sine = u.cross(v).length();
+            return (p.distance(q) <= tol && sine.is_finite() && sine > ACROSS).then_some((s, p));
+        }
+    }
+    None
+}
+
 /// `off` over the sine of the angle at which the curve, at `t`, meets the
 /// surface; infinite where it runs along it. `None` without a tangent or
 /// a normal there.
@@ -642,6 +889,77 @@ mod tests {
         let tilted = plane(target, Vec3::new(1.0, 1e-11, 0.0));
         let sheets = [Sheet::bare(a), Sheet::bare(&tilted), Sheet::bare(c)];
         assert!(meet(sheets, target + Vec3::new(0.0, 0.5, 0.0), 1.0, tol).is_none());
+    }
+
+    /// The review of `curves_cross` (2026-11-26): at every scale from 1e-3
+    /// to 1e6, two lines that cross at a sine of a half are crossed where
+    /// they do; lines at a sine of 5e-3 (below [`ACROSS`]), parallel lines
+    /// half a tolerance apart, and a line that touches a circle half a
+    /// tolerance off it give nothing; a line that passes half a tolerance
+    /// beyond the end of the other piece is crossed within the tolerance of
+    /// that end (by the tolerance the piece's end lies on it); one that
+    /// passes two tolerances beyond it gives nothing.
+    #[test]
+    fn two_curves_cross_only_where_they_cross_at_an_angle() {
+        use craft3d_geom::{Circle, Line};
+        for k in [1e-3, 1.0, 1e3, 1e6] {
+            let tol = 1e-6 * k;
+            let line = |origin: Vec3, direction: Vec3| {
+                Curve3::Line(Line::new(origin * k, direction).unwrap())
+            };
+            let x_axis = line(Vec3::ZERO, Vec3::X);
+            let range = (-10.0 * k, 10.0 * k);
+            // Across at a sine of a half, through (2, 0, 0).
+            let steep = line(
+                Vec3::new(2.0, 0.0, 0.0),
+                Vec3::new(3.0_f64.sqrt(), 1.0, 0.0),
+            );
+            let (s, p) = curves_cross(&x_axis, range, &steep, range, (k, -k), tol)
+                .unwrap_or_else(|| panic!("k={k}: two lines at a sine of a half"));
+            assert!((s - 2.0 * k).abs() <= 1e-9 * k, "k={k}: at {s}");
+            assert!(p.distance(Vec3::new(2.0, 0.0, 0.0) * k) <= 1e-9 * k);
+            // At a sine of 5e-3.
+            let shallow = line(Vec3::new(2.0, 0.0, 0.0), Vec3::new(1.0, 5e-3, 0.0));
+            assert!(
+                curves_cross(&x_axis, range, &shallow, range, (k, -k), tol).is_none(),
+                "k={k}: lines at a sine of 5e-3"
+            );
+            // Parallel, half a tolerance apart.
+            let beside = line(Vec3::new(0.0, 0.5e-6, 0.0), Vec3::X);
+            assert!(
+                curves_cross(&x_axis, range, &beside, range, (k, k), tol).is_none(),
+                "k={k}: parallel lines"
+            );
+            // A circle of radius 5 about (0, 5 + tol / 2) touching the axis.
+            let frame = Frame::WORLD
+                .at(Vec3::new(0.0, 5.0 + 0.5e-6, 0.0) * k)
+                .unwrap();
+            let round = Curve3::Circle(Circle::new(frame, 5.0 * k).unwrap());
+            let bottom = 1.5 * std::f64::consts::PI;
+            assert!(
+                curves_cross(
+                    &x_axis,
+                    range,
+                    &round,
+                    (bottom - 1.0, bottom + 1.0),
+                    (0.1 * k, bottom - 0.01),
+                    tol
+                )
+                .is_none(),
+                "k={k}: a circle that touches the line"
+            );
+            // A piece of the y axis that ends half a tolerance short of the
+            // x axis, and one that ends two tolerances short of it.
+            let y_axis = line(Vec3::ZERO, Vec3::Y);
+            for (short, found) in [(0.5e-6, true), (2e-6, false)] {
+                let piece = (short * k, 10.0 * k);
+                let crossed = curves_cross(&x_axis, range, &y_axis, piece, (k, k), tol);
+                assert_eq!(crossed.is_some(), found, "k={k}: ends {short} short");
+                if let Some((_, p)) = crossed {
+                    assert!(p.distance(Vec3::ZERO) <= tol, "k={k}: at {p:?}");
+                }
+            }
+        }
     }
 
     /// The count of a touch's looks is the cap's: doubling from a quarter of

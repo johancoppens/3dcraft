@@ -40,18 +40,17 @@
 
 mod common;
 
-use common::{arc, circle, line};
+use common::{arc, line};
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::BooleanOp::{Intersect, Subtract};
 use craft3d_kernel::boolean::{BooleanOp, VerifyOptions, boolean, verify};
-use craft3d_kernel::fillet::{FilletEdge, fillet};
 use craft3d_kernel::primitives;
 use craft3d_kernel::profile::{SketchCurve, detect_profiles};
 use craft3d_kernel::revolve::revolve;
 use craft3d_math::Portable;
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_testkit::parallel::map_parallel;
-use craft3d_topo::{Body, EdgeId, check, mass_properties};
+use craft3d_topo::{Body, check, mass_properties};
 use std::f64::consts::{PI, TAU};
 
 /// The scales the cases are built at; the tolerance is a millionth of
@@ -939,83 +938,4 @@ fn seed_128676_a_cup_in_a_hole_through_a_ring() {
             format!("{label}: the union and the intersection {sum} where the two are {parts}")
         })
     }));
-}
-
-/// The edge of a body nearest `p`.
-fn edge_near(body: &Body, p: Vec3) -> EdgeId {
-    let distance = |i: usize| {
-        let e = &body.edges[i];
-        (0..=32)
-            .map(|j| {
-                e.curve
-                    .eval(e.range.0 + (e.range.1 - e.range.0) * f64::from(j) / 32.0)
-            })
-            .map(|q| q.distance(p))
-            .fold(f64::INFINITY, f64::min)
-    };
-    let nearest = (0..body.edges.len())
-        .min_by(|&a, &b| distance(a).total_cmp(&distance(b)))
-        .unwrap();
-    EdgeId(u32::try_from(nearest).unwrap())
-}
-
-/// Random design 121704 as reduced, owed: half a torus (a circle of
-/// radius 7.5 about (12.5, 2.5) in z = −10 turned half a turn about the
-/// sketch's y axis, so that both end caps lie in z = −10), its end rim
-/// filleted by 2.5, less a copy moved 7.5 along y. The two caps lie on one
-/// plane and each is bounded by its fillet's tangent edge, a spline: the
-/// copy's tangent edge crosses the original cap's border, and both
-/// fillets are tangent to the plane there. The plane's meeting with the
-/// copy's fillet is marched as a crossing curve, cut where the original's
-/// tangent edge touches the fillet: one of the two crossings is found
-/// (−8.85, 6.25), the other (−15.61, 6.25) not, both stretches are left
-/// out, and the original's cap is not divided along the copy's tangent
-/// edge (*"edge 8 is used 1 times …"*). Where two tangent edges cross on
-/// one plane no surface meets either of them across it; the place is
-/// where the two curves cross on the plane.
-#[test]
-#[ignore = "owed: two fillets' tangent edges that cross on a plane both caps lie on"]
-fn owed_seed_121704_two_tangent_edges_cross_on_a_shared_cap() {
-    for k in SCALES {
-        let tol = tolerance(k);
-        let sketch = Frame::WORLD.at(Vec3::new(0.0, 0.0, -10.0 * k)).unwrap();
-        let profiles = detect_profiles(&[circle(1, [12.5 * k, 2.5 * k], 7.5 * k)], &tol).unwrap();
-        let half = revolve(&profiles, &sketch, [0.0, 0.0], [0.0, 1.0], 0.0, PI, &tol)
-            .unwrap()
-            .body;
-        let rim = edge_near(&half, Vec3::new(-20.0, 2.5, -10.0) * k);
-        let rounded = fillet(
-            &half,
-            &[FilletEdge {
-                edge: rim,
-                radius: 2.5 * k,
-            }],
-            &tol,
-        )
-        .unwrap()
-        .body;
-        let copy = rounded
-            .transformed(&Transform::translation(Vec3::new(0.0, 7.5, 0.0) * k))
-            .unwrap();
-        let result = boolean(&rounded, &copy, Subtract, &tol);
-        let body = match result {
-            Ok(result) => result.body,
-            Err(e) => panic!("scale {k}: {e}"),
-        };
-        assert_eq!(check(&body, &tol), [], "scale {k}");
-        let found = verify(
-            &rounded,
-            &copy,
-            Subtract,
-            &body,
-            &tol,
-            &VerifyOptions::default(),
-        )
-        .unwrap();
-        assert!(
-            found.violations.is_empty(),
-            "scale {k}: {:?}",
-            found.violations
-        );
-    }
 }

@@ -710,6 +710,13 @@ fn edge_cuts(
             cut(b.point, false, None);
             continue;
         }
+        // Where a tangent edge crosses a border of the other face that
+        // lies on one of its faces, the other face tangent to that face
+        // there (`corner::border_crossings`): places of the result that
+        // the edge's hits on the other surface stand for badly, or miss.
+        let crossings = super::corner::border_crossings(own, id, against, tol);
+        let mut represented = vec![false; crossings.len()];
+        let mut placed: Vec<Vec3> = Vec::new();
         // The edge's own curve with the other body's surface: a tolerant
         // edge is taken as it is, not as the exact curve it stands for.
         match curve_hits(&edge.curve, edge.range, surface, tolerance)
@@ -760,10 +767,12 @@ fn edge_cuts(
                     // cone up to its apex, meets it there.)
                     let approximated = matches!(edge.curve, Curve3::Nurbs(_));
                     if approximated && surface_distance(surface, a.point) <= tol && hugs(t0) {
+                        placed.push(a.point);
                         cut(a.point, true, Some(hit.point));
                         continue;
                     }
                     if approximated && surface_distance(surface, b.point) <= tol && hugs(t1) {
+                        placed.push(b.point);
                         cut(b.point, true, Some(hit.point));
                         continue;
                     }
@@ -808,9 +817,46 @@ fn edge_cuts(
                     // (`corner::kept_both`: that curve is an edge of the
                     // result, and the place ends it); and its hit at a
                     // shallow angle to where the surfaces meet (`corner`).
-                    let point = match end {
-                        Some(end) => end,
-                        None if approximated && hit.tangent => {
+                    // A hit that stands for a place where the edge crosses
+                    // a border of the other face (`border_crossings`) is
+                    // that place: any hit within the guard of it, and a
+                    // touch, or a hit where the other face's surface is
+                    // tangent to the edge's faces (a touch whose distance's
+                    // sign beside a surface's rim made it a crossing),
+                    // within the reach of `corner`'s moves; the place
+                    // strictly between the hit's neighbours. Within a
+                    // quarter of the tolerance the hit stays where it is.
+                    let standing = match end {
+                        Some(_) => None,
+                        None => {
+                            let (lo, hi) = between();
+                            crossings
+                                .iter()
+                                .enumerate()
+                                .find(|&(_, &(s, x))| {
+                                    let apart = x.distance(hit.point);
+                                    s > lo
+                                        && s < hi
+                                        && (apart <= 2.0 * tol
+                                            || (apart <= super::corner::CAP * tol
+                                                && (hit.tangent
+                                                    || super::corner::touches_there(
+                                                        own, id, surface, hit.point, tol,
+                                                    ))))
+                                })
+                                .map(|(k, &(_, x))| (k, x))
+                        }
+                    };
+                    if let Some((k, _)) = standing
+                        && let Some(seen) = represented.get_mut(k)
+                    {
+                        *seen = true;
+                    }
+                    let point = match (end, standing) {
+                        (Some(end), _) => end,
+                        (None, Some((_, x))) if x.distance(hit.point) > 0.25 * tol => x,
+                        (None, Some(_)) => hit.point,
+                        (None, None) if approximated && hit.tangent => {
                             super::corner::touch(own, id, surface, (hit.point, at), between(), tol)
                                 .filter(|&p| match against.side(p, tol) {
                                     Ok(Side::On) => true,
@@ -821,7 +867,7 @@ fn edge_cuts(
                                 })
                                 .unwrap_or(hit.point)
                         }
-                        None if approximated => super::corner::refine(
+                        (None, None) if approximated => super::corner::refine(
                             own,
                             id,
                             surface,
@@ -831,13 +877,23 @@ fn edge_cuts(
                         )
                         .map_err(|r| Stop::of(r).at(named))?
                         .unwrap_or(hit.point),
-                        None => hit.point,
+                        (None, None) => hit.point,
                     };
                     // A touch is a cut like any other: the stretches on
                     // either side of it are judged on their own.
+                    placed.push(point);
                     cut(point, true, end.map(|_| hit.point));
                 }
             }
+        }
+        // A crossing no hit stood for is a cut of its own, unless a cut of
+        // this edge is within the guard of it already.
+        for (k, &(_, x)) in crossings.iter().enumerate() {
+            let seen = represented.get(k).copied().unwrap_or(true);
+            if seen || placed.iter().any(|p| p.distance(x) <= 2.0 * tol) {
+                continue;
+            }
+            cut(x, true, None);
         }
     }
     Ok(())
