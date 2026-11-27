@@ -2577,8 +2577,9 @@ impl Marcher {
 
     /// The arms of zones that leave the point inside the chart but are cut
     /// by its border before the place their seed is brought onto `f = 0`
-    /// from, where the crossing comes to the border (`meets_border`) and no
-    /// branch traced has them: each drawn straight from the point to the
+    /// from, where the crossing comes to the border (`meets_border`), no
+    /// branch traced has them and the border there does not lie on the
+    /// field (`on_lying_border`): each drawn straight from the point to the
     /// border, as every branch is drawn inside the zone.
     ///
     /// The cells of a point's disc are settled without seeds (its arms
@@ -2624,6 +2625,20 @@ impl Marcher {
                     continue;
                 }
                 let (u, v) = (zone.u + ou * s, zone.v + ov * s);
+                // Not to a stretch of the border that lies on the field: that
+                // stretch is the meeting there, reported as a curve of its
+                // own (`lying`), and a seed on it is dropped for the same
+                // reason. Along it `f` is zero to rounding, so a change of
+                // sign there says nothing of a crossing coming to the
+                // border, and an arm drawn to it ends beside that curve: the
+                // halves of a B-spline trough sewn along the spline they
+                // share, turned, at 1e6, had zones along the touch a quarter
+                // of a tolerance from it, and two of their arms' ends a
+                // tolerance apart on it were refused as two points too near
+                // (`two_sheets.rs`, 2026-11-27).
+                if self.on_lying_border(u, v) {
+                    continue;
+                }
                 let Some(e) = self.eval(u, v) else {
                     continue;
                 };
