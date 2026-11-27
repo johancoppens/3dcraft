@@ -65,8 +65,8 @@ owed, and it is being made better step by step.
 ## Get started
 
 > **0.3.0 is the current release:** a body cut by planes in one feature, glTF export for web pages and
-> renderers, an MCP bundle with every release, and a kernel that refuses bodies it used to build wrong
-> ([what changed](CHANGELOG.md)). Files saved by 0.3.0 do not open in 0.2.x. Its installers are on
+> renderers, an MCP bundle with every release, and a kernel that refuses some bodies 0.2.x built and answers
+> many it refused ([what changed](CHANGELOG.md)). Files saved by 0.3.0 do not open in 0.2.x. Its installers are on
 > the [releases page](https://github.com/johancoppens/3dcraft/releases), and the website,
 > [3dcraft.dev](https://3dcraft.dev/), has the guide, the examples and the web version.
 
