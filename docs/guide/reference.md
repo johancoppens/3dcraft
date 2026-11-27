@@ -8,7 +8,7 @@ The full description of any command, with every value it takes and what it refus
 
 ## Commands
 
-3DCraft 0.2.1 has 185 commands. A command's id is its family and its name: `feature.fillet`.
+3DCraft 0.3.0 has 185 commands. A command's id is its family and its name: `feature.fillet`.
 
 ### Documents and files
 

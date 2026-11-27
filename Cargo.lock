@@ -401,7 +401,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-automation",
  "craft3d-buildinfo",
@@ -422,14 +422,14 @@ dependencies = [
 
 [[package]]
 name = "craft3d-assembly"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-math",
 ]
 
 [[package]]
 name = "craft3d-automation"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-doc",
  "craft3d-engine",
@@ -440,19 +440,19 @@ dependencies = [
 
 [[package]]
 name = "craft3d-brep"
-version = "0.2.1"
+version = "0.3.0"
 
 [[package]]
 name = "craft3d-buildinfo"
-version = "0.2.1"
+version = "0.3.0"
 
 [[package]]
 name = "craft3d-changelog"
-version = "0.2.1"
+version = "0.3.0"
 
 [[package]]
 name = "craft3d-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-automation",
  "craft3d-buildinfo",
@@ -466,7 +466,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-doc"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-expr",
  "craft3d-math",
@@ -476,14 +476,14 @@ dependencies = [
 
 [[package]]
 name = "craft3d-drawing"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "libm",
 ]
 
 [[package]]
 name = "craft3d-engine"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-assembly",
  "craft3d-changelog",
@@ -513,14 +513,14 @@ dependencies = [
 
 [[package]]
 name = "craft3d-expr"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-math",
 ]
 
 [[package]]
 name = "craft3d-fcstdread"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-brep",
  "craft3d-geom",
@@ -534,7 +534,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-font"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "libm",
  "ttf-parser",
@@ -542,7 +542,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-format"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-doc",
  "craft3d-math",
@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-fuzz"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-engine",
  "craft3d-geom",
@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-geom"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-math",
  "craft3d-testkit",
@@ -571,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-gpu"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-kernel",
  "craft3d-math",
@@ -585,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-io"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-doc",
  "craft3d-drawing",
@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-kernel"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-geom",
  "craft3d-math",
@@ -615,21 +615,21 @@ dependencies = [
 
 [[package]]
 name = "craft3d-launcher"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rfd",
 ]
 
 [[package]]
 name = "craft3d-math"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "libm",
 ]
 
 [[package]]
 name = "craft3d-meshio"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-zipstore",
  "libm",
@@ -637,14 +637,14 @@ dependencies = [
 
 [[package]]
 name = "craft3d-ops"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-doc",
 ]
 
 [[package]]
 name = "craft3d-regen"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-doc",
  "craft3d-expr",
@@ -661,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-render"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-geom",
  "craft3d-kernel",
@@ -673,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-solve"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-math",
  "craft3d-testkit",
@@ -681,11 +681,11 @@ dependencies = [
 
 [[package]]
 name = "craft3d-step"
-version = "0.2.1"
+version = "0.3.0"
 
 [[package]]
 name = "craft3d-stepread"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-geom",
  "craft3d-math",
@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-tess"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-geom",
  "craft3d-math",
@@ -705,7 +705,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-testkit"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-geom",
  "craft3d-kernel",
@@ -716,7 +716,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-topo"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-geom",
  "craft3d-math",
@@ -725,7 +725,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-ui-egui"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-engine",
  "craft3d-gpu",
@@ -744,7 +744,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-web"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-automation",
  "craft3d-buildinfo",
@@ -770,7 +770,7 @@ dependencies = [
 
 [[package]]
 name = "craft3d-zipstore"
-version = "0.2.1"
+version = "0.3.0"
 
 [[package]]
 name = "crc32fast"
@@ -3770,7 +3770,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "craft3d-changelog",
  "craft3d-doc",

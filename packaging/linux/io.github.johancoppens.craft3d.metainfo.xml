@@ -25,6 +25,13 @@
     <mediatype>application/x-craft3d-assembly</mediatype>
   </provides>
   <releases>
+    <release version="0.3.0" date="2026-11-27">
+      <url type="details">https://github.com/johancoppens/3dcraft/releases/tag/v0.3.0</url>
+      <description>
+        <p>A body cut by planes in one feature, glTF export for web pages and renderers, and an MCP bundle with every release.</p>
+        <p>Some results changed: bodies whose parts or walls come closer together than the tolerance can tell apart, or that meet themselves only along a curve, are refused where 0.2.x built them, and many refusals of 0.2.x are answers now. If you checked a design with 0.2, check it again. Files saved by 0.3.0 do not open in 0.2.x.</p>
+      </description>
+    </release>
     <release version="0.2.1" date="2026-11-20">
       <url type="details">https://github.com/johancoppens/3dcraft/releases/tag/v0.2.1</url>
       <description>
