@@ -983,15 +983,12 @@ fn asm_paths_review_read_errors_say_what_is_so() {
     // 2026-11-27, expected "not no such file" as on Unix).
     let through = "model/v2/rod.3dcraft/x.3dcraft";
     let kind = std::fs::read(l.root.join(through)).unwrap_err().kind();
-    assert_eq!(
-        kind == std::io::ErrorKind::NotFound,
-        cfg!(windows),
-        "{kind:?}"
-    );
+    let windows = cfg!(windows);
+    assert_eq!(kind == std::io::ErrorKind::NotFound, windows, "{kind:?}");
     for (source, missing) in [
         ("model/none.3dcraft", true),
         ("model/v3/rod.3dcraft", true),
-        (through, cfg!(windows)),
+        (through, windows),
         ("model/dir.3dcraft", false),
         ("../outside.3dcraft", false),
     ] {
