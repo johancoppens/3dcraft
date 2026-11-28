@@ -569,6 +569,7 @@ fn files_stay_inside_the_roots() {
     std::fs::create_dir_all(dir.join("folder.3dcraft")).unwrap();
     let folder = error(&mut session, "file.open", json!({"path": "folder.3dcraft"}));
     assert!(folder.contains("it is a folder, not a file"), "{folder}");
+    std::fs::remove_dir(dir.join("folder.3dcraft")).unwrap();
     assert!(error(&mut session, "file.save", json!({})).contains("give a `path`"));
     // Saving into a directory that does not exist fails cleanly.
     assert!(
