@@ -2969,12 +2969,34 @@ mod tests {
     /// frames of its still: by default a frame is one pass, read back
     /// once; `accumulate: 16` waits for the average (more passes, only the
     /// last read back). Prints where the time goes.
+    ///
+    /// On a CPU adapter (WARP, lavapipe) the window is 400 x 250 and a
+    /// frame waits for 2 frames of the average, with the longest timeout
+    /// `ui.advance` takes: WARP drew one studio pass at 1600 x 1000 in 38
+    /// to 57 s (public CI, 2026-11-16 to 2026-11-27), past the 30 s an
+    /// advance waits by default, so 2 of the 6 frames were drawn, and 16
+    /// such passes are past the 60 s a frame may take to settle. What is
+    /// asserted, the passes counted per frame and every frame drawn, does
+    /// not depend on the size or on how many frames are averaged.
     #[test]
     fn a_frame_exact_frame_is_one_pass_unless_it_waits_for_the_average() {
         let Ok(state) = craft3d_ui_egui::direct::headless_render_state() else {
             println!("SKIPPED: no graphics adapter");
             return;
         };
+        let adapter = state.adapter.get_info();
+        let cpu = adapter.device_type == eframe::wgpu::DeviceType::Cpu;
+        let ([width, height], average, timeout) = if cpu {
+            ([400.0_f32, 250.0], 2, r#","timeout":110"#)
+        } else {
+            ([1600.0, 1000.0], 16, "")
+        };
+        if cpu {
+            println!(
+                "a CPU adapter ({}): the window is {width} x {height}, a frame waits for {average} frames of the average, an advance for at most 110 s",
+                adapter.name
+            );
+        }
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/tmp/craft3d-desk-record-speed");
         let _ = std::fs::remove_dir_all(&dir);
@@ -2988,7 +3010,7 @@ mod tests {
         }));
         host.shell.attach_gpu(&state).unwrap();
         let mut desk = Desk::new(host, incoming, picker);
-        desk.set_window_points([1600.0, 1000.0]);
+        desk.set_window_points([width, height]);
         desk.attach_recorder(Some(&state));
         let ctx = egui::Context::default();
         let serve = |desk: &mut Desk, line: &str| -> Value {
@@ -3012,7 +3034,7 @@ mod tests {
             assert_eq!(serve(&mut desk, line)["ok"], true, "{line}");
         }
         desk.offscreen_pass(&ctx, 0.0, Vec::new(), false).unwrap();
-        for (accumulate, path, view) in [(1, "one", "top"), (16, "sixteen", "front")] {
+        for (accumulate, path, view) in [(1, "one", "top"), (average, "average", "front")] {
             // Another view: the viewport starts its average again.
             let view = format!(r#"{{"id":4,"method":"ui.set","params":{{"view":"{view}"}}}}"#);
             assert_eq!(serve(&mut desk, &view)["ok"], true);
@@ -3023,14 +3045,13 @@ mod tests {
             );
             assert_eq!(serve(&mut desk, &start)["ok"], true);
             let began = Instant::now();
-            let reply = serve(
-                &mut desk,
-                r#"{"id":6,"method":"ui.advance","params":{"frames":6}}"#,
-            );
+            let advance =
+                format!(r#"{{"id":6,"method":"ui.advance","params":{{"frames":6{timeout}}}}}"#);
+            let reply = serve(&mut desk, &advance);
             let took = began.elapsed().as_secs_f64() / 6.0;
             let result = &reply["result"];
             println!(
-                "accumulate {accumulate}: {:.0} ms a frame at 1600 x 1000, {}",
+                "accumulate {accumulate}: {:.0} ms a frame at {width} x {height}, {}",
                 took * 1e3,
                 result["timing"]
             );
