@@ -150,7 +150,22 @@ fn a_face_just_over_the_index_budget_is_refused_before_its_memory_is_taken() {
     println!(
         "degree 15, {over} × {over} spans: {would:.0} MiB would be taken; peak {before:.0} MiB before, {after:.0} after"
     );
-    assert!(after - before < 0.1 * would, "{before} -> {after} MiB");
+    if before.is_finite() && after.is_finite() {
+        assert!(after - before < 0.1 * would, "{before} -> {after} MiB");
+    } else {
+        // The peak is read from `/proc/self/status`, which only Linux
+        // has: macOS and Windows gave `NaN -> NaN MiB` (public CI,
+        // 2026-11-23 and 2026-11-27), and NaN fails every comparison.
+        // There the refusal above is what is asserted; the memory it
+        // spares is measured on Linux, where it must be.
+        assert!(
+            !cfg!(target_os = "linux"),
+            "no peak memory on Linux: {before} -> {after} MiB"
+        );
+        println!(
+            "the peak memory is not measured here (no /proc/self/status): the refusal is asserted"
+        );
+    }
 }
 
 /// Just under the budget the same sheet cuts the block; its peak is about
