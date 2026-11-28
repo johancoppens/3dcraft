@@ -89,6 +89,24 @@ fn path_start(path: &str) -> Result<(Start, &str), String> {
     Ok((Start::Relative, path))
 }
 
+/// The start of `path` as [`crate::asm::join`] reads it ([`path_start`]):
+/// whether there is one (the path is absolute), and how many of its
+/// parts, between `separators`, are that start, which no `..` takes back:
+/// a drive (`C:`) one, a share (`\\server\share`) two, a verbatim drive
+/// (`\\?\C:`) two and a verbatim share (`\\?\UNC\server\share`) four; `/`
+/// none. `None` where [`path_start`] finds no start it can name (`C:x`,
+/// `\\server` alone, `\\?\` of another kind).
+pub(crate) fn start_parts(path: &str, separators: &[char]) -> Option<(bool, usize)> {
+    let (start, rest) = path_start(path).ok()?;
+    // `rest` is the end of `path`.
+    let head = path.get(..path.len().saturating_sub(rest.len()))?;
+    let parts = head
+        .split(separators)
+        .filter(|part| !part.is_empty() && *part != ".")
+        .count();
+    Some((start != Start::Relative, parts))
+}
+
 /// `\\server\share\rest` (given without its `\\`).
 fn share_start<'a>(path: &str, share: &'a str) -> Result<(Start, &'a str), String> {
     let mut parts = share.splitn(3, ['\\', '/']);

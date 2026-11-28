@@ -722,12 +722,28 @@ pub(crate) fn dir_of(path: &str) -> String {
 }
 
 /// `relative` (parts between `/`, `..` allowed) beneath `dir`, with `..`
-/// and `.` taken out as text. An error when `..` climbs out of a relative
-/// `dir`'s start.
+/// and `.` taken out as text. An error when `..` climbs above the start
+/// of an absolute `dir` (or of `relative` when `dir` is empty): `/`, a
+/// Windows drive, a share or a verbatim start
+/// ([`crate::asm_paths::start_parts`]).
+///
+/// 2026-11-27 (public CI on Windows): only `/` and `\` were taken as a
+/// start, so the drive of `D:\work` (and the `?` and the drive of
+/// `\\?\D:\…`, the server and the share of `\\server\share\…`) were
+/// climbed out of as folders, and a source path that climbs above the
+/// drive was joined as another path, relative or on the share's server,
+/// instead of refused as leading to no file.
 pub(crate) fn join(dir: &str, relative: &str) -> Result<String, String> {
     let absolute = dir.starts_with('/')
         || dir.starts_with('\\')
         || (dir.is_empty() && relative.starts_with('/'));
+    // A path whose start cannot be named (`C:x`) is joined as before.
+    let (rooted, fixed) = if dir.is_empty() {
+        crate::asm_paths::start_parts(relative, &['/'])
+    } else {
+        crate::asm_paths::start_parts(dir, &['/', '\\'])
+    }
+    .unwrap_or((absolute, 0));
     let mut parts: Vec<&str> = dir
         .split(['/', '\\'])
         .filter(|p| !p.is_empty() && *p != ".")
@@ -737,10 +753,11 @@ pub(crate) fn join(dir: &str, relative: &str) -> Result<String, String> {
         match part {
             "" | "." => {}
             ".." => {
-                if parts.pop().is_none() {
-                    if absolute {
-                        return Err(format!("`{relative}` climbs above the root"));
-                    }
+                if parts.len() > fixed {
+                    parts.pop();
+                } else if rooted {
+                    return Err(format!("`{relative}` climbs above the root"));
+                } else {
                     climbs = climbs.saturating_add(1);
                 }
             }
@@ -3199,6 +3216,47 @@ mod tests {
         assert_eq!(dir_of("c.3dcraftasm"), "");
         assert_eq!(relative_to("a/b", "a/c/d.3dcraft"), "../c/d.3dcraft");
         assert_eq!(relative_to("", "p/d.3dcraft"), "p/d.3dcraft");
+    }
+
+    /// Windows paths, as text on every platform: `..` climbs to a drive,
+    /// a share or a verbatim start and no higher. A source path that
+    /// climbs above it leads to no file and is refused, never joined as
+    /// another path (public CI on Windows, 2026-11-27: `D:\w` with
+    /// `../../../p` was `p`, relative, and a save elsewhere wrote it).
+    #[test]
+    fn a_climb_above_a_drive_or_a_share_is_refused() {
+        for (dir, relative) in [
+            (r"D:\w\x", "../../../p.3dcraft"),
+            (r"D:\w\x", "../../../../p.3dcraft"),
+            ("D:/w", "../../p.3dcraft"),
+            ("D:", "../p.3dcraft"),
+            (r"\\srv\share\w", "../../p.3dcraft"),
+            (r"\\srv\share", "../p.3dcraft"),
+            (r"\\?\D:\w", "../../p.3dcraft"),
+            (r"\\?\UNC\srv\share\w", "../../p.3dcraft"),
+            ("", "D:/w/../../p.3dcraft"),
+            ("/w", "../../p.3dcraft"),
+        ] {
+            let joined = join(dir, relative);
+            assert!(joined.is_err(), "{dir} {relative}: {joined:?}");
+        }
+        // Down to the start, the paths are written as before.
+        for (dir, relative, want) in [
+            (r"D:\w\x", "../../p.3dcraft", "D:/p.3dcraft"),
+            (r"D:\w\x", "../y/p.3dcraft", "D:/w/y/p.3dcraft"),
+            ("d:/w", "p.3dcraft", "d:/w/p.3dcraft"),
+            (r"\\srv\share\w", "../p.3dcraft", "/srv/share/p.3dcraft"),
+            (r"\\?\D:\w", "../p.3dcraft", "/?/D:/p.3dcraft"),
+            (
+                r"\\?\UNC\srv\share\w",
+                "../p.3dcraft",
+                "/?/UNC/srv/share/p.3dcraft",
+            ),
+            ("", "D:/w/../p.3dcraft", "D:/p.3dcraft"),
+            ("w", "../../p.3dcraft", "../p.3dcraft"),
+        ] {
+            assert_eq!(join(dir, relative).as_deref(), Ok(want), "{dir} {relative}");
+        }
     }
 
     #[test]

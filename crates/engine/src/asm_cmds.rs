@@ -2112,3 +2112,35 @@ pub(crate) fn rebased(doc: &Document, relinker: &Relinker) -> Result<Option<Docu
     }
     Ok(changed.then_some(doc))
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    /// A save into another folder on Windows, as text on every platform:
+    /// a source path that climbs above the assembly's drive leads to no
+    /// file and is refused; one that climbs to the drive's root is
+    /// written from the new folder. Public CI on Windows, 2026-11-27
+    /// (`a_source_that_leads_nowhere_is_refused_by_a_save_elsewhere`):
+    /// the drive was climbed out of as a folder, and the save wrote
+    /// `../work/rod.3dcraft` for a source that leads nowhere.
+    #[test]
+    fn a_source_that_climbs_above_its_drive_is_not_written_elsewhere() {
+        let relinker = Relinker {
+            old_base: r"D:\a\work\abs".to_string(),
+            new_base: r"D:\a\out".to_string(),
+            new_folder: Some(r"D:\a\out".to_string()),
+            write_frame: None,
+            read_root: None,
+            read_from: std::collections::BTreeMap::new(),
+            default_folder: Some(r"D:\a\work\abs".to_string()),
+        };
+        let why = relinker.link("../../../../../rod.3dcraft").unwrap_err();
+        assert!(why.contains("leads to no file"), "{why}");
+        assert_eq!(
+            relinker.link("../../model/rod.3dcraft").as_deref(),
+            Ok("../model/rod.3dcraft")
+        );
+    }
+}

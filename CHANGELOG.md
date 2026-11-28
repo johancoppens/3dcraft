@@ -4,6 +4,10 @@ All notable changes to 3DCraft are listed here. The format follows [Keep a Chang
 
 ## [Unreleased]
 
+### Fixed
+
+- **On Windows, an assembly whose source path climbs above its drive is refused when it is saved into another folder, no longer saved with another path.** A source path in an assembly's file that climbs, by its `..`, above the drive the assembly is on (`D:\`), or above its share (`\\server\share`), leads to no file. 3DCraft took the drive or the share as one more folder to climb out of, so such a path was turned into another one, and a save of the assembly into another folder wrote that path and answered ok. The save is refused now, as on Linux and macOS: it names the instance, says that its source leads to no file and how to point the instance at its file again (`instance.edit`) or pack the sources into the assembly (`assembly.pack`), and writes nothing. Only a source path that was broken already, edited by hand or carried over from another computer, is concerned.
+
 ## [0.3.0] - 2026-11-27
 
 A body cut by planes in one feature, glTF export for web pages and renderers, and an MCP bundle with every release. Results that changed come first: some bodies that 0.2.x built are refused now, where two of their parts or walls come closer together than the tolerance can tell apart or a body meets itself only along a curve, and the refusal says where and what to do; many refusals of 0.2.x are answers or bodies now; and a fillet or a chamfer that is too large names only the sizes it tried. The 112 documents 3DCraft has published answer as they did on 0.2.1 (each check, measure, assertion, output and STEP export compared), and its 33 Jigs pass their checks at all 3 538 points of their ranges that were tried. Files saved by this version do not open in 0.2.x.
