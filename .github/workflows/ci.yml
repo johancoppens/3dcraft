@@ -115,8 +115,10 @@ jobs:
           else
             # The full gate: fmt, clippy, tests, layering, wasm.
             want linux && add linux "gate (linux)" ubuntu-latest "xtask ci" 330
+            # 330 minutes, as Linux: the workspace's tests took macOS 3 h 57
+            # on 2026-11-27 (0.2.1) and ran out at 4 h on 0.3.0.
             want macos && add macos "test (macos)" macos-15 \
-              "test --workspace --no-fail-fast" 240
+              "test --workspace --no-fail-fast" 330
             # Windows in three jobs that together are the workspace: the
             # engine, the kernel, and every other crate (keep the
             # exclusions in step with the first two).
