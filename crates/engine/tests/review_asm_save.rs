@@ -964,8 +964,9 @@ fn asm_paths_review_an_assembly_never_read_saved_by_the_agent() {
 }
 
 /// "there is no such file" only where there is none: not for a folder,
-/// not for a path through a file, not for a file this user may not read,
-/// not for a path outside the root.
+/// not for a file this user may not read, not for a path outside the
+/// root; for a path through a file only where the system says that it
+/// names no file (Windows).
 #[test]
 fn asm_paths_review_read_errors_say_what_is_so() {
     let l = layout("errors");
@@ -973,10 +974,24 @@ fn asm_paths_review_read_errors_say_what_is_so() {
     part(&mut s, ROD, 40.0);
     std::fs::create_dir_all(l.root.join("model/dir.3dcraft")).unwrap();
     run(&mut s, "assembly.new", json!({ "units": "mm" }));
+    // A path through a file: Unix says that a part of it is not a folder
+    // (ENOTDIR); Windows says that the path is not found
+    // (ERROR_PATH_NOT_FOUND, `NotFound`), as for a folder that is not
+    // there. Both are so: there is no file by that path, and its name
+    // and its folder are what to check. Pinned by the system itself, not
+    // by the engine's words (public CI on Windows, 2026-11-23 and
+    // 2026-11-27, expected "not no such file" as on Unix).
+    let through = "model/v2/rod.3dcraft/x.3dcraft";
+    let kind = std::fs::read(l.root.join(through)).unwrap_err().kind();
+    assert_eq!(
+        kind == std::io::ErrorKind::NotFound,
+        cfg!(windows),
+        "{kind:?}"
+    );
     for (source, missing) in [
         ("model/none.3dcraft", true),
         ("model/v3/rod.3dcraft", true),
-        ("model/v2/rod.3dcraft/x.3dcraft", false),
+        (through, cfg!(windows)),
         ("model/dir.3dcraft", false),
         ("../outside.3dcraft", false),
     ] {
