@@ -777,6 +777,19 @@ fn announce_step(count: u8, studio: bool, slow: bool) -> (u8, bool) {
     }
 }
 
+/// [`announce_step`] for a frame of a frame-exact recording
+/// (`Shell::frame_exact`): the frame recorded is the picture, never the
+/// frame that says the studio look is being prepared, so there the look is
+/// made at once and the saying is done with (a plate said before the
+/// recording is not drawn again).
+fn announce_step_recorded(count: u8, studio: bool, slow: bool) -> (u8, bool) {
+    if studio && slow {
+        (2, false)
+    } else {
+        announce_step(count, studio, slow)
+    }
+}
+
 /// A notice about the graphics interface the window draws through: one
 /// passed over because it ended an earlier start (the desktop app's
 /// graphics start journal, `apps/craft3d/src/graphics_start.rs`). Shown in
@@ -1567,10 +1580,12 @@ impl Shell {
 
     /// Whether the frame that says the studio look is being prepared is
     /// still to come or shown ([`Self::direct_frame`]): the studio look
-    /// asked for on a device whose pipelines take long to make.
+    /// asked for on a device whose pipelines take long to make, outside a
+    /// frame-exact recording (which never draws that frame).
     fn studio_announcing(&self) -> bool {
         self.state.look.is_studio()
             && self.direct.as_ref().is_some_and(Direct::slow_pipelines)
+            && !self.frame_exact
             && self.studio_announce < 2
     }
 
@@ -6029,9 +6044,14 @@ impl Shell {
         }
         // Where making the studio look's pipelines holds the window (a
         // minute through OpenGL on an older Intel card), one frame of the
-        // plain look first says so; the next makes them.
+        // plain look first says so; the next makes them. Not in a
+        // frame-exact recording, whose frame is the picture recorded.
         let slow = self.direct.as_ref().is_some_and(Direct::slow_pipelines);
-        let (count, say) = announce_step(self.studio_announce, studio.is_some(), slow);
+        let (count, say) = if self.frame_exact {
+            announce_step_recorded(self.studio_announce, studio.is_some(), slow)
+        } else {
+            announce_step(self.studio_announce, studio.is_some(), slow)
+        };
         self.studio_announce = count;
         if say {
             craft3d_gpu::diag::note("look", "preparing the studio look: said first");
@@ -6872,6 +6892,27 @@ mod announce_tests {
         assert_eq!(announce_step(0, true, true), (1, true));
         assert_eq!(announce_step(1, false, true), (0, false));
         assert_eq!(announce_step(0, true, true), (1, true));
+    }
+}
+
+#[cfg(test)]
+mod recorded_announce_tests {
+    use super::announce_step_recorded;
+
+    /// A frame-exact frame on a slow device (OpenGL) is never the frame
+    /// that says the studio look is being prepared: it makes the look at
+    /// once, so the recording's first frame shows it (2026-11-28).
+    #[test]
+    fn a_frame_exact_frame_is_never_the_announcement() {
+        // Not said yet, or said in the frame before the recording: made
+        // now, and never said again.
+        assert_eq!(announce_step_recorded(0, true, true), (2, false));
+        assert_eq!(announce_step_recorded(1, true, true), (2, false));
+        assert_eq!(announce_step_recorded(2, true, true), (2, false));
+        // A fast device and the plain look as announce_step has them.
+        assert_eq!(announce_step_recorded(0, true, false), (0, false));
+        assert_eq!(announce_step_recorded(0, false, true), (0, false));
+        assert_eq!(announce_step_recorded(1, false, true), (0, false));
     }
 }
 

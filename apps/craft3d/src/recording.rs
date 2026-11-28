@@ -79,7 +79,8 @@ pub struct Timing {
     pub other_passes: f64,
     /// Handing frames to the writer (waiting for room in its queue).
     pub push: f64,
-    /// Waiting for the window to settle (commands, scenes).
+    /// Waiting for the window to settle (commands, scenes) and for the
+    /// studio look's environment to be prepared.
     pub waiting: f64,
 }
 

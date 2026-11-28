@@ -688,7 +688,14 @@ the picture of the window does (`Shell::prepare_look`). `app::tests::a_frame_exa
 records one frame right after switching on an environment no other test of the binary prepares; the
 frame test asserts the average where the shell says it averages (`Shell::converging`) and otherwise
 prints the reason the shell gives (not drawn on the window's device; `Shell::studio_failure`), failing
-when it gives none.
+when it gives none. The review of the fix found two more ways for such a frame to depend on timing or
+order. On OpenGL the first studio frame is the plain one that says the look is being prepared
+(`announce_step`), and a frame-exact frame was that frame when it came first: a frame-exact frame now
+makes the look at once and never says it (`announce_step_recorded`, `Shell::frame_exact`). And the
+window's thread and the thread `prepared_if_ready` started could both prepare one environment, the
+later replacing the cached `Arc`, so a frame after it started its average again and uploaded the
+environment once more (`ProgressKey::same` and `ensure_env` compare by `Arc::ptr_eq`): `bundled::register`
+keeps an environment that is kept already.
 
 ### Layer 3: materials (2026-10-30)
 

@@ -44,15 +44,18 @@ fn cache() -> &'static Mutex<BTreeMap<String, Arc<Prepared>>> {
 }
 
 /// Prepares an environment from the bytes of its `.hdr` file and keeps it
-/// under `name` (the browser's page, after fetching it).
+/// under `name` (the browser's page, after fetching it), unless one is
+/// kept there already: then that one is kept and returned. Two threads
+/// that prepare the same environment at once (the window's thread waiting
+/// for it while the one `LookSpec::prepared_if_ready` started is still at
+/// it) so hand out one `Arc`, and a frame drawn after the second is done
+/// does not take a new one for another picture, start its average again
+/// and upload it once more (both compare by `Arc::ptr_eq`).
 pub fn register(name: &str, bytes: &[u8]) -> Result<Arc<Prepared>, RenderError> {
     let image = decode_hdr(bytes).map_err(|e| RenderError::Environment(e.to_string()))?;
     let prepared = Arc::new(Prepared::new(&image)?);
-    cache()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(name.to_string(), Arc::clone(&prepared));
-    Ok(prepared)
+    let mut kept = cache().lock().unwrap_or_else(PoisonError::into_inner);
+    Ok(Arc::clone(kept.entry(name.to_string()).or_insert(prepared)))
 }
 
 /// The prepared environment of that name, if it is ready already.
@@ -79,5 +82,26 @@ pub fn environment(name: &str) -> Result<Arc<Prepared>, RenderError> {
             "no environment {name:?}; there are {}",
             ENVIRONMENTS.join(", ")
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    /// An environment prepared a second time under a name already kept
+    /// is the one kept: the second preparation's `Arc` is dropped, so a
+    /// frame never sees another `Arc` for the same environment (the review
+    /// of 2026-11-28). A name of its own, so no other test's cache entry
+    /// is touched.
+    #[test]
+    fn a_second_preparation_keeps_the_first() {
+        let name = "bundled-tests-prepared-twice";
+        let bytes = bundled("outdoor").unwrap();
+        let first = register(name, bytes).unwrap();
+        let second = register(name, bytes).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(&ready(name).unwrap(), &first));
     }
 }

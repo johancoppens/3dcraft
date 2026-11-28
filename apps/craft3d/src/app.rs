@@ -2019,6 +2019,11 @@ impl Desk {
                 }
                 return changed;
             }
+            if let Some(advance) = self.rec.advance.as_mut()
+                && let Some(since) = advance.waiting.take()
+            {
+                advance.timing.waiting += since.elapsed().as_secs_f64();
+            }
             // The look asked for, as a picture of the window shows it
             // (`drive`): the studio look's environment is prepared now,
             // waiting for it once per environment and process, rather than
@@ -2026,14 +2031,12 @@ impl Desk {
             // does not depend on how far that thread got (on a slow
             // machine the first frames after the look was switched on were
             // plain, and averaged nothing). A look that cannot be prepared
-            // is drawn plain, as on screen.
+            // is drawn plain, as on screen. (Nor is a frame the one that
+            // says the look is being prepared: `Shell::frame_exact`.)
             let looked = Instant::now();
             let _ = self.host.shell.prepare_look();
             if let Some(advance) = self.rec.advance.as_mut() {
                 advance.timing.waiting += looked.elapsed().as_secs_f64();
-                if let Some(since) = advance.waiting.take() {
-                    advance.timing.waiting += since.elapsed().as_secs_f64();
-                }
             }
             let Some(recording) = self
                 .rec
@@ -3159,10 +3162,12 @@ mod tests {
     }
 
     /// Why `shell` says its viewport does not average its still, in its
-    /// own words: it is not drawn on the window's device (a picture drawn
-    /// another way is one frame of the look, [`Shell::studio_once`]), or
-    /// the device drew the studio look in the plain look
-    /// ([`Shell::studio_failure`]). `None` when it gives no reason.
+    /// own words: it has no path that draws on the window's device
+    /// ([`Shell::draws_directly`]; a picture drawn another way is one
+    /// frame of the look, [`Shell::studio_once`]), or the device drew the
+    /// studio look in the plain look ([`Shell::studio_failure`]). `None`
+    /// when it gives no reason, a frame the direct path refused (drawn
+    /// another way) included.
     fn why_it_does_not_average(shell: &Shell) -> Option<String> {
         if !shell.draws_directly() {
             let fallback = shell.renderer_report().fallback;
@@ -3188,7 +3193,11 @@ mod tests {
     /// (docs/design/rendering.md › *Preparing an environment*), and a
     /// frame of 800 x 500 is drawn and answered sooner there. Drawn on the
     /// window's device in the studio look, the viewport then averages its
-    /// still, one frame of it done.
+    /// still, one frame of it done: on OpenGL too, where the first studio
+    /// frame outside a recording is the plain one that says the look is
+    /// being prepared, which a frame-exact frame never is (the review of
+    /// 2026-11-28: with no environment prepared before, this test failed
+    /// there).
     #[test]
     fn a_frame_exact_frame_waits_for_the_studio_looks_environment() {
         let Ok(state) = craft3d_ui_egui::direct::headless_render_state() else {
