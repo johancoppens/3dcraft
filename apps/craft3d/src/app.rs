@@ -3196,8 +3196,8 @@ mod tests {
     /// still, one frame of it done: on OpenGL too, where the first studio
     /// frame outside a recording is the plain one that says the look is
     /// being prepared, which a frame-exact frame never is (the review of
-    /// 2026-11-28: with no environment prepared before, this test failed
-    /// there).
+    /// 2026-11-28, read from the code and not run there: with no
+    /// environment prepared before, this test would fail there).
     #[test]
     fn a_frame_exact_frame_waits_for_the_studio_looks_environment() {
         let Ok(state) = craft3d_ui_egui::direct::headless_render_state() else {
