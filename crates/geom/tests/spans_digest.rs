@@ -9,7 +9,8 @@
 //! (where a homogeneous point or a blend of two overflows). The digest of
 //! them all is held to what it was when spans were made one knot at a time
 //! (main before 2026-11-17, and the branch that made them in one pass:
-//! the review's runs on both); a change is told to the bit. To compare two
+//! the review's runs on both); a change is told to the bit, every NaN
+//! hashed as one (`Fnv::f`, since 2026-11-28). To compare two
 //! commits case by case, print the lines and `diff` them:
 //!
 //! `cargo test --release -p craft3d-geom --test spans_digest -- --nocapture`
@@ -37,8 +38,20 @@ impl Fnv {
             self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
         }
     }
+    /// A number's bits; every NaN as the one quiet NaN with no sign,
+    /// `0x7ff8_0000_0000_0000`. IEEE 754 leaves the sign and the payload
+    /// of a NaN an invalid operation makes (∞ − ∞, 0 × ∞, where a
+    /// homogeneous point overflows) to the processor: x86 makes
+    /// `0xfff8…`, ARM `0x7ff8…`. A NaN is no value of a span, so which
+    /// one it is says nothing of the extraction; where one stands is still
+    /// hashed.
     fn f(&mut self, x: f64) {
-        self.bytes(&x.to_bits().to_le_bytes());
+        let bits = if x.is_nan() {
+            0x7ff8_0000_0000_0000
+        } else {
+            x.to_bits()
+        };
+        self.bytes(&bits.to_le_bytes());
     }
     fn u(&mut self, x: u64) {
         self.bytes(&x.to_le_bytes());
@@ -338,5 +351,15 @@ fn digests_of_the_spans_of_surfaces_of_every_kind() {
         );
     }
     println!("ALL {:016x}", all.0);
-    assert_eq!(format!("{:016x}", all.0), "f367892a0bb14266");
+    // 2026-11-28, an expectation change (was f367892a0bb14266, the same
+    // spans with x86's NaNs): every NaN is hashed as one pattern (`Fnv::f`),
+    // since the sign of a NaN made by an invalid operation is the
+    // processor's choice (IEEE 754), and macOS on ARM gave 340056b29d8a661a
+    // with the old hash (public CI 45115891590 and 45967346239). Pinned
+    // independently of this hash: the case digests of x86 and ARM were the
+    // same to the bit in 5828 of the 6000 cases with the old hash, and the
+    // other 172, the only cases with a NaN (141 527 NaNs, each with the sign
+    // set on x86), were ARM's case for case once x86's NaNs were written as
+    // ARM's (Strix probe 45964777337): no finite bit differed.
+    assert_eq!(format!("{:016x}", all.0), "340056b29d8a661a");
 }
