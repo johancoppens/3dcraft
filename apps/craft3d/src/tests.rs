@@ -2153,16 +2153,40 @@ mod engine_thread {
             })
         };
         let first = spawn("slow", 0, "debug.slow", json!({"ms": 900, "steps": 3}));
-        let second = spawn(
-            "batch",
-            200,
-            "batch",
-            json!({"steps": [
-                {"command": "file.new"},
-                {"command": "feature.block", "params": {"size": [1, 2, 3]}},
-            ]}),
-        );
-        let third = spawn("ui.fit", 300, "ui.fit", json!({}));
+        // `ui.fit` goes 100 ms after the batch is written, not 100 ms
+        // after a start of its own: how long a connection takes to open
+        // and prove the token is not the order (macOS on the public CI,
+        // 2026-11-27: `ui.fit` came first and found nothing to frame).
+        let (sent, batch_sent) = mpsc::channel();
+        let second = {
+            let (address, order) = (window.address, Arc::clone(&order));
+            std::thread::spawn(move || {
+                let mut client = Client::connect(address);
+                client.call("auth", json!({"token": TOKEN}));
+                std::thread::sleep(Duration::from_millis(200));
+                let batch = json!({"id": 2, "method": "batch", "params": {"steps": [
+                    {"command": "file.new"},
+                    {"command": "feature.block", "params": {"size": [1, 2, 3]}},
+                ]}});
+                client.send(format!("{batch}\n").as_bytes());
+                let _ = sent.send(());
+                let reply = client.read().expect("a reply");
+                order.lock().unwrap().push(("batch", start.elapsed()));
+                reply
+            })
+        };
+        let third = {
+            let (address, order) = (window.address, Arc::clone(&order));
+            std::thread::spawn(move || {
+                let mut client = Client::connect(address);
+                client.call("auth", json!({"token": TOKEN}));
+                let _ = batch_sent.recv();
+                std::thread::sleep(Duration::from_millis(100));
+                let reply = client.call("ui.fit", json!({}));
+                order.lock().unwrap().push(("ui.fit", start.elapsed()));
+                reply
+            })
+        };
         let look = spawn("ui.get", 400, "ui.get", json!({}));
         let looked = look.join().unwrap();
         assert_eq!(looked["result"]["work"]["label"], "debug.slow", "{looked}");
