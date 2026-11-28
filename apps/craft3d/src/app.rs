@@ -2970,14 +2970,20 @@ mod tests {
     /// once; `accumulate: 16` waits for the average (more passes, only the
     /// last read back). Prints where the time goes.
     ///
-    /// On a CPU adapter (WARP, lavapipe) the window is 400 x 250 and a
-    /// frame waits for 2 frames of the average, with the longest timeout
-    /// `ui.advance` takes: WARP drew one studio pass at 1600 x 1000 in 38
-    /// to 57 s (public CI, 2026-11-16 to 2026-11-27), past the 30 s an
-    /// advance waits by default, so 2 of the 6 frames were drawn, and 16
-    /// such passes are past the 60 s a frame may take to settle. What is
-    /// asserted, the passes counted per frame and every frame drawn, does
-    /// not depend on the size or on how many frames are averaged.
+    /// On WARP (Windows' software rasteriser, a CPU adapter on DX12) the
+    /// window is 800 x 500, an advance asks for 2 frames, a frame waits for
+    /// 2 frames of the average and an advance for at most 110 s: WARP drew
+    /// one studio pass at 1600 x 1000 in 38 to 57 s (public CI, 2026-11-16
+    /// to 2026-11-27), past the 30 s an advance waits by default, so 2 of
+    /// its 6 frames were drawn, and 16 such passes are past what a frame
+    /// may take to settle. 800 x 500 keeps the wide layout, as 1600 x 1000
+    /// does; at 400 x 250 (the narrow layout) the viewport did not average
+    /// its still, so the averaging half went unasserted (the review of
+    /// 2026-11-28). Every
+    /// other adapter runs that size too, after the full one, so the size
+    /// WARP gets is shown to average where a GPU runs it. Wherever the
+    /// viewport is drawn on the window's device, a frame that waits for the
+    /// average takes more than one pass.
     #[test]
     fn a_frame_exact_frame_is_one_pass_unless_it_waits_for_the_average() {
         let Ok(state) = craft3d_ui_egui::direct::headless_render_state() else {
@@ -2985,18 +2991,36 @@ mod tests {
             return;
         };
         let adapter = state.adapter.get_info();
-        let cpu = adapter.device_type == eframe::wgpu::DeviceType::Cpu;
-        let ([width, height], average, timeout) = if cpu {
-            ([400.0_f32, 250.0], 2, r#","timeout":110"#)
-        } else {
-            ([1600.0, 1000.0], 16, "")
-        };
-        if cpu {
+        let warp = adapter.device_type == eframe::wgpu::DeviceType::Cpu
+            && adapter.backend == eframe::wgpu::Backend::Dx12;
+        // The window, the frames an advance asks for, the frames of the
+        // average a frame waits for, the advance's timeout.
+        let small = ([800.0_f32, 500.0], 2_u32, 2_u32, r#","timeout":110"#);
+        let runs = if warp {
             println!(
-                "a CPU adapter ({}): the window is {width} x {height}, a frame waits for {average} frames of the average, an advance for at most 110 s",
+                "WARP ({}): the window is 800 x 500, 2 frames an advance, an average of 2, an advance for at most 110 s",
                 adapter.name
             );
+            vec![small]
+        } else {
+            vec![([1600.0, 1000.0], 6, 16, ""), small]
+        };
+        for (run, &(size, frames, average, timeout)) in runs.iter().enumerate() {
+            frame_exact_at(&state, size, frames, average, timeout, run == 0);
         }
+    }
+
+    /// [`a_frame_exact_frame_is_one_pass_unless_it_waits_for_the_average`]
+    /// in a window of `width` x `height`, with `frames` an advance and an
+    /// average of `average`; `late`: also an advance that runs out of time.
+    fn frame_exact_at(
+        state: &eframe::egui_wgpu::RenderState,
+        [width, height]: [f32; 2],
+        frames: u32,
+        average: u32,
+        timeout: &str,
+        late: bool,
+    ) {
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/tmp/craft3d-desk-record-speed");
         let _ = std::fs::remove_dir_all(&dir);
@@ -3008,10 +3032,10 @@ mod tests {
             read: Access::Root(dir.clone()),
             write: Access::Root(dir.clone()),
         }));
-        host.shell.attach_gpu(&state).unwrap();
+        host.shell.attach_gpu(state).unwrap();
         let mut desk = Desk::new(host, incoming, picker);
         desk.set_window_points([width, height]);
-        desk.attach_recorder(Some(&state));
+        desk.attach_recorder(Some(state));
         let ctx = egui::Context::default();
         let serve = |desk: &mut Desk, line: &str| -> Value {
             let answer = ask(&requests, line);
@@ -3045,28 +3069,35 @@ mod tests {
             );
             assert_eq!(serve(&mut desk, &start)["ok"], true);
             let began = Instant::now();
-            let advance =
-                format!(r#"{{"id":6,"method":"ui.advance","params":{{"frames":6{timeout}}}}}"#);
+            let advance = format!(
+                r#"{{"id":6,"method":"ui.advance","params":{{"frames":{frames}{timeout}}}}}"#
+            );
             let reply = serve(&mut desk, &advance);
-            let took = began.elapsed().as_secs_f64() / 6.0;
+            let took = began.elapsed().as_secs_f64() / f64::from(frames);
             let result = &reply["result"];
             println!(
                 "accumulate {accumulate}: {:.0} ms a frame at {width} x {height}, {}",
                 took * 1e3,
                 result["timing"]
             );
-            assert_eq!(result["frames"], 6, "{reply}");
+            assert_eq!(result["frames"], frames, "{reply}");
             assert_eq!(result["complete"], true);
             let passes = result["timing"]["passesPerFrame"].as_f64().unwrap();
             if accumulate == 1 {
                 assert_eq!(passes, 1.0, "{reply}");
-            } else if averages {
-                assert!(passes > 1.0, "{reply}");
+            } else if desk.host.shell.draws_directly() {
+                assert!(
+                    passes > 1.0,
+                    "at {width} x {height} (averaging {averages}): {reply}"
+                );
             } else {
                 println!("the viewport does not average its still here (no direct GPU path)");
             }
             let stop = r#"{"id":7,"method":"ui.record","params":{"stop":true}}"#;
             assert_eq!(serve(&mut desk, stop)["ok"], true);
+        }
+        if !late {
+            return;
         }
         // Out of time: the frames drawn so far, the rest left to ask for.
         let start = r#"{"id":8,"method":"ui.record","params":{"path":"late","step":true}}"#;
