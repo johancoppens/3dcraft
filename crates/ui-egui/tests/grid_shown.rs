@@ -650,9 +650,9 @@ fn ink(with: &[u8], without: &[u8], levels: u8) -> Vec<bool> {
         .collect()
 }
 
-/// How many of the pixels marked in `of` have no pixel marked in `near`
-/// within `reach` pixels.
-fn alone(of: &[bool], near: &[bool], width: usize, reach: i64) -> usize {
+/// The pixels marked in `of` that have no pixel marked in `near` within
+/// `reach` pixels, by their index.
+fn alone(of: &[bool], near: &[bool], width: usize, reach: i64) -> Vec<usize> {
     let height = of.len() / width;
     (0..of.len())
         .filter(|&i| of[i])
@@ -669,7 +669,58 @@ fn alone(of: &[bool], near: &[bool], width: usize, reach: i64) -> usize {
                 })
             })
         })
-        .count()
+        .collect()
+}
+
+/// Where a direct picture and the oracle's part, kept for whoever reads
+/// the failure: both pictures with the sketches, and the GPU's with its
+/// strays red and the CPU's ink it misses blue, in `target/evidence/gpu/`
+/// (which the public CI keeps), and the first strays with their colours.
+/// 2026-11-23 and 2026-11-27, lavapipe on the public CI: 14 strays of 2530
+/// (flipped, see-through 0.5) and no picture to say where they lie.
+fn keep_evidence(
+    label: &str,
+    width: usize,
+    gpu_rgb: &[u8],
+    cpu_rgb: &[u8],
+    strays: &[usize],
+    missing: &[usize],
+) {
+    let height = gpu_rgb.len() / 3 / width;
+    let dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/gpu");
+    std::fs::create_dir_all(&dir).unwrap();
+    let name: String = label
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let mut marked: Vec<u8> = gpu_rgb.iter().map(|&c| c / 2 + 64).collect();
+    for (at, colour) in strays
+        .iter()
+        .map(|&i| (i, [255_u8, 0, 0]))
+        .chain(missing.iter().map(|&i| (i, [0_u8, 0, 255])))
+    {
+        marked[3 * at..3 * at + 3].copy_from_slice(&colour);
+    }
+    for (what, rgb) in [
+        ("gpu", gpu_rgb),
+        ("cpu", cpu_rgb),
+        ("strays", marked.as_slice()),
+    ] {
+        let path = dir.join(format!("failed-grid-{name}-{what}.png"));
+        let png = craft3d_render::encode_png(width as u32, height as u32, rgb).unwrap();
+        std::fs::write(&path, png).unwrap();
+        println!("evidence: {}", path.display());
+    }
+    for &i in strays.iter().take(20) {
+        println!(
+            "stray ({}, {}): gpu {:?}, cpu {:?}",
+            i % width,
+            i / width,
+            &gpu_rgb[3 * i..3 * i + 3],
+            &cpu_rgb[3 * i..3 * i + 3]
+        );
+    }
 }
 
 /// The window's own device cuts the grid as the oracle does: with a
@@ -727,11 +778,15 @@ fn the_direct_path_cuts_the_grid_as_the_oracle_does() {
             );
             let label = format!("{name}, see-through {transparency}");
             assert!(cpu_ink > 1000, "{label}: {cpu_ink} pixels of the grid");
-            let stray = alone(&gpu, &cpu, width, 2);
-            let missing = alone(&cpu, &gpu, width, 2);
+            let strays = alone(&gpu, &cpu, width, 2);
+            let lacking = alone(&cpu, &gpu, width, 2);
+            let (stray, missing) = (strays.len(), lacking.len());
             println!(
                 "{label}: grid ink {gpu_ink} GPU, {cpu_ink} CPU; {stray} GPU pixels with no CPU ink near, {missing} CPU pixels with no GPU ink near"
             );
+            if stray * 200 > gpu_ink || missing * 50 > cpu_ink {
+                keep_evidence(&label, width, gpu_with, cpu_with, &strays, &lacking);
+            }
             assert!(stray * 200 <= gpu_ink, "{label}: {stray} of {gpu_ink}");
             assert!(missing * 50 <= cpu_ink, "{label}: {missing} of {cpu_ink}");
         }
