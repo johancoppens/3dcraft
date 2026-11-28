@@ -753,6 +753,7 @@ The first version for people outside the project (0.1.0); it does not wait for t
 - [ ] A silhouette or parting-line curve of faces for a pull direction (where n·d = 0), usable as a loft or network curve, and a surface extended outward from it ([`design/surfacing.md`](design/surfacing.md)).
 - [ ] `measure.draft` on spline faces proven, not sampled ([`design/surfacing.md`](design/surfacing.md)).
 - [ ] Assemblies: a subassembly in another length unit, the part's own assertions checked per configuration ([`design/assemblies.md`](design/assemblies.md))
+- [ ] Assemblies on a Windows share or a verbatim path: `asm::join` writes `\\server\share\x` as `/server/share/x` and `\\?\D:\x` as `/?/D:/x`, so a save into another folder refuses every source, good ones too ([`design/assemblies.md`](design/assemblies.md) › *Pack and unpack*)
 - [ ] The web build: `assembly.reload` and a trace while the view is scrubbed still run on the page's thread ([`design/engine.md`](design/engine.md) › *Sweeps and assembly edits in the worker*)
 - [ ] The web build: each moment's scene crosses whole (about 10 MB a moment on the planetary gearbox); the parts' poses on the wire, once measured in a browser ([`design/engine.md`](design/engine.md) › *Sweeps and assembly edits in the worker*)
 - [ ] Assemblies as Jigs (track C, after phase 2): gear-reducer and planetary-gearbox by body picks, revolute mates and gear couplings; strandbeest-leg as one bar part and pins (its `t` thickness renamed first) ([`design/motion.md`](design/motion.md))

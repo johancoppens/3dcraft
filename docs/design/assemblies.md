@@ -656,7 +656,11 @@ sources cannot be rewritten keeps its paths. The files the open assembly read ar
 them by after the save (`Relinker::carry`: the same files, so the same bytes and stamps), and the save does not read the
 saved assembly's own sources again (its follow of the other open assemblies skips it): its instances stay placed with
 whatever access the save had, and a source changed on disk is taken in by the next follow (the window's focus,
-`assembly.follow`), not by the save.
+`assembly.follow`), not by the save. Since 2026-11-28 `asm::join` refuses a `..` that climbs above a Windows drive, a
+share or a verbatim start (`asm_paths::start_parts`), as above `/`. Owed (the review of `check/ci-0.3`): `join` still
+writes a share (`\\server\share\x`) as `/server/share/x` and a verbatim path (`\\?\D:\x`) as `/?/D:/x`, so a save into
+another folder of an assembly on a share or a verbatim path is refused for every source, good ones too, and a
+subassembly's folder loses its start.
 
 ### Export (`crates/engine/src/asm_export.rs`, `crates/io/src/step_assembly.rs`)
 
