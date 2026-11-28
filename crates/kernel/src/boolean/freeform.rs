@@ -4725,6 +4725,39 @@ mod tests {
     use craft3d_geom::BezierPatch;
     use craft3d_math::Frame;
 
+    /// The process's room for fine pieces ([`fine_room`]: [`HELD_TOGETHER`]
+    /// less what the operations hold) as the tests of this binary share it.
+    /// A test that fills what the operations hold together takes it alone
+    /// ([`room_alone`]); a test whose store must keep what its own cap
+    /// allows takes it with the others like it ([`room_shared`]), so never
+    /// beside a filling one. Public CI, 2026-11-23 (Linux) and 2026-11-27
+    /// (Windows): `a_full_fine_store_lets_go_of_old_leaves_and_answers_the_same`
+    /// ran beside `trees_held_together_are_bounded_process_wide`, whose
+    /// operations held up to all of [`HELD_TOGETHER`], and its full store
+    /// was told to let go of leaves early: the most it held was 3581 and
+    /// 3620 pieces, where the test asks more than 4397 of it. The answers
+    /// were the same, bit for bit.
+    static ROOM: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+    fn room_alone() -> std::sync::RwLockWriteGuard<'static, ()> {
+        ROOM.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn room_shared() -> std::sync::RwLockReadGuard<'static, ()> {
+        ROOM.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The process's room is there, far more than a test's store takes:
+    /// no test that fills it runs beside (one that does not take
+    /// [`room_alone`] would).
+    fn assert_room() {
+        let room = fine_room(0);
+        assert!(
+            room > HELD_TOGETHER / 4,
+            "a test fills the room beside this one: {room}"
+        );
+    }
+
     /// Nobody passes an operation that waits, and the background never
     /// passes the foreground: a background operation that comes while a
     /// woken foreground one has not locked again yet waits (before
@@ -4768,6 +4801,7 @@ mod tests {
     fn a_holder_that_gets_in_line_wakes_the_waiter_before_it() {
         use std::sync::mpsc;
         use std::time::{Duration, Instant};
+        let _room = room_alone();
         let (done, finished) = mpsc::channel();
         std::thread::spawn(move || {
             let (b_holds, a_may_start) = mpsc::channel();
@@ -4822,6 +4856,7 @@ mod tests {
     fn background_churn_does_not_starve_the_foreground() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::time::{Duration, Instant};
+        let _room = room_alone();
         let stop = AtomicBool::new(false);
         let waited = std::thread::scope(|scope| {
             for n in 0..3u64 {
@@ -4877,6 +4912,7 @@ mod tests {
     #[test]
     fn trees_held_together_are_bounded_process_wide() {
         use std::sync::atomic::{AtomicUsize, Ordering};
+        let _room = room_alone();
         for (background, limit, size) in [
             (false, HELD_TOGETHER, HELD_TOGETHER / 3),
             (true, HELD_TOGETHER / 2, HELD_TOGETHER / 5),
@@ -5481,6 +5517,8 @@ mod tests {
     /// a little more (some leaves kept), and the store of a tree in use.
     #[test]
     fn a_full_fine_store_lets_go_of_old_leaves_and_answers_the_same() {
+        let _room = room_shared();
+        assert_room();
         let plate = Surface::Nurbs(
             NurbsSurface::new(
                 1,
@@ -5587,6 +5625,8 @@ mod tests {
     /// charged are the same, bit for bit, either way. Counted, not timed.
     #[test]
     fn a_store_that_holds_the_searches_along_a_boundary_makes_each_piece_once() {
+        let _room = room_shared();
+        assert_room();
         let sheet = weighted_plane(3);
         let n = 8;
         let ((u0, u1), (v0, v1)) = sheet.domain();
