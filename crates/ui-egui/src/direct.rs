@@ -665,6 +665,13 @@ impl Direct {
         self.onscreen.converging()
     }
 
+    /// Why the last frame asked for in the studio look was drawn in the
+    /// plain look (its passes could not be built or made ready on this
+    /// device), or `None` when it was drawn as asked.
+    pub fn studio_failure(&self) -> Option<&str> {
+        self.onscreen.studio_failure()
+    }
+
     /// The egui texture that shows the picture, once one was drawn.
     pub fn texture_id(&self) -> Option<egui::TextureId> {
         self.texture.map(|(id, _)| id)

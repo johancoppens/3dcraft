@@ -23,7 +23,8 @@
 //! - frame-exact (`ui.record {path, step: true}`): nothing is drawn until
 //!   `ui.advance {frames, dt}`, and then each frame is a pass at a time
 //!   `dt` after the last one, run once what the window shows has settled
-//!   (no command running, the scene built, the viewport's picture done).
+//!   (no command running, the scene built, the studio look's environment
+//!   prepared, the viewport's picture done).
 //!   The history player, flights and the orbit follow egui's input time,
 //!   so an agent gets the same frames for the same requests; a playing
 //!   motion is recorded at its exact moments and full quality

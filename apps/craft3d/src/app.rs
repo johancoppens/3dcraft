@@ -2019,10 +2019,21 @@ impl Desk {
                 }
                 return changed;
             }
-            if let Some(advance) = self.rec.advance.as_mut()
-                && let Some(since) = advance.waiting.take()
-            {
-                advance.timing.waiting += since.elapsed().as_secs_f64();
+            // The look asked for, as a picture of the window shows it
+            // (`drive`): the studio look's environment is prepared now,
+            // waiting for it once per environment and process, rather than
+            // the plain look drawn while a thread prepares it, so a frame
+            // does not depend on how far that thread got (on a slow
+            // machine the first frames after the look was switched on were
+            // plain, and averaged nothing). A look that cannot be prepared
+            // is drawn plain, as on screen.
+            let looked = Instant::now();
+            let _ = self.host.shell.prepare_look();
+            if let Some(advance) = self.rec.advance.as_mut() {
+                advance.timing.waiting += looked.elapsed().as_secs_f64();
+                if let Some(since) = advance.waiting.take() {
+                    advance.timing.waiting += since.elapsed().as_secs_f64();
+                }
             }
             let Some(recording) = self
                 .rec
@@ -2978,12 +2989,27 @@ mod tests {
     /// its 6 frames were drawn, and 16 such passes are past what a frame
     /// may take to settle. 800 x 500 keeps the wide layout, as 1600 x 1000
     /// does; at 400 x 250 (the narrow layout) the viewport did not average
-    /// its still, so the averaging half went unasserted (the review of
-    /// 2026-11-28). Every
-    /// other adapter runs that size too, after the full one, so the size
-    /// WARP gets is shown to average where a GPU runs it. Wherever the
-    /// viewport is drawn on the window's device, a frame that waits for the
-    /// average takes more than one pass.
+    /// its still in the review's probe of 2026-11-28, so the averaging half
+    /// went unasserted (that probe ran before the fix below, its first
+    /// recording a few fast frames, so its environment may still have been
+    /// prepared then). Every other adapter runs that size too, after the
+    /// full one, so the size WARP gets is shown to average where a GPU runs
+    /// it.
+    ///
+    /// The averaging half asserts what the shell says the viewport does
+    /// once the view changed: where it says it averages its still
+    /// ([`Shell::converging`]), a frame that waits for the average takes
+    /// more than one pass; where it says it does not, the test prints the
+    /// reason the shell gives ([`why_it_does_not_average`]), and a shell
+    /// that gives none fails it. By then the first recording's frames have
+    /// prepared the studio look's environment (`ui.advance` waits for it,
+    /// as a picture of the window does). Before they did, they were drawn
+    /// in the plain look while a thread prepared it, and the averaging half
+    /// could meet a viewport still drawn plain, which averages nothing: one
+    /// pass a frame on the public CI's macOS runner (Apple's Paravirtual
+    /// device, 2026-11-28; the cause read from the code:
+    /// docs/design/rendering.md › *The same in a frame-exact recording*),
+    /// while the Strix, quicker, had it prepared in time.
     #[test]
     fn a_frame_exact_frame_is_one_pass_unless_it_waits_for_the_average() {
         let Ok(state) = craft3d_ui_egui::direct::headless_render_state() else {
@@ -3063,7 +3089,11 @@ mod tests {
             let view = format!(r#"{{"id":4,"method":"ui.set","params":{{"view":"{view}"}}}}"#);
             assert_eq!(serve(&mut desk, &view)["ok"], true);
             desk.offscreen_pass(&ctx, 0.0, Vec::new(), false).unwrap();
+            // What the shell says the viewport does now, before the frames
+            // finish its average: whether it averages its still, and if
+            // not, why.
             let averages = desk.host.shell.converging();
+            let why_not = why_it_does_not_average(&desk.host.shell);
             let start = format!(
                 r#"{{"id":5,"method":"ui.record","params":{{"path":"{path}","step":true,"accumulate":{accumulate}}}}}"#
             );
@@ -3085,13 +3115,24 @@ mod tests {
             let passes = result["timing"]["passesPerFrame"].as_f64().unwrap();
             if accumulate == 1 {
                 assert_eq!(passes, 1.0, "{reply}");
-            } else if desk.host.shell.draws_directly() {
+            } else if averages {
                 assert!(
                     passes > 1.0,
-                    "at {width} x {height} (averaging {averages}): {reply}"
+                    "at {width} x {height} the shell says the viewport averages its still: {reply}"
+                );
+                println!(
+                    "at {width} x {height} the shell says the viewport averages its still: {passes} passes a frame, more than 1 asserted"
                 );
             } else {
-                println!("the viewport does not average its still here (no direct GPU path)");
+                let Some(why) = why_not else {
+                    panic!(
+                        "at {width} x {height} the shell says the viewport does not average its still and gives no reason (drawn on the window's device, the studio look drawn as asked); render {:?}: {reply}",
+                        desk.host.shell.render_stats()
+                    );
+                };
+                println!(
+                    "at {width} x {height} the shell says the viewport does not average its still, so {passes} passes a frame: {why}"
+                );
             }
             let stop = r#"{"id":7,"method":"ui.record","params":{"stop":true}}"#;
             assert_eq!(serve(&mut desk, stop)["ok"], true);
@@ -3115,6 +3156,125 @@ mod tests {
             )["ok"],
             true
         );
+    }
+
+    /// Why `shell` says its viewport does not average its still, in its
+    /// own words: it is not drawn on the window's device (a picture drawn
+    /// another way is one frame of the look, [`Shell::studio_once`]), or
+    /// the device drew the studio look in the plain look
+    /// ([`Shell::studio_failure`]). `None` when it gives no reason.
+    fn why_it_does_not_average(shell: &Shell) -> Option<String> {
+        if !shell.draws_directly() {
+            let fallback = shell.renderer_report().fallback;
+            return Some(format!(
+                "it is not drawn on the window's device ({}), and a picture drawn another way is one frame of the look",
+                fallback.as_deref().unwrap_or("no direct GPU path")
+            ));
+        }
+        shell
+            .studio_failure()
+            .map(|why| format!("the window's device draws the studio look plain: {why}"))
+    }
+
+    /// The first frame of a frame-exact recording made right after the
+    /// studio look is switched on shows the studio look, its environment
+    /// prepared by `ui.advance` first (as a picture of the window is),
+    /// never the plain look drawn while a thread prepares it, which made
+    /// the frames depend on how far that thread got (2026-11-28). The
+    /// environment is
+    /// `outdoor`, which no other test of this binary uses, so it is not
+    /// prepared yet when the frame is asked for (where it is, the test
+    /// says so); the thread takes some 120 ms for it on the Strix
+    /// (docs/design/rendering.md › *Preparing an environment*), and a
+    /// frame of 800 x 500 is drawn and answered sooner there. Drawn on the
+    /// window's device in the studio look, the viewport then averages its
+    /// still, one frame of it done.
+    #[test]
+    fn a_frame_exact_frame_waits_for_the_studio_looks_environment() {
+        let Ok(state) = craft3d_ui_egui::direct::headless_render_state() else {
+            println!("SKIPPED: no graphics adapter");
+            return;
+        };
+        let environment = "outdoor";
+        if craft3d_engine::look::environment_ready(environment) {
+            println!(
+                "{environment} was prepared already in this process: this proves nothing here"
+            );
+        }
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp/craft3d-desk-record-environment");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = craft3d_engine::canonical(&dir).unwrap();
+        let (requests, incoming) = mpsc::channel();
+        let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+        let mut host = Host::new(Session::new(Workspace {
+            read: Access::Root(dir.clone()),
+            write: Access::Root(dir.clone()),
+        }));
+        host.shell.attach_gpu(&state).unwrap();
+        let mut desk = Desk::new(host, incoming, picker);
+        desk.set_window_points([800.0, 500.0]);
+        desk.attach_recorder(Some(&state));
+        let ctx = egui::Context::default();
+        let serve = |desk: &mut Desk, line: &str| -> Value {
+            let answer = ask(&requests, line);
+            for _ in 0..20000 {
+                desk.turn();
+                desk.drive(&ctx);
+                if let Ok(reply) = answer.try_recv() {
+                    return serde_json::from_str(&reply.unwrap()).unwrap();
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            panic!("no reply to {line}");
+        };
+        let look = format!(
+            r#"{{"id":3,"method":"ui.set","params":{{"look":{{"mode":"studio","environment":"{environment}"}}}}}}"#
+        );
+        for line in [
+            r#"{"id":1,"method":"engine.execute","params":{"command":"file.new","params":{}}}"#,
+            r#"{"id":2,"method":"engine.execute","params":{"command":"feature.block","params":{"size":["40 mm","30 mm","20 mm"]}}}"#,
+            look.as_str(),
+        ] {
+            assert_eq!(serve(&mut desk, line)["ok"], true, "{line}");
+        }
+        // A pass as the window draws one, which a frame of the recording
+        // was before the fix: the plain look while the environment is
+        // prepared (where the thread was not quicker than the pass).
+        desk.offscreen_pass(&ctx, 0.0, Vec::new(), false).unwrap();
+        println!(
+            "a pass as the window draws it, right after the look was switched on: averaging {}, {environment} prepared {}",
+            desk.host.shell.converging(),
+            craft3d_engine::look::environment_ready(environment)
+        );
+        let start = r#"{"id":4,"method":"ui.record","params":{"path":"first","step":true}}"#;
+        assert_eq!(serve(&mut desk, start)["ok"], true);
+        let reply = serve(
+            &mut desk,
+            r#"{"id":5,"method":"ui.advance","params":{"frames":1,"timeout":110}}"#,
+        );
+        assert_eq!(reply["result"]["frames"], 1, "{reply}");
+        assert!(
+            craft3d_engine::look::environment_ready(environment),
+            "the frame was drawn before the studio look's environment was prepared: {reply}"
+        );
+        let shell = &desk.host.shell;
+        if shell.converging() {
+            println!(
+                "the first frame was drawn in the studio look: the viewport averages its still"
+            );
+        } else {
+            let Some(why) = why_it_does_not_average(shell) else {
+                panic!(
+                    "after the first frame the shell says the viewport does not average its still and gives no reason; render {:?}: {reply}",
+                    shell.render_stats()
+                );
+            };
+            println!("the viewport does not average its still: {why}");
+        }
+        let stop = r#"{"id":6,"method":"ui.record","params":{"stop":true}}"#;
+        assert_eq!(serve(&mut desk, stop)["ok"], true);
     }
 
     /// The status bar names the file a request opens, without its folder

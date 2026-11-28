@@ -239,9 +239,9 @@ in the plain look, with the reason kept (`Onscreen::studio_failure`); the viewpo
 the simpler look (no shadows, no occlusion, `backend::cpu_look`): full PCSS and GTAO on its one thread
 would hold the page up. The window prepares an environment on a thread of its own
 (`LookSpec::prepared_if_ready`) and draws plain until it is ready, then again (the frame key has the
-environment's readiness; the window looks again every 100 ms while it waits); `ui.screenshot` and
-`view.render` wait for it. The split-sum table does not depend on the environment and is computed once
-per process (`brdf::shared_lut`).
+environment's readiness; the window looks again every 100 ms while it waits); `ui.screenshot`,
+`view.render` and the frames of a frame-exact recording (`ui.advance`) wait for it. The split-sum table
+does not depend on the environment and is computed once per process (`brdf::shared_lut`).
 
 **WebGL2.** The simpler path (`studio::simpler`): in the browser on WebGL2 the viewport draws the studio
 look without shadows and without occlusion (`Onscreen::studio_as_drawn` turns them off, so the CPU
@@ -672,6 +672,23 @@ clock, while `Shell::animating` (a popover or the drawer fading in, by egui's
 `Shell::look_settling` as still averaging. `ui-egui/tests/look_settling.rs` drives frames at chosen
 times; the offscreen path itself needs a GPU and was checked by looking: the first studio picture of a
 fresh window at 760 × 900 shows the studio look with its popover opaque.
+
+*The same in a frame-exact recording* (2026-11-28, check/ci-0.3). `ui.advance` drew its frames once the
+window had settled, which waited for the scene and the averaging but not for the look, so the frames
+after the studio look was switched on were plain until its thread had prepared the environment. On the
+public CI's macOS runner (Apple's Paravirtual device, a busy three-core machine) the frame test
+`app::tests::a_frame_exact_frame_is_one_pass_unless_it_waits_for_the_average` found the viewport not
+averaging after a change of view (one pass a frame where 16 were asked for), while the Strix, quicker,
+had the environment ready in time. The cause is read from the code, not seen on that runner: the
+viewport averages while the studio look is drawn on the window's device and its frames are not all
+summed (`Onscreen::converging`); it is drawn plain while the environment is prepared, or where the
+device cannot make its passes (`Onscreen::studio_failure`), and `ui-egui/tests/play_light.rs`, which
+prepares the look first, averages on the direct path on the same runner (at 800 × 560). Fixed: `Desk::advance_frames` prepares the look before each frame, as
+the picture of the window does (`Shell::prepare_look`). `app::tests::a_frame_exact_frame_waits_for_the_studio_looks_environment`
+records one frame right after switching on an environment no other test of the binary prepares; the
+frame test asserts the average where the shell says it averages (`Shell::converging`) and otherwise
+prints the reason the shell gives (not drawn on the window's device; `Shell::studio_failure`), failing
+when it gives none.
 
 ### Layer 3: materials (2026-10-30)
 

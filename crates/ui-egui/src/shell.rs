@@ -2036,6 +2036,17 @@ impl Shell {
         self.direct_shown && self.direct.as_ref().is_some_and(Direct::converging)
     }
 
+    /// Why the viewport, drawn directly, showed the studio look asked for
+    /// in its last frame in the plain look: its passes could not be built
+    /// or made ready on the window's device (`Onscreen::studio_failure`).
+    /// `None` when it was drawn as asked, or not drawn directly.
+    pub fn studio_failure(&self) -> Option<&str> {
+        self.direct
+            .as_ref()
+            .filter(|_| self.direct_shown)
+            .and_then(Direct::studio_failure)
+    }
+
     /// The picture the direct path shows, read back from the device: for
     /// tests, which compare it with the CPU reference renderer's. `None`
     /// when the viewport is not drawn directly or nothing was drawn yet.
