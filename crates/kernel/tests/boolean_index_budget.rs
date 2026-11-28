@@ -158,10 +158,9 @@ fn a_face_just_over_the_index_budget_is_refused_before_its_memory_is_taken() {
         // 2026-11-23 and 2026-11-27), and NaN fails every comparison.
         // There the refusal above is what is asserted; the memory it
         // spares is measured on Linux, where it must be.
-        assert!(
-            !cfg!(target_os = "linux"),
-            "no peak memory on Linux: {before} -> {after} MiB"
-        );
+        if cfg!(target_os = "linux") {
+            panic!("no peak memory on Linux: {before} -> {after} MiB");
+        }
         println!(
             "the peak memory is not measured here (no /proc/self/status): the refusal is asserted"
         );
