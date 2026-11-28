@@ -564,6 +564,11 @@ fn files_stay_inside_the_roots() {
     assert_eq!(missing.matches("cannot open").count(), 1, "{missing}");
     assert!(missing.contains("there is no such file"), "{missing}");
     assert_eq!(missing.matches("missing.3dcraft").count(), 1, "{missing}");
+    // A folder is said to be one, not "permission denied" (Windows) or
+    // `Is a directory (os error 21)` (Unix).
+    std::fs::create_dir_all(dir.join("folder.3dcraft")).unwrap();
+    let folder = error(&mut session, "file.open", json!({"path": "folder.3dcraft"}));
+    assert!(folder.contains("it is a folder, not a file"), "{folder}");
     assert!(error(&mut session, "file.save", json!({})).contains("give a `path`"));
     // Saving into a directory that does not exist fails cleanly.
     assert!(

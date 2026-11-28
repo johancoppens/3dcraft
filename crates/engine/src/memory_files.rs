@@ -165,7 +165,16 @@ impl Session {
                     crate::workspace::io_reason(&e, crate::workspace::IoAccess::Read)
                 )
             };
-            let size = std::fs::metadata(resolved).map_err(cannot)?.len();
+            let metadata = std::fs::metadata(resolved).map_err(cannot)?;
+            // Said here: Windows refuses to read a folder as access
+            // denied (`permission denied: this user may not read it`,
+            // which is not so), Unix as `Is a directory (os error 21)`.
+            if metadata.is_dir() {
+                return Err(format!(
+                    "cannot read `{path}`: it is a folder, not a file; give the path of a file"
+                ));
+            }
+            let size = metadata.len();
             if size > limit {
                 return Err(too_large(size));
             }

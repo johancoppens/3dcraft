@@ -1039,6 +1039,11 @@ fn load_from_disk(
 ) -> Result<(craft3d_doc::Document, Vec<String>), String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        // Windows refuses to open a folder as a file as access denied,
+        // which is not so (`Session::read_input` says the same).
+        if resolved.is_dir() {
+            return Err("it is a folder, not a file; give the path of a file".to_string());
+        }
         craft3d_format::load_noted(resolved).map_err(|e| match e {
             // The path is in the message that wraps this already.
             craft3d_format::FormatError::Io { error, .. } => {

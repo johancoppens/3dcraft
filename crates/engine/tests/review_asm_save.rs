@@ -1006,6 +1006,16 @@ fn asm_paths_review_read_errors_say_what_is_so() {
             missing,
             "{source}: {e}"
         );
+        // A folder is said to be one on every platform: Windows refuses
+        // to open it as a file as access denied (ERROR_ACCESS_DENIED,
+        // `PermissionDenied`), which is not so, Unix as `Is a directory
+        // (os error 21)`.
+        assert_eq!(
+            e.contains("it is a folder, not a file"),
+            source == "model/dir.3dcraft",
+            "{source}: {e}"
+        );
+        assert!(!e.contains("permission denied"), "{source}: {e}");
     }
     #[cfg(unix)]
     {
